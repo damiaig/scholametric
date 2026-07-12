@@ -1,0 +1,261 @@
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [citext, pg_trgm]
+}
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+enum SchoolType {
+  NURSERY_PRIMARY
+  SECONDARY
+  COMBINED
+}
+
+enum SchoolStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  SCHOOL_ADMIN
+  TEACHER
+  PARENT
+  STUDENT
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum TermName {
+  FIRST
+  SECOND
+  THIRD
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum StudentStatus {
+  ACTIVE
+  SUSPENDED
+  GRADUATED
+  TRANSFERRED
+  WITHDRAWN
+}
+
+model School {
+  id        String       @id @default(uuid(7)) @db.Uuid
+  name      String
+  slug      String       @unique
+  type      SchoolType
+  address   String?
+  phone     String?
+  email     String?
+  status    SchoolStatus @default(ACTIVE)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  users              User[]
+  academicSessions   AcademicSession[]
+  terms              Term[]
+  classLevels        ClassLevel[]
+  classArms          ClassArm[]
+  students           Student[]
+  studentEnrollments StudentEnrollment[]
+  auditLogs          AuditLog[]
+
+  @@map("schools")
+}
+
+model User {
+  id           String     @id @default(uuid(7)) @db.Uuid
+  schoolId     String     @map("school_id") @db.Uuid
+  email        String     @db.Citext
+  passwordHash String     @map("password_hash")
+  firstName    String     @map("first_name")
+  lastName     String     @map("last_name")
+  role         UserRole
+  status       UserStatus @default(ACTIVE)
+  lastLoginAt  DateTime?  @map("last_login_at")
+  deletedAt    DateTime?  @map("deleted_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  school        School         @relation(fields: [schoolId], references: [id])
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+
+  @@unique([schoolId, email])
+  @@index([schoolId])
+  @@map("users")
+}
+
+// No school_id here by design — a refresh token is only ever reached via
+// user_id, and the owning user already carries school_id. See
+// docs/DECISIONS.md for the tradeoff against CLAUDE.md §4's general rule.
+model RefreshToken {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// Exactly one is_current = true per school is enforced by a partial
+// unique index added by hand in the initial migration — Prisma's schema
+// DSL can't express partial indexes. See docs/DECISIONS.md.
+model AcademicSession {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  schoolId  String   @map("school_id") @db.Uuid
+  name      String
+  startsOn  DateTime @map("starts_on") @db.Date
+  endsOn    DateTime @map("ends_on") @db.Date
+  isCurrent Boolean  @default(false) @map("is_current")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  school             School              @relation(fields: [schoolId], references: [id])
+  terms              Term[]
+  studentEnrollments StudentEnrollment[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@map("academic_sessions")
+}
+
+// Exactly one is_current = true per session is enforced by a partial
+// unique index added by hand in the initial migration, same as above.
+model Term {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  schoolId  String   @map("school_id") @db.Uuid
+  sessionId String   @map("session_id") @db.Uuid
+  name      TermName
+  startsOn  DateTime @map("starts_on") @db.Date
+  endsOn    DateTime @map("ends_on") @db.Date
+  isCurrent Boolean  @default(false) @map("is_current")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  school  School          @relation(fields: [schoolId], references: [id])
+  session AcademicSession @relation(fields: [sessionId], references: [id])
+
+  @@unique([sessionId, name])
+  @@index([schoolId])
+  @@map("terms")
+}
+
+model ClassLevel {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  schoolId  String   @map("school_id") @db.Uuid
+  name      String
+  rank      Int
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  school    School     @relation(fields: [schoolId], references: [id])
+  classArms ClassArm[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@map("class_levels")
+}
+
+model ClassArm {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  schoolId     String   @map("school_id") @db.Uuid
+  classLevelId String   @map("class_level_id") @db.Uuid
+  name         String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  school             School              @relation(fields: [schoolId], references: [id])
+  classLevel         ClassLevel          @relation(fields: [classLevelId], references: [id])
+  studentEnrollments StudentEnrollment[]
+
+  @@unique([classLevelId, name])
+  @@index([schoolId])
+  @@map("class_arms")
+}
+
+// Trigram index on (first_name, last_name) for ILIKE search added by
+// hand in the initial migration — Prisma's index DSL has no way to
+// specify the gin_trgm_ops operator class. See docs/DECISIONS.md.
+model Student {
+  id              String        @id @default(uuid(7)) @db.Uuid
+  schoolId        String        @map("school_id") @db.Uuid
+  admissionNumber String        @map("admission_number")
+  firstName       String        @map("first_name")
+  lastName        String        @map("last_name")
+  middleName      String?       @map("middle_name")
+  gender          Gender
+  dateOfBirth     DateTime      @map("date_of_birth") @db.Date
+  admittedOn      DateTime      @default(now()) @map("admitted_on") @db.Date
+  status          StudentStatus @default(ACTIVE)
+  guardianName    String        @map("guardian_name")
+  guardianPhone   String        @map("guardian_phone")
+  guardianEmail   String?       @map("guardian_email")
+  address         String?
+  deletedAt       DateTime?     @map("deleted_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  school      School              @relation(fields: [schoolId], references: [id])
+  enrollments StudentEnrollment[]
+
+  @@unique([schoolId, admissionNumber])
+  @@index([schoolId])
+  @@map("students")
+}
+
+model StudentEnrollment {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  schoolId   String   @map("school_id") @db.Uuid
+  studentId  String   @map("student_id") @db.Uuid
+  classArmId String   @map("class_arm_id") @db.Uuid
+  sessionId  String   @map("session_id") @db.Uuid
+  enrolledOn DateTime @default(now()) @map("enrolled_on") @db.Date
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  school   School          @relation(fields: [schoolId], references: [id])
+  student  Student         @relation(fields: [studentId], references: [id])
+  classArm ClassArm        @relation(fields: [classArmId], references: [id])
+  session  AcademicSession @relation(fields: [sessionId], references: [id])
+
+  @@unique([studentId, sessionId])
+  @@index([schoolId, classArmId, sessionId])
+  @@index([studentId])
+  @@map("student_enrollments")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  schoolId    String   @map("school_id") @db.Uuid
+  actorUserId String   @map("actor_user_id") @db.Uuid
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id") @db.Uuid
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+  actor  User   @relation(fields: [actorUserId], references: [id])
+
+  @@index([schoolId])
+  @@map("audit_logs")
+}

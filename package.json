@@ -10,7 +10,7 @@
     "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "pnpm -r --if-present run lint",
     "test": "pnpm -r --if-present run test",
-    "seed": "echo \"seed: implemented in step 2\" && exit 0",
+    "seed": "pnpm --filter @scholametric/api exec prisma db seed",
     "ci": "pnpm typecheck && pnpm lint && pnpm test"
   },
   "packageManager": "pnpm@11.12.0"

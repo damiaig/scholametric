@@ -1,14 +1,17 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Client as PgClient } from "pg";
 import Redis from "ioredis";
 import type { HealthResponse } from "@scholametric/shared";
+import { PrismaService } from "../prisma/prisma.service";
 
 @Injectable()
 export class HealthService {
   private readonly logger = new Logger(HealthService.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   async check(): Promise<HealthResponse> {
     const [db, redis] = await Promise.all([this.checkDb(), this.checkRedis()]);
@@ -20,19 +23,12 @@ export class HealthService {
   }
 
   private async checkDb(): Promise<boolean> {
-    const client = new PgClient({
-      connectionString: this.configService.get<string>("DATABASE_URL"),
-      connectionTimeoutMillis: 2000,
-    });
     try {
-      await client.connect();
-      await client.query("SELECT 1");
+      await this.prisma.$queryRaw`SELECT 1`;
       return true;
     } catch (error) {
       this.logger.warn(`Postgres health check failed: ${(error as Error).message}`);
       return false;
-    } finally {
-      await client.end().catch(() => undefined);
     }
   }
 

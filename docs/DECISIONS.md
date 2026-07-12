@@ -1,5 +1,54 @@
 # Decisions log
 
+## 2026-07-12 — Prisma schema (10 tables), hand-written migration for what the DSL can't express
+Decision: full Prisma schema for every SPEC_V0.1.md §1 table. IDs use
+`@default(uuid(7))` (client-side UUIDv7, no DB extension needed).
+`citext`/`pg_trgm` enabled via `extensions = [citext, pg_trgm]` +
+`previewFeatures = ["postgresqlExtensions"]`. `refresh_tokens` has no
+`school_id` column (only reachable via `user_id`, whose owning user
+already carries `school_id`) — a deliberate exception to CLAUDE.md §4's
+general rule, following the spec's explicit table definition.
+Reason: matches spec exactly; `refresh_tokens` scoping is transitive and
+never queried cross-tenant directly.
+
+## 2026-07-12 — Partial unique indexes and trigram indexes are hand-written SQL, not in schema.prisma
+Decision: `apps/api/prisma/migrations/20260712104944_init/migration.sql`
+was generated via `prisma migrate dev --create-only`, then hand-edited to
+add: `academic_sessions_one_current_per_school` and
+`terms_one_current_per_session` (partial unique indexes, `WHERE
+is_current = true`), plus `students_first_name_trgm_idx` /
+`students_last_name_trgm_idx` (GIN + `gin_trgm_ops`, for ILIKE name
+search per §5). None of these are declared in `schema.prisma` — Prisma's
+DSL has no syntax for partial indexes or operator classes.
+Reason/confirmed gotcha: verified via `prisma migrate diff
+--from-migrations ... --to-schema-datamodel ...` that running a bare
+`prisma migrate dev` after this proposes `DROP INDEX` on the two
+**trigram** indexes (they're plain GIN indexes Prisma can "see" but
+doesn't recognize as wanted). The **partial** unique indexes were *not*
+flagged — Prisma's diffing appears not to model partial indexes at all,
+so they're silently safe. **Rule for every future migration in this
+repo: always run `prisma migrate dev --create-only` first and read the
+generated SQL before applying — if it contains `DROP INDEX
+"students_first_name_trgm_idx"` or `"students_last_name_trgm_idx"`,
+delete those lines before applying.**
+
+## 2026-07-12 — Health check switched from raw pg to PrismaService
+Decision: `HealthService`'s DB check now runs `prisma.$queryRaw` via the
+shared `PrismaService` instead of a one-off `pg.Client`. The `pg`
+dependency was removed from `apps/api/package.json`.
+Reason: step 1 justified the raw client because no ORM/schema existed
+yet; now that Prisma is set up, a second direct-`pg` connection just for
+health checks is redundant.
+
+## 2026-07-12 — TenantContext + forSchool scaffolding added, no consumers yet
+Decision: `apps/api/src/common/tenant/tenant-context.ts` (request-scoped,
+reads `request.user?.schoolId`, throws if accessed before a guard
+populates it) and `for-school.ts` (`forSchool(schoolId, where)` helper)
+per CLAUDE.md §4's required structural pattern. Nothing consumes them
+yet — no `JwtAuthGuard`/`request.user` exists until step 3.
+Reason: scaffolding requested explicitly for step 2 so step 3+ domain
+modules have the seam ready.
+
 ## 2026-07-12 — Health check uses raw pg/ioredis, not Prisma
 Decision: `HealthService` pings Postgres and Redis with the `pg` and `ioredis`
 clients directly instead of via Prisma.
