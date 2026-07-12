@@ -1,5 +1,68 @@
 # Decisions log
 
+## 2026-07-12 — Refresh tokens are opaque random strings, not JWTs
+Decision: `refresh_tokens.token_hash` stores SHA-256 of a 48-byte random
+`base64url` string returned to the client, not a signed JWT. Access tokens
+remain signed JWTs (`JWT_ACCESS_SECRET`, 15m).
+Reason: refresh validity is already a DB round trip (revocation/rotation
+state lives only there), so a self-verifying JWT refresh token would just
+duplicate that check with no benefit. `JWT_REFRESH_SECRET` is provisioned
+and reserved for env-validation purposes even though it isn't consumed by
+token-signing code yet.
+
+## 2026-07-12 — Refresh-token "family" = all of a user's tokens, not a per-chain family_id
+Decision: reuse detection (presenting an already-revoked refresh token)
+revokes every non-revoked `refresh_tokens` row for that `user_id`, not just
+the rotation chain the reused token came from. No `family_id` column was
+added — schema changes were explicitly out of scope for this step.
+Reason: matches the spec's own wording ("revokes the entire family for that
+user") and needs no migration; the tradeoff is that a user's *other*, unrelated
+sessions also get logged out on reuse, which is an acceptable false-positive
+cost for v0.1.
+
+## 2026-07-12 — Login timing-safety via a precomputed dummy bcrypt hash
+Decision: `bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH)` always
+runs, where `DUMMY_HASH` is `bcrypt.hashSync(...)` computed once at module
+load (cost 12), never a real credential.
+Reason: keeps bcrypt compare cost identical whether the school, email, or
+active-user lookup failed, so response timing can't distinguish "unknown
+account" from "wrong password."
+
+## 2026-07-12 — Two separate JWT secrets, both required at boot
+Decision: `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET`, both `min(32)` chars,
+added to the Zod `envSchema` with no defaults.
+Reason: compromising one shouldn't compromise the other; boot-time
+validation matches the existing "refuse to boot with missing required env"
+rule (SPEC_V0.1.md §5).
+
+## 2026-07-12 — Global AllExceptionsFilter added in step 3, not step 1/2
+Decision: `src/common/filters/all-exceptions.filter.ts` implements the
+`{ statusCode, message, error, path, timestamp }` envelope from CLAUDE.md §5
+and is wired via a shared `configureApp()` (`src/bootstrap.ts`) used by both
+`main.ts` and the e2e test bootstrap.
+Reason: auth is the first module producing real 401/403/429/400 responses;
+no prior step needed it since `/health` never errors in a way clients see.
+
+## 2026-07-12 — Custom ThrottlerGuard tracks by user id when authenticated, IP otherwise
+Decision: `AppThrottlerGuard` overrides `getTracker` to return
+`req.user?.userId ?? req.ip`. Verified against `@nestjs/core`'s
+`GuardsConsumer.tryActivate` (runs global guards in the exact order they're
+registered as `APP_GUARD` providers) that `JwtAuthGuard` must be registered
+*before* `AppThrottlerGuard` in `AppModule` for this to work — otherwise the
+throttler always runs first, `request.user` is never set yet, and every
+route silently falls back to IP-only tracking. Route-level `@Throttle()`
+overrides tighten `/auth/login` (10/min/IP) and `/schools/search`
+(30/min/IP) per spec.
+Reason: default `nestjs/throttler` only tracks by IP; CLAUDE.md §5 asks for
+100/min *per user* globally.
+
+## 2026-07-12 — @nestjs/jwt, @nestjs/throttler, class-validator, class-transformer added
+Decision: four new dependencies in `apps/api/package.json`.
+Reason: each is required to implement something CLAUDE.md already mandates
+by name — "JWT" (§2), "Nest throttler" (§5), "class-validator DTOs" (§2/§5) —
+not a substitution for anything in the fixed stack.
+
+
 ## 2026-07-12 — Prisma schema (10 tables), hand-written migration for what the DSL can't express
 Decision: full Prisma schema for every SPEC_V0.1.md §1 table. IDs use
 `@default(uuid(7))` (client-side UUIDv7, no DB extension needed).

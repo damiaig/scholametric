@@ -1,11 +1,10 @@
 import { Inject, Injectable, Scope } from "@nestjs/common";
 import { REQUEST } from "@nestjs/core";
 import type { Request } from "express";
+import type { AuthenticatedUser } from "../types/authenticated-user";
 
-// Populated by JwtAuthGuard in step 3. Kept minimal and local until a
-// real auth module defines the authenticated-user shape.
 interface AuthenticatedRequest extends Request {
-  user?: { schoolId: string };
+  user?: AuthenticatedUser;
 }
 
 /**

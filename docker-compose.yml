@@ -35,6 +35,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-scholametric}:${POSTGRES_PASSWORD:-scholametric}@postgres:5432/${POSTGRES_DB:-scholametric}
       REDIS_URL: redis://redis:6379
       CORS_ORIGIN: http://localhost:${WEB_PORT:-5173}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET must be set (32+ chars)}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set (32+ chars)}
     ports:
       - "${API_PORT:-3000}:3000"
     depends_on:
