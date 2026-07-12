@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+coverage/
+.env
+.env.local
+*.local
+.DS_Store
+pnpm-lock.yaml.bak
+.turbo/
+apps/web/.vite/

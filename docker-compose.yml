@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-scholametric}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scholametric}
+      POSTGRES_DB: ${POSTGRES_DB:-scholametric}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - scholametric_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scholametric} -d ${POSTGRES_DB:-scholametric}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-scholametric}:${POSTGRES_PASSWORD:-scholametric}@postgres:5432/${POSTGRES_DB:-scholametric}
+      REDIS_URL: redis://redis:6379
+      CORS_ORIGIN: http://localhost:${WEB_PORT:-5173}
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      VITE_API_URL: http://localhost:${API_PORT:-3000}
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    depends_on:
+      - api
+
+volumes:
+  scholametric_postgres_data:

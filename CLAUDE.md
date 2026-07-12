@@ -1,8 +1,66 @@
-Rules:
-- Every API request/response type lives in `packages/shared` and is imported
-  by both apps. Never duplicate a type by hand in `web`.
-- One NestJS module per domain concept. No "misc" or "utils" modules.
+# ScholaMetric — Project Constitution (CLAUDE.md)
 
+This file is read by Claude Code at the start of every session. Nothing in this
+repository may violate it. If a requested change conflicts with this document,
+STOP and say so instead of implementing it.
+
+---
+
+## 1. What this project is
+
+ScholaMetric is a multi-tenant school management platform for Nigerian schools
+(nursery/primary/JSS/SSS), designed to eventually cover admissions, grading,
+attendance, homework, messaging, report cards, and WAEC/NECO workflows.
+
+Current phase: **v0.1 — Foundation** (see docs/SPEC_V0.1.md). Do not build
+features from future versions unless explicitly asked.
+
+---
+
+## 2. Tech stack (fixed — do not substitute)
+
+| Layer      | Choice                                              |
+|------------|-----------------------------------------------------|
+| Language   | TypeScript 5.x, `"strict": true` everywhere         |
+| Backend    | NestJS 10 (REST, not GraphQL)                       |
+| ORM        | Prisma (with raw SQL allowed for reports later)     |
+| Database   | PostgreSQL 16                                       |
+| Cache/queue| Redis 7 (BullMQ for background jobs — not in v0.1)  |
+| Frontend   | React 18 + Vite + TypeScript                        |
+| UI         | Tailwind CSS + shadcn/ui components, Lucide icons   |
+| State/data | TanStack Query for server state; no Redux           |
+| Auth       | Email + password with JWT (access 15m / refresh 7d).|
+|            | Firebase Auth may replace this later — isolate auth |
+|            | behind an `AuthService` so it is swappable.         |
+| Validation | Zod on the frontend, class-validator DTOs on the API|
+| Tests      | Vitest (frontend), Jest + Supertest (backend e2e)   |
+| Containers | Docker + docker-compose for local dev               |
+
+Do not add libraries beyond these without asking. No moment.js, no lodash
+(use native), no axios (use fetch or NestJS HttpService).
+
+---
+
+## 3. Repository layout (fixed)
+
+```
+scholametric/
+├── CLAUDE.md                  ← this file
+├── docs/
+│   ├── SPEC_V0.1.md           ← current version spec
+│   ├── DECISIONS.md           ← append-only architecture decision log
+│   └── API.md                 ← generated/maintained endpoint reference
+├── docker-compose.yml         ← postgres + redis + api + web
+├── apps/
+│   ├── api/                   ← NestJS app (src/modules per domain,
+│   │                             src/common for guards/filters,
+│   │                             src/prisma, test/ for e2e)
+│   └── web/                   ← React app (src/features per domain,
+│                                 src/components/ui for shadcn,
+│                                 src/components shared, src/lib, src/routes)
+└── packages/
+    └── shared/                ← shared types & Zod schemas (API contracts)
+```
 ---
 
 ## 4. Multi-tenancy (the most important rule in this file)

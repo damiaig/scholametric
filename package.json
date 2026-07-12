@@ -1,0 +1,17 @@
+{
+  "name": "scholametric",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "prepare": "pnpm --filter @scholametric/shared build",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "lint": "pnpm -r --if-present run lint",
+    "test": "pnpm -r --if-present run test",
+    "seed": "echo \"seed: implemented in step 2\" && exit 0",
+    "ci": "pnpm typecheck && pnpm lint && pnpm test"
+  },
+  "packageManager": "pnpm@11.12.0"
+}
