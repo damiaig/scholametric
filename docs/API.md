@@ -99,6 +99,10 @@ Requires a valid access token.
 
 ## Schools
 
+List endpoints below use the shared pagination shape: query `?page=&pageSize=`
+(`pageSize` ≤ 100, default 20), response `{ items, total, page, pageSize }`,
+ordering always tiebreaks on `id`.
+
 ### `GET /schools/search?q=`
 
 Public. Rate limited: 30 req/min per IP. Used by the login page's school
@@ -112,6 +116,116 @@ Returns up to 10 `ACTIVE` schools matching `q` on name (ILIKE) or slug —
 ```json
 [{ "id": "...", "name": "Sunrise College", "slug": "sunrise" }]
 ```
+
+### `POST /schools`
+
+`SUPER_ADMIN` only.
+
+Creates the school and its first `SCHOOL_ADMIN` user in one transaction. If
+the slug already exists, nothing is created (409) — not even the admin user.
+
+**Body**
+```json
+{
+  "name": "Riverside Academy",
+  "slug": "riverside",
+  "type": "SECONDARY",
+  "admin": { "email": "admin@riverside.test", "firstName": "...", "lastName": "...", "password": "..." }
+}
+```
+
+**Response `201`**: the school row plus `{ admin: { id, email, firstName, lastName, role } }`.
+
+**Response `409`**: slug already in use.
+
+### `GET /schools`
+
+`SUPER_ADMIN` only. Paginated list of every school (not just `ACTIVE` ones —
+this is the platform directory, distinct from the public `/schools/search`).
+
+### `GET /schools/:id`
+
+`SUPER_ADMIN` only. `404` if the id doesn't exist.
+
+### `PATCH /schools/:id`
+
+`SUPER_ADMIN` only. Body: any of `name`, `type`, `address`, `phone`, `email`,
+`status` — `slug` is immutable and not accepted here.
+
+---
+
+## School setup
+
+`SCHOOL_ADMIN` only, all endpoints below. Every resource is scoped to the
+caller's own school via the access token's `schoolId` — never from the
+request body/query/params. Fetching or patching another school's resource by
+its real ID returns `404`, not `403`.
+
+### `GET /sessions`
+
+Paginated, ordered by `startsOn` descending.
+
+### `POST /sessions`
+
+Body: `{ name, startsOn, endsOn }` (dates as `YYYY-MM-DD`). `409` on a
+duplicate `name` within the school.
+
+### `PATCH /sessions/:id`
+
+Body: any of `name`, `startsOn`, `endsOn`. `isCurrent` is not settable here —
+only `/activate` changes it.
+
+### `POST /sessions/:id/activate`
+
+Sets `isCurrent: true` on this session and `false` on every other session in
+the school, atomically (deactivate-then-activate in one transaction, so the
+one-current-per-school constraint is never violated mid-flight).
+
+**Response `200`**: the activated session.
+
+### `GET /terms?sessionId=`
+
+`sessionId` (query, required) scopes the list to one session. Paginated,
+ordered by `startsOn` ascending.
+
+### `POST /terms`
+
+Body: `{ sessionId, name, startsOn, endsOn }` — `name` is one of `FIRST`,
+`SECOND`, `THIRD`. `404` if `sessionId` doesn't belong to the caller's school.
+`409` on a duplicate `name` within the session.
+
+### `POST /terms/:id/activate`
+
+Same atomic deactivate-then-activate pattern as sessions, scoped to the
+term's session (one current term per session).
+
+### `GET /class-levels`
+
+Paginated, ordered by `rank` ascending.
+
+### `POST /class-levels`
+
+Body: `{ name, rank }`. `409` on a duplicate `name` within the school (the
+same name in a different school is fine).
+
+### `PATCH /class-levels/:id`
+
+Body: any of `name`, `rank`.
+
+### `GET /class-arms?classLevelId=`
+
+`classLevelId` (query, optional) filters to one class level. Paginated,
+ordered by `name` ascending.
+
+### `POST /class-arms`
+
+Body: `{ name, classLevelId }`. `404` if `classLevelId` doesn't belong to the
+caller's school. `409` on a duplicate `name` within the class level.
+
+### `PATCH /class-arms/:id`
+
+Body: any of `name`, `classLevelId`. If `classLevelId` is provided, it must
+belong to the caller's school (`404` otherwise).
 
 ---
 

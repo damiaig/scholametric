@@ -1,5 +1,54 @@
 # Decisions log
 
+## 2026-07-12 — Activate endpoints: deactivate-then-activate, in one transaction, after a pre-check
+Decision: `SessionsService.activate` / `TermsService.activate` run
+`prisma.$transaction([updateMany(deactivate others), update(activate target)])`
+in that exact order, preceded by a tenant-scoped `findFirst` (not inside the
+transaction).
+Reason: the partial unique indexes (`... WHERE is_current = true`) are
+checked per-statement, not deferred — activating before deactivating would
+momentarily hold two current rows for the same scope and violate the index.
+The pre-check matters independently of ordering: the transaction's own
+`update({ where: { id } })` has no `school_id` filter, so without it a
+cross-tenant activate/patch would silently succeed against another school's
+row.
+
+## 2026-07-12 — @Roles() placement: class-level for school-setup, per-method for SchoolsController
+Decision: `SessionsController`/`TermsController`/`ClassLevelsController`/
+`ClassArmsController` each carry one class-level `@Roles(SCHOOL_ADMIN)`.
+`SchoolsController` instead applies `@Roles(SUPER_ADMIN)` per-method (create/
+findAll/findOne/update), leaving `search` with none.
+Reason: `RolesGuard` falls back to class-level metadata when a method has
+none — a class-level `@Roles()` on `SchoolsController` would also lock down
+the pre-existing public `/schools/search` route from step 3.
+
+## 2026-07-12 — TenantContext/forSchool now have real consumers; injected into services, not controllers
+Decision: the four school-setup services take `TenantContext` in their
+constructor and read `schoolId` internally; controllers never see it.
+Reason: matches CLAUDE.md §4's stated architecture literally
+("repositories/services receive a TenantContext"). Since `TenantContext` is
+request-scoped, every service that injects it becomes request-scoped too
+(Nest propagates this automatically) — expected, not a bug.
+
+## 2026-07-12 — Prisma Date fields need `new Date(...)`, not the raw DTO string
+Decision: `SessionsService`/`TermsService` wrap `dto.startsOn`/`dto.endsOn`
+in `new Date(...)` before passing to Prisma, even though `class-validator`'s
+`@IsDateString()` accepts a bare `"YYYY-MM-DD"`.
+Reason/confirmed gotcha: Prisma's `DateTime`-backed `@db.Date` columns
+reject a bare date string at the client layer ("premature end of input,
+expected ISO-8601 DateTime") — caught by e2e tests exercising session/term
+creation, not by typecheck (the DTO type is `string` either way).
+
+## 2026-07-12 — Shared pagination DTO/helper and Prisma-unique-constraint→409 helper
+Decision: `common/pagination/{pagination-query.dto,paginate}.ts` (page/pageSize
+validation + the `{ items, total, page, pageSize }` envelope) and
+`common/prisma/prisma-errors.ts` (`throwIfUniqueConstraint`, matches Prisma's
+P2002) are shared across schools/sessions/terms/class-levels/class-arms.
+Reason: every list endpoint and every unique-name conflict in this step needs
+identical behavior (CLAUDE.md §5); one helper avoids five near-identical
+copies.
+
+
 ## 2026-07-12 — Refresh tokens are opaque random strings, not JWTs
 Decision: `refresh_tokens.token_hash` stores SHA-256 of a 48-byte random
 `base64url` string returned to the client, not a signed JWT. Access tokens

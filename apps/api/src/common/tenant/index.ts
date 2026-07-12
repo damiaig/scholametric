@@ -1,2 +1,3 @@
 export * from "./tenant-context";
 export * from "./for-school";
+export * from "./tenant.module";
