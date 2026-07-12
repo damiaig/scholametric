@@ -27,6 +27,7 @@ features from future versions unless explicitly asked.
 | Database   | PostgreSQL 16                                       |
 | Cache/queue| Redis 7 (BullMQ for background jobs — not in v0.1)  |
 | Frontend   | React 18 + Vite + TypeScript                        |
+| Routing    | react-router-dom 6.x                                |
 | UI         | Tailwind CSS + shadcn/ui components, Lucide icons   |
 | State/data | TanStack Query for server state; no Redux           |
 | Auth       | Email + password with JWT (access 15m / refresh 7d).|
