@@ -153,6 +153,12 @@ Students (SCHOOL_ADMIN; TEACHER read-only)
 
 Misc
 - `GET /health` — { status: "ok", db: true, redis: true } (public).
+- `GET /schools/search?q=` — PUBLIC (@Public()). Returns up to 10 ACTIVE
+  schools matching the query: { id, name, slug } only — no address, no
+  contact details, no counts. Matches on name (ILIKE) and slug. Empty or
+  1-character queries return an empty list (no full-directory dump).
+  Rate limited: 30 req/min per IP. Used by the login page school picker.
+  Built in step 3; consumed in step 6.
 
 RBAC matrix (v0.1):
 
@@ -183,8 +189,15 @@ safe to run twice.
 Layout: left sidebar (school name, nav, user menu) + top bar with global
 student search. Sidebar collapses to a bottom sheet on mobile.
 
-1. `/login` — school slug + email + password. Friendly errors; no
-   distinction between "wrong email" and "wrong password".
+1. `/login` — school picker + email + password. The school field is
+   a button ("Select your school"); clicking it opens a modal with a
+   search bar (autofocused). Typing (debounced 300ms, min 2 chars)
+   queries GET /schools/search and shows matching schools; selecting
+   one closes the modal and shows the school name on the button. The
+   chosen slug is sent with login. States: searching spinner, "no
+   schools found" empty state, error state. Modal is keyboard-
+   navigable (arrows + Enter) and works at 360px. Friendly login
+   errors; no distinction between "wrong email" and "wrong password".
 2. `/dashboard` — stat cards (total active students, students by level as
    a bar chart via recharts, current session/term banner). Real data, no
    placeholders.
