@@ -40,6 +40,11 @@ describe("Academic setup (e2e)", () => {
     const classLevelIds = createdClassLevelIds.filter((id): id is string => Boolean(id));
     await prisma.term.deleteMany({ where: { sessionId: { in: sessionIds } } });
     await prisma.academicSession.deleteMany({ where: { id: { in: sessionIds } } });
+    // The "session activation" test above flips isCurrent onto a temporary
+    // session and never back — deleting that session doesn't restore this
+    // one, so every other test file (present and future) would otherwise
+    // find sunrise with no current session at all.
+    await prisma.academicSession.update({ where: { id: sunriseSessionId }, data: { isCurrent: true } });
     await prisma.classArm.deleteMany({ where: { classLevelId: { in: classLevelIds } } });
     await prisma.classLevel.deleteMany({ where: { id: { in: classLevelIds } } });
     await app.close();

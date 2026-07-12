@@ -1,6 +1,6 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
-import { APP_GUARD } from "@nestjs/core";
+import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
 import { JwtModule } from "@nestjs/jwt";
 import { ThrottlerModule } from "@nestjs/throttler";
 import { validateEnv } from "./config/env.validation";
@@ -12,10 +12,12 @@ import { SessionsModule } from "./sessions/sessions.module";
 import { TermsModule } from "./terms/terms.module";
 import { ClassLevelsModule } from "./class-levels/class-levels.module";
 import { ClassArmsModule } from "./class-arms/class-arms.module";
+import { StudentsModule } from "./students/students.module";
 import { TenantModule } from "./common/tenant/tenant.module";
 import { AppThrottlerGuard } from "./common/guards/app-throttler.guard";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { RolesGuard } from "./common/guards/roles.guard";
+import { AuditInterceptor } from "./common/interceptors/audit.interceptor";
 
 @Module({
   imports: [
@@ -36,6 +38,7 @@ import { RolesGuard } from "./common/guards/roles.guard";
     TermsModule,
     ClassLevelsModule,
     ClassArmsModule,
+    StudentsModule,
   ],
   providers: [
     // Order matters — Nest runs global APP_GUARDs in registration order:
@@ -46,6 +49,8 @@ import { RolesGuard } from "./common/guards/roles.guard";
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    // Global but a no-op without @Audit() — see AuditInterceptor.
+    { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
   ],
 })
 export class AppModule {}

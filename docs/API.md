@@ -159,7 +159,8 @@ this is the platform directory, distinct from the public `/schools/search`).
 `SCHOOL_ADMIN` only, all endpoints below. Every resource is scoped to the
 caller's own school via the access token's `schoolId` — never from the
 request body/query/params. Fetching or patching another school's resource by
-its real ID returns `404`, not `403`.
+its real ID returns `404`, not `403`. Every mutation below writes an
+`audit_logs` row automatically (actor + school from the JWT).
 
 ### `GET /sessions`
 
@@ -226,6 +227,67 @@ caller's school. `409` on a duplicate `name` within the class level.
 
 Body: any of `name`, `classLevelId`. If `classLevelId` is provided, it must
 belong to the caller's school (`404` otherwise).
+
+---
+
+## Students
+
+`SCHOOL_ADMIN` full access; `TEACHER` read-only (every mutation `403`s);
+`SUPER_ADMIN` has no access at all (`403`, not `404` — see docs/DECISIONS.md).
+Every resource is scoped to the caller's school via the access token, same as
+School setup above. Every mutation writes an `audit_logs` row automatically
+(actor + school from the JWT, `metadata` = the raw request body).
+
+### `GET /students?search=&classArmId=&status=&page=&pageSize=`
+
+Paginated, ordered by `lastName`, `firstName`, tiebreak `id`.
+
+- `search` — ILIKE (trigram-indexed) against first name, last name, **or**
+  admission number.
+- `classArmId` — filters to students currently enrolled (current session) in
+  that class arm.
+- `status` — one of `ACTIVE`, `SUSPENDED`, `GRADUATED`, `TRANSFERRED`,
+  `WITHDRAWN`. Omitted: defaults to everything **except** `WITHDRAWN`.
+  Soft-deleted rows (`deletedAt`) are always excluded regardless.
+
+### `GET /students/:id`
+
+Full profile plus `currentEnrollment` (`{ classArm: { classLevel }, session }`
+for the current session, or `null`). `404` outside the caller's school.
+
+### `POST /students`
+
+Body: bio + guardian fields, `{ classArmId }`, optional `admissionNumber`.
+Creates the student and its enrollment in the current session in one
+transaction.
+
+If `admissionNumber` is omitted, one is generated:
+`{first 3 letters of the school's slug, uppercased}/{session start
+year}/{4-digit sequence}`, e.g. `SUN/2026/0026` — sequence resets per
+(school, year) and is safe under concurrent creates (see docs/DECISIONS.md).
+A supplied `admissionNumber` is used as-is.
+
+**Response `201`**: the created student row.
+
+**Response `404`**: `classArmId` doesn't belong to the caller's school.
+
+**Response `409`**: `admissionNumber` already exists in this school (a
+generated number never collides; only a caller-supplied one can).
+
+### `PATCH /students/:id`
+
+Bio/guardian fields only — not `classArmId` (`/transfer-class`), not `status`
+(`/withdraw`), not `admissionNumber` (immutable).
+
+### `POST /students/:id/withdraw`
+
+Body: `{ reason }`. Sets `status: WITHDRAWN`. `reason` is not a student
+column — it's recorded in the audit log's `metadata`.
+
+### `POST /students/:id/transfer-class`
+
+Body: `{ classArmId }`. Updates the student's enrollment for the current
+session. `404` if `classArmId` isn't in the caller's school.
 
 ---
 

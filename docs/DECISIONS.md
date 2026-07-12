@@ -1,5 +1,76 @@
 # Decisions log
 
+## 2026-07-13 — Nigerian class sizes: design for 100+ students per arm
+Nigerian class sizes average 51, up to 101+ in some regions. All future
+class-scoped UIs (grade entry v0.4, attendance v0.5, class lists step 7)
+must be designed for 100+ students per arm: bulk entry patterns, no
+per-student page-hopping for batch tasks.
+
+## 2026-07-13 — Admission-number concurrency: Postgres advisory lock, not a sequence table
+Decision: `StudentsService.generateAdmissionNumber` runs
+`SELECT pg_advisory_xact_lock(hashtext('{schoolId}:{year}'))` (via
+`tx.$executeRaw`, inside the same interactive transaction as the student
+insert) before reading the max existing sequence for that (school, year) and
+incrementing. The lock is transaction-scoped — released automatically on
+commit or rollback, no cleanup code needed.
+Reason: schema changes are out of scope this step, so a dedicated counter
+table wasn't an option. Row-level locking (`SELECT ... FOR UPDATE`) doesn't
+protect the *first* insert for a new (school, year) pair — there's no row
+yet to lock — whereas an advisory lock keyed on the pair serializes
+allocation regardless of whether any row exists.
+
+## 2026-07-13 — Admission-number sequence resets per (school, year), not globally per school
+Decision: the 4-digit sequence in `{prefix}/{year}/{NNNN}` is scoped to the
+(school, year) pair — computed by scanning existing numbers with that year's
+prefix and taking max+1 — not a single running counter per school.
+Reason: SPEC_V0.1.md §1 says "4-digit sequence per school" without
+specifying whether it resets per year, but embeds the session start year in
+the format; a sequence indifferent to year would make that year component
+decorative rather than meaningful. Resetting per year is also what real
+Nigerian school admission numbering conventionally does.
+
+## 2026-07-13 — Students API RBAC: SUPER_ADMIN gets 403, not 404
+Decision: `StudentsController`'s class-level `@Roles()` lists only
+`SCHOOL_ADMIN` and `TEACHER` (further restricted to `SCHOOL_ADMIN` alone per
+mutation) — `SUPER_ADMIN` never appears, so `RolesGuard` 403s it uniformly
+before any tenant/service logic runs.
+Reason: 404 is reserved everywhere else in this codebase for "right role,
+wrong tenant/resource." SUPER_ADMIN has no school-student access at all,
+regardless of ID — that's a role problem, not a lookup problem, so 403 is
+the answer consistent with every other controller.
+
+## 2026-07-13 — Audit interceptor: global but decorator-gated, awaited before the response, scoped to students + step-4 modules
+Decision: `AuditInterceptor` is registered as a global `APP_INTERCEPTOR` but
+no-ops unless the handler carries the new `@Audit(entityType, action)`
+decorator. It `await`s the `audit_logs` insert inside a `concatMap` (not a
+fire-and-forget `tap`) so the row is guaranteed to exist by the time the
+response reaches the caller. `metadata` is the raw `request.body` — this is
+what makes the withdraw `reason` land automatically with no special-casing.
+Applied to students plus the four step-4 controllers (sessions/terms/
+class-levels/class-arms mutations); deliberately **not** applied to
+`SchoolsController` or `AuthController`.
+Reason: for students and the step-4 modules, `request.user.schoolId` (the
+JWT's tenant) always equals the entity's own school — that's the whole
+tenant-scoping model. For `POST /schools`, it wouldn't: the actor is
+SUPER_ADMIN, whose JWT `schoolId` is the platform school, not the new
+school being created. Logging the platform school for "a school was
+created" would be misleading, and the task's own scope explicitly named
+"students AND the step-4 modules," not schools/auth.
+
+## 2026-07-13 — Fixed a step-4 test-isolation bug: activation left sunrise with no current session
+Decision: `academic-setup.e2e-spec.ts`'s "session activation" test flips
+`isCurrent` onto a temporary session and its `afterAll` deleted that session
+but never restored the original seeded session's `isCurrent: true` —
+leaving Sunrise with *no* current session for every test file that ran
+afterward (including, this step, `students.e2e-spec.ts`'s very first
+`POST /students`, which failed with "No current academic session configured"
+against real seeded data, not mocks). Fixed by having that `afterAll`
+explicitly reactivate the original session after deleting the temporary one.
+Reason: confirmed gotcha, not a hypothetical — this broke a real local run.
+Any future test that activates a session/term must restore prior state in
+its own cleanup; there's no global "reset between test files" here.
+
+
 ## 2026-07-12 — Activate endpoints: deactivate-then-activate, in one transaction, after a pre-check
 Decision: `SessionsService.activate` / `TermsService.activate` run
 `prisma.$transaction([updateMany(deactivate others), update(activate target)])`

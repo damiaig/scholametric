@@ -51,6 +51,38 @@ const HILLCREST_STUDENTS: StudentSeed[] = [
   { firstName: "Abdulrahman", lastName: "Sule", gender: Gender.MALE },
 ];
 
+// Nigerian class sizes average 51, up to 101+ in some regions (North-West) —
+// one large JSS 2 A class at Sunrise gives the frontend a realistic
+// performance test bed from step 7 onward. See docs/DECISIONS.md.
+const BULK_CLASS_SIZE = 100;
+const BULK_CLASS_STARTING_SEQUENCE = 26; // continues after SUNRISE_STUDENTS' 1–25
+
+const MALE_FIRST_NAMES = [
+  "Adebayo", "Chukwuemeka", "Ibrahim", "Oluwadamilare", "Emeka", "Tunde", "Kunle", "Segun", "Yusuf", "Chidi",
+  "Uche", "Kayode", "Sani", "Wale", "Femi", "Abdullahi", "Ikenna", "Damilola", "Habib", "Gbenga",
+];
+const FEMALE_FIRST_NAMES = [
+  "Chiamaka", "Ngozi", "Aisha", "Blessing", "Folake", "Amina", "Chioma", "Temitope", "Hauwa", "Adaeze",
+  "Bimpe", "Fatima", "Ifeoma", "Zainab", "Halima", "Yetunde", "Nkechi", "Rukayat", "Omolara", "Adaobi",
+];
+const SURNAMES = [
+  "Okafor", "Mohammed", "Eze", "Nwosu", "Bello", "Adebayo", "Okonkwo", "Abdullahi", "Ogunleye", "Okoro",
+  "Sani", "Alabi", "Nnamdi", "Garba", "Fashola", "Obi", "Usman", "Ojo", "Chukwu", "Yakubu",
+  "Adewale", "Lawal", "Akintola", "Musa", "Danjuma",
+];
+
+function generateBulkClassStudents(count: number): StudentSeed[] {
+  return Array.from({ length: count }, (_, i) => {
+    const isMale = i % 2 === 0;
+    const firstNames = isMale ? MALE_FIRST_NAMES : FEMALE_FIRST_NAMES;
+    return {
+      firstName: firstNames[i % firstNames.length],
+      lastName: SURNAMES[(i + Math.floor(i / firstNames.length)) % SURNAMES.length],
+      gender: isMale ? Gender.MALE : Gender.FEMALE,
+    };
+  });
+}
+
 const CLASS_LEVELS = [
   { name: "JSS 1", rank: 1 },
   { name: "JSS 2", rank: 2 },
@@ -150,6 +182,45 @@ async function seedStudents(
   }
 }
 
+async function seedBulkClassArm(
+  schoolId: string,
+  admissionPrefix: string,
+  sessionId: string,
+  classArmId: string,
+  students: StudentSeed[],
+  startingSequence: number,
+) {
+  for (let i = 0; i < students.length; i++) {
+    const student = students[i];
+    const sequence = startingSequence + i;
+    const admissionNumber = `${admissionPrefix}/2026/${String(sequence).padStart(4, "0")}`;
+    const age = 12 + (i % 2);
+    const dateOfBirth = new Date(Date.UTC(2026 - age, i % 12, 5 + (i % 20)));
+
+    const created = await prisma.student.upsert({
+      where: { schoolId_admissionNumber: { schoolId, admissionNumber } },
+      update: {},
+      create: {
+        schoolId,
+        admissionNumber,
+        firstName: student.firstName,
+        lastName: student.lastName,
+        gender: student.gender,
+        dateOfBirth,
+        guardianName: `${student.lastName} Household`,
+        guardianPhone: `+23481${String(20000000 + sequence).slice(-8)}`,
+        guardianEmail: `guardian.${student.firstName.toLowerCase()}.${student.lastName.toLowerCase()}.${sequence}@example.com`,
+      },
+    });
+
+    await prisma.studentEnrollment.upsert({
+      where: { studentId_sessionId: { studentId: created.id, sessionId } },
+      update: {},
+      create: { schoolId, studentId: created.id, classArmId, sessionId },
+    });
+  }
+}
+
 async function main() {
   const platform = await prisma.school.upsert({
     where: { slug: "platform" },
@@ -210,6 +281,14 @@ async function main() {
   });
   const sunriseAcademics = await seedSchoolAcademics(sunrise.id);
   await seedStudents(sunrise.id, "SUN", sunriseAcademics.sessionId, sunriseAcademics.arms, SUNRISE_STUDENTS);
+  await seedBulkClassArm(
+    sunrise.id,
+    "SUN",
+    sunriseAcademics.sessionId,
+    sunriseAcademics.arms["JSS 2-A"],
+    generateBulkClassStudents(BULK_CLASS_SIZE),
+    BULK_CLASS_STARTING_SEQUENCE,
+  );
 
   const hillcrest = await prisma.school.upsert({
     where: { slug: "hillcrest" },
