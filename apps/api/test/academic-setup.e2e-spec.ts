@@ -33,9 +33,16 @@ describe("Academic setup (e2e)", () => {
     sunriseSessionId = sunriseSession.id;
     const sunriseClassArm = await prisma.classArm.findFirstOrThrow({ where: { schoolId: sunriseSchoolId } });
     sunriseClassArmId = sunriseClassArm.id;
-  });
+  }, 20000);
 
   afterAll(async () => {
+    // beforeAll may have thrown/timed out partway (seen twice under load) —
+    // afterAll still runs, so nothing here can assume beforeAll finished.
+    if (!prisma) {
+      await app?.close();
+      return;
+    }
+
     const sessionIds = createdSessionIds.filter((id): id is string => Boolean(id));
     const classLevelIds = createdClassLevelIds.filter((id): id is string => Boolean(id));
     await prisma.term.deleteMany({ where: { sessionId: { in: sessionIds } } });
@@ -44,7 +51,9 @@ describe("Academic setup (e2e)", () => {
     // session and never back — deleting that session doesn't restore this
     // one, so every other test file (present and future) would otherwise
     // find sunrise with no current session at all.
-    await prisma.academicSession.update({ where: { id: sunriseSessionId }, data: { isCurrent: true } });
+    if (sunriseSessionId) {
+      await prisma.academicSession.update({ where: { id: sunriseSessionId }, data: { isCurrent: true } });
+    }
     await prisma.classArm.deleteMany({ where: { classLevelId: { in: classLevelIds } } });
     await prisma.classLevel.deleteMany({ where: { id: { in: classLevelIds } } });
     await app.close();

@@ -1,5 +1,79 @@
 # Decisions log
 
+## 2026-07-13 — Refresh token stays in memory too; a reload logs the user out
+Decision: both the access token and refresh token live only in a
+module-level store (`apps/web/src/lib/auth-store.ts`), never in
+`localStorage`/`sessionStorage`. There's no rehydration step on boot — a
+page reload always starts unauthenticated, and the route guard just
+renders `/login` (no error, nothing broken).
+Reason: an httpOnly-cookie refresh token would survive reloads without an
+XSS-exfiltration risk, but needs API changes (out of scope this step).
+Storing the refresh token in `localStorage` instead would preserve the
+session across reloads but reintroduce exactly the long-lived,
+script-readable credential the "never localStorage" rule exists to avoid.
+Given the choice, this step takes the safer side: zero persistent
+credentials in browser storage, at the cost of session persistence.
+
+## 2026-07-13 — API client dedupes concurrent refresh attempts
+Decision: `apps/web/src/lib/api-client.ts` holds a single in-flight
+`refreshPromise`; any request that 401s while a refresh is already running
+awaits that same promise instead of calling `/auth/refresh` again.
+Reason: the backend (step 3) rotates the refresh token on every use and
+revokes the whole session if a rotated-away token is presented again. Two
+API calls 401-ing around the same time and each independently calling
+refresh would mean the second call presents an already-rotated token,
+triggering reuse detection and logging the user out — a real bug the
+dedupe exists specifically to prevent.
+
+## 2026-07-13 — Auth state is a plain external store, not React Context
+Decision: `authStore` (`apps/web/src/lib/auth-store.ts`) is a module-level
+object with `subscribe`/`getState`, exposed to components via
+`useSyncExternalStore`. `useIsAuthenticated()` wraps it for route guards.
+Reason: the API client (plain fetch-wrapping functions, not a component)
+needs to read the current token and clear it on failed refresh. Context
+only reaches components; a plain store reaches both, and
+`useSyncExternalStore` keeps React's re-renders correct without an extra
+state-management library.
+
+## 2026-07-13 — Hand-rolled Dialog/modal, no Radix
+Decision: `apps/web/src/components/ui/dialog.tsx` implements the school
+picker's modal directly (Escape to close, backdrop click to close, focus
+restored to the previously-focused element on close) rather than adding
+`@radix-ui/react-dialog`.
+Reason: every existing `ui/` primitive in this repo (button, card, input,
+label) is already hand-rolled shadcn-style, not Radix-backed. Adding Radix
+now for just one component would be inconsistent with that established
+precedent; a full Tab-cycle focus trap was left out since SPEC_V0.1.md §4
+only requires arrow-key list navigation and Escape-to-close, not a full
+trap.
+
+## 2026-07-13 — Removed the login page's health-check badge
+Decision: `LoginPage` no longer shows the "API reachable" badge from step
+1; `apps/web/src/lib/api.ts` (`fetchHealth`) was deleted along with its
+tests.
+Reason: the amended SPEC_V0.1.md §4 login page design (school picker +
+email + password) replaces the step-1 placeholder shell entirely, and
+nothing else in the app used `fetchHealth`. The shared-types "live wire"
+proof this badge existed for for (docs/DECISIONS.md, step 1) is now carried
+by real code instead: `LoginInput`, `LoginResponse`, `CurrentUser`,
+`SchoolSearchResult`, and `ApiErrorBody` from `@scholametric/shared` are
+all wired into functioning login/shell code, not a dead import.
+
+## 2026-07-13 — Vite must be told to pre-bundle @scholametric/shared
+Decision: `apps/web/vite.config.ts` sets `optimizeDeps.include:
+["@scholametric/shared"]`.
+Reason/confirmed gotcha: caught by manual browser verification, not by
+`tsc` or Vitest (both run in Node, where CJS/ESM interop is transparent).
+`packages/shared` builds CommonJS on purpose (`apps/api` consumes it via
+ts-node/Jest, which need CJS) — but Vite treats a pnpm-workspace symlinked
+package as "linked source" and skips the normal dependency pre-bundling
+step that would otherwise convert CJS to browser-usable ESM. Without this,
+the browser fetched the raw `module.exports` file directly and failed with
+"does not provide an export named 'loginSchema'" — the page rendered blank
+white. Any future real-value (non-type-only) import from `packages/shared`
+into `apps/web` depends on this staying set.
+
+
 ## 2026-07-13 — Nigerian class sizes: design for 100+ students per arm
 Nigerian class sizes average 51, up to 101+ in some regions. All future
 class-scoped UIs (grade entry v0.4, attendance v0.5, class lists step 7)
