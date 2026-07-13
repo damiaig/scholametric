@@ -1,5 +1,68 @@
 # Decisions log
 
+## 2026-07-14 — DataTable: page-local sort only, search/filters stay outside, mobile card is an explicit render-prop
+Decision: the shared `DataTable<T>` (`apps/web/src/components/DataTable.tsx`) owns rows, pagination, and
+loading/empty/error states only. Sorting is a client-side sort of whatever
+page is already loaded, not a global sort — no list endpoint in this API
+accepts a sort parameter, so a real cross-page sort isn't "cheap," a
+page-local one is. Search and filters are NOT owned by the table; they're
+sibling UI on the page (`StudentsListPage`), since future tables (grades,
+attendance) will want very different filter sets. Mobile rendering is an
+explicit `renderMobileCard(row)` prop rather than an auto-derived card from
+column defs, for the same reason.
+Reason: this component is meant to outlive step 7 (SPEC_V0.1.md §4: "built
+once, reused forever") — baking in assumptions that only fit Students would
+make it harder to reuse, not easier.
+
+## 2026-07-14 — Form sections are generic over field shape, not over a single DTO type
+Decision: `StudentBioFields`/`StudentGuardianFields` are generic components
+constrained to a minimal field-shape interface (`BioFieldsShape`,
+`GuardianFieldsShape`, all fields optional) rather than tied to
+`CreateStudentInput` specifically. `packages/shared/src/students.ts` builds
+`createStudentSchema` and `updateStudentSchema` from the same `bioSchema`/
+`guardianSchema` sub-schemas via `.merge()`/`.partial()`, so both input
+types satisfy the shared shape. This is what lets `/students/new` and the
+Edit dialog render the identical two components with zero duplication.
+Reason/confirmed gotcha: the shape fields must be optional even though
+`CreateStudentInput`'s are required — `UpdateStudentInput` is `.partial()`
+(all fields optional), and TypeScript correctly rejects a generic
+constraint stricter than one of its actual callers.
+
+## 2026-07-14 — TEACHER's class-arm filter is absent, not broken, when GET /class-arms 403s
+Decision: `useClassArms()` (`apps/web/src/features/students/use-class-arms.ts`)
+sets `retry: false`, and the class-arm filter dropdown on the students list
+only renders once that query has real data — on error (TEACHER's request
+403s, since `GET /class-arms` is SCHOOL_ADMIN-only server-side, unchanged
+this step) the filter simply doesn't render.
+Reason: consistent with "absent, not disabled" already used for TEACHER's
+missing mutation buttons — a visibly broken/empty dropdown would be worse
+than no dropdown, and loosening that endpoint's RBAC was out of scope.
+
+## 2026-07-14 — Dev-time gotcha: Vite's dependency cache goes stale when packages/shared gains new exports
+Confirmed gotcha, not a code bug: after adding `students.ts`/`pagination.ts`
+to `packages/shared`, the already-running local Vite dev server threw
+`Cannot read properties of undefined (reading 'parseAsync')` on the new
+`createStudentSchema` import — its pre-bundled `@scholametric/shared` cache
+(`node_modules/.vite/deps`) predated the new exports. Fixed by restarting
+with `vite --force` (or deleting `node_modules/.vite`). Same root cause as
+step 6's `optimizeDeps.include` decision, different symptom — worth knowing
+before assuming a real bug when `packages/shared` grows mid-session.
+
+
+## 2026-07-14 — GET /students list now includes currentEnrollment (user-approved backend change in a frontend step)
+Decision: `StudentsService.findAll` gained the same `include: studentProfileInclude`
+that `findOne` already used, mapping each row through the existing
+`toProfile()`. Every list item now carries `currentEnrollment` (class arm +
+level + session), not just bare `Student` columns.
+Reason: step 7's students table needs a "class (level + arm)" column per
+row; the list endpoint previously returned none of that, and doing an
+N-per-page follow-up request (~20-100 on the JSS 2 A view) would work
+directly against "must stay fast." Flagged per CLAUDE.md §8 and explicitly
+approved by the user rather than assumed — the one exception to step 7's
+"no backend changes" scope. Purely additive: no schema change, no new
+endpoint, identical shape to what `GET /students/:id` already returned.
+
+
 ## 2026-07-13 — Refresh token stays in memory too; a reload logs the user out
 Decision: both the access token and refresh token live only in a
 module-level store (`apps/web/src/lib/auth-store.ts`), never in

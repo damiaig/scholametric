@@ -250,6 +250,10 @@ Paginated, ordered by `lastName`, `firstName`, tiebreak `id`.
   `WITHDRAWN`. Omitted: defaults to everything **except** `WITHDRAWN`.
   Soft-deleted rows (`deletedAt`) are always excluded regardless.
 
+Each item includes `currentEnrollment` (same shape as `GET /students/:id`
+below) — added in step 7 so the students list page can show class/level per
+row without an extra request per student.
+
 ### `GET /students/:id`
 
 Full profile plus `currentEnrollment` (`{ classArm: { classLevel }, session }`

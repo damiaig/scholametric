@@ -3,7 +3,7 @@ import { Prisma, Student, StudentStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
-import { paginate, Paginated } from "../common/pagination/paginate";
+import { paginate } from "../common/pagination/paginate";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
 import { CreateStudentDto } from "./dto/create-student.dto";
 import { UpdateStudentDto } from "./dto/update-student.dto";
@@ -30,7 +30,7 @@ export class StudentsService {
     private readonly tenantContext: TenantContext,
   ) {}
 
-  async findAll(query: ListStudentsQueryDto): Promise<Paginated<Student>> {
+  async findAll(query: ListStudentsQueryDto) {
     const schoolId = this.tenantContext.schoolId;
     const where: Prisma.StudentWhereInput = {
       ...forSchool(schoolId, { deletedAt: null }),
@@ -49,16 +49,19 @@ export class StudentsService {
       where.enrollments = { some: { classArmId: query.classArmId, session: { isCurrent: true } } };
     }
 
+    // Includes the same current-enrollment shape as findOne — the students
+    // list page (step 7) needs class/level per row, not just a bare Student.
     const [items, total] = await this.prisma.$transaction([
       this.prisma.student.findMany({
         where,
         orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
+        include: studentProfileInclude,
       }),
       this.prisma.student.count({ where }),
     ]);
-    return paginate(items, total, query.page, query.pageSize);
+    return paginate(items.map((item) => this.toProfile(item)), total, query.page, query.pageSize);
   }
 
   async findOne(id: string) {

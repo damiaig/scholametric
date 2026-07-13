@@ -160,6 +160,16 @@ describe("Students (e2e)", () => {
       expect(response.status).toBe(200);
       expect(response.body.items).toHaveLength(1);
       expect(response.body.items[0].admissionNumber).toBe("SUN/2026/0001");
+      // List rows carry the same currentEnrollment shape as GET /students/:id
+      // (step 7 needs class/level per row, not just a bare Student).
+      expect(response.body.items[0].currentEnrollment).toEqual(
+        expect.objectContaining({
+          classArm: expect.objectContaining({
+            name: expect.any(String),
+            classLevel: expect.objectContaining({ name: expect.any(String) }),
+          }),
+        }),
+      );
     });
 
     it("filters by classArmId (the seeded ~100-student JSS 2 A class)", async () => {
