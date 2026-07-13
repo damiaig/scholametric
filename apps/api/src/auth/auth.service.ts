@@ -104,6 +104,9 @@ export class AuthService {
         slug: user.school.slug,
         type: user.school.type,
         status: user.school.status,
+        address: user.school.address,
+        phone: user.school.phone,
+        email: user.school.email,
       },
     };
   }

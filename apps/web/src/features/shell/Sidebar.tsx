@@ -7,8 +7,9 @@ import { UserMenu } from "./UserMenu";
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/students", label: "Students", icon: Users },
-  { to: "/settings", label: "Settings", icon: Settings },
 ];
+
+const SETTINGS_ITEM = { to: "/settings/school", label: "Settings", icon: Settings };
 
 interface SidebarProps {
   onNavigate?: () => void;
@@ -16,6 +17,9 @@ interface SidebarProps {
 
 export function Sidebar({ onNavigate }: SidebarProps) {
   const { data: user, isLoading, isError } = useCurrentUser();
+  // RBAC matrix (SPEC_V0.1.md §2): every settings action is SCHOOL_ADMIN
+  // only, so TEACHER has nothing to do there — link is absent, not disabled.
+  const navItems = user?.role === "SCHOOL_ADMIN" ? [...NAV_ITEMS, SETTINGS_ITEM] : NAV_ITEMS;
 
   return (
     <div className="flex h-full flex-col gap-6 p-4">
@@ -31,7 +35,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
       </div>
 
       <nav className="flex flex-1 flex-col gap-1">
-        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+        {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}

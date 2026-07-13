@@ -13,6 +13,8 @@ import { TermsModule } from "./terms/terms.module";
 import { ClassLevelsModule } from "./class-levels/class-levels.module";
 import { ClassArmsModule } from "./class-arms/class-arms.module";
 import { StudentsModule } from "./students/students.module";
+import { UsersModule } from "./users/users.module";
+import { DashboardModule } from "./dashboard/dashboard.module";
 import { TenantModule } from "./common/tenant/tenant.module";
 import { AppThrottlerGuard } from "./common/guards/app-throttler.guard";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
@@ -39,6 +41,8 @@ import { AuditInterceptor } from "./common/interceptors/audit.interceptor";
     ClassLevelsModule,
     ClassArmsModule,
     StudentsModule,
+    UsersModule,
+    DashboardModule,
   ],
   providers: [
     // Order matters — Nest runs global APP_GUARDs in registration order:

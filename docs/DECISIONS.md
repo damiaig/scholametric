@@ -418,3 +418,115 @@ type a TanStack Query hook that shows an "API reachable" badge on the login
 page, rather than an unused type-only import.
 Reason: proves the shared-types contract with real, functioning code instead
 of a dead import that only exists to satisfy a rule.
+
+## 2026-07-13 — Users module built in step 8, not step 4 (a real backend gap)
+Decision: SPEC_V0.1.md §2 describes a full Users module (list/create/edit/
+reset-password) but step 4's commit never built it — only schools,
+sessions, terms, class-levels, and class-arms landed. Discovered while
+planning step 8's `/settings/users` page, which depends on it entirely.
+Reason: flagged to the user rather than assumed (CLAUDE.md §8); user chose
+to build it now, same rigor as the other step-4 modules (DTOs, RBAC, e2e
+matrix including cross-tenant 404 and self-demote 400).
+
+## 2026-07-13 — User creation and password reset both return a one-time generated password
+Decision: `POST /users` takes no password field; the server generates one
+(and so does `POST /users/:id/reset-password`), returned once in the
+response body and never retrievable again.
+Reason: SPEC_V0.1.md §4 describes creating a user "via drawer/dialog" with
+no password field, and reset-password already required generating one —
+using the same mechanism for creation avoids a second, inconsistent code
+path and matches how the admin actually hands off credentials (verbally or
+by copy-paste), not by choosing them for someone else.
+
+## 2026-07-13 — Password reset revokes the user's existing refresh tokens
+Decision: `POST /users/:id/reset-password` also sets `revokedAt` on every
+non-revoked refresh token for that user, in the same transaction as the
+password change.
+Reason: a password reset that leaves an already-issued session valid
+defeats the point of the reset (e.g. resetting because a device was lost).
+Not in SPEC_V0.1.md explicitly, but a direct security consequence of the
+endpoint that already exists — not new scope.
+
+## 2026-07-13 — GET /auth/me's school object gained address/phone/email
+Decision: added three nullable fields to the `school` object already
+returned by `GET /auth/me`, alongside the existing `id`/`name`/`slug`/
+`type`/`status`. No new endpoint, no RBAC change.
+Reason: `PATCH /schools/:id` is confirmed SUPER_ADMIN-only (SPEC_V0.1.md
+§2), so `/settings/school` renders read-only for SCHOOL_ADMIN per explicit
+user instruction — but SPEC_V0.1.md §4 still calls for the profile to show
+name/address/phone/email, and `GET /auth/me` (which SCHOOL_ADMIN already
+has full access to) didn't expose the latter three. Same category as step
+7's `currentEnrollment` precedent: a small additive field on an endpoint
+the caller already owns, not a permission expansion.
+
+## 2026-07-13 — /settings/school is read-only for SCHOOL_ADMIN (v0.2 question)
+Decision: the school profile page has no Edit action for SCHOOL_ADMIN;
+editing name/address/phone/email is not available in v0.1.
+Reason: `PATCH /schools/:id` is SUPER_ADMIN-only per the step-4 RBAC matrix
+(SPEC_V0.1.md §2), and CLAUDE.md §8 forbids changing backend RBAC without
+being asked. Open question for v0.2: should SCHOOL_ADMIN be allowed to
+edit their own school's contact details (not `slug`/`type`/`status`)?
+
+## 2026-07-13 — Dashboard studentsByLevel uses one raw SQL query, not Prisma groupBy
+Decision: `GET /dashboard/stats` computes the per-class-level student
+counts with a single parameterized `$queryRaw` (join students →
+student_enrollments → class_arms → class_levels, grouped by level),
+instead of Prisma's `groupBy` or a per-level count loop.
+Reason: Prisma's `groupBy` can't express the multi-table join needed here
+in one call; CLAUDE.md §2 explicitly allows raw SQL for reports. Postgres
+`uuid` columns require explicit `::uuid` casts on the interpolated
+`schoolId`/`sessionId` params — Prisma's tagged-template raw query doesn't
+infer parameter types, caught by an e2e test failure (`operator does not
+exist: uuid = text`) before it reached production.
+
+## 2026-07-13 — recharts added to the approved frontend stack (v2, not v3)
+Decision: added `recharts@^2` as a direct dependency of apps/web for the
+dashboard's students-by-level bar chart; pinned to the v2 major (v3 exists
+but wasn't requested and isn't needed here — CLAUDE.md §2 says don't
+upgrade majors without asking, and the user only asked for "recharts",
+not a specific major).
+Reason: user explicitly named recharts in the step-8 instructions (SPEC
+§4 item 2), which is the required approval per CLAUDE.md §2's "no
+libraries beyond these without asking." Amended in CLAUDE.md's stack
+table as its own commit, same pattern as react-router-dom in step 6.
+
+## 2026-07-13 — jsdom needs a ResizeObserver stub for recharts tests
+Decision: added a minimal `ResizeObserver` stub to `src/test/setup.ts`
+(observe/unobserve/disconnect as no-ops), applied globally.
+Reason: recharts' `ResponsiveContainer` (used by the dashboard chart)
+calls `new ResizeObserver(...)` on mount; jsdom has no such global and the
+component throws, crashing any test that renders it. The stub never needs
+to fire callbacks since jsdom has no real layout to observe anyway —
+DashboardPage's tests only assert on data-driven text content, not pixel
+dimensions.
+
+## 2026-07-13 — Settings pages: routed top-level tabs, local-state sub-tabs
+Decision: `/settings/school`, `/settings/academic`, `/settings/users` are
+real routes under a `SettingsLayout` (so they're deep-linkable and survive
+a reload... within the same login session), but *within* `/settings/academic`
+the Sessions/Terms vs Class-levels/Arms split is local `useState`, not
+nested routes.
+Reason: the top-level split is a real navigation destination (matches
+SPEC_V0.1.md §4's three named settings pages); the sub-split is an
+implementation detail of one page, not something a user would want to
+bookmark or share a link to. Same tab-bar pattern as StudentDetailPage's
+Overview/History tabs from step 7, reused rather than reinvented.
+
+## 2026-07-13 — Global search reuses GET /students?search=, no new endpoint
+Decision: the top-bar global search (SPEC_V0.1.md §4 layout) calls the
+existing `GET /students?search=&page=1&pageSize=8`, the same endpoint the
+students list page uses, rather than adding a dedicated search endpoint.
+Reason: the existing endpoint already does ILIKE/trigram search on name
+and admission number and is tenant-scoped correctly — a second endpoint
+would duplicate that logic for no benefit at this data volume.
+
+## 2026-07-13 — User creation and reset-password share one OneTimePasswordDisplay component
+Decision: `features/settings/OneTimePasswordDisplay.tsx` (copy button +
+"won't be shown again" warning) is used by both `CreateUserDialog` and
+`ResetPasswordDialog`, each of which otherwise manages its own two-step
+(form/confirm → reveal) dialog flow independently rather than sharing a
+bigger abstraction.
+Reason: the one-time-password reveal is identical in both flows and worth
+not duplicating; the surrounding flow (create form vs. confirm-then-reset)
+differs enough that forcing them into one shared component would need
+more conditional branching than the two call sites are worth.

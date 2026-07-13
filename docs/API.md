@@ -91,9 +91,21 @@ Requires a valid access token.
   "role": "SCHOOL_ADMIN",
   "status": "ACTIVE",
   "lastLoginAt": "2026-07-12T10:00:00.000Z",
-  "school": { "id": "...", "name": "Sunrise College", "slug": "sunrise", "type": "SECONDARY", "status": "ACTIVE" }
+  "school": {
+    "id": "...",
+    "name": "Sunrise College",
+    "slug": "sunrise",
+    "type": "SECONDARY",
+    "status": "ACTIVE",
+    "address": null,
+    "phone": null,
+    "email": null
+  }
 }
 ```
+`school.address`/`phone`/`email` added in step 8 (nullable) so the
+read-only `/settings/school` profile page has data to show — see
+docs/DECISIONS.md.
 
 ---
 
@@ -292,6 +304,76 @@ column — it's recorded in the audit log's `metadata`.
 
 Body: `{ classArmId }`. Updates the student's enrollment for the current
 session. `404` if `classArmId` isn't in the caller's school.
+
+---
+
+## Users
+
+Added in step 8 (SPEC_V0.1.md §2 described this in step 4 but it was never
+built then — see docs/DECISIONS.md). `SCHOOL_ADMIN` only; unlike Students,
+`TEACHER` has no access at all here, not even read (`403`). Scoped to the
+caller's school. Every mutation writes an `audit_logs` row.
+
+### `GET /users?role=&search=&page=&pageSize=`
+
+Paginated, ordered by `firstName`, tiebreak `id`. `role` filters to
+`SCHOOL_ADMIN` or `TEACHER`. `search` is ILIKE against first name, last
+name, or email. Soft-deleted users always excluded. Response items never
+include `passwordHash`.
+
+### `POST /users`
+
+Body: `{ email, firstName, lastName, role }` — `role` must be
+`SCHOOL_ADMIN` or `TEACHER` (`400` otherwise; `SUPER_ADMIN` accounts are
+only provisioned via school creation). No password is supplied by the
+caller — the server generates a temporary one.
+
+**Response `201`**: `{ user, temporaryPassword }`. `temporaryPassword` is
+returned once and never stored in retrievable form; there is no way to
+fetch it again — use reset-password below if it's lost.
+
+**Response `409`**: a user with this email already exists in this school.
+
+### `PATCH /users/:id`
+
+Body: any of `firstName`, `lastName`, `role` (`SCHOOL_ADMIN`/`TEACHER`
+only), `status` (`ACTIVE`/`DISABLED`).
+
+**Response `400`**: caller attempted to change their **own** `role`.
+
+**Response `404`**: `:id` isn't a user in the caller's school.
+
+### `POST /users/:id/reset-password`
+
+Sets a new server-generated temporary password and revokes all of that
+user's active refresh tokens (any other active session is logged out).
+
+**Response `200`**: `{ temporaryPassword }` — shown once, same rule as
+creation above.
+
+---
+
+## Dashboard
+
+Added in step 8. `SCHOOL_ADMIN` and `TEACHER` both have read access, scoped
+to the caller's school.
+
+### `GET /dashboard/stats`
+
+**Response `200`**
+```json
+{
+  "totalActiveStudents": 25,
+  "studentsByLevel": [{ "levelName": "JSS 1", "rank": 1, "count": 8 }],
+  "currentSession": "2026/2027",
+  "currentTerm": "FIRST"
+}
+```
+`studentsByLevel` counts only students currently enrolled (current session)
+and `ACTIVE`, grouped by class level, ordered by `rank`. Computed with one
+grouped raw SQL query, not one query per level. If the school has no
+current session yet, `studentsByLevel` is `[]` and `currentSession`/
+`currentTerm` are `null` rather than erroring.
 
 ---
 

@@ -32,6 +32,17 @@ export interface RefreshResponse {
   refreshToken: string;
 }
 
+export interface CurrentUserSchool {
+  id: string;
+  name: string;
+  slug: string;
+  type: SchoolType;
+  status: SchoolStatus;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+}
+
 export interface CurrentUser {
   id: string;
   email: string;
@@ -40,5 +51,5 @@ export interface CurrentUser {
   role: UserRole;
   status: string;
   lastLoginAt: string | null;
-  school: { id: string; name: string; slug: string; type: SchoolType; status: SchoolStatus };
+  school: CurrentUserSchool;
 }

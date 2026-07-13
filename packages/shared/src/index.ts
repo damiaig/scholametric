@@ -4,3 +4,6 @@ export * from "./schools";
 export * from "./api-error";
 export * from "./pagination";
 export * from "./students";
+export * from "./dashboard";
+export * from "./users";
+export * from "./academic";
