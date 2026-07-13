@@ -29,6 +29,7 @@ features from future versions unless explicitly asked.
 | Frontend   | React 18 + Vite + TypeScript                        |
 | Routing    | react-router-dom 6.x                                |
 | UI         | Tailwind CSS + shadcn/ui components, Lucide icons   |
+| Charts     | recharts 2.x (dashboard only — added step 8)        |
 | State/data | TanStack Query for server state; no Redux           |
 | Auth       | Email + password with JWT (access 15m / refresh 7d).|
 |            | Firebase Auth may replace this later — isolate auth |
