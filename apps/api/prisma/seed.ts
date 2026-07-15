@@ -1,4 +1,4 @@
-import { PrismaClient, SchoolType, UserRole, TermName, Gender } from "@prisma/client";
+import { PrismaClient, SchoolType, UserRole, TermName, Gender, JobTitle, GuardianRelationship } from "@prisma/client";
 import bcrypt from "bcrypt";
 
 const prisma = new PrismaClient();
@@ -96,6 +96,210 @@ const ARM_KEYS = CLASS_LEVELS.flatMap((level) => ARMS.map((arm) => `${level.name
 
 const CURRENT_SESSION_NAME = "2026/2027";
 
+const JSS_LEVEL_NAMES = ["JSS 1", "JSS 2", "JSS 3"];
+const SSS_LEVEL_NAMES = ["SSS 1", "SSS 2", "SSS 3"];
+
+interface StaffSeed {
+  email: string;
+  firstName: string;
+  lastName: string;
+  jobTitle: JobTitle;
+  qualification: string;
+  phone: string;
+}
+
+// SPEC_V0.2.md §3: 8 teachers at Sunrise, including the pre-existing
+// teacher@sunrise.test (kept first so its login/e2e usage is unchanged).
+const SUNRISE_TEACHERS: StaffSeed[] = [
+  { email: "teacher@sunrise.test", firstName: "Bola", lastName: "Ogundare", jobTitle: JobTitle.TEACHER, qualification: "B.Ed Mathematics", phone: "+2348030000001" },
+  { email: "teacher2@sunrise.test", firstName: "Ngozi", lastName: "Chukwuma", jobTitle: JobTitle.TEACHER, qualification: "B.Sc Ed. English Language", phone: "+2348030000002" },
+  { email: "teacher3@sunrise.test", firstName: "Ahmed", lastName: "Suleiman", jobTitle: JobTitle.TEACHER, qualification: "B.Sc Physics", phone: "+2348030000003" },
+  { email: "teacher4@sunrise.test", firstName: "Ifeoma", lastName: "Anozie", jobTitle: JobTitle.TEACHER, qualification: "B.Sc Chemistry", phone: "+2348030000004" },
+  { email: "teacher5@sunrise.test", firstName: "Tunde", lastName: "Bakare", jobTitle: JobTitle.TEACHER, qualification: "B.Sc Biology", phone: "+2348030000005" },
+  { email: "teacher6@sunrise.test", firstName: "Halima", lastName: "Yusuf", jobTitle: JobTitle.TEACHER, qualification: "B.A Economics", phone: "+2348030000006" },
+  { email: "teacher7@sunrise.test", firstName: "Emeka", lastName: "Obiora", jobTitle: JobTitle.TEACHER, qualification: "B.Ed Social Studies", phone: "+2348030000007" },
+  { email: "teacher8@sunrise.test", firstName: "Grace", lastName: "Adeyinka", jobTitle: JobTitle.TEACHER, qualification: "B.A Religious Studies", phone: "+2348030000008" },
+];
+
+// SPEC_V0.2.md §3: 2 teachers at Hillcrest — enough for cross-tenant tests.
+const HILLCREST_TEACHERS: StaffSeed[] = [
+  { email: "teacher@hillcrest.test", firstName: "Peter", lastName: "Etim", jobTitle: JobTitle.TEACHER, qualification: "B.Sc Ed. Mathematics", phone: "+2348040000001" },
+  { email: "teacher2@hillcrest.test", firstName: "Comfort", lastName: "Bassey", jobTitle: JobTitle.TEACHER, qualification: "B.A English Language", phone: "+2348040000002" },
+];
+
+interface SubjectSeed {
+  name: string;
+  code: string;
+  levels: "ALL" | string[];
+}
+
+// SPEC_V0.2.md §3: the full subject list with "sensible level mappings" —
+// Physics/Chemistry/Biology/Economics/Government/Literature are SSS-only;
+// Basic Science/Social Studies/Business Studies are JSS-only (SSS splits
+// Basic Science into the three sciences, and Business Studies into
+// Economics/Government); everything else spans all six levels.
+const SUNRISE_SUBJECTS: SubjectSeed[] = [
+  { name: "Mathematics", code: "MTH", levels: "ALL" },
+  { name: "English Language", code: "ENG", levels: "ALL" },
+  { name: "Basic Science", code: "BSC", levels: JSS_LEVEL_NAMES },
+  { name: "Civic Education", code: "CIV", levels: "ALL" },
+  { name: "Social Studies", code: "SOS", levels: JSS_LEVEL_NAMES },
+  { name: "Agricultural Science", code: "AGR", levels: "ALL" },
+  { name: "Business Studies", code: "BUS", levels: JSS_LEVEL_NAMES },
+  { name: "CRS", code: "CRS", levels: "ALL" },
+  { name: "IRS", code: "IRS", levels: "ALL" },
+  { name: "Physics", code: "PHY", levels: SSS_LEVEL_NAMES },
+  { name: "Chemistry", code: "CHM", levels: SSS_LEVEL_NAMES },
+  { name: "Biology", code: "BIO", levels: SSS_LEVEL_NAMES },
+  { name: "Economics", code: "ECO", levels: SSS_LEVEL_NAMES },
+  { name: "Government", code: "GOV", levels: SSS_LEVEL_NAMES },
+  { name: "Literature", code: "LIT", levels: SSS_LEVEL_NAMES },
+];
+
+// SPEC_V0.2.md §3: 4 subjects at Hillcrest.
+const HILLCREST_SUBJECTS: SubjectSeed[] = [
+  { name: "Mathematics", code: "MTH", levels: "ALL" },
+  { name: "English Language", code: "ENG", levels: "ALL" },
+  { name: "Basic Science", code: "BSC", levels: JSS_LEVEL_NAMES },
+  { name: "CRS", code: "CRS", levels: "ALL" },
+];
+
+function staffNumber(prefix: string, sequence: number): string {
+  return `${prefix}/STF/${String(sequence).padStart(4, "0")}`;
+}
+
+async function seedStaffProfile(
+  schoolId: string,
+  userId: string,
+  sequence: number,
+  prefix: string,
+  jobTitle: JobTitle,
+  phone: string,
+  qualification: string,
+) {
+  await prisma.staffProfile.upsert({
+    where: { userId },
+    update: {},
+    create: { schoolId, userId, staffNumber: staffNumber(prefix, sequence), jobTitle, phone, qualification },
+  });
+}
+
+async function seedStaffUser(schoolId: string, prefix: string, sequence: number, seed: StaffSeed, role: UserRole) {
+  const user = await prisma.user.upsert({
+    where: { schoolId_email: { schoolId, email: seed.email } },
+    update: {},
+    create: {
+      schoolId,
+      email: seed.email,
+      passwordHash: await hash(SEED_PASSWORD),
+      firstName: seed.firstName,
+      lastName: seed.lastName,
+      role,
+    },
+  });
+  await seedStaffProfile(schoolId, user.id, sequence, prefix, seed.jobTitle, seed.phone, seed.qualification);
+  return user;
+}
+
+/** Creates every subject and its subject_class_levels mappings; returns subject name -> id. */
+async function seedSubjects(
+  schoolId: string,
+  classLevelIdsByName: Record<string, string>,
+  defs: SubjectSeed[],
+): Promise<Record<string, string>> {
+  const subjectIds: Record<string, string> = {};
+  for (const def of defs) {
+    const subject = await prisma.subject.upsert({
+      where: { schoolId_name: { schoolId, name: def.name } },
+      update: {},
+      create: { schoolId, name: def.name, code: def.code },
+    });
+    subjectIds[def.name] = subject.id;
+
+    const levelNames = def.levels === "ALL" ? Object.keys(classLevelIdsByName) : def.levels;
+    for (const levelName of levelNames) {
+      const classLevelId = classLevelIdsByName[levelName];
+      if (!classLevelId) continue;
+      await prisma.subjectClassLevel.upsert({
+        where: { subjectId_classLevelId: { subjectId: subject.id, classLevelId } },
+        update: {},
+        create: { schoolId, subjectId: subject.id, classLevelId },
+      });
+    }
+  }
+  return subjectIds;
+}
+
+/** One class teacher per arm per session — cycles through the given teachers if there are more arms than teachers. */
+async function seedClassTeacherAssignments(
+  schoolId: string,
+  sessionId: string,
+  classArmIds: string[],
+  teacherUserIds: string[],
+) {
+  for (let i = 0; i < classArmIds.length; i++) {
+    const classArmId = classArmIds[i];
+    const teacherUserId = teacherUserIds[i % teacherUserIds.length];
+    await prisma.classTeacherAssignment.upsert({
+      where: { classArmId_sessionId: { classArmId, sessionId } },
+      update: {},
+      create: { schoolId, classArmId, sessionId, teacherUserId },
+    });
+  }
+}
+
+async function seedSubjectTeacherAssignments(
+  schoolId: string,
+  sessionId: string,
+  assignments: { subjectId: string; classArmId: string; teacherUserId: string }[],
+) {
+  for (const assignment of assignments) {
+    await prisma.subjectTeacherAssignment.upsert({
+      where: {
+        subjectId_classArmId_sessionId: {
+          subjectId: assignment.subjectId,
+          classArmId: assignment.classArmId,
+          sessionId,
+        },
+      },
+      update: {},
+      create: { schoolId, sessionId, ...assignment },
+    });
+  }
+}
+
+// SPEC_V0.2.md §3: give one seeded student a second guardian (mother) to
+// exercise the multi-guardian path. Guardians/student_guardians have no
+// natural unique key to upsert against (see docs/DECISIONS.md), so
+// idempotency is checked explicitly: skip if this student already has 2+
+// guardian links from a prior seed run.
+async function seedSecondGuardian(schoolId: string, admissionNumber: string) {
+  const student = await prisma.student.findFirst({ where: { schoolId, admissionNumber } });
+  if (!student) return;
+
+  const existingLinks = await prisma.studentGuardian.count({ where: { studentId: student.id } });
+  if (existingLinks >= 2) return;
+
+  const mother = await prisma.guardian.create({
+    data: {
+      schoolId,
+      firstName: "Funmilayo",
+      lastName: "Adeyemi",
+      phone: "+2348090000001",
+      email: "funmilayo.adeyemi@example.com",
+    },
+  });
+  await prisma.studentGuardian.create({
+    data: {
+      schoolId,
+      studentId: student.id,
+      guardianId: mother.id,
+      relationship: GuardianRelationship.MOTHER,
+      isPrimary: false,
+    },
+  });
+}
+
 async function seedSchoolAcademics(schoolId: string) {
   const session = await prisma.academicSession.upsert({
     where: { schoolId_name: { schoolId, name: CURRENT_SESSION_NAME } },
@@ -123,12 +327,14 @@ async function seedSchoolAcademics(schoolId: string) {
   }
 
   const arms: Record<string, string> = {};
+  const classLevels: Record<string, string> = {};
   for (const level of CLASS_LEVELS) {
     const classLevel = await prisma.classLevel.upsert({
       where: { schoolId_name: { schoolId, name: level.name } },
       update: {},
       create: { schoolId, name: level.name, rank: level.rank },
     });
+    classLevels[level.name] = classLevel.id;
     for (const armName of ARMS) {
       const arm = await prisma.classArm.upsert({
         where: { classLevelId_name: { classLevelId: classLevel.id, name: armName } },
@@ -139,7 +345,7 @@ async function seedSchoolAcademics(schoolId: string) {
     }
   }
 
-  return { sessionId: session.id, arms };
+  return { sessionId: session.id, arms, classLevels };
 }
 
 async function seedStudents(
@@ -255,7 +461,7 @@ async function main() {
       status: "ACTIVE",
     },
   });
-  await prisma.user.upsert({
+  const sunriseAdmin = await prisma.user.upsert({
     where: { schoolId_email: { schoolId: sunrise.id, email: "admin@sunrise.test" } },
     update: {},
     create: {
@@ -265,18 +471,6 @@ async function main() {
       firstName: "Adaobi",
       lastName: "Nwachukwu",
       role: UserRole.SCHOOL_ADMIN,
-    },
-  });
-  await prisma.user.upsert({
-    where: { schoolId_email: { schoolId: sunrise.id, email: "teacher@sunrise.test" } },
-    update: {},
-    create: {
-      schoolId: sunrise.id,
-      email: "teacher@sunrise.test",
-      passwordHash: await hash(SEED_PASSWORD),
-      firstName: "Bola",
-      lastName: "Ogundare",
-      role: UserRole.TEACHER,
     },
   });
   const sunriseAcademics = await seedSchoolAcademics(sunrise.id);
@@ -290,6 +484,68 @@ async function main() {
     BULK_CLASS_STARTING_SEQUENCE,
   );
 
+  // SPEC_V0.2.md §3 — proprietor, Adaobi's PRINCIPAL profile (she stays
+  // SCHOOL_ADMIN — title is organizational, not a permission level), 8
+  // teachers, subjects + level mappings, a class teacher on every arm,
+  // subject teachers covering JSS 1-2, and a second guardian.
+  const sunriseProprietor = await prisma.user.upsert({
+    where: { schoolId_email: { schoolId: sunrise.id, email: "proprietor@sunrise.test" } },
+    update: {},
+    create: {
+      schoolId: sunrise.id,
+      email: "proprietor@sunrise.test",
+      passwordHash: await hash(SEED_PASSWORD),
+      firstName: "Olumide",
+      lastName: "Adebanjo",
+      role: UserRole.PROPRIETOR,
+    },
+  });
+  await seedStaffProfile(
+    sunrise.id,
+    sunriseProprietor.id,
+    1,
+    "SUN",
+    JobTitle.DIRECTOR_PROPRIETOR,
+    "+2348020000001",
+    "B.Sc Business Administration",
+  );
+  await seedStaffProfile(
+    sunrise.id,
+    sunriseAdmin.id,
+    2,
+    "SUN",
+    JobTitle.PRINCIPAL,
+    "+2348020000002",
+    "M.Ed Educational Administration",
+  );
+
+  const sunriseTeacherUserIds: string[] = [];
+  for (let i = 0; i < SUNRISE_TEACHERS.length; i++) {
+    const teacherUser = await seedStaffUser(sunrise.id, "SUN", 3 + i, SUNRISE_TEACHERS[i], UserRole.TEACHER);
+    sunriseTeacherUserIds.push(teacherUser.id);
+  }
+
+  const sunriseSubjectIds = await seedSubjects(sunrise.id, sunriseAcademics.classLevels, SUNRISE_SUBJECTS);
+
+  await seedClassTeacherAssignments(
+    sunrise.id,
+    sunriseAcademics.sessionId,
+    ARM_KEYS.map((key) => sunriseAcademics.arms[key]),
+    sunriseTeacherUserIds,
+  );
+
+  const jss1And2ArmKeys = ["JSS 1-A", "JSS 1-B", "JSS 2-A", "JSS 2-B"];
+  await seedSubjectTeacherAssignments(
+    sunrise.id,
+    sunriseAcademics.sessionId,
+    jss1And2ArmKeys.flatMap((armKey) => [
+      { subjectId: sunriseSubjectIds["Mathematics"], classArmId: sunriseAcademics.arms[armKey], teacherUserId: sunriseTeacherUserIds[0] },
+      { subjectId: sunriseSubjectIds["English Language"], classArmId: sunriseAcademics.arms[armKey], teacherUserId: sunriseTeacherUserIds[1] },
+    ]),
+  );
+
+  await seedSecondGuardian(sunrise.id, "SUN/2026/0001");
+
   const hillcrest = await prisma.school.upsert({
     where: { slug: "hillcrest" },
     update: {},
@@ -300,7 +556,7 @@ async function main() {
       status: "ACTIVE",
     },
   });
-  await prisma.user.upsert({
+  const hillcrestAdmin = await prisma.user.upsert({
     where: { schoolId_email: { schoolId: hillcrest.id, email: "admin@hillcrest.test" } },
     update: {},
     create: {
@@ -314,6 +570,32 @@ async function main() {
   });
   const hillcrestAcademics = await seedSchoolAcademics(hillcrest.id);
   await seedStudents(hillcrest.id, "HIL", hillcrestAcademics.sessionId, hillcrestAcademics.arms, HILLCREST_STUDENTS);
+
+  await seedStaffProfile(
+    hillcrest.id,
+    hillcrestAdmin.id,
+    1,
+    "HIL",
+    JobTitle.PRINCIPAL,
+    "+2348050000001",
+    "M.Ed Educational Administration",
+  );
+
+  const hillcrestTeacherUserIds: string[] = [];
+  for (let i = 0; i < HILLCREST_TEACHERS.length; i++) {
+    const teacherUser = await seedStaffUser(hillcrest.id, "HIL", 2 + i, HILLCREST_TEACHERS[i], UserRole.TEACHER);
+    hillcrestTeacherUserIds.push(teacherUser.id);
+  }
+
+  await seedSubjects(hillcrest.id, hillcrestAcademics.classLevels, HILLCREST_SUBJECTS);
+
+  // One class-teacher assignment — enough for cross-tenant tests.
+  await seedClassTeacherAssignments(
+    hillcrest.id,
+    hillcrestAcademics.sessionId,
+    [hillcrestAcademics.arms["JSS 1-A"]],
+    [hillcrestTeacherUserIds[0]],
+  );
 
   console.log("Seed complete.");
 }

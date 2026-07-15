@@ -22,10 +22,39 @@ enum SchoolStatus {
 
 enum UserRole {
   SUPER_ADMIN
+  PROPRIETOR
   SCHOOL_ADMIN
   TEACHER
   PARENT
   STUDENT
+}
+
+enum JobTitle {
+  DIRECTOR_PROPRIETOR
+  PRINCIPAL
+  VICE_PRINCIPAL
+  REGISTRAR
+  EXAMINATION_OFFICER
+  BURSAR
+  SECRETARY
+  ICT_ADMINISTRATOR
+  SCHOOL_NURSE
+  GUIDANCE_COUNSELOR
+  TEACHER
+  OTHER
+}
+
+enum GuardianRelationship {
+  FATHER
+  MOTHER
+  STEPFATHER
+  STEPMOTHER
+  GRANDPARENT
+  UNCLE
+  AUNT
+  SIBLING
+  LEGAL_GUARDIAN
+  OTHER
 }
 
 enum UserStatus {
@@ -64,14 +93,21 @@ model School {
   createdAt DateTime     @default(now()) @map("created_at")
   updatedAt DateTime     @updatedAt @map("updated_at")
 
-  users              User[]
-  academicSessions   AcademicSession[]
-  terms              Term[]
-  classLevels        ClassLevel[]
-  classArms          ClassArm[]
-  students           Student[]
-  studentEnrollments StudentEnrollment[]
-  auditLogs          AuditLog[]
+  users                     User[]
+  academicSessions          AcademicSession[]
+  terms                     Term[]
+  classLevels               ClassLevel[]
+  classArms                 ClassArm[]
+  students                  Student[]
+  studentEnrollments        StudentEnrollment[]
+  auditLogs                 AuditLog[]
+  staffProfiles             StaffProfile[]
+  subjects                  Subject[]
+  subjectClassLevels        SubjectClassLevel[]
+  classTeacherAssignments   ClassTeacherAssignment[]
+  subjectTeacherAssignments SubjectTeacherAssignment[]
+  guardians                 Guardian[]
+  studentGuardians          StudentGuardian[]
 
   @@map("schools")
 }
@@ -90,9 +126,12 @@ model User {
   createdAt    DateTime   @default(now()) @map("created_at")
   updatedAt    DateTime   @updatedAt @map("updated_at")
 
-  school        School         @relation(fields: [schoolId], references: [id])
-  refreshTokens RefreshToken[]
-  auditLogs     AuditLog[]
+  school                    School                     @relation(fields: [schoolId], references: [id])
+  refreshTokens             RefreshToken[]
+  auditLogs                 AuditLog[]
+  staffProfile              StaffProfile?
+  classTeacherAssignments   ClassTeacherAssignment[]
+  subjectTeacherAssignments SubjectTeacherAssignment[]
 
   @@unique([schoolId, email])
   @@index([schoolId])
@@ -129,9 +168,11 @@ model AcademicSession {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  school             School              @relation(fields: [schoolId], references: [id])
-  terms              Term[]
-  studentEnrollments StudentEnrollment[]
+  school                    School                     @relation(fields: [schoolId], references: [id])
+  terms                     Term[]
+  studentEnrollments        StudentEnrollment[]
+  classTeacherAssignments   ClassTeacherAssignment[]
+  subjectTeacherAssignments SubjectTeacherAssignment[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -167,8 +208,9 @@ model ClassLevel {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  school    School     @relation(fields: [schoolId], references: [id])
-  classArms ClassArm[]
+  school             School              @relation(fields: [schoolId], references: [id])
+  classArms          ClassArm[]
+  subjectClassLevels SubjectClassLevel[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -183,9 +225,11 @@ model ClassArm {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  school             School              @relation(fields: [schoolId], references: [id])
-  classLevel         ClassLevel          @relation(fields: [classLevelId], references: [id])
-  studentEnrollments StudentEnrollment[]
+  school                    School                     @relation(fields: [schoolId], references: [id])
+  classLevel                ClassLevel                 @relation(fields: [classLevelId], references: [id])
+  studentEnrollments        StudentEnrollment[]
+  classTeacherAssignments   ClassTeacherAssignment[]
+  subjectTeacherAssignments SubjectTeacherAssignment[]
 
   @@unique([classLevelId, name])
   @@index([schoolId])
@@ -206,6 +250,10 @@ model Student {
   dateOfBirth     DateTime      @map("date_of_birth") @db.Date
   admittedOn      DateTime      @default(now()) @map("admitted_on") @db.Date
   status          StudentStatus @default(ACTIVE)
+  // Frozen as of v0.2 (SPEC_V0.2.md §1): backfilled into guardians/
+  // student_guardians by the v0.2 migration, but no longer written by new
+  // code. Kept for now — dropping is a future migration once the new
+  // tables are verified in production use.
   guardianName    String        @map("guardian_name")
   guardianPhone   String        @map("guardian_phone")
   guardianEmail   String?       @map("guardian_email")
@@ -214,8 +262,9 @@ model Student {
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
-  school      School              @relation(fields: [schoolId], references: [id])
-  enrollments StudentEnrollment[]
+  school           School              @relation(fields: [schoolId], references: [id])
+  enrollments      StudentEnrollment[]
+  studentGuardians StudentGuardian[]
 
   @@unique([schoolId, admissionNumber])
   @@index([schoolId])
@@ -258,4 +307,143 @@ model AuditLog {
 
   @@index([schoolId])
   @@map("audit_logs")
+}
+
+// 1:1 extension of User for every PROPRIETOR/SCHOOL_ADMIN/TEACHER
+// (enforced at the service layer, not the DB — v0.2 step 2).
+model StaffProfile {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  schoolId      String    @map("school_id") @db.Uuid
+  userId        String    @unique @map("user_id") @db.Uuid
+  staffNumber   String    @map("staff_number")
+  jobTitle      JobTitle  @map("job_title")
+  phone         String?
+  qualification String?
+  dateEmployed  DateTime? @map("date_employed") @db.Date
+  deletedAt     DateTime? @map("deleted_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([schoolId, staffNumber])
+  @@index([schoolId])
+  @@map("staff_profiles")
+}
+
+model Subject {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  schoolId  String    @map("school_id") @db.Uuid
+  name      String
+  code      String?
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  school             School                     @relation(fields: [schoolId], references: [id])
+  classLevels        SubjectClassLevel[]
+  teacherAssignments SubjectTeacherAssignment[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@map("subjects")
+}
+
+model SubjectClassLevel {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  schoolId     String   @map("school_id") @db.Uuid
+  subjectId    String   @map("subject_id") @db.Uuid
+  classLevelId String   @map("class_level_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  school     School     @relation(fields: [schoolId], references: [id])
+  subject    Subject    @relation(fields: [subjectId], references: [id])
+  classLevel ClassLevel @relation(fields: [classLevelId], references: [id])
+
+  @@unique([subjectId, classLevelId])
+  @@index([schoolId])
+  @@map("subject_class_levels")
+}
+
+model ClassTeacherAssignment {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  schoolId      String   @map("school_id") @db.Uuid
+  classArmId    String   @map("class_arm_id") @db.Uuid
+  sessionId     String   @map("session_id") @db.Uuid
+  teacherUserId String   @map("teacher_user_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  school      School          @relation(fields: [schoolId], references: [id])
+  classArm    ClassArm        @relation(fields: [classArmId], references: [id])
+  session     AcademicSession @relation(fields: [sessionId], references: [id])
+  teacherUser User            @relation(fields: [teacherUserId], references: [id])
+
+  @@unique([classArmId, sessionId])
+  @@index([schoolId])
+  @@map("class_teacher_assignments")
+}
+
+model SubjectTeacherAssignment {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  schoolId      String   @map("school_id") @db.Uuid
+  subjectId     String   @map("subject_id") @db.Uuid
+  classArmId    String   @map("class_arm_id") @db.Uuid
+  sessionId     String   @map("session_id") @db.Uuid
+  teacherUserId String   @map("teacher_user_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  school      School          @relation(fields: [schoolId], references: [id])
+  subject     Subject         @relation(fields: [subjectId], references: [id])
+  classArm    ClassArm        @relation(fields: [classArmId], references: [id])
+  session     AcademicSession @relation(fields: [sessionId], references: [id])
+  teacherUser User            @relation(fields: [teacherUserId], references: [id])
+
+  @@unique([subjectId, classArmId, sessionId])
+  @@index([schoolId, teacherUserId, sessionId])
+  @@map("subject_teacher_assignments")
+}
+
+model Guardian {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  schoolId  String    @map("school_id") @db.Uuid
+  firstName String    @map("first_name")
+  lastName  String    @map("last_name")
+  phone     String
+  email     String?
+  address   String?
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  school           School            @relation(fields: [schoolId], references: [id])
+  studentGuardians StudentGuardian[]
+
+  @@index([schoolId])
+  @@map("guardians")
+}
+
+// Exactly one is_primary = true per student is enforced by a partial
+// unique index added by hand in this migration — same pattern as v0.1's
+// academic_sessions/terms current-flag indexes. See docs/DECISIONS.md.
+model StudentGuardian {
+  id           String               @id @default(uuid(7)) @db.Uuid
+  schoolId     String               @map("school_id") @db.Uuid
+  studentId    String               @map("student_id") @db.Uuid
+  guardianId   String               @map("guardian_id") @db.Uuid
+  relationship GuardianRelationship
+  isPrimary    Boolean              @default(false) @map("is_primary")
+  createdAt    DateTime             @default(now()) @map("created_at")
+  updatedAt    DateTime             @updatedAt @map("updated_at")
+
+  school   School   @relation(fields: [schoolId], references: [id])
+  student  Student  @relation(fields: [studentId], references: [id])
+  guardian Guardian @relation(fields: [guardianId], references: [id])
+
+  @@unique([studentId, guardianId])
+  @@index([schoolId])
+  @@map("student_guardians")
 }
