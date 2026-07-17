@@ -598,3 +598,62 @@ it, regardless of remaining admin count.
 Reason: matches SPEC_V0.2.md §2's literal wording ("cannot change the last
 PROPRIETOR/SCHOOL_ADMIN... to TEACHER"); both remaining roles keep
 school-admin-level access, so there's no "last admin" hazard between them.
+
+## 2026-07-17 — GET /classes is one raw SQL statement, current session resolved via CTE
+Decision: `ClassesService.findAll` runs a single `$queryRaw` — a CTE
+resolving the school's current session (or zero rows if none), LEFT
+JOINed against `class_arms`/`student_enrollments`/`class_teacher_assignments`/`users`,
+grouped by level+arm+teacher. No separate query to find the current
+session first.
+Reason: SPEC_V0.2.md §2 asked for "one efficient query" and proof of no
+N+1. A missing current session isn't special-cased in the SQL: the CTE
+returns no rows, so every session-scoped join condition compares against
+NULL and never matches (Postgres `x = NULL` is never true), which
+naturally yields enrollmentCount 0 / classTeacher null for every arm — the
+same "no session = empty, not broken" convention as DashboardService.
+Proved in classes.e2e-spec.ts by configuring PrismaService with query-event
+logging and asserting the query count is identical for Sunrise (~125
+students) and Hillcrest (5 students) — N+1 would show different counts.
+
+## 2026-07-17 — PrismaService now supports query-event logging (test-only capability)
+Decision: `PrismaService` extends `PrismaClient<Prisma.PrismaClientOptions,
+"query">` and passes `{ log: [{ emit: "event", level: "query" }] }` to
+`super()`.
+Reason: enables `$on('query', ...)` for e2e tests to literally count SQL
+round-trips per request — the only rigorous way to prove "not N+1" rather
+than asserting on it indirectly. `emit: "event"` only enables listening; it
+prints nothing and costs nothing unless a listener is attached, so this is
+a no-op in production.
+
+## 2026-07-17 — GET/POST/PATCH /class-arms stay PROPRIETOR/SCHOOL_ADMIN-only; only the new GET /class-arms/:id opens to TEACHER
+Decision: the existing class-arms list/create/update endpoints keep their
+step-7/8 RBAC (`PROPRIETOR`/`SCHOOL_ADMIN`, no `TEACHER`) unchanged. Only
+the new `GET /class-arms/:id` (added this step, the Classes-tab arm detail)
+gets a per-method `@Roles()` override adding `TEACHER`, same as the new
+`GET /classes`.
+Reason: SPEC_V0.2.md §2's RBAC matrix adds `TEACHER` read access to
+"classes" as a new concept (the Classes tab), not to the older class-arm
+management list — extending the old endpoint would reverse a documented
+step-8 decision (hiding the class-arm filter dropdown from TEACHER) that
+this step never asked to revisit.
+
+## 2026-07-17 — POST /users/:id/reset-password's PROPRIETOR/SCHOOL_ADMIN caller check unchanged; personnel/teachers RBAC additions don't touch schools.controller.ts
+Decision: `PATCH /schools/:id`'s new PROPRIETOR/SCHOOL_ADMIN path still
+writes no `audit_logs` row, matching the original SchoolsController-wide
+exclusion (see the 2026-07-13 entry above) — the interceptor logs under
+`request.user.schoolId`, correct for a school user patching themselves,
+wrong for SUPER_ADMIN patching a different school, and the interceptor has
+no way to tell the two call paths apart.
+Reason: adding `@Audit` only for one caller type isn't expressible with the
+current decorator (it's a static route annotation, not caller-aware); doing
+it unconditionally would reintroduce the exact misleading-log problem the
+original exclusion was written to avoid.
+
+## 2026-07-17 — /users' GET/POST/PATCH marked @deprecated (JSDoc only), no behavior change
+Decision: per explicit pre-approved housekeeping scope, all four
+`/users` endpoints (previously only reset-password) now carry a
+`/** @deprecated ... */` JSDoc comment and an API.md note, with removal
+planned for v0.3. No route, RBAC, or service logic changed.
+Reason: keeps the deprecation signal consistent across the whole
+controller now that `/personnel` fully supersedes it, without touching
+behavior ahead of the actual removal (a separate, future decision).

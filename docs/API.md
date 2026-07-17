@@ -161,8 +161,19 @@ this is the platform directory, distinct from the public `/schools/search`).
 
 ### `PATCH /schools/:id`
 
-`SUPER_ADMIN` only. Body: any of `name`, `type`, `address`, `phone`, `email`,
-`status` — `slug` is immutable and not accepted here.
+`SUPER_ADMIN`, `PROPRIETOR`, or `SCHOOL_ADMIN` (RBAC split added in v0.2,
+SPEC_V0.2.md §2). `SUPER_ADMIN` may PATCH any school with the full body:
+`name`, `type`, `address`, `phone`, `email`, `status` (`slug` is immutable
+and not accepted here, by anyone).
+
+`PROPRIETOR`/`SCHOOL_ADMIN` may only PATCH **their own** school — `:id` must
+equal their JWT `schoolId`, else `404` (not `403`, same cross-tenant
+convention as everywhere else) — and only `name`/`address`/`phone`/`email`;
+sending `type` or `status` is `400`. No `audit_logs` row is written for this
+endpoint by anyone, including the school-level path: the interceptor logs
+under the actor's own `schoolId`, which is right when a school user patches
+themselves but wrong when `SUPER_ADMIN` patches some other school (same
+reason the whole controller was excluded from auditing originally).
 
 ---
 
@@ -189,11 +200,28 @@ duplicate `name` within the school.
 Body: any of `name`, `startsOn`, `endsOn`. `isCurrent` is not settable here —
 only `/activate` changes it.
 
+### `GET /sessions/:id/activation-preview`
+
+Added in v0.2 (SPEC_V0.2.md §2 — the acceptance run showed activating an
+empty session silently was a real footgun). Response:
+```json
+{
+  "targetSession": { "name": "2027/2028", "enrollmentCount": 0 },
+  "currentSession": { "name": "2026/2027", "enrollmentCount": 125 }
+}
+```
+`currentSession` is `null` if the school has no current session yet.
+`enrollmentCount` is the raw `student_enrollments` row count for that
+session (not filtered by student status).
+
 ### `POST /sessions/:id/activate`
 
-Sets `isCurrent: true` on this session and `false` on every other session in
-the school, atomically (deactivate-then-activate in one transaction, so the
-one-current-per-school constraint is never violated mid-flight).
+Body: `{ confirmName }`, added in v0.2 — must equal the **target** session's
+(`:id`'s) `name` exactly, or `400` with a clear message naming the required
+value. Sets `isCurrent: true` on this session and `false` on every other
+session in the school, atomically (deactivate-then-activate in one
+transaction, so the one-current-per-school constraint is never violated
+mid-flight). Term activation is unchanged — no confirmation required there.
 
 **Response `200`**: the activated session.
 
@@ -226,6 +254,12 @@ same name in a different school is fine).
 
 Body: any of `name`, `rank`.
 
+### `POST /class-levels/:id/arms`
+
+Added in v0.2 (SPEC_V0.2.md §2) — the natural "add arm B to JSS 1" flow.
+Body: `{ name }`; `classLevelId` comes from the path, wraps the same
+`POST /class-arms` logic (`409` on a duplicate name within the level).
+
 ### `GET /class-arms?classLevelId=`
 
 `classLevelId` (query, optional) filters to one class level. Paginated,
@@ -253,6 +287,26 @@ same as any other cross-tenant foreign key in this API).
 
 Unassigns the current session's class teacher. `404` if the arm has none
 this session (including a second `DELETE` in a row).
+
+### `GET /class-arms/:id`
+
+Added in v0.2 (SPEC_V0.2.md §2) — arm detail for the Classes tab. Unlike the
+plain list above, also readable by `TEACHER` (RBAC matrix "View
+teachers/classes/subjects"). Query: `page`/`pageSize` for the students list.
+
+**Response `200`**
+```json
+{
+  "id": "...", "name": "A",
+  "classLevel": { "id": "...", "name": "JSS 1", "rank": 1 },
+  "classTeacher": { "userId": "...", "firstName": "Bola", "lastName": "Ogundare" },
+  "subjectTeachers": [{ "subjectId": "...", "subjectName": "Mathematics", "teacherUserId": "...", "teacherFirstName": "Bola", "teacherLastName": "Ogundare" }],
+  "students": { "items": [...], "total": 5, "page": 1, "pageSize": 20 }
+}
+```
+`classTeacher`/`subjectTeachers`/`students` all reflect the **current
+session** only; if the school has none yet, `classTeacher` is `null` and
+`subjectTeachers`/`students.items` are empty rather than erroring.
 
 ---
 
@@ -332,10 +386,15 @@ caller's school. Every mutation writes an `audit_logs` row.
 `staff_profile` (staff number, job title, ...) and recognizes `PROPRIETOR`.
 `GET`/`POST`/`PATCH /users` are unchanged and still work exactly as before —
 they are **not** extended to `PROPRIETOR` and deliberately do not create a
-`staff_profile`, so prefer `/personnel` for any new integration. Only
+`staff_profile`, so prefer `/personnel` for any new integration.
 `POST /users/:id/reset-password` is a true alias: it now delegates to the
 same logic as `POST /personnel/:userId/reset-password` (and also accepts
 `PROPRIETOR`), kept working for one version per SPEC_V0.2.md §2.
+
+**All of `GET`/`POST`/`PATCH`/`reset-password /users`** are now marked
+`@deprecated` (step 3 housekeeping, pre-approved) — behavior is unchanged,
+this is a documentation-only marker. Planned removal: v0.3. Prefer
+`/personnel` and `/teachers` for anything new.
 
 ### `GET /users?role=&search=&page=&pageSize=`
 
@@ -495,6 +554,90 @@ to Bola Ogundare for this class."*
 
 Removes the assignment. `404` if `:id` isn't in the caller's school
 (including a repeat `DELETE`).
+
+---
+
+## Subjects (v0.2 step 3, SPEC_V0.2.md §2)
+
+Manage: `PROPRIETOR`/`SCHOOL_ADMIN` only. View (`GET`): also `TEACHER`.
+
+### `GET /subjects`
+
+Paginated, ordered by `name`. Soft-deleted subjects always excluded.
+
+### `POST /subjects`
+
+Body: `{ name, code? }`. `409` on a duplicate `name` within the school.
+
+### `PATCH /subjects/:id`
+
+Body: any of `name`, `code`.
+
+### `DELETE /subjects/:id`
+
+Soft delete (`deleted_at`).
+
+**Response `409`**: the subject has at least one `subject_teacher_assignment`
+(any session — a past assignment still counts as a real dependency).
+
+### `PUT /subjects/:id/levels`
+
+Body: `{ classLevelIds: [] }` — replaces the subject's `subject_class_levels`
+set wholesale (delete-all-then-recreate in one transaction).
+
+**Response `404`**: one or more `classLevelIds` don't belong to the caller's school.
+
+**Response `200`**: the subject with its current `classLevels` (ordered by `rank`).
+
+---
+
+## Classes (v0.2 step 3, SPEC_V0.2.md §2)
+
+Read-shaped views for the Classes tab. `PROPRIETOR`/`SCHOOL_ADMIN`/`TEACHER` can all read.
+
+### `GET /classes`
+
+Every class level with its arms, each carrying the **current session's**
+enrollment count and class teacher (`null` if unassigned or if the school
+has no current session — never an error). Computed as a single SQL
+statement (a CTE resolving the current session, LEFT JOINed against
+enrollments and class-teacher assignments, grouped) — query count doesn't
+scale with the number of levels/arms/students (SPEC_V0.2.md §5).
+
+**Response `200`**
+```json
+[
+  { "id": "...", "name": "JSS 1", "rank": 1, "arms": [
+    { "id": "...", "name": "A", "enrollmentCount": 25, "classTeacher": { "userId": "...", "firstName": "Bola", "lastName": "Ogundare" } }
+  ] }
+]
+```
+
+---
+
+## Audit logs (v0.2 step 3, SPEC_V0.2.md §2)
+
+`PROPRIETOR`/`SCHOOL_ADMIN` only. Pays the v0.1 debt (the student History
+tab's placeholder note).
+
+### `GET /audit-logs?entityType=&entityId=&page=&pageSize=`
+
+Paginated, newest first (`createdAt` desc, tiebreak `id`). `entityType`/
+`entityId` both optional and combinable — e.g. `entityType=student&entityId=...`
+returns one student's full history (create, withdraw with its reason in
+`metadata`, etc.).
+
+**Response `200`**
+```json
+{
+  "items": [{
+    "id": "...", "action": "student.withdraw", "entityType": "student", "entityId": "...",
+    "metadata": { "reason": "relocated" }, "createdAt": "...",
+    "actor": { "id": "...", "firstName": "Adaobi", "lastName": "Nwachukwu" }
+  }],
+  "total": 1, "page": 1, "pageSize": 20
+}
+```
 
 ---
 

@@ -6,6 +6,7 @@ import { PaginationQueryDto } from "../common/pagination/pagination-query.dto";
 import { SessionsService } from "./sessions.service";
 import { CreateSessionDto } from "./dto/create-session.dto";
 import { UpdateSessionDto } from "./dto/update-session.dto";
+import { ActivateSessionDto } from "./dto/activate-session.dto";
 
 @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN)
 @Controller("sessions")
@@ -29,10 +30,15 @@ export class SessionsController {
     return this.sessionsService.update(id, dto);
   }
 
+  @Get(":id/activation-preview")
+  activationPreview(@Param("id", ParseUUIDPipe) id: string) {
+    return this.sessionsService.activationPreview(id);
+  }
+
   @Audit("session", "activate")
   @Post(":id/activate")
   @HttpCode(HttpStatus.OK)
-  activate(@Param("id", ParseUUIDPipe) id: string) {
-    return this.sessionsService.activate(id);
+  activate(@Param("id", ParseUUIDPipe) id: string, @Body() dto: ActivateSessionDto) {
+    return this.sessionsService.activate(id, dto);
   }
 }

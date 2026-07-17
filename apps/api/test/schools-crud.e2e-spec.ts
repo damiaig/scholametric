@@ -11,6 +11,11 @@ describe("Schools CRUD (e2e)", () => {
   let superAdminToken: string;
   let sunriseAdminToken: string;
   let sunriseTeacherToken: string;
+  let sunriseProprietorToken: string;
+  let hillcrestAdminToken: string;
+  let sunriseSchoolId: string;
+  let hillcrestSchoolId: string;
+  let sunriseOriginal: { address: string | null; phone: string | null; email: string | null };
   const createdSchoolIds: string[] = [];
 
   beforeAll(async () => {
@@ -19,12 +24,22 @@ describe("Schools CRUD (e2e)", () => {
     superAdminToken = await loginAs(app, "super@scholametric.test", "platform");
     sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
     sunriseTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
+    sunriseProprietorToken = await loginAs(app, "proprietor@sunrise.test", "sunrise");
+    hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
+
+    const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
+    sunriseSchoolId = sunrise.id;
+    sunriseOriginal = { address: sunrise.address, phone: sunrise.phone, email: sunrise.email };
+    hillcrestSchoolId = (await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } })).id;
   });
 
   afterAll(async () => {
     // FK from users.school_id is ON DELETE RESTRICT — delete admins before schools.
     await prisma.user.deleteMany({ where: { schoolId: { in: createdSchoolIds } } });
     await prisma.school.deleteMany({ where: { id: { in: createdSchoolIds } } });
+    if (sunriseSchoolId && sunriseOriginal) {
+      await prisma.school.update({ where: { id: sunriseSchoolId }, data: sunriseOriginal });
+    }
     await app.close();
   });
 
@@ -137,6 +152,88 @@ describe("Schools CRUD (e2e)", () => {
       expect(updateResponse.status).toBe(200);
       expect(updateResponse.body.address).toBe("1 Riverside Way");
       expect(updateResponse.body.slug).toBe(payload.slug);
+    });
+  });
+
+  describe("school profile PATCH split (v0.2)", () => {
+    it("a PROPRIETOR/SCHOOL_ADMIN can PATCH their own school's contact fields", async () => {
+      for (const token of [sunriseProprietorToken, sunriseAdminToken]) {
+        const response = await request(app.getHttpServer())
+          .patch(`/api/v1/schools/${sunriseSchoolId}`)
+          .set("Authorization", `Bearer ${token}`)
+          .send({ address: "42 Sunrise Way", phone: "+2348010000000", email: "info@sunrise.test" });
+        expect(response.status).toBe(200);
+        expect(response.body.address).toBe("42 Sunrise Way");
+        expect(response.body.phone).toBe("+2348010000000");
+        expect(response.body.email).toBe("info@sunrise.test");
+      }
+    });
+
+    it("400s when a school-level caller sends type or status", async () => {
+      const typeResponse = await request(app.getHttpServer())
+        .patch(`/api/v1/schools/${sunriseSchoolId}`)
+        .set("Authorization", `Bearer ${sunriseAdminToken}`)
+        .send({ type: "COMBINED" });
+      expect(typeResponse.status).toBe(400);
+
+      const statusResponse = await request(app.getHttpServer())
+        .patch(`/api/v1/schools/${sunriseSchoolId}`)
+        .set("Authorization", `Bearer ${sunriseAdminToken}`)
+        .send({ status: "SUSPENDED" });
+      expect(statusResponse.status).toBe(400);
+
+      const school = await prisma.school.findUniqueOrThrow({ where: { id: sunriseSchoolId } });
+      expect(school.type).toBe("SECONDARY");
+      expect(school.status).toBe("ACTIVE");
+    });
+
+    it("400s when a school-level caller sends slug (rejected by the global whitelist)", async () => {
+      const response = await request(app.getHttpServer())
+        .patch(`/api/v1/schools/${sunriseSchoolId}`)
+        .set("Authorization", `Bearer ${sunriseAdminToken}`)
+        .send({ slug: "hijacked" });
+      expect(response.status).toBe(400);
+    });
+
+    it("404s (not 403) when a school-level caller targets another school's real id", async () => {
+      const response = await request(app.getHttpServer())
+        .patch(`/api/v1/schools/${hillcrestSchoolId}`)
+        .set("Authorization", `Bearer ${sunriseAdminToken}`)
+        .send({ address: "hijacked" });
+      expect(response.status).toBe(404);
+
+      const hillcrest = await prisma.school.findUniqueOrThrow({ where: { id: hillcrestSchoolId } });
+      expect(hillcrest.address).not.toBe("hijacked");
+    });
+
+    it("works symmetrically for hillcrest's own admin against hillcrest's own school", async () => {
+      const original = await prisma.school.findUniqueOrThrow({ where: { id: hillcrestSchoolId } });
+      try {
+        const response = await request(app.getHttpServer())
+          .patch(`/api/v1/schools/${hillcrestSchoolId}`)
+          .set("Authorization", `Bearer ${hillcrestAdminToken}`)
+          .send({ address: "1 Hillcrest Road" });
+        expect(response.status).toBe(200);
+        expect(response.body.address).toBe("1 Hillcrest Road");
+      } finally {
+        await prisma.school.update({ where: { id: hillcrestSchoolId }, data: { address: original.address } });
+      }
+    });
+
+    it("TEACHER cannot PATCH the school profile", async () => {
+      const response = await request(app.getHttpServer())
+        .patch(`/api/v1/schools/${sunriseSchoolId}`)
+        .set("Authorization", `Bearer ${sunriseTeacherToken}`)
+        .send({ address: "should fail" });
+      expect(response.status).toBe(403);
+    });
+
+    it("SUPER_ADMIN behavior is unchanged: can still set type/status on any school", async () => {
+      const response = await request(app.getHttpServer())
+        .patch(`/api/v1/schools/${sunriseSchoolId}`)
+        .set("Authorization", `Bearer ${superAdminToken}`)
+        .send({ type: "SECONDARY", status: "ACTIVE" });
+      expect(response.status).toBe(200);
     });
   });
 });

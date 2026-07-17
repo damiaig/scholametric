@@ -112,19 +112,36 @@ describe("Academic setup (e2e)", () => {
   });
 
   describe("session activation", () => {
-    it("activating session B atomically deactivates session A", async () => {
+    it("activating session B atomically deactivates session A, requiring confirmName to match exactly", async () => {
       const suffix = randomUUID().slice(0, 8);
+      const sessionBName = `Session B ${suffix}`;
       const create = await request(app.getHttpServer())
         .post("/api/v1/sessions")
         .set(auth(sunriseAdminToken))
-        .send({ name: `Session B ${suffix}`, startsOn: "2027-09-01", endsOn: "2028-07-31" });
+        .send({ name: sessionBName, startsOn: "2027-09-01", endsOn: "2028-07-31" });
       expect(create.status).toBe(201);
       const sessionBId = create.body.id;
       createdSessionIds.push(sessionBId);
 
+      const noConfirmName = await request(app.getHttpServer())
+        .post(`/api/v1/sessions/${sessionBId}/activate`)
+        .set(auth(sunriseAdminToken))
+        .send({});
+      expect(noConfirmName.status).toBe(400);
+
+      const wrongConfirmName = await request(app.getHttpServer())
+        .post(`/api/v1/sessions/${sessionBId}/activate`)
+        .set(auth(sunriseAdminToken))
+        .send({ confirmName: "not the right name" });
+      expect(wrongConfirmName.status).toBe(400);
+
+      const stillOriginal = await prisma.academicSession.findUniqueOrThrow({ where: { id: sunriseSessionId } });
+      expect(stillOriginal.isCurrent).toBe(true);
+
       const activate = await request(app.getHttpServer())
         .post(`/api/v1/sessions/${sessionBId}/activate`)
-        .set(auth(sunriseAdminToken));
+        .set(auth(sunriseAdminToken))
+        .send({ confirmName: sessionBName });
       expect(activate.status).toBe(200);
       expect(activate.body.isCurrent).toBe(true);
 

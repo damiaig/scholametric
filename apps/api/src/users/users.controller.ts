@@ -25,17 +25,20 @@ export class UsersController {
     private readonly personnelService: PersonnelService,
   ) {}
 
+  /** @deprecated superseded by GET /personnel (SPEC_V0.2.md §2); unchanged, planned removal in v0.3. */
   @Get()
   findAll(@Query() query: ListUsersQueryDto) {
     return this.usersService.findAll(query);
   }
 
+  /** @deprecated superseded by POST /personnel (SPEC_V0.2.md §2); unchanged, planned removal in v0.3. */
   @Audit("user", "create")
   @Post()
   create(@Body() dto: CreateUserDto) {
     return this.usersService.create(dto);
   }
 
+  /** @deprecated superseded by PATCH /personnel/:userId (SPEC_V0.2.md §2); unchanged, planned removal in v0.3. */
   @Audit("user", "update")
   @Patch(":id")
   update(

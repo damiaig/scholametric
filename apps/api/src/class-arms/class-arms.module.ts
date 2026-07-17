@@ -5,5 +5,6 @@ import { ClassArmsService } from "./class-arms.service";
 @Module({
   controllers: [ClassArmsController],
   providers: [ClassArmsService],
+  exports: [ClassArmsService],
 })
 export class ClassArmsModule {}

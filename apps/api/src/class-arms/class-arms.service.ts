@@ -8,6 +8,21 @@ import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
 import { CreateClassArmDto } from "./dto/create-class-arm.dto";
 import { UpdateClassArmDto } from "./dto/update-class-arm.dto";
 
+export interface ClassArmDetail {
+  id: string;
+  name: string;
+  classLevel: { id: string; name: string; rank: number };
+  classTeacher: { userId: string; firstName: string; lastName: string } | null;
+  subjectTeachers: {
+    subjectId: string;
+    subjectName: string;
+    teacherUserId: string;
+    teacherFirstName: string;
+    teacherLastName: string;
+  }[];
+  students: Paginated<{ id: string; firstName: string; lastName: string; admissionNumber: string; status: string }>;
+}
+
 @Injectable()
 export class ClassArmsService {
   constructor(
@@ -81,6 +96,82 @@ export class ClassArmsService {
     }
     await this.prisma.classTeacherAssignment.delete({ where: { id: assignment.id } });
     return { id: assignment.id };
+  }
+
+  // Detail view for the Classes tab (SPEC_V0.2.md §2). Unlike
+  // setClassTeacher/removeClassTeacher, a missing current session isn't an
+  // error here — it just means nothing to show yet (empty students page,
+  // null class teacher), same "no session = empty, not broken" convention
+  // as ClassesService/DashboardService.
+  async findOne(id: string, page: number, pageSize: number): Promise<ClassArmDetail> {
+    const schoolId = this.tenantContext.schoolId;
+    const arm = await this.prisma.classArm.findFirst({
+      where: forSchool(schoolId, { id }),
+      include: { classLevel: true },
+    });
+    if (!arm) {
+      throw new NotFoundException("Class arm not found.");
+    }
+
+    const session = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
+
+    const [classTeacherAssignment, subjectTeacherAssignments, enrollments, enrollmentTotal] = await Promise.all([
+      session
+        ? this.prisma.classTeacherAssignment.findFirst({
+            where: { classArmId: id, sessionId: session.id },
+            include: { teacherUser: true },
+          })
+        : null,
+      session
+        ? this.prisma.subjectTeacherAssignment.findMany({
+            where: { classArmId: id, sessionId: session.id },
+            include: { subject: true, teacherUser: true },
+            orderBy: { subject: { name: "asc" } },
+          })
+        : [],
+      session
+        ? this.prisma.studentEnrollment.findMany({
+            where: { classArmId: id, sessionId: session.id },
+            include: { student: true },
+            orderBy: [{ student: { lastName: "asc" } }, { student: { firstName: "asc" } }, { id: "asc" }],
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+          })
+        : [],
+      session ? this.prisma.studentEnrollment.count({ where: { classArmId: id, sessionId: session.id } }) : 0,
+    ]);
+
+    return {
+      id: arm.id,
+      name: arm.name,
+      classLevel: { id: arm.classLevel.id, name: arm.classLevel.name, rank: arm.classLevel.rank },
+      classTeacher: classTeacherAssignment
+        ? {
+            userId: classTeacherAssignment.teacherUser.id,
+            firstName: classTeacherAssignment.teacherUser.firstName,
+            lastName: classTeacherAssignment.teacherUser.lastName,
+          }
+        : null,
+      subjectTeachers: subjectTeacherAssignments.map((assignment) => ({
+        subjectId: assignment.subjectId,
+        subjectName: assignment.subject.name,
+        teacherUserId: assignment.teacherUserId,
+        teacherFirstName: assignment.teacherUser.firstName,
+        teacherLastName: assignment.teacherUser.lastName,
+      })),
+      students: paginate(
+        enrollments.map((enrollment) => ({
+          id: enrollment.student.id,
+          firstName: enrollment.student.firstName,
+          lastName: enrollment.student.lastName,
+          admissionNumber: enrollment.student.admissionNumber,
+          status: enrollment.student.status,
+        })),
+        enrollmentTotal,
+        page,
+        pageSize,
+      ),
+    };
   }
 
   private async findOneOrThrow(schoolId: string, id: string): Promise<ClassArm> {

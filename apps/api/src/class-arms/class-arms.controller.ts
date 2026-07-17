@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Put, 
 import { UserRole } from "@prisma/client";
 import { Roles } from "../common/decorators/roles.decorator";
 import { Audit } from "../common/decorators/audit.decorator";
+import { PaginationQueryDto } from "../common/pagination/pagination-query.dto";
 import { ClassArmsService } from "./class-arms.service";
 import { CreateClassArmDto } from "./dto/create-class-arm.dto";
 import { UpdateClassArmDto } from "./dto/update-class-arm.dto";
@@ -16,6 +17,14 @@ export class ClassArmsController {
   @Get()
   findAll(@Query() query: ListClassArmsQueryDto) {
     return this.classArmsService.findAll(query.classLevelId, query.page, query.pageSize);
+  }
+
+  // View row (RBAC matrix): also readable by TEACHER, unlike the plain list
+  // above (SPEC_V0.2.md §2 — this is the Classes tab's arm-detail page).
+  @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN, UserRole.TEACHER)
+  @Get(":id")
+  findOne(@Param("id", ParseUUIDPipe) id: string, @Query() query: PaginationQueryDto) {
+    return this.classArmsService.findOne(id, query.page, query.pageSize);
   }
 
   @Audit("classArm", "create")

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import bcrypt from "bcrypt";
 import type { School, User } from "@prisma/client";
 import { UserRole } from "@prisma/client";
@@ -6,6 +6,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { paginate, Paginated } from "../common/pagination/paginate";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
 import { BCRYPT_COST } from "../auth/auth.constants";
+import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { CreateSchoolDto } from "./dto/create-school.dto";
 import { UpdateSchoolDto } from "./dto/update-school.dto";
 
@@ -66,7 +67,22 @@ export class SchoolsService {
     return school;
   }
 
-  async update(id: string, dto: UpdateSchoolDto): Promise<School> {
+  // SPEC_V0.2.md §2's RBAC resolution: SUPER_ADMIN may PATCH any school with
+  // the full DTO. A school-level caller (PROPRIETOR/SCHOOL_ADMIN) may only
+  // PATCH their OWN school (id must equal their JWT schoolId — a mismatch
+  // 404s rather than 403, hiding whether the other school even exists, same
+  // convention as every other cross-tenant lookup in this API) and may not
+  // set `type`/`status` (400 — those stay SUPER_ADMIN-only fields).
+  async update(id: string, dto: UpdateSchoolDto, caller: AuthenticatedUser): Promise<School> {
+    if (caller.role !== UserRole.SUPER_ADMIN) {
+      if (id !== caller.schoolId) {
+        throw new NotFoundException("School not found.");
+      }
+      if (dto.type !== undefined || dto.status !== undefined) {
+        throw new BadRequestException("Only name, address, phone, and email can be updated here.");
+      }
+    }
+
     await this.findOne(id);
     return this.prisma.school.update({ where: { id }, data: dto });
   }
