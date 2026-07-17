@@ -1,7 +1,12 @@
 import { Type } from "class-transformer";
-import { IsDate, IsEmail, IsEnum, IsOptional, IsString, IsUUID, MaxDate, MinLength } from "class-validator";
+import { ArrayMinSize, IsArray, IsDate, IsEnum, IsOptional, IsString, IsUUID, MaxDate, MinLength, ValidateNested } from "class-validator";
 import { Gender } from "@prisma/client";
+import { CreateStudentGuardianDto } from "./create-student-guardian.dto";
 
+// v0.2 (SPEC_V0.2.md §2, a deliberate breaking change from v0.1 — see
+// docs/DECISIONS.md): guardianName/guardianPhone/guardianEmail/address are
+// no longer accepted here. Guardians are now guardians[] (min 1), written
+// only to the new guardians/student_guardians tables.
 export class CreateStudentDto {
   @IsString()
   @MinLength(1)
@@ -23,21 +28,11 @@ export class CreateStudentDto {
   @MaxDate(() => new Date(), { message: "dateOfBirth must be in the past" })
   dateOfBirth!: Date;
 
-  @IsString()
-  @MinLength(1)
-  guardianName!: string;
-
-  @IsString()
-  @MinLength(1)
-  guardianPhone!: string;
-
-  @IsOptional()
-  @IsEmail()
-  guardianEmail?: string;
-
-  @IsOptional()
-  @IsString()
-  address?: string;
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => CreateStudentGuardianDto)
+  guardians!: CreateStudentGuardianDto[];
 
   @IsUUID()
   classArmId!: string;

@@ -348,6 +348,32 @@ async function seedSchoolAcademics(schoolId: string) {
   return { sessionId: session.id, arms, classLevels };
 }
 
+// A from-scratch bootstrap (empty DB -> migrate -> seed) runs the v0.2
+// guardian backfill migration against zero rows, since these students don't
+// exist yet at migration time — so every seeded student needs its own
+// primary guardian created here too, not just students that predate the
+// migration. Idempotent (checked by isPrimary existing) since seed.ts is
+// designed to be safely re-run.
+async function seedPrimaryGuardian(
+  schoolId: string,
+  studentId: string,
+  guardian: { firstName: string; lastName: string; phone: string; email: string },
+) {
+  const existingPrimary = await prisma.studentGuardian.findFirst({ where: { studentId, isPrimary: true } });
+  if (existingPrimary) return;
+
+  const created = await prisma.guardian.create({ data: { schoolId, ...guardian } });
+  await prisma.studentGuardian.create({
+    data: {
+      schoolId,
+      studentId,
+      guardianId: created.id,
+      relationship: GuardianRelationship.OTHER,
+      isPrimary: true,
+    },
+  });
+}
+
 async function seedStudents(
   schoolId: string,
   admissionPrefix: string,
@@ -363,6 +389,8 @@ async function seedStudents(
     const levelIndex = Math.floor((i % ARM_KEYS.length) / ARMS.length);
     const age = 11 + levelIndex;
     const dateOfBirth = new Date(Date.UTC(2026 - age, i % 12, 5 + (i % 20)));
+    const guardianPhone = `+23480${String(10000000 + i).slice(-8)}`;
+    const guardianEmail = `guardian.${student.firstName.toLowerCase()}.${student.lastName.toLowerCase()}@example.com`;
 
     const created = await prisma.student.upsert({
       where: { schoolId_admissionNumber: { schoolId, admissionNumber } },
@@ -375,8 +403,8 @@ async function seedStudents(
         gender: student.gender,
         dateOfBirth,
         guardianName: `${student.lastName} Household`,
-        guardianPhone: `+23480${String(10000000 + i).slice(-8)}`,
-        guardianEmail: `guardian.${student.firstName.toLowerCase()}.${student.lastName.toLowerCase()}@example.com`,
+        guardianPhone,
+        guardianEmail,
       },
     });
 
@@ -384,6 +412,13 @@ async function seedStudents(
       where: { studentId_sessionId: { studentId: created.id, sessionId } },
       update: {},
       create: { schoolId, studentId: created.id, classArmId, sessionId },
+    });
+
+    await seedPrimaryGuardian(schoolId, created.id, {
+      firstName: student.lastName,
+      lastName: "Household",
+      phone: guardianPhone,
+      email: guardianEmail,
     });
   }
 }
@@ -402,6 +437,8 @@ async function seedBulkClassArm(
     const admissionNumber = `${admissionPrefix}/2026/${String(sequence).padStart(4, "0")}`;
     const age = 12 + (i % 2);
     const dateOfBirth = new Date(Date.UTC(2026 - age, i % 12, 5 + (i % 20)));
+    const guardianPhone = `+23481${String(20000000 + sequence).slice(-8)}`;
+    const guardianEmail = `guardian.${student.firstName.toLowerCase()}.${student.lastName.toLowerCase()}.${sequence}@example.com`;
 
     const created = await prisma.student.upsert({
       where: { schoolId_admissionNumber: { schoolId, admissionNumber } },
@@ -414,8 +451,8 @@ async function seedBulkClassArm(
         gender: student.gender,
         dateOfBirth,
         guardianName: `${student.lastName} Household`,
-        guardianPhone: `+23481${String(20000000 + sequence).slice(-8)}`,
-        guardianEmail: `guardian.${student.firstName.toLowerCase()}.${student.lastName.toLowerCase()}.${sequence}@example.com`,
+        guardianPhone,
+        guardianEmail,
       },
     });
 
@@ -423,6 +460,13 @@ async function seedBulkClassArm(
       where: { studentId_sessionId: { studentId: created.id, sessionId } },
       update: {},
       create: { schoolId, studentId: created.id, classArmId, sessionId },
+    });
+
+    await seedPrimaryGuardian(schoolId, created.id, {
+      firstName: student.lastName,
+      lastName: "Household",
+      phone: guardianPhone,
+      email: guardianEmail,
     });
   }
 }

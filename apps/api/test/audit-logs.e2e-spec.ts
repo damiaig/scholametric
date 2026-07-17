@@ -35,6 +35,11 @@ describe("Audit logs (e2e)", () => {
     }
     const ids = createdStudentIds.filter((id): id is string => Boolean(id));
     await prisma.auditLog.deleteMany({ where: { entityId: { in: ids } } });
+    const guardianIds = (
+      await prisma.studentGuardian.findMany({ where: { studentId: { in: ids } }, select: { guardianId: true } })
+    ).map((link) => link.guardianId);
+    await prisma.studentGuardian.deleteMany({ where: { studentId: { in: ids } } });
+    await prisma.guardian.deleteMany({ where: { id: { in: guardianIds } } });
     await prisma.studentEnrollment.deleteMany({ where: { studentId: { in: ids } } });
     await prisma.student.deleteMany({ where: { id: { in: ids } } });
     await app.close();
@@ -51,8 +56,7 @@ describe("Audit logs (e2e)", () => {
           lastName: `Test-${randomUUID().slice(0, 8)}`,
           gender: "MALE",
           dateOfBirth: "2012-05-01",
-          guardianName: "Test Guardian",
-          guardianPhone: "+2348012345678",
+          guardians: [{ firstName: "Test", lastName: "Guardian", phone: "+2348012345678", relationship: "FATHER" }],
           classArmId: sunriseClassArmId,
         });
       expect(created.status).toBe(201);
@@ -81,8 +85,7 @@ describe("Audit logs (e2e)", () => {
           lastName: `Withdraw-${randomUUID().slice(0, 8)}`,
           gender: "FEMALE",
           dateOfBirth: "2012-05-01",
-          guardianName: "Test Guardian",
-          guardianPhone: "+2348012345678",
+          guardians: [{ firstName: "Test", lastName: "Guardian", phone: "+2348012345678", relationship: "FATHER" }],
           classArmId: sunriseClassArmId,
         });
       createdStudentIds.push(created.body.id);

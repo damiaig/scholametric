@@ -657,3 +657,112 @@ planned for v0.3. No route, RBAC, or service logic changed.
 Reason: keeps the deprecation signal consistent across the whole
 controller now that `/personnel` fully supersedes it, without touching
 behavior ahead of the actual removal (a separate, future decision).
+
+## 2026-07-17 — POST/PATCH /students: breaking change, guardians move to their own tables (v0.2 step 4)
+Decision: `POST /students` now takes `guardians: [{...}]` (min 1, each
+either `{ guardianId, relationship }` to link an existing guardian or
+`{ firstName, lastName, phone, relationship, email?, address? }` to create
+one) instead of flat `guardianName`/`guardianPhone`/`guardianEmail`/
+`address` fields. `PATCH /students/:id` no longer accepts any guardian
+field at all — bio fields only. Confirmed via grep that only
+`apps/web`'s v0.1 students UI (`NewStudentPage`, `EditStudentDialog`,
+`StudentGuardianFields`, their hooks/tests) called the old shape; nothing
+else in the API does. That frontend is expected to be broken for student
+creation/editing until SPEC_V0.2.md §7 steps 5-7 rebuild it — pre-approved
+by the user, who named this exact breaking change in the step-4 instructions.
+Reason: SPEC_V0.2.md §2's guardian restructure (multi-guardian, sibling
+linking, primary reassignment) has no room in a flat-fields shape; the old
+shape can express at most one guardian per student and can't express "link
+an existing guardian record."
+
+## 2026-07-17 — Frozen legacy guardian columns are derived from the resolved primary guardian, not raw request fields
+Decision: `students.guardian_name`/`guardian_phone` (`NOT NULL`, no
+migration this step) /`guardian_email`/`address` are populated on
+`POST /students` from the **resolved** primary `Guardian` entity (after
+`resolveOrCreateGuardian` runs) — `guardianName: `${firstName}
+${lastName}``, `guardianPhone: phone`, etc. — not from the raw DTO input.
+Reason: raw input has no `firstName`/`lastName`/`phone` at all in
+link-existing (sibling) mode, only a `guardianId`; deriving from the
+resolved entity is the only option that works for both create-new and
+link-existing. User's explicit choice (asked via clarifying question:
+"derive from primary guardian" vs. inert placeholders) — keeps the
+pre-v0.2 frontend, which still reads these flat columns until its own
+guardians UI ships, showing real guardian info for new students rather
+than blank/placeholder junk.
+
+## 2026-07-17 — GET /students list item gets `primaryGuardian`, detail gets full `guardians[]`
+Decision: `GET /students` list rows carry `primaryGuardian: { guardianId,
+firstName, lastName, phone } | null` (one extra join, `take: 1`); `GET
+/students/:id` carries the full `guardians: StudentGuardianSummary[]`
+(every link, primary first). Two different Prisma `include` shapes
+(`studentListInclude` vs `studentDetailInclude` in `students.service.ts`),
+not one shared shape reused everywhere.
+Reason: the students list page only needs "who to call," not a full
+guardian roster per row across 100+ students; the detail page's guardians
+tab needs everything. Flagged per the step-4 instructions ("flag the shape
+you choose — the frontend list will want it") rather than assumed.
+
+## 2026-07-17 — isPrimary is asymmetric between create-time and add-time guardian DTOs
+Decision: `CreateStudentGuardianDto` (used inside `POST /students`'s
+`guardians[]`) has an optional `isPrimary` field. `AddStudentGuardianDto`
+(used by the standalone `POST /students/:id/guardians`) has **no
+`isPrimary` field at all** — not accepted-but-ignored, absent from the
+type.
+Reason: at student-creation time there's no existing primary to steal from,
+so choosing one explicitly is meaningful. Adding a guardian to a student
+who already has guardians must never steal primary (SPEC_V0.2.md §2) — a
+field that's silently ignored would be a more confusing contract than a
+field that doesn't exist; the server always computes `isPrimary` here as
+"true only if this is the student's first-ever guardian link."
+
+## 2026-07-17 — Orphaned guardians (zero links school-wide) are soft-deleted on unlink
+Decision: `StudentGuardiansService.remove` soft-deletes the `Guardian` row
+(`deletedAt`) if, after removing the requested link, that guardian has zero
+`student_guardians` rows anywhere in the school. Guardians still linked to
+at least one other (sibling) student are untouched.
+Reason: user's explicit design decision (SPEC_V0.2.md §2 unlink rules,
+"a guardian left with zero links across the school gets soft-deleted" — I
+did not disagree when asked to flag it). No endpoint lists "unlinked
+guardians," so a guardian record with zero links would otherwise be
+permanent dead data with no way to reach or clean it up.
+
+## 2026-07-17 — Real concurrency bug found and fixed: primary-guardian swap needs a row lock, not just transaction ordering
+Decision: `StudentGuardiansService.setPrimary` locks every
+`student_guardians` row for the student (`SELECT id FROM student_guardians
+WHERE student_id = $1 ORDER BY id FOR UPDATE`) inside an interactive
+transaction, before deactivating the old primary and activating the new
+one. The earlier "deactivate-then-activate" version — a batch
+`prisma.$transaction([updateMany, update])`, the same shape as
+`SessionsService.activate` — passed a naive test but **failed under a real
+6-way concurrent `Promise.all` swapping between two different guardians**:
+two concurrent swaps could each read "no other primary to deactivate"
+before the other's write was visible, then both try to activate, and the
+second to commit hit the partial unique index and 500'd. The first locking
+attempt (no `ORDER BY`) then deadlocked instead under the same load,
+because concurrent transactions could acquire the two rows' locks in
+different orders. Adding `ORDER BY id` (a fixed lock-acquisition order)
+fixed it — verified clean across 3 consecutive full test runs.
+Reason: the user's step-4 instructions explicitly asked for a concurrency
+test that "tries to break it," and it did. This pattern (batch
+`$transaction([updateMany, update])` for an atomic activate-swap) is reused
+elsewhere in this codebase (`SessionsService.activate`, `TermsService.activate`) —
+those were **not** touched this step (out of scope, extend-never-rewrite),
+but they likely share the same latent race and are worth auditing in a
+future step.
+
+## 2026-07-17 — seed.ts fixed to give every seeded student a primary guardian (from-scratch bootstrap gap)
+Decision: `seedStudents`/`seedBulkClassArm` in `prisma/seed.ts` now call a
+new `seedPrimaryGuardian()` helper that creates a `Guardian` +
+primary `StudentGuardian` row per student, idempotently (skips if a
+primary link already exists).
+Reason: discovered while verifying CLAUDE.md §7's "`docker-compose up`
+boots the full stack from scratch" on a genuinely empty volume — the v0.2
+step-1 migration's guardian backfill only covers students that already
+exist *at migration time*; on a fresh `migrate deploy` (empty `students`
+table) followed by `prisma db seed`, the ~130 students seed.ts creates
+directly via Prisma got zero guardian rows, violating this step's own
+"every student has ≥1 guardian, exactly one primary" invariant. Not
+something this step's code caused, but directly exposed by it — fixed
+here rather than left as a known gap, per explicit user confirmation.
+Verified: fresh `migrate deploy` + `seed` gives all 130 students a primary
+guardian; re-running `seed` again produces no duplicate primaries.

@@ -45,6 +45,11 @@ describe("Students (e2e)", () => {
   afterAll(async () => {
     const ids = createdStudentIds.filter((id): id is string => Boolean(id));
     await prisma.auditLog.deleteMany({ where: { entityId: { in: ids } } });
+    const guardianIds = (
+      await prisma.studentGuardian.findMany({ where: { studentId: { in: ids } }, select: { guardianId: true } })
+    ).map((link) => link.guardianId);
+    await prisma.studentGuardian.deleteMany({ where: { studentId: { in: ids } } });
+    await prisma.guardian.deleteMany({ where: { id: { in: guardianIds } } });
     await prisma.studentEnrollment.deleteMany({ where: { studentId: { in: ids } } });
     await prisma.student.deleteMany({ where: { id: { in: ids } } });
     await app.close();
@@ -59,8 +64,7 @@ describe("Students (e2e)", () => {
       lastName: `Student-${suffix}`,
       gender: "MALE",
       dateOfBirth: "2012-05-01",
-      guardianName: "Test Guardian",
-      guardianPhone: "+2348012345678",
+      guardians: [{ firstName: "Test", lastName: "Guardian", phone: "+2348012345678", relationship: "FATHER" }],
       classArmId: sunriseClassArmId,
       ...overrides,
     };
@@ -81,11 +85,63 @@ describe("Students (e2e)", () => {
       expect(enrollment).not.toBeNull();
       expect(enrollment!.classArmId).toBe(sunriseClassArmId);
 
+      // Frozen legacy columns (guardian_name/guardian_phone are NOT NULL,
+      // no migration this step) are derived from the resolved primary
+      // guardian so the pre-v0.2 frontend still shows real data.
+      const stored = await prisma.student.findUniqueOrThrow({ where: { id: response.body.id } });
+      expect(stored.guardianName).toBe("Test Guardian");
+      expect(stored.guardianPhone).toBe("+2348012345678");
+
+      const detail = await request(app.getHttpServer())
+        .get(`/api/v1/students/${response.body.id}`)
+        .set(auth(sunriseAdminToken));
+      expect(detail.body.guardians).toHaveLength(1);
+      expect(detail.body.guardians[0]).toEqual(
+        expect.objectContaining({ firstName: "Test", lastName: "Guardian", isPrimary: true }),
+      );
+
       const auditRow = await prisma.auditLog.findFirst({
         where: { entityId: response.body.id, action: "student.create" },
       });
       expect(auditRow).not.toBeNull();
       expect(auditRow!.schoolId).toBe(sunriseSchoolId);
+    });
+
+    it("creates a student with two guardians, exactly one primary, and rejects two explicit primaries", async () => {
+      const twoGuardians = await request(app.getHttpServer())
+        .post("/api/v1/students")
+        .set(auth(sunriseAdminToken))
+        .send(
+          validStudentPayload({
+            guardians: [
+              { firstName: "Primary", lastName: "Parent", phone: "+2348011111111", relationship: "MOTHER" },
+              { firstName: "Secondary", lastName: "Parent", phone: "+2348022222222", relationship: "FATHER" },
+            ],
+          }),
+        );
+      expect(twoGuardians.status).toBe(201);
+      createdStudentIds.push(twoGuardians.body.id);
+
+      const detail = await request(app.getHttpServer())
+        .get(`/api/v1/students/${twoGuardians.body.id}`)
+        .set(auth(sunriseAdminToken));
+      expect(detail.body.guardians).toHaveLength(2);
+      expect(detail.body.guardians.filter((g: { isPrimary: boolean }) => g.isPrimary)).toHaveLength(1);
+      expect(detail.body.guardians[0].isPrimary).toBe(true);
+      expect(detail.body.guardians[0].firstName).toBe("Primary");
+
+      const twoPrimaries = await request(app.getHttpServer())
+        .post("/api/v1/students")
+        .set(auth(sunriseAdminToken))
+        .send(
+          validStudentPayload({
+            guardians: [
+              { firstName: "A", lastName: "A", phone: "+2348033333333", relationship: "MOTHER", isPrimary: true },
+              { firstName: "B", lastName: "B", phone: "+2348044444444", relationship: "FATHER", isPrimary: true },
+            ],
+          }),
+        );
+      expect(twoPrimaries.status).toBe(400);
     });
 
     it("increments the admission number sequence on successive creates", async () => {
@@ -222,8 +278,19 @@ describe("Students (e2e)", () => {
       const patch = await request(app.getHttpServer())
         .patch(`/api/v1/students/${sunriseSeededStudentId}`)
         .set(auth(sunriseTeacherToken))
-        .send({ address: "should be rejected" });
+        .send({ firstName: "should be rejected" });
       expect(patch.status).toBe(403);
+
+      const getGuardians = await request(app.getHttpServer())
+        .get(`/api/v1/students/${sunriseSeededStudentId}/guardians`)
+        .set(auth(sunriseTeacherToken));
+      expect(getGuardians.status).toBe(200);
+
+      const addGuardian = await request(app.getHttpServer())
+        .post(`/api/v1/students/${sunriseSeededStudentId}/guardians`)
+        .set(auth(sunriseTeacherToken))
+        .send({ firstName: "Should", lastName: "Reject", phone: "+2348000000000", relationship: "OTHER" });
+      expect(addGuardian.status).toBe(403);
 
       const withdraw = await request(app.getHttpServer())
         .post(`/api/v1/students/${sunriseSeededStudentId}/withdraw`)
@@ -239,6 +306,18 @@ describe("Students (e2e)", () => {
     });
   });
 
+  describe("GET /students/:id — backfilled (pre-v0.2) students", () => {
+    it("reads guardian data through the new endpoint for a student created before the guardians tables existed", async () => {
+      const detail = await request(app.getHttpServer())
+        .get(`/api/v1/students/${sunriseSeededStudentId}`)
+        .set(auth(sunriseAdminToken));
+      expect(detail.status).toBe(200);
+      expect(Array.isArray(detail.body.guardians)).toBe(true);
+      expect(detail.body.guardians.length).toBeGreaterThanOrEqual(1);
+      expect(detail.body.guardians.filter((g: { isPrimary: boolean }) => g.isPrimary)).toHaveLength(1);
+    });
+  });
+
   describe("cross-tenant isolation", () => {
     it("404s (not 403) when hillcrest's admin reaches for a sunrise student by real ID", async () => {
       const get = await request(app.getHttpServer())
@@ -249,8 +328,13 @@ describe("Students (e2e)", () => {
       const patch = await request(app.getHttpServer())
         .patch(`/api/v1/students/${sunriseSeededStudentId}`)
         .set(auth(hillcrestAdminToken))
-        .send({ address: "hijacked" });
+        .send({ firstName: "hijacked" });
       expect(patch.status).toBe(404);
+
+      const getGuardians = await request(app.getHttpServer())
+        .get(`/api/v1/students/${sunriseSeededStudentId}/guardians`)
+        .set(auth(hillcrestAdminToken));
+      expect(getGuardians.status).toBe(404);
 
       const withdraw = await request(app.getHttpServer())
         .post(`/api/v1/students/${sunriseSeededStudentId}/withdraw`)
@@ -271,7 +355,7 @@ describe("Students (e2e)", () => {
   });
 
   describe("PATCH /students/:id", () => {
-    it("updates bio/guardian fields and records an audit row", async () => {
+    it("updates bio fields and records an audit row (guardian fields moved to /guardians endpoints in v0.2)", async () => {
       const create = await request(app.getHttpServer())
         .post("/api/v1/students")
         .set(auth(sunriseAdminToken))
@@ -282,14 +366,28 @@ describe("Students (e2e)", () => {
       const patch = await request(app.getHttpServer())
         .patch(`/api/v1/students/${studentId}`)
         .set(auth(sunriseAdminToken))
-        .send({ guardianPhone: "+2348099999999" });
+        .send({ firstName: "Updated" });
       expect(patch.status).toBe(200);
-      expect(patch.body.guardianPhone).toBe("+2348099999999");
+      expect(patch.body.firstName).toBe("Updated");
 
       const auditRow = await prisma.auditLog.findFirst({ where: { entityId: studentId, action: "student.update" } });
       expect(auditRow).not.toBeNull();
       expect(auditRow!.actorUserId).not.toBeNull();
       expect(auditRow!.schoolId).toBe(sunriseSchoolId);
+    });
+
+    it("rejects guardian fields as unknown properties (they no longer live on this DTO)", async () => {
+      const create = await request(app.getHttpServer())
+        .post("/api/v1/students")
+        .set(auth(sunriseAdminToken))
+        .send(validStudentPayload());
+      createdStudentIds.push(create.body.id);
+
+      const patch = await request(app.getHttpServer())
+        .patch(`/api/v1/students/${create.body.id}`)
+        .set(auth(sunriseAdminToken))
+        .send({ guardianPhone: "+2348099999999" });
+      expect(patch.status).toBe(400);
     });
   });
 

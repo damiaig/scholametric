@@ -337,13 +337,33 @@ row without an extra request per student.
 ### `GET /students/:id`
 
 Full profile plus `currentEnrollment` (`{ classArm: { classLevel }, session }`
-for the current session, or `null`). `404` outside the caller's school.
+for the current session, or `null`), plus `guardians` (v0.2 step 4 — see the
+Guardians section below): every linked guardian, primary first, shaped as
+`{ guardianId, relationship, isPrimary, firstName, lastName, phone, email,
+address }`. `404` outside the caller's school.
 
 ### `POST /students`
 
-Body: bio + guardian fields, `{ classArmId }`, optional `admissionNumber`.
-Creates the student and its enrollment in the current session in one
-transaction.
+**Breaking change, v0.2 step 4** (see docs/DECISIONS.md): body is bio fields,
+`{ classArmId }`, optional `admissionNumber`, and **`guardians: [{...}]`**
+(min 1) — `guardianName`/`guardianPhone`/`guardianEmail`/`address` are no
+longer accepted here. Each entry in `guardians[]` is either:
+- `{ guardianId, relationship }` — link an existing guardian (the sibling
+  case: reuse a guardian already in this school), or
+- `{ firstName, lastName, phone, relationship, email?, address? }` — create
+  a new guardian.
+
+`relationship` is required on every entry either way. Exactly one entry may
+carry `isPrimary: true`; if none do, the first entry becomes primary. Two
+explicit primaries is a `400`. Creates the student, its enrollment, and every
+guardian link in one transaction — a failure partway rolls back everything,
+so no orphan guardian rows.
+
+Every seeded/pre-v0.2 student's frozen `guardianName`/`guardianPhone`/
+`guardianEmail`/`address` columns still exist (`NOT NULL`, no migration this
+step) and are still populated on create — from the **resolved primary
+guardian's** own data, not the raw request — so the old columns keep showing
+real info for any code still reading them.
 
 If `admissionNumber` is omitted, one is generated:
 `{first 3 letters of the school's slug, uppercased}/{session start
@@ -351,17 +371,26 @@ year}/{4-digit sequence}`, e.g. `SUN/2026/0026` — sequence resets per
 (school, year) and is safe under concurrent creates (see docs/DECISIONS.md).
 A supplied `admissionNumber` is used as-is.
 
-**Response `201`**: the created student row.
+**Response `201`**: the created student row (bio + legacy guardian columns;
+call `GET /students/:id` for the full `guardians[]` array).
 
-**Response `404`**: `classArmId` doesn't belong to the caller's school.
+**Response `400`**: two guardians both marked `isPrimary`, or a guardian
+entry with neither `guardianId` nor `firstName`/`lastName`/`phone`.
+
+**Response `404`**: `classArmId`, or a supplied `guardianId`, doesn't belong
+to the caller's school.
 
 **Response `409`**: `admissionNumber` already exists in this school (a
 generated number never collides; only a caller-supplied one can).
 
 ### `PATCH /students/:id`
 
-Bio/guardian fields only — not `classArmId` (`/transfer-class`), not `status`
-(`/withdraw`), not `admissionNumber` (immutable).
+**Breaking change, v0.2 step 4**: bio fields only
+(`firstName`/`lastName`/`middleName`/`gender`/`dateOfBirth`) — not
+`classArmId` (`/transfer-class`), not `status` (`/withdraw`), not
+`admissionNumber` (immutable), and no longer any guardian field. Edit a
+guardian's own data via `PATCH /guardians/:id`, or the set of guardians via
+the `/students/:id/guardians` endpoints below.
 
 ### `POST /students/:id/withdraw`
 
@@ -372,6 +401,79 @@ column — it's recorded in the audit log's `metadata`.
 
 Body: `{ classArmId }`. Updates the student's enrollment for the current
 session. `404` if `classArmId` isn't in the caller's school.
+
+---
+
+## Guardians (v0.2 step 4, SPEC_V0.2.md §2)
+
+`PROPRIETOR`/`SCHOOL_ADMIN` full access; `TEACHER` read-only (`GET` only —
+every mutation `403`s); `SUPER_ADMIN` no access (`403`). Every mutation
+writes an `audit_logs` row. A `Guardian` may be linked to more than one
+`Student` (siblings) via `student_guardians`; editing the guardian record
+updates every student it's linked to at once.
+
+### `GET /students/:id/guardians`
+
+Every link for the student, primary first: `{ id, guardianId, relationship,
+isPrimary, firstName, lastName, phone, email, address }[]`. `404` outside the
+caller's school.
+
+### `POST /students/:id/guardians`
+
+Add a guardian to an existing student — same two modes as `POST /students`'s
+`guardians[]` entries (`guardianId` to link existing, or
+`firstName`/`lastName`/`phone` to create new), `relationship` always
+required. **No `isPrimary` field exists on this endpoint** — adding a
+guardian to a student who already has one or more never steals primary; the
+server sets `isPrimary: true` only if this is the student's first-ever
+guardian link. Reassigning primary is only possible via the `/primary`
+endpoint below.
+
+**Response `201`**: the new link (`StudentGuardianSummary` shape, see `GET`
+above).
+
+**Response `400`**: neither `guardianId` nor `firstName`/`lastName`/`phone`
+given.
+
+**Response `404`**: the student, or a supplied `guardianId`, isn't in the
+caller's school.
+
+### `DELETE /students/:id/guardians/:guardianId?force=`
+
+Unlink a guardian from a student.
+
+- **`409`** if this is the student's primary guardian and other links exist
+  — reassign primary first (message says so).
+- **`400`** if this is the student's *only* guardian, unless `?force=true`.
+- On success, if the guardian now has **zero** links across the whole
+  school, the `Guardian` row itself is soft-deleted (`deletedAt`) — dead data
+  otherwise, since nothing lists "unlinked guardians."
+
+**Response `200`**: `{ id }` (the removed link's id).
+
+### `PUT /students/:id/guardians/:guardianId/primary`
+
+Makes `:guardianId` the student's primary guardian, atomically demoting the
+current one. Concurrency-safe: the swap runs inside a transaction that locks
+every guardian-link row for the student (`SELECT ... FOR UPDATE ... ORDER BY
+id`) before deactivating the old primary and activating the new one — see
+docs/DECISIONS.md for why the lock (and its row order) is load-bearing, not
+decorative.
+
+**Response `200`**: the now-primary link (`StudentGuardianSummary` shape).
+
+**Response `404`**: the student, or `:guardianId` isn't currently linked to
+it, or either is outside the caller's school.
+
+### `PATCH /guardians/:id`
+
+Edit a guardian's own fields (`firstName`/`lastName`/`phone`/`email`/
+`address`) — tenant-scoped, independent of which student(s) it's linked to.
+If the guardian is linked to more than one student (the sibling case), every
+linked student's `GET /students/:id/guardians` reflects the change
+immediately, since they all point at the same row.
+
+**Response `404`**: outside the caller's school.
 
 ---
 

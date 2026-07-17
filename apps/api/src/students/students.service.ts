@@ -10,18 +10,31 @@ import { UpdateStudentDto } from "./dto/update-student.dto";
 import { WithdrawStudentDto } from "./dto/withdraw-student.dto";
 import { TransferClassDto } from "./dto/transfer-class.dto";
 import { ListStudentsQueryDto } from "./dto/list-students-query.dto";
+import { resolveOrCreateGuardian } from "./resolve-guardian.util";
 
 const ADMISSION_NUMBER_SEQUENCE_LENGTH = 4;
 
-const studentProfileInclude = {
-  enrollments: {
-    where: { session: { isCurrent: true } },
-    include: { classArm: { include: { classLevel: true } }, session: true },
-    take: 1,
-  },
+const currentEnrollmentInclude = {
+  where: { session: { isCurrent: true } },
+  include: { classArm: { include: { classLevel: true } }, session: true },
+  take: 1,
+} satisfies Prisma.Student$enrollmentsArgs;
+
+// List: only the primary guardian (one row, cheap). Detail: every link,
+// primary first (SPEC_V0.2.md §2 — the list may show primary guardian
+// name/phone; the detail page shows the full guardians array).
+const studentListInclude = {
+  enrollments: currentEnrollmentInclude,
+  studentGuardians: { where: { isPrimary: true }, take: 1, include: { guardian: true } },
 } satisfies Prisma.StudentInclude;
 
-type StudentWithCurrentEnrollment = Prisma.StudentGetPayload<{ include: typeof studentProfileInclude }>;
+const studentDetailInclude = {
+  enrollments: currentEnrollmentInclude,
+  studentGuardians: { include: { guardian: true }, orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }] },
+} satisfies Prisma.StudentInclude;
+
+type StudentListRow = Prisma.StudentGetPayload<{ include: typeof studentListInclude }>;
+type StudentDetailRow = Prisma.StudentGetPayload<{ include: typeof studentDetailInclude }>;
 
 @Injectable()
 export class StudentsService {
@@ -57,27 +70,35 @@ export class StudentsService {
         orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
-        include: studentProfileInclude,
+        include: studentListInclude,
       }),
       this.prisma.student.count({ where }),
     ]);
-    return paginate(items.map((item) => this.toProfile(item)), total, query.page, query.pageSize);
+    return paginate(items.map((item) => this.toListItem(item)), total, query.page, query.pageSize);
   }
 
   async findOne(id: string) {
     const schoolId = this.tenantContext.schoolId;
     const student = await this.prisma.student.findFirst({
       where: forSchool(schoolId, { id, deletedAt: null }),
-      include: studentProfileInclude,
+      include: studentDetailInclude,
     });
     if (!student) {
       throw new NotFoundException("Student not found.");
     }
-    return this.toProfile(student);
+    return this.toDetail(student);
   }
 
+  // v0.2 (SPEC_V0.2.md §2, a deliberate breaking change — see
+  // docs/DECISIONS.md): guardians come from dto.guardians[] and are written
+  // only to guardians/student_guardians. The frozen legacy columns
+  // (guardian_name/guardian_phone are NOT NULL, no migration this step)
+  // are populated FROM the resolved primary guardian so the pre-v0.2
+  // frontend — which still reads them until its own guardians UI ships —
+  // shows real data for students created from here on, not placeholders.
   async create(dto: CreateStudentDto) {
     const schoolId = this.tenantContext.schoolId;
+    const primaryIndex = this.resolvePrimaryIndex(dto.guardians);
 
     return this.prisma.$transaction(async (tx) => {
       const school = await tx.school.findUniqueOrThrow({ where: { id: schoolId } });
@@ -89,6 +110,11 @@ export class StudentsService {
       if (!session) {
         throw new BadRequestException("No current academic session configured for this school.");
       }
+
+      const resolvedGuardians = await Promise.all(
+        dto.guardians.map((guardianInput) => resolveOrCreateGuardian(tx, schoolId, guardianInput)),
+      );
+      const primaryGuardian = resolvedGuardians[primaryIndex];
 
       const admissionNumber =
         dto.admissionNumber ??
@@ -105,10 +131,10 @@ export class StudentsService {
             middleName: dto.middleName,
             gender: dto.gender,
             dateOfBirth: dto.dateOfBirth,
-            guardianName: dto.guardianName,
-            guardianPhone: dto.guardianPhone,
-            guardianEmail: dto.guardianEmail,
-            address: dto.address,
+            guardianName: `${primaryGuardian.firstName} ${primaryGuardian.lastName}`,
+            guardianPhone: primaryGuardian.phone,
+            guardianEmail: primaryGuardian.email,
+            address: primaryGuardian.address,
           },
         });
       } catch (error) {
@@ -117,6 +143,16 @@ export class StudentsService {
 
       await tx.studentEnrollment.create({
         data: { schoolId, studentId: student.id, classArmId: dto.classArmId, sessionId: session.id },
+      });
+
+      await tx.studentGuardian.createMany({
+        data: resolvedGuardians.map((guardian, index) => ({
+          schoolId,
+          studentId: student.id,
+          guardianId: guardian.id,
+          relationship: dto.guardians[index].relationship,
+          isPrimary: index === primaryIndex,
+        })),
       });
 
       return student;
@@ -174,9 +210,51 @@ export class StudentsService {
     return student;
   }
 
-  private toProfile(student: StudentWithCurrentEnrollment) {
-    const { enrollments, ...rest } = student;
-    return { ...rest, currentEnrollment: enrollments[0] ?? null };
+  private toListItem(student: StudentListRow) {
+    const { enrollments, studentGuardians, ...rest } = student;
+    const primary = studentGuardians[0];
+    return {
+      ...rest,
+      currentEnrollment: enrollments[0] ?? null,
+      primaryGuardian: primary
+        ? {
+            guardianId: primary.guardian.id,
+            firstName: primary.guardian.firstName,
+            lastName: primary.guardian.lastName,
+            phone: primary.guardian.phone,
+          }
+        : null,
+    };
+  }
+
+  private toDetail(student: StudentDetailRow) {
+    const { enrollments, studentGuardians, ...rest } = student;
+    return {
+      ...rest,
+      currentEnrollment: enrollments[0] ?? null,
+      guardians: studentGuardians.map((link) => ({
+        guardianId: link.guardian.id,
+        relationship: link.relationship,
+        isPrimary: link.isPrimary,
+        firstName: link.guardian.firstName,
+        lastName: link.guardian.lastName,
+        phone: link.guardian.phone,
+        email: link.guardian.email,
+        address: link.guardian.address,
+      })),
+    };
+  }
+
+  // "Exactly one primary or first-is-primary default" (SPEC_V0.2.md §2).
+  private resolvePrimaryIndex(guardians: CreateStudentDto["guardians"]): number {
+    const explicitPrimaryIndices = guardians.reduce<number[]>((acc, guardian, index) => {
+      if (guardian.isPrimary) acc.push(index);
+      return acc;
+    }, []);
+    if (explicitPrimaryIndices.length > 1) {
+      throw new BadRequestException("Only one guardian can be marked primary.");
+    }
+    return explicitPrimaryIndices.length === 1 ? explicitPrimaryIndices[0] : 0;
   }
 
   /**
