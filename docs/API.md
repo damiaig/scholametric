@@ -168,7 +168,8 @@ this is the platform directory, distinct from the public `/schools/search`).
 
 ## School setup
 
-`SCHOOL_ADMIN` only, all endpoints below. Every resource is scoped to the
+`PROPRIETOR` and `SCHOOL_ADMIN` (added in v0.2 — PROPRIETOR is a superset of
+SCHOOL_ADMIN within their school per SPEC_V0.2.md §2). Every resource is scoped to the
 caller's own school via the access token's `schoolId` — never from the
 request body/query/params. Fetching or patching another school's resource by
 its real ID returns `404`, not `403`. Every mutation below writes an
@@ -240,11 +241,24 @@ caller's school. `409` on a duplicate `name` within the class level.
 Body: any of `name`, `classLevelId`. If `classLevelId` is provided, it must
 belong to the caller's school (`404` otherwise).
 
+### `PUT /class-arms/:id/class-teacher`
+
+Added in v0.2 step 2. Body: `{ teacherUserId }`. Upsert-replace for the
+**current session** — reassigning simply overwrites the existing row (no
+`409`, unlike subject assignments below). `teacherUserId` must resolve to a
+`TEACHER` with a `staff_profile` in the caller's school (`404` otherwise,
+same as any other cross-tenant foreign key in this API).
+
+### `DELETE /class-arms/:id/class-teacher`
+
+Unassigns the current session's class teacher. `404` if the arm has none
+this session (including a second `DELETE` in a row).
+
 ---
 
 ## Students
 
-`SCHOOL_ADMIN` full access; `TEACHER` read-only (every mutation `403`s);
+`PROPRIETOR`/`SCHOOL_ADMIN` full access; `TEACHER` read-only (every mutation `403`s);
 `SUPER_ADMIN` has no access at all (`403`, not `404` — see docs/DECISIONS.md).
 Every resource is scoped to the caller's school via the access token, same as
 School setup above. Every mutation writes an `audit_logs` row automatically
@@ -307,12 +321,21 @@ session. `404` if `classArmId` isn't in the caller's school.
 
 ---
 
-## Users
+## Users — deprecated, superseded by Personnel (v0.2)
 
 Added in step 8 (SPEC_V0.1.md §2 described this in step 4 but it was never
 built then — see docs/DECISIONS.md). `SCHOOL_ADMIN` only; unlike Students,
 `TEACHER` has no access at all here, not even read (`403`). Scoped to the
 caller's school. Every mutation writes an `audit_logs` row.
+
+**v0.2**: superseded by `/personnel` below, which additionally creates a
+`staff_profile` (staff number, job title, ...) and recognizes `PROPRIETOR`.
+`GET`/`POST`/`PATCH /users` are unchanged and still work exactly as before —
+they are **not** extended to `PROPRIETOR` and deliberately do not create a
+`staff_profile`, so prefer `/personnel` for any new integration. Only
+`POST /users/:id/reset-password` is a true alias: it now delegates to the
+same logic as `POST /personnel/:userId/reset-password` (and also accepts
+`PROPRIETOR`), kept working for one version per SPEC_V0.2.md §2.
 
 ### `GET /users?role=&search=&page=&pageSize=`
 
@@ -374,6 +397,104 @@ and `ACTIVE`, grouped by class level, ordered by `rank`. Computed with one
 grouped raw SQL query, not one query per level. If the school has no
 current session yet, `studentsByLevel` is `[]` and `currentSession`/
 `currentTerm` are `null` rather than erroring.
+
+---
+
+## Personnel (v0.2, SPEC_V0.2.md §2)
+
+`PROPRIETOR`/`SCHOOL_ADMIN` only — unlike Students, there is no `TEACHER`
+row at all here, not even read. Supersedes `/users` (see above). Every
+mutation writes an `audit_logs` row.
+
+### `GET /personnel?role=&jobTitle=&search=&page=&pageSize=`
+
+Staff list — `staff_profiles` joined with `users`. `role` filters to
+`PROPRIETOR`/`SCHOOL_ADMIN`/`TEACHER`; `jobTitle` to any `JobTitle` value.
+`search` is ILIKE against first name, last name, or email. Paginated,
+ordered by `firstName`, tiebreak `id`. Response items never include
+`passwordHash`; the resource's own id is the **user's** id (field `id`),
+with the staff profile row's id separately as `staffProfileId`.
+
+### `POST /personnel`
+
+Body: `{ email, firstName, lastName, role, jobTitle, phone?, qualification?, dateEmployed?, password }`.
+`role` must be `PROPRIETOR`/`SCHOOL_ADMIN`/`TEACHER`. Unlike the old
+`/users` (and unlike reset-password below), **the caller supplies the
+password** — same shape as `POST /schools`'s admin sub-object — rather than
+the server generating one. Creates the `user` + `staff_profile` in one
+transaction; `staffNumber` is auto-generated as `{prefix}/STF/{4-digit
+sequence}` (no year component, unlike admission numbers), serialized per
+school by the same advisory-lock pattern.
+
+**Response `409`**: a user with this email already exists in this school.
+
+### `PATCH /personnel/:userId`
+
+Body: any of `firstName`, `lastName`, `role`, `jobTitle`, `phone`,
+`qualification`, `status`.
+
+**Response `400`**: caller attempted to change their **own** `role`, or the
+target is the school's last `PROPRIETOR`/`SCHOOL_ADMIN` and `role` would
+change them to `TEACHER`.
+
+**Response `404`**: `:userId` isn't a personnel record in the caller's school.
+
+### `POST /personnel/:userId/reset-password`
+
+Sets a new server-generated temporary password and revokes all of that
+user's active refresh tokens. Works for any user in the tenant, not only
+ones with a `staff_profile` (also reachable via the deprecated
+`POST /users/:id/reset-password` alias).
+
+**Response `200`**: `{ temporaryPassword }` — shown once, never retrievable again.
+
+---
+
+## Teachers (v0.2, SPEC_V0.2.md §2)
+
+Read-shaped views over Personnel + assignments. `PROPRIETOR`/`SCHOOL_ADMIN`/`TEACHER`
+all have read access (unlike Personnel above) — teachers can see their own
+profile and assignments here.
+
+### `GET /teachers?search=&page=&pageSize=`
+
+Same shape as `GET /personnel`, filtered to `role: TEACHER`.
+
+### `GET /teachers/:userId`
+
+Profile plus current-session assignments: `classTeacherOf` (arms this
+teacher is the class teacher of) and `subjectsTaught` (subject + arm
+pairs). Three queries total regardless of data size — no N+1
+(SPEC_V0.2.md §5).
+
+**Response `404`**: `:userId` isn't a `TEACHER` with a staff profile in the
+caller's school.
+
+---
+
+## Subject assignments (v0.2, SPEC_V0.2.md §2)
+
+`PROPRIETOR`/`SCHOOL_ADMIN` only.
+
+### `POST /subject-assignments`
+
+Body: `{ subjectId, classArmId, teacherUserId }` → the **current session**.
+Immutable insert, not an upsert — unlike `PUT /class-arms/:id/class-teacher`,
+a taken slot doesn't silently replace; the caller must `DELETE` then `POST`
+to reassign.
+
+**Response `404`**: `subjectId`, `classArmId`, or `teacherUserId` doesn't
+resolve within the caller's school (the latter must also be a `TEACHER`
+with a `staff_profile`).
+
+**Response `409`**: the `(subject, arm, session)` slot is already taken —
+message names the current holder, e.g. *"This subject is already assigned
+to Bola Ogundare for this class."*
+
+### `DELETE /subject-assignments/:id`
+
+Removes the assignment. `404` if `:id` isn't in the caller's school
+(including a repeat `DELETE`).
 
 ---
 

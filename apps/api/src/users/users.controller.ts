@@ -5,16 +5,25 @@ import { Audit } from "../common/decorators/audit.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { UsersService } from "./users.service";
+import { PersonnelService } from "../personnel/personnel.service";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { ListUsersQueryDto } from "./dto/list-users-query.dto";
 
-// Unlike students, the Users section of SPEC_V0.1.md §2 has no TEACHER row
-// at all — staff management is SCHOOL_ADMIN only, including reads.
+// Superseded by /personnel (SPEC_V0.2.md §2) — kept working, unchanged,
+// since nothing in the spec asks to remove it and PROPRIETOR isn't added
+// to its class-level @Roles(): a PROPRIETOR hitting POST/PATCH here would
+// create/edit SCHOOL_ADMIN/TEACHER users with no staff_profile, silently
+// breaking this version's "every such user has one" invariant. Only
+// reset-password is explicitly "moved... kept as alias" — it has no such
+// risk, so it delegates to PersonnelService and accepts PROPRIETOR too.
 @Roles(UserRole.SCHOOL_ADMIN)
 @Controller("users")
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly personnelService: PersonnelService,
+  ) {}
 
   @Get()
   findAll(@Query() query: ListUsersQueryDto) {
@@ -37,10 +46,12 @@ export class UsersController {
     return this.usersService.update(id, dto, currentUser.userId);
   }
 
+  /** @deprecated moved to POST /personnel/:userId/reset-password (SPEC_V0.2.md §2); kept as an alias for one version. */
+  @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN)
   @Audit("user", "resetPassword")
   @Post(":id/reset-password")
   @HttpCode(HttpStatus.OK)
   resetPassword(@Param("id", ParseUUIDPipe) id: string) {
-    return this.usersService.resetPassword(id);
+    return this.personnelService.resetPassword(id);
   }
 }

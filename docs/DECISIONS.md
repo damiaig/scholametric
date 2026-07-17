@@ -530,3 +530,71 @@ Reason: the one-time-password reveal is identical in both flows and worth
 not duplicating; the surrounding flow (create form vs. confirm-then-reset)
 differs enough that forcing them into one shared component would need
 more conditional branching than the two call sites are worth.
+
+## 2026-07-17 — /users left unchanged; only reset-password becomes a real alias
+Decision: v0.2's Personnel module (`/personnel`) supersedes v0.1's `/users`,
+but `GET`/`POST`/`PATCH /users` are untouched — no `PROPRIETOR` added to
+their `@Roles()`, no staff_profile awareness. Only
+`POST /users/:id/reset-password` now delegates to `PersonnelService`
+(injected into `UsersModule`) and additionally accepts `PROPRIETOR`.
+Reason: SPEC_V0.2.md §2 only says reset-password is "moved... kept as
+alias"; adding PROPRIETOR to /users' create/edit would let it mint
+SCHOOL_ADMIN/TEACHER users with no staff_profile, silently violating this
+version's "every such user has one" invariant. CLAUDE.md §8's "extend,
+never rewrite" argues against touching working endpoints beyond what's asked.
+
+## 2026-07-17 — POST /personnel takes a caller-supplied password (unlike v0.1's /users)
+Decision: `CreatePersonnelDto.password` is required and caller-supplied,
+same shape as `POST /schools`'s admin sub-object — not server-generated
+like v0.1's `POST /users`, which returned a `temporaryPassword` once.
+Reason: SPEC_V0.2.md §2 lists `password` explicitly in the POST /personnel
+body, a deliberate spec difference from v0.1, not an oversight. Reset-password
+(both `/personnel` and the `/users` alias) keeps the generate-and-reveal-once
+behavior — only creation changed.
+
+## 2026-07-17 — PersonnelSummary uses `id`, not `userId`, for the response's identity field
+Decision: the personnel/teachers response shape names the user's id `id`
+(with `staffProfileId` as a secondary field for the profile row), even
+though the route param is `:userId`.
+Reason: `AuditInterceptor` reads a generic `response.id` to know what to
+write into `audit_logs.entity_id`; a `userId`-only response would silently
+produce zero audit rows for every personnel mutation, caught before
+shipping by checking the interceptor's source, not by a failing test.
+
+## 2026-07-17 — DELETE endpoints return `{ id }` (200), not empty 204
+Decision: `DELETE /class-arms/:id/class-teacher` and
+`DELETE /subject-assignments/:id` both return `{ id: <deleted row's id> }`
+with an implicit 200, rather than a bodyless 204.
+Reason: same root cause as above — these are the first true DELETE
+endpoints in the API, and AuditInterceptor's `response.id` lookup needs
+something to read. A 204 would make these two mutations silently unaudited.
+
+## 2026-07-17 — Personnel/Teachers reset-password checks the User table, not StaffProfile
+Decision: `PersonnelService.resetPassword` looks up the target via
+`prisma.user.findFirst`, not `staffProfile.findFirst` (unlike `update`,
+which does require a staff profile).
+Reason: this method is also reached via the deprecated `/users/:id/reset-password`
+alias, which must keep working for any tenant user — including ones
+predating staff_profiles entirely (confirmed against a manually-created
+bare user in e2e). A password reset only touches `users`/`refresh_tokens`;
+requiring a staff_profile here would be a regression, not a feature.
+
+## 2026-07-17 — Class-teacher is upsert-replace; subject-teacher is insert-with-named-409
+Decision: `PUT /class-arms/:id/class-teacher` silently replaces the
+current session's assignment (no conflict possible — one arm, one class
+teacher). `POST /subject-assignments` refuses a taken `(subject, arm,
+session)` slot with a 409 naming the current holder; reassigning requires
+an explicit `DELETE` first.
+Reason: matches SPEC_V0.2.md §2's stated semantics exactly for each
+endpoint — not an inconsistency, a deliberate difference (a class only
+ever has one class teacher to overwrite; a taken subject slot implies
+someone else's schedule already depends on it, worth surfacing explicitly).
+
+## 2026-07-17 — "cannot demote the last admin" only fires on a change TO TEACHER
+Decision: `PersonnelService.update`'s last-admin guard only triggers when
+`dto.role === TEACHER` and the target currently holds `PROPRIETOR` or
+`SCHOOL_ADMIN`; a PROPRIETOR↔SCHOOL_ADMIN transition is never blocked by
+it, regardless of remaining admin count.
+Reason: matches SPEC_V0.2.md §2's literal wording ("cannot change the last
+PROPRIETOR/SCHOOL_ADMIN... to TEACHER"); both remaining roles keep
+school-admin-level access, so there's no "last admin" hazard between them.

@@ -7,7 +7,7 @@ import { ClassLevelsService } from "./class-levels.service";
 import { CreateClassLevelDto } from "./dto/create-class-level.dto";
 import { UpdateClassLevelDto } from "./dto/update-class-level.dto";
 
-@Roles(UserRole.SCHOOL_ADMIN)
+@Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN)
 @Controller("class-levels")
 export class ClassLevelsController {
   constructor(private readonly classLevelsService: ClassLevelsService) {}

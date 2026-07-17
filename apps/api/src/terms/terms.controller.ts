@@ -6,7 +6,7 @@ import { TermsService } from "./terms.service";
 import { CreateTermDto } from "./dto/create-term.dto";
 import { ListTermsQueryDto } from "./dto/list-terms-query.dto";
 
-@Roles(UserRole.SCHOOL_ADMIN)
+@Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN)
 @Controller("terms")
 export class TermsController {
   constructor(private readonly termsService: TermsService) {}
