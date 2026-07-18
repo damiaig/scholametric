@@ -8,3 +8,4 @@ export * from "./dashboard";
 export * from "./users";
 export * from "./academic";
 export * from "./personnel";
+export * from "./classes";

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, Link } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import { JOB_TITLE_LABELS } from "@scholametric/shared";
 import { PageHeader } from "../../components/PageHeader";
@@ -13,8 +13,8 @@ import { formatDate } from "../../lib/format-date";
 import { isSchoolAdmin } from "../../lib/roles";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useTeacher } from "./use-teachers";
-import { useRemoveClassTeacher } from "./use-class-teacher";
-import { useRemoveSubjectAssignment } from "./use-subject-assignments";
+import { useRemoveClassTeacher } from "../classes/use-class-teacher";
+import { useRemoveSubjectAssignment } from "../classes/use-subject-assignments";
 import { AssignClassTeacherDialog } from "./AssignClassTeacherDialog";
 import { AddSubjectAssignmentDialog } from "./AddSubjectAssignmentDialog";
 
@@ -112,7 +112,12 @@ export function TeacherDetailPage() {
                 className="flex items-center justify-between rounded-lg border border-muted/20 bg-card p-3"
               >
                 <div>
-                  <p className="text-sm font-medium text-text">{entry.className}</p>
+                  <Link
+                    to={`/classes/arms/${entry.classArmId}`}
+                    className="text-sm font-medium text-primary hover:underline"
+                  >
+                    {entry.className}
+                  </Link>
                   <p className="text-xs text-muted">{entry.sessionName}</p>
                 </div>
                 {canManage && (
@@ -158,7 +163,11 @@ export function TeacherDetailPage() {
                 {teacher.subjectsTaught.map((entry) => (
                   <tr key={entry.id} className="border-b border-muted/10 last:border-0">
                     <td className="px-4 py-3 text-text">{entry.subjectName}</td>
-                    <td className="px-4 py-3 text-text">{entry.className}</td>
+                    <td className="px-4 py-3">
+                      <Link to={`/classes/arms/${entry.classArmId}`} className="text-primary hover:underline">
+                        {entry.className}
+                      </Link>
+                    </td>
                     {canManage && (
                       <td className="px-4 py-3 text-right">
                         <Button

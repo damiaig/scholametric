@@ -16,6 +16,7 @@ export function useCreateSubjectAssignment() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["teachers"] });
       queryClient.invalidateQueries({ queryKey: ["classes"] });
+      queryClient.invalidateQueries({ queryKey: ["class-arm"] });
     },
   });
 }
@@ -26,6 +27,7 @@ export function useRemoveSubjectAssignment() {
     mutationFn: (id: string) => apiRequest<{ id: string }>(`/api/v1/subject-assignments/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["teachers"] });
+      queryClient.invalidateQueries({ queryKey: ["class-arm"] });
     },
   });
 }

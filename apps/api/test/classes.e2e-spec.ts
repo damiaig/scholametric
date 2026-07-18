@@ -111,6 +111,10 @@ describe("Classes (e2e)", () => {
       expect(response.body.classLevel.name).toBe("JSS 1");
       expect(response.body.classTeacher).not.toBeNull();
       expect(Array.isArray(response.body.subjectTeachers)).toBe(true);
+      expect(response.body.subjectTeachers.length).toBeGreaterThan(0);
+      // id lets the frontend target DELETE /subject-assignments/:id from
+      // this table directly (v0.2 step 6 — see docs/DECISIONS.md).
+      expect(response.body.subjectTeachers.every((s: { id?: string }) => typeof s.id === "string")).toBe(true);
       expect(response.body.students.items.length).toBeLessThanOrEqual(3);
       expect(response.body.students.total).toBeGreaterThan(0);
     });

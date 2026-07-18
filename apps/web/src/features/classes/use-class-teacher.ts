@@ -12,6 +12,7 @@ export function useSetClassTeacher() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["teachers"] });
       queryClient.invalidateQueries({ queryKey: ["classes"] });
+      queryClient.invalidateQueries({ queryKey: ["class-arm"] });
     },
   });
 }
@@ -24,6 +25,7 @@ export function useRemoveClassTeacher() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["teachers"] });
       queryClient.invalidateQueries({ queryKey: ["classes"] });
+      queryClient.invalidateQueries({ queryKey: ["class-arm"] });
     },
   });
 }

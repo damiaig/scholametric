@@ -10,12 +10,12 @@ import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
 import { useCreateClassLevel } from "./use-class-levels";
 
-interface CreateClassLevelDialogProps {
+interface AddClassLevelDialogProps {
   open: boolean;
   onClose: () => void;
 }
 
-export function CreateClassLevelDialog({ open, onClose }: CreateClassLevelDialogProps) {
+export function AddClassLevelDialog({ open, onClose }: AddClassLevelDialogProps) {
   const createClassLevel = useCreateClassLevel();
   const {
     register,
@@ -27,19 +27,20 @@ export function CreateClassLevelDialog({ open, onClose }: CreateClassLevelDialog
     defaultValues: { name: "", rank: 0 },
   });
 
+  function handleClose() {
+    reset();
+    createClassLevel.reset();
+    onClose();
+  }
+
   const onSubmit = handleSubmit((values) => {
-    createClassLevel.mutate(values, {
-      onSuccess: () => {
-        reset();
-        onClose();
-      },
-    });
+    createClassLevel.mutate(values, { onSuccess: handleClose });
   });
 
   return (
-    <Dialog open={open} onClose={onClose} title="New class level">
+    <Dialog open={open} onClose={handleClose} title="Add class level">
       <form className="flex flex-col gap-4 p-6" onSubmit={onSubmit} noValidate>
-        <h2 className="text-lg font-semibold text-text">New class level</h2>
+        <h2 className="text-lg font-semibold text-text">Add class level</h2>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="level-name">Name</Label>
           <Input id="level-name" placeholder="e.g. JSS 1" {...register("name")} />
@@ -56,12 +57,12 @@ export function CreateClassLevelDialog({ open, onClose }: CreateClassLevelDialog
           </p>
         )}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button type="button" variant="outline" onClick={handleClose}>
             Cancel
           </Button>
           <Button type="submit" disabled={createClassLevel.isPending}>
             {createClassLevel.isPending && <Spinner className="mr-2" />}
-            Create
+            Add
           </Button>
         </div>
       </form>

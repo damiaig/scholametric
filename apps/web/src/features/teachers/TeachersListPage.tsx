@@ -9,8 +9,8 @@ import { Input } from "../../components/ui/input";
 import { useDebouncedValue } from "../../lib/use-debounced-value";
 import { getErrorMessage } from "../../lib/api-client";
 import { useTeachers } from "./use-teachers";
-import { useClasses } from "./use-classes";
-import { buildClassTeacherMap } from "./class-teacher-map";
+import { useClasses } from "../classes/use-classes";
+import { buildClassTeacherMap } from "../classes/class-teacher-map";
 
 const PAGE_SIZE = 20;
 
@@ -24,10 +24,27 @@ export function TeachersListPage() {
   const classesQuery = useClasses();
   const classTeacherMap = useMemo(() => buildClassTeacherMap(classesQuery.data), [classesQuery.data]);
 
-  function classTeacherBadge(userId: string) {
-    const labels = classTeacherMap.get(userId);
-    if (!labels || labels.length === 0) return <span className="text-muted">—</span>;
-    return <StatusBadge label={labels.join(", ")} tone="info" />;
+  // Each badge links to its arm page (cross-navigation, SPEC_V0.2.md §4) —
+  // stopPropagation so it doesn't also trigger the row's own onRowClick.
+  function classTeacherBadges(userId: string) {
+    const badges = classTeacherMap.get(userId);
+    if (!badges || badges.length === 0) return <span className="text-muted">—</span>;
+    return (
+      <div className="flex flex-wrap gap-1">
+        {badges.map((badge) => (
+          <button
+            key={badge.armId}
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate(`/classes/arms/${badge.armId}`);
+            }}
+          >
+            <StatusBadge label={badge.label} tone="info" />
+          </button>
+        ))}
+      </div>
+    );
   }
 
   const columns: DataTableColumn<PersonnelSummary>[] = [
@@ -48,7 +65,7 @@ export function TeachersListPage() {
       cell: (row) => <span className="font-mono text-xs">{row.staffNumber}</span>,
     },
     { key: "jobTitle", header: "Title", cell: (row) => JOB_TITLE_LABELS[row.jobTitle] ?? row.jobTitle },
-    { key: "classTeacherOf", header: "Class teacher of", cell: (row) => classTeacherBadge(row.id) },
+    { key: "classTeacherOf", header: "Class teacher of", cell: (row) => classTeacherBadges(row.id) },
   ];
 
   return (
@@ -91,7 +108,7 @@ export function TeachersListPage() {
                 </p>
                 <p className="font-mono text-xs text-muted">{row.staffNumber}</p>
               </div>
-              {classTeacherBadge(row.id)}
+              {classTeacherBadges(row.id)}
             </div>
             <p className="text-xs text-muted">{JOB_TITLE_LABELS[row.jobTitle]}</p>
           </div>

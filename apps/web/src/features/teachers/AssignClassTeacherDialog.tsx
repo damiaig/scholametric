@@ -3,8 +3,8 @@ import { Dialog } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
-import { useClasses } from "./use-classes";
-import { useSetClassTeacher } from "./use-class-teacher";
+import { useClasses } from "../classes/use-classes";
+import { useSetClassTeacher } from "../classes/use-class-teacher";
 
 interface AssignClassTeacherDialogProps {
   teacherId: string;

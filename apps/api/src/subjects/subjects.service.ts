@@ -20,18 +20,32 @@ export class SubjectsService {
     private readonly tenantContext: TenantContext,
   ) {}
 
-  async findAll(page: number, pageSize: number): Promise<Paginated<Subject>> {
+  // Includes classLevels per row (the Subjects tab shows them as chips) —
+  // one join, not an N+1 (there's no single-subject GET to fall back on).
+  async findAll(page: number, pageSize: number): Promise<Paginated<SubjectWithLevels>> {
     const where = forSchool(this.tenantContext.schoolId, { deletedAt: null });
     const [items, total] = await this.prisma.$transaction([
       this.prisma.subject.findMany({
         where,
+        include: { classLevels: { include: { classLevel: true } } },
         orderBy: [{ name: "asc" }, { id: "asc" }],
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
       this.prisma.subject.count({ where }),
     ]);
-    return paginate(items, total, page, pageSize);
+    return paginate(
+      items.map(({ classLevels, ...rest }) => ({
+        ...rest,
+        classLevels: classLevels
+          .map((entry) => entry.classLevel)
+          .sort((a, b) => a.rank - b.rank)
+          .map((level) => ({ id: level.id, name: level.name, rank: level.rank })),
+      })),
+      total,
+      page,
+      pageSize,
+    );
   }
 
   async create(dto: CreateSubjectDto): Promise<Subject> {

@@ -869,3 +869,80 @@ something this step's code caused, but directly exposed by it — fixed
 here rather than left as a known gap, per explicit user confirmation.
 Verified: fresh `migrate deploy` + `seed` gives all 130 students a primary
 guardian; re-running `seed` again produces no duplicate primaries.
+
+## 2026-07-18 — v0.2 step 6: two more small backend additions, applied directly (established precedent, not re-asked)
+Decision: `ClassArmDetail.subjectTeachers[]` gained `id` (the assignment's
+own id — the arm page's remove action had nothing to target otherwise),
+and `GET /subjects` (list) now includes `classLevels` per row (the
+Subjects tab's "levels as chips" column has no other data source — no
+per-subject GET exists). Both flagged in the step-6 plan but applied
+directly rather than re-confirmed via a fresh question, since step 5
+already established and got explicit approval for the identical pattern
+twice (`SubjectTaughtEntry.id` and the "small backend addition" choice).
+Reason: same reasoning as step 5's equivalent fixes — one field/one join,
+no schema or migration change, purely additive.
+
+## 2026-07-18 — Class-level/arm management fully removed from Settings, not duplicated; Edit dropped (flagged, deliberate)
+Decision: `ClassLevelsSection`/`ClassArmsSection` and their Create/Edit
+dialogs (`features/settings/`) are deleted outright — `AcademicSettingsPage`
+is sessions & terms only now, no sub-tab. The Classes page only gets
+**Add** level/arm (per SPEC_V0.2.md §4's literal wording); renaming an
+existing level or arm has no UI anywhere in this step.
+Reason: "class management moves to Classes" (spec) meant relocate, not
+duplicate — leaving the old CRUD in Settings alongside the new Classes
+page would be two places to manage the same data. Edit was deliberately
+left out because it isn't named in this step's scope list (only "Add
+level" and "Add arm" are); flagged in the plan rather than silently added
+or silently dropped without mention. The backend `PATCH` endpoints are
+untouched and still work — only their UI is gone until a future step adds
+it back, if ever needed.
+
+## 2026-07-18 — Assignment dialogs: hooks reused verbatim, relocated; UI components rebuilt as arm-centric mirrors
+Decision: the six data hooks from step 5 (`useClasses`, `useSubjects` →
+split into `useAllSubjects`/`useSubjectsList` with mutations,
+`useSetClassTeacher`, `useRemoveClassTeacher`, `useCreateSubjectAssignment`,
+`useRemoveSubjectAssignment`) moved from `features/teachers/` to
+`features/classes/` verbatim (plus extra `["class-arm"]` cache invalidation
+so the arm detail page refetches too) — both features now import one
+copy. `AssignClassTeacherDialog`/`AddSubjectAssignmentDialog` themselves
+were **not** reused: they're teacher-centric ("this teacher, pick an arm" /
+"...pick subject + multiple arms"). The arm page needed the inverted axis
+("this arm, pick a teacher" / "...pick one subject + one teacher"), so
+`AssignClassTeacherForArmDialog`/`AddSubjectTeacherDialog` are new
+components sharing only the mutation hooks, `Dialog`/`ConfirmDialog`
+primitives, and the inline-409 convention.
+Reason: flagged in the step-6 plan per explicit request to distinguish
+reused-from-rebuilt. The two axes genuinely can't share one component
+without a confusing "which side is fixed" prop, and forcing it would cost
+more clarity than the duplication it'd save.
+
+## 2026-07-18 — Cross-navigation: class-teacher-map now carries armId, not just a display label
+Decision: `buildClassTeacherMap` (`features/classes/class-teacher-map.ts`)
+returns `Map<teacherUserId, { armId, label }[]>` instead of
+`Map<teacherUserId, string[]>` — the Teachers list's class-teacher-of
+badges are now clickable buttons (`stopPropagation` + `navigate`, since
+the row itself is also clickable) linking to `/classes/arms/:armId`, and
+`TeacherDetailPage`'s "Class teacher of" entries and "Subjects taught"
+class cells link the same way.
+Reason: SPEC_V0.2.md §4's explicit cross-navigation requirement — the
+badge already had the label, just needed the id threaded through to link
+anywhere.
+
+## 2026-07-18 — Confirmed gotcha: `docker compose build` silently reused a stale layer for both api and web
+Decision: no code change — a manual-verification-process note. A plain
+`docker compose build api web` (no `--no-cache`) produced images that,
+when inspected inside the running containers, were missing multiple
+files from this step entirely (`ClassesPlaceholderPage.tsx` was still
+present; none of the new `features/classes/*` files existed). `GET
+/subjects` from the "rebuilt" api container was still returning the
+pre-step-6 shape (no `classLevels`), which crashed `SubjectsTab`'s
+`row.classLevels.length` with a real, reproducible blank-page error —
+not a code bug, confirmed by checking the container's own on-disk source
+after the `--no-cache` rebuild fixed it.
+Reason: worth knowing before assuming a fresh `docker compose build` is
+sufficient evidence of "verified against current code" in this repo —
+this session needed a `--no-cache` rebuild of *both* `api` and `web` to
+get honest results. Not investigated further (BuildKit cache internals,
+out of scope), but the failure mode (stale image reports success,
+container silently serves old code) is exactly the kind of thing that
+would otherwise produce a false "verified" claim.

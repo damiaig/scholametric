@@ -300,13 +300,17 @@ teachers/classes/subjects"). Query: `page`/`pageSize` for the students list.
   "id": "...", "name": "A",
   "classLevel": { "id": "...", "name": "JSS 1", "rank": 1 },
   "classTeacher": { "userId": "...", "firstName": "Bola", "lastName": "Ogundare" },
-  "subjectTeachers": [{ "subjectId": "...", "subjectName": "Mathematics", "teacherUserId": "...", "teacherFirstName": "Bola", "teacherLastName": "Ogundare" }],
+  "subjectTeachers": [{ "id": "...", "subjectId": "...", "subjectName": "Mathematics", "teacherUserId": "...", "teacherFirstName": "Bola", "teacherLastName": "Ogundare" }],
   "students": { "items": [...], "total": 5, "page": 1, "pageSize": 20 }
 }
 ```
 `classTeacher`/`subjectTeachers`/`students` all reflect the **current
 session** only; if the school has none yet, `classTeacher` is `null` and
 `subjectTeachers`/`students.items` are empty rather than erroring.
+`subjectTeachers[].id` (the assignment's own id) was added in v0.2 step 6
+so the arm page's remove action can target
+`DELETE /subject-assignments/:id` directly — mirrors the same fix already
+made to `GET /teachers/:userId`'s `subjectsTaught` in step 5.
 
 ---
 
@@ -667,7 +671,10 @@ Manage: `PROPRIETOR`/`SCHOOL_ADMIN` only. View (`GET`): also `TEACHER`.
 
 ### `GET /subjects`
 
-Paginated, ordered by `name`. Soft-deleted subjects always excluded.
+Paginated, ordered by `name`. Soft-deleted subjects always excluded. Each
+row includes `classLevels` (ordered by `rank`) — added in v0.2 step 6 so
+the Subjects tab can show them as chips without a per-subject GET (there
+isn't one) or an N+1.
 
 ### `POST /subjects`
 

@@ -14,6 +14,7 @@ export interface ClassArmDetail {
   classLevel: { id: string; name: string; rank: number };
   classTeacher: { userId: string; firstName: string; lastName: string } | null;
   subjectTeachers: {
+    id: string;
     subjectId: string;
     subjectName: string;
     teacherUserId: string;
@@ -153,6 +154,7 @@ export class ClassArmsService {
           }
         : null,
       subjectTeachers: subjectTeacherAssignments.map((assignment) => ({
+        id: assignment.id,
         subjectId: assignment.subjectId,
         subjectName: assignment.subject.name,
         teacherUserId: assignment.teacherUserId,

@@ -61,6 +61,10 @@ describe("Subjects (e2e)", () => {
         .set(auth(sunriseAdminToken));
       expect(response.status).toBe(200);
       expect(response.body.items.some((s: { name: string }) => s.name === "Mathematics")).toBe(true);
+      // classLevels per row (v0.2 step 6 — the Subjects tab shows them as
+      // chips; no per-subject GET exists, so the list must carry them).
+      const mathematics = response.body.items.find((s: { name: string }) => s.name === "Mathematics");
+      expect(Array.isArray(mathematics.classLevels)).toBe(true);
     });
 
     it("TEACHER can read (view row in the RBAC matrix)", async () => {

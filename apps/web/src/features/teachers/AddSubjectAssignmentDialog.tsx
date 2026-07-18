@@ -6,9 +6,9 @@ import { Label } from "../../components/ui/label";
 import { Select } from "../../components/ui/select";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
-import { useClasses } from "./use-classes";
-import { useSubjects } from "./use-subjects";
-import { useCreateSubjectAssignment } from "./use-subject-assignments";
+import { useClasses } from "../classes/use-classes";
+import { useAllSubjects } from "../classes/use-subjects";
+import { useCreateSubjectAssignment } from "../classes/use-subject-assignments";
 
 interface AddSubjectAssignmentDialogProps {
   teacherId: string;
@@ -28,7 +28,7 @@ interface ArmOutcome {
 // §4) — shown inline per arm rather than as a single toast, since some
 // arms in the same submission can succeed while others conflict.
 export function AddSubjectAssignmentDialog({ teacherId, open, onClose }: AddSubjectAssignmentDialogProps) {
-  const subjectsQuery = useSubjects();
+  const subjectsQuery = useAllSubjects();
   const classesQuery = useClasses();
   const createAssignment = useCreateSubjectAssignment();
   const [subjectId, setSubjectId] = useState("");

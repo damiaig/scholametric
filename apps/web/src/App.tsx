@@ -8,7 +8,8 @@ import { NewStudentPage } from "./features/students/NewStudentPage";
 import { StudentDetailPage } from "./features/students/StudentDetailPage";
 import { TeachersListPage } from "./features/teachers/TeachersListPage";
 import { TeacherDetailPage } from "./features/teachers/TeacherDetailPage";
-import { ClassesPlaceholderPage } from "./features/classes/ClassesPlaceholderPage";
+import { ClassesPage } from "./features/classes/ClassesPage";
+import { ClassArmDetailPage } from "./features/classes/ClassArmDetailPage";
 import { PersonnelListPage } from "./features/personnel/PersonnelListPage";
 import { SettingsLayout } from "./features/settings/SettingsLayout";
 import { SchoolProfilePage } from "./features/settings/SchoolProfilePage";
@@ -27,7 +28,8 @@ export function App() {
           <Route path="/students/:id" element={<StudentDetailPage />} />
           <Route path="/teachers" element={<TeachersListPage />} />
           <Route path="/teachers/:id" element={<TeacherDetailPage />} />
-          <Route path="/classes" element={<ClassesPlaceholderPage />} />
+          <Route path="/classes" element={<ClassesPage />} />
+          <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
 
           {/* v0.2 (SPEC_V0.2.md §4): /settings/users no longer exists as a
               tab — it's a bare redirect to /personnel, which replaced it. */}
