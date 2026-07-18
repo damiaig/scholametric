@@ -74,4 +74,32 @@ describe("AppShell", () => {
     expect(await screen.findByText("Login page marker")).toBeInTheDocument();
     expect(authStore.getState()).toBeNull();
   });
+
+  it("TEACHER: Personnel and Settings are absent from the sidebar; Teachers/Classes are present", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: /Teachers/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Classes/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Personnel/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Settings/ })).not.toBeInTheDocument();
+  });
+
+  it("PROPRIETOR sees everything SCHOOL_ADMIN does, including Personnel and Settings", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "PROPRIETOR" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: /Personnel/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Settings/ })).toBeInTheDocument();
+  });
 });

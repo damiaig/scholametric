@@ -625,8 +625,10 @@ Same shape as `GET /personnel`, filtered to `role: TEACHER`.
 
 Profile plus current-session assignments: `classTeacherOf` (arms this
 teacher is the class teacher of) and `subjectsTaught` (subject + arm
-pairs). Three queries total regardless of data size — no N+1
-(SPEC_V0.2.md §5).
+pairs, each carrying the assignment's own `id` — added in v0.2 step 5 so
+the Teachers UI can target `DELETE /subject-assignments/:id` directly from
+this list; see docs/DECISIONS.md). Three queries total regardless of data
+size — no N+1 (SPEC_V0.2.md §5).
 
 **Response `404`**: `:userId` isn't a `TEACHER` with a staff profile in the
 caller's school.

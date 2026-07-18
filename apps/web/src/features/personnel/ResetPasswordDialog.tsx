@@ -1,20 +1,19 @@
 import { useState } from "react";
-import type { StaffUser } from "@scholametric/shared";
 import { Dialog } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
+import { OneTimePasswordDisplay } from "../../components/OneTimePasswordDisplay";
 import { getErrorMessage } from "../../lib/api-client";
-import { useResetStaffPassword } from "./use-staff-users";
-import { OneTimePasswordDisplay } from "./OneTimePasswordDisplay";
+import { useResetPersonnelPassword } from "./use-personnel";
 
 interface ResetPasswordDialogProps {
-  user: StaffUser;
+  person: { id: string; firstName: string; lastName: string };
   open: boolean;
   onClose: () => void;
 }
 
-export function ResetPasswordDialog({ user, open, onClose }: ResetPasswordDialogProps) {
-  const resetPassword = useResetStaffPassword();
+export function ResetPasswordDialog({ person, open, onClose }: ResetPasswordDialogProps) {
+  const resetPassword = useResetPersonnelPassword();
   const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
 
   function handleClose() {
@@ -28,7 +27,7 @@ export function ResetPasswordDialog({ user, open, onClose }: ResetPasswordDialog
       <Dialog open={open} onClose={handleClose} title="Password reset">
         <div className="flex flex-col gap-4 p-6">
           <h2 className="text-lg font-semibold text-text">
-            New password for {user.firstName} {user.lastName}
+            New password for {person.firstName} {person.lastName}
           </h2>
           <OneTimePasswordDisplay password={temporaryPassword} />
           <div className="flex justify-end">
@@ -48,7 +47,7 @@ export function ResetPasswordDialog({ user, open, onClose }: ResetPasswordDialog
         <p className="text-sm text-muted">
           This generates a new temporary password for{" "}
           <span className="font-semibold text-text">
-            {user.firstName} {user.lastName}
+            {person.firstName} {person.lastName}
           </span>{" "}
           and signs them out of any other active session.
         </p>
@@ -65,7 +64,7 @@ export function ResetPasswordDialog({ user, open, onClose }: ResetPasswordDialog
             type="button"
             disabled={resetPassword.isPending}
             onClick={() =>
-              resetPassword.mutate(user.id, {
+              resetPassword.mutate(person.id, {
                 onSuccess: (result) => setTemporaryPassword(result.temporaryPassword),
               })
             }

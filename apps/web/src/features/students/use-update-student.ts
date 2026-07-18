@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Student, UpdateStudentInput } from "@scholametric/shared";
 import { apiRequest } from "../../lib/api-client";
-import { normalizeOptionalString } from "./normalize-optional";
+import { normalizeOptionalString } from "../../lib/normalize-optional";
 
 export function useUpdateStudent(id: string) {
   const queryClient = useQueryClient();

@@ -649,6 +649,109 @@ current decorator (it's a static route annotation, not caller-aware); doing
 it unconditionally would reintroduce the exact misleading-log problem the
 original exclusion was written to avoid.
 
+## 2026-07-18 — v0.2 step 5 fixed a real pre-existing gap: PROPRIETOR was never added to the frontend's shared UserRole type
+Decision: `packages/shared/src/auth.ts`'s `UserRole` union gained `"PROPRIETOR"` (backend
+Prisma enum had it since v0.2 step 1). A new `apps/web/src/lib/roles.ts`
+(`isSchoolAdmin(role)`, true for `PROPRIETOR` or `SCHOOL_ADMIN`) replaced
+the ad-hoc `role === "SCHOOL_ADMIN"` checks in `useCanManageStudents` and
+`SettingsLayout`'s route gate, and is used by every new Personnel/Teachers
+role check this step.
+Reason: this step's own RBAC requirement ("PROPRIETOR sees everything
+SCHOOL_ADMIN does") doesn't type-check, let alone hold, without it — a
+PROPRIETOR user would have silently lost student-management and Settings
+access ever since that role was introduced. Discovered by inspection while
+planning the sidebar/route-guard work, not by a failing test.
+
+## 2026-07-18 — /settings/users is a bare redirect Route, not a SettingsLayout tab
+Decision: `<Route path="/settings/users" element={<Navigate to="/personnel" replace />} />`
+is registered at the top protected level in `App.tsx`, outside
+`SettingsLayout`'s nested routes — not a fourth tab that itself redirects.
+`/personnel` is guarded by a new `RequireSchoolAdmin` route-wrapper
+component (loading-aware, then redirects non-admins to `/dashboard`),
+mirroring `SettingsLayout`'s own existing gate rather than duplicating its
+tab-bar UI for a route that has no tabs of its own.
+Reason: SPEC_V0.2.md §4 says the route "redirects," not "shows a Users tab
+that redirects" — nesting it under `SettingsLayout` would flash the
+Settings tab-bar chrome before redirecting, for no benefit.
+
+## 2026-07-18 — v0.1 Users UI deleted outright, not deprecated in place
+Decision: `UsersSettingsPage`, `CreateUserDialog`, `EditUserDialog`,
+`use-staff-users.ts` (and their test file) are deleted, not left dead.
+`ResetPasswordDialog`/`OneTimePasswordDisplay` are kept but generalized —
+moved to `features/personnel/` and `components/` respectively, now
+type over a minimal `{ id, firstName, lastName }` shape instead of
+`StaffUser`, and call `/api/v1/personnel/:userId/reset-password` instead
+of `/api/v1/users/:id/reset-password`.
+Reason: `/personnel` fully supersedes this page (SPEC_V0.2.md §4 §7); the
+backend's `/users` endpoints stay deprecated-but-working (step 3
+decision), but nothing in the frontend should keep calling them. Reusing
+the two components matched CLAUDE.md §8's explicit instruction; the rest
+of the page had no reason to survive.
+
+## 2026-07-18 — Teachers list: class-teacher badge computed client-side; "subjects count" column dropped (flagged, user's choice)
+Decision: `GET /teachers` (list) returns plain `PersonnelSummary` rows with
+no assignment data at all. The list page's "class teacher of" badge is
+computed by fetching `GET /classes` once for the whole page and building a
+`teacherUserId -> arm labels` map client-side (`class-teacher-map.ts`) —
+free, no N+1. A "subjects count" column, also asked for in the original
+scope, has no equivalent data source (no `GET /subject-assignments` list
+endpoint exists) and was dropped from the list table rather than adding a
+backend field or an N+1 per-row fetch — user's explicit choice when
+flagged. Full subject list is still visible on the teacher detail page,
+which already has it.
+Reason: flagged per CLAUDE.md §8 rather than silently picking a workaround;
+the class-teacher badge had a genuinely free solution, the subjects count
+did not.
+
+## 2026-07-18 — Backend addition: SubjectTaughtEntry gained `id` (flagged, user's choice)
+Decision: `TeachersService.findOne`'s `subjectsTaught` entries now include
+the `SubjectTeacherAssignment`'s own `id` (`apps/api/src/teachers/teachers.service.ts`,
+mirrored in `packages/shared/src/personnel.ts`). One field, no schema
+change, no migration.
+Reason: flagged mid-step-5 ("no backend changes" was the stated scope) —
+the Subjects-taught table's explicitly-required "remove action" needs
+`DELETE /subject-assignments/:id`, and the detail response had no id to
+target at all. User chose the small backend addition over shipping the
+table read-only. Covered by a new e2e assertion in `teachers.e2e-spec.ts`.
+
+## 2026-07-18 — Add-subject dialog: one POST per selected arm, inline per-arm outcome
+Decision: `AddSubjectAssignmentDialog` submits one `POST
+/subject-assignments` per checked arm (sequentially, `mutateAsync` in a
+loop, not `Promise.all`), and renders a success/error icon plus the exact
+backend error message per arm row rather than a single toast. Arms that
+succeed are not re-shown as selected; arms that conflict stay checked so
+the admin sees exactly what still needs attention.
+Reason: `POST /subject-assignments` only accepts one `classArmId` at a
+time, and a single submission spanning several arms can partially succeed
+(some arms open, others already taken) — SPEC_V0.2.md §4 explicitly wants
+the named 409 "surfaced inline," which a page-level toast can't do
+per-arm.
+
+## 2026-07-18 — Class-teacher-of section also gets a per-row Remove (small addition beyond the literal spec text)
+Decision: each arm in the Teacher detail page's "Class teacher of" list
+has its own Remove button (`ConfirmDialog` + `DELETE
+/class-arms/:id/class-teacher`), not just the "assign/replace" dialog the
+instructions named explicitly.
+Reason: the endpoint already exists and is safe (404s cleanly on a repeat
+call); the "Subjects taught" section right below it already has an
+equivalent per-row remove, and leaving class-teacher-of as
+add-only-no-remove would be an inconsistent, arbitrarily incomplete
+mirror of the same UX pattern one section down. Small, low-risk,
+uses only endpoints already in scope.
+
+## 2026-07-18 — Observed pre-existing test flake: auth-rate-limit.e2e-spec.ts immediately before schools-crud.e2e-spec.ts
+Confirmed gotcha, not a regression: running the full backend e2e suite
+occasionally has every test in `schools-crud.e2e-spec.ts` fail its
+`beforeAll` login with a 5000ms Jest hook timeout — reproduces reliably
+when Jest happens to schedule `auth-rate-limit.e2e-spec.ts` (which fires
+11 rapid login attempts, each running a real bcrypt cost-12 compare)
+immediately before it, and disappears when the file order changes or
+either file runs alone. Neither file was touched this step. Not
+investigated further (pre-existing test-infrastructure timing, out of
+this step's scope) — worth knowing before assuming a real regression if
+seen again; re-running the suite (file order isn't pinned) reliably
+clears it.
+
 ## 2026-07-17 — /users' GET/POST/PATCH marked @deprecated (JSDoc only), no behavior change
 Decision: per explicit pre-approved housekeeping scope, all four
 `/users` endpoints (previously only reset-password) now carry a

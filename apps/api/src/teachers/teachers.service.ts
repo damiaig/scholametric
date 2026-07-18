@@ -20,6 +20,7 @@ export interface ClassTeacherOfEntry {
 }
 
 export interface SubjectTaughtEntry {
+  id: string;
   subjectId: string;
   subjectName: string;
   classArmId: string;
@@ -103,6 +104,7 @@ export class TeachersService {
         sessionName: assignment.session.name,
       })),
       subjectsTaught: subjectTeacherAssignments.map((assignment) => ({
+        id: assignment.id,
         subjectId: assignment.subjectId,
         subjectName: assignment.subject.name,
         classArmId: assignment.classArmId,

@@ -7,3 +7,4 @@ export * from "./students";
 export * from "./dashboard";
 export * from "./users";
 export * from "./academic";
+export * from "./personnel";

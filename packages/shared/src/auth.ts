@@ -7,7 +7,10 @@ export const loginSchema = z.object({
 });
 export type LoginInput = z.infer<typeof loginSchema>;
 
-export type UserRole = "SUPER_ADMIN" | "SCHOOL_ADMIN" | "TEACHER" | "PARENT" | "STUDENT";
+// PROPRIETOR added in v0.2 (backend Prisma enum, step 1) — was missing here
+// until v0.2 step 5 added the first frontend code that needs to compare
+// against it (see docs/DECISIONS.md).
+export type UserRole = "SUPER_ADMIN" | "PROPRIETOR" | "SCHOOL_ADMIN" | "TEACHER" | "PARENT" | "STUDENT";
 export type SchoolType = "NURSERY_PRIMARY" | "SECONDARY" | "COMBINED";
 export type SchoolStatus = "ACTIVE" | "SUSPENDED";
 

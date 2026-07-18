@@ -134,6 +134,9 @@ describe("Teachers + assignments (e2e)", () => {
       expect(response.body.subjectsTaught.some((s: { subjectName: string }) => s.subjectName === "Mathematics")).toBe(
         true,
       );
+      // id lets the frontend target DELETE /subject-assignments/:id from
+      // this table directly (v0.2 step 5 — see docs/DECISIONS.md).
+      expect(response.body.subjectsTaught.every((s: { id?: string }) => typeof s.id === "string")).toBe(true);
     });
 
     it("a cross-tenant teacher id returns 404", async () => {

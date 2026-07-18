@@ -1,11 +1,14 @@
 import { NavLink, Navigate, Outlet } from "react-router-dom";
 import { Spinner } from "../../components/ui/spinner";
 import { useCurrentUser } from "../shell/use-current-user";
+import { isSchoolAdmin } from "../../lib/roles";
 
+// v0.2 (SPEC_V0.2.md §4): Settings shrinks to School/Academic only — staff
+// management moved to /personnel (its own nav item now, see Sidebar.tsx).
+// /settings/users redirects there rather than appearing as a tab (see App.tsx).
 const TABS = [
   { to: "/settings/school", label: "Profile" },
   { to: "/settings/academic", label: "Academic" },
-  { to: "/settings/users", label: "Users" },
 ];
 
 export function SettingsLayout() {
@@ -23,7 +26,7 @@ export function SettingsLayout() {
     );
   }
 
-  if (currentUser.data?.role !== "SCHOOL_ADMIN") {
+  if (!isSchoolAdmin(currentUser.data?.role)) {
     return <Navigate to="/dashboard" replace />;
   }
 

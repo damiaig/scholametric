@@ -1,14 +1,23 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Users, Settings, GraduationCap } from "lucide-react";
+import { LayoutDashboard, Users, UserCog, Layers, IdCard, Settings, GraduationCap } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { isSchoolAdmin } from "../../lib/roles";
 import { useCurrentUser } from "./use-current-user";
 import { UserMenu } from "./UserMenu";
 
-const NAV_ITEMS = [
+// v0.2 (SPEC_V0.2.md §4): Dashboard / Students / Teachers / Classes /
+// Personnel / Settings. Teachers and Classes are visible to everyone
+// (TEACHER gets read-only views server-side); Personnel and Settings are
+// PROPRIETOR/SCHOOL_ADMIN only — absent from nav for TEACHER, not disabled,
+// same convention as every other role-gated nav item in this app.
+const BASE_NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/students", label: "Students", icon: Users },
+  { to: "/teachers", label: "Teachers", icon: UserCog },
+  { to: "/classes", label: "Classes", icon: Layers },
 ];
 
+const PERSONNEL_ITEM = { to: "/personnel", label: "Personnel", icon: IdCard };
 const SETTINGS_ITEM = { to: "/settings/school", label: "Settings", icon: Settings };
 
 interface SidebarProps {
@@ -17,9 +26,7 @@ interface SidebarProps {
 
 export function Sidebar({ onNavigate }: SidebarProps) {
   const { data: user, isLoading, isError } = useCurrentUser();
-  // RBAC matrix (SPEC_V0.1.md §2): every settings action is SCHOOL_ADMIN
-  // only, so TEACHER has nothing to do there — link is absent, not disabled.
-  const navItems = user?.role === "SCHOOL_ADMIN" ? [...NAV_ITEMS, SETTINGS_ITEM] : NAV_ITEMS;
+  const navItems = isSchoolAdmin(user?.role) ? [...BASE_NAV_ITEMS, PERSONNEL_ITEM, SETTINGS_ITEM] : BASE_NAV_ITEMS;
 
   return (
     <div className="flex h-full flex-col gap-6 p-4">

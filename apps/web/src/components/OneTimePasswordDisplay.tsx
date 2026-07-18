@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Check, Copy, TriangleAlert } from "lucide-react";
-import { Button } from "../../components/ui/button";
+import { Button } from "./ui/button";
 
 interface OneTimePasswordDisplayProps {
   password: string;
