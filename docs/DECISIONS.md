@@ -946,3 +946,78 @@ get honest results. Not investigated further (BuildKit cache internals,
 out of scope), but the failure mode (stale image reports success,
 container silently serves old code) is exactly the kind of thing that
 would otherwise produce a false "verified" claim.
+
+## 2026-07-18 — Step 7: History tab hidden from TEACHER entirely (no backend change)
+Decision: `GET /audit-logs` is `@Roles(PROPRIETOR, SCHOOL_ADMIN)` only —
+TEACHER gets zero audit-log access, matching SPEC_V0.2.md's own RBAC
+matrix (§2), which never granted TEACHER visibility either. Rather than
+add a TEACHER-readable path to the endpoint, the student detail page's
+History tab is simply absent from TEACHER's `tabs` array
+(`StudentDetailPage.tsx`), and `useStudentAuditLog`'s query is gated
+`enabled: canManage` so it never even fires for TEACHER in the background.
+Reason: confirmed with the user via AskUserQuestion before building —
+this step's stated scope was explicitly "no backend changes."
+
+## 2026-07-18 — Sibling guardian linking: search the STUDENT, not a guardian endpoint
+Decision: no `GET /guardians` (list/search) endpoint exists — only `PATCH
+/guardians/:id`. `SiblingGuardianPicker.tsx` searches students by name via
+the existing `GET /students?search=`, then lists that student's own
+guardians via the existing `GET /students/:id/guardians`, and the user
+picks one to link. Reused verbatim in both `AddGuardianDialog` (existing
+student, `excludeStudentId` set) and `StudentGuardiansFormSection` (new
+student being created, no id yet, `excludeStudentId` omitted).
+Reason: confirmed with the user via AskUserQuestion — zero-backend-change
+was the explicit constraint for this step, and the original spec's own
+Guardians section never called for a dedicated search endpoint either.
+
+## 2026-07-18 — History tab scoped to student-level audit events only
+Decision: the History tab renders `GET /audit-logs?entityType=student&
+entityId=<id>` results only — `studentGuardian.*` and `guardian.*` actions
+are deliberately excluded, even though they're relevant to "this
+student's history" in a plain-English sense.
+Reason: those rows are logged against the guardian **link's** or the
+**guardian's** own id, not the student's id (see the Guardians section of
+docs/API.md). Merging them into one student's timeline would require an
+N+1 query across every link the student has ever had, including removed
+ones — infeasible without a new backend aggregation endpoint, which is
+out of scope for a "no backend changes" step. Matches the API's own
+documented example literally (`entityType=student&entityId=...` returns
+one student's own history, nothing else).
+
+## 2026-07-18 — Fixed a second PROPRIETOR RBAC gap: NewStudentPage's own inline role-gate
+Decision: `NewStudentPage.tsx`'s redirect guard excluded `PROPRIETOR`
+(`role !== "SCHOOL_ADMIN"`), the same bug class as step 5's
+`useCanManageStudents`/`SettingsLayout` gaps — changed to
+`!isSchoolAdmin(role)`.
+Reason: found in passing while rebuilding the page for the new
+guardians[] form section; PROPRIETOR is a strict superset of SCHOOL_ADMIN
+everywhere else in this app, so a third instance of this same missed spot
+was worth fixing rather than leaving as a known gap.
+
+## 2026-07-18 — zod gotcha: a required `z.enum()` sibling field can silently swallow a `superRefine`'s other errors
+Decision: `guardians.ts`'s `relationship` field is `z.union([z.enum(...),
+z.literal("")]).optional()`, not a required `z.enum(GUARDIAN_RELATIONSHIPS)`
+— and its own requiredness check moved inside the shared
+`validateGuardianEntry` superRefine alongside firstName/lastName/phone,
+rather than living on the base object schema.
+Reason: a native `<select>`'s placeholder option submits `""` through
+react-hook-form's uncontrolled `register`, not `undefined`. A required
+`z.enum()` rejects `""` as an invalid value, which gives the object an
+"aborted" zod parse status — and zod skips a `.superRefine()` entirely
+when the base object aborts, silently hiding every other issue in the
+same entry (found via a failing vitest assertion: submitting an empty
+guardian entry showed only "Select a relationship," not the expected
+firstName/lastName/phone errors too, until this fix).
+
+## 2026-07-18 — Fixed: History tab went stale after withdraw/edit/transfer because audit-logs wasn't invalidated
+Decision: `useWithdrawStudent`, `useUpdateStudent`, and `useTransferClass`
+(`features/students/use-*.ts`) now also call
+`queryClient.invalidateQueries({ queryKey: ["audit-logs", "student", id] })`
+in `onSuccess`, alongside their existing `["students"]` invalidation.
+Reason: found during manual verification (withdraw a student, click
+History, expect to see "Student withdrawn" — saw only the older "Student
+created" entry). `useStudentAuditLog`'s query fires unconditionally on
+page mount (not lazily on tab click), so it had already cached the
+pre-withdrawal result by the time the mutation completed; nothing told it
+to refetch. The backend was correct throughout (confirmed via direct API
+call) — this was a pure frontend cache-staleness bug.

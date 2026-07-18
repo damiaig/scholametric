@@ -338,6 +338,12 @@ Each item includes `currentEnrollment` (same shape as `GET /students/:id`
 below) — added in step 7 so the students list page can show class/level per
 row without an extra request per student.
 
+Each item also includes `primaryGuardian`: `{ guardianId, firstName,
+lastName, phone } | null` — the student's primary guardian, cheap enough to
+compute per row for the list's name/phone column without pulling the full
+`guardians[]` roster (that's `GET /students/:id`'s job). `null` if the
+student somehow has no guardians at all.
+
 ### `GET /students/:id`
 
 Full profile plus `currentEnrollment` (`{ classArm: { classLevel }, session }`

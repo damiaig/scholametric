@@ -142,7 +142,7 @@ describe("ClassesPage — Subjects tab", () => {
 
     await user.click(screen.getByRole("button", { name: "Delete Mathematics" }));
     const confirmDialog = within(await screen.findByRole("dialog"));
-    await user.click(confirmDialog.getByRole("button", { name: "Delete", exact: true }));
+    await user.click(confirmDialog.getByRole("button", { name: "Delete" }));
 
     expect(
       await screen.findByText("This subject has teacher assignments and cannot be deleted."),

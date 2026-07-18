@@ -3,6 +3,7 @@ import { CircleAlert, Users, CalendarDays } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
+import { EmptySessionBanner } from "../../components/EmptySessionBanner";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useDashboardStats } from "./use-dashboard-stats";
 
@@ -28,6 +29,10 @@ export function DashboardPage() {
 
       {stats.data && (
         <div className="flex flex-col gap-6">
+          {stats.data.currentSession && stats.data.totalActiveStudents === 0 && (
+            <EmptySessionBanner sessionName={stats.data.currentSession} />
+          )}
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Card>
               <CardContent className="flex items-center gap-4 p-6">

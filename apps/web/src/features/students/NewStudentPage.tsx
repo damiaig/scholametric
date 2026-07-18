@@ -8,10 +8,11 @@ import { Card, CardContent } from "../../components/ui/card";
 import { Spinner } from "../../components/ui/spinner";
 import { ApiError, getErrorMessage } from "../../lib/api-client";
 import { StudentBioFields } from "./StudentBioFields";
-import { StudentGuardianFields } from "./StudentGuardianFields";
+import { StudentGuardiansFormSection } from "./StudentGuardiansFormSection";
 import { StudentClassFields } from "./StudentClassFields";
 import { useCreateStudent } from "./use-create-student";
 import { useCurrentUser } from "../shell/use-current-user";
+import { isSchoolAdmin } from "../../lib/roles";
 
 export function NewStudentPage() {
   const navigate = useNavigate();
@@ -20,8 +21,10 @@ export function NewStudentPage() {
 
   const {
     register,
+    control,
     handleSubmit,
     setError,
+    setValue,
     formState: { errors },
   } = useForm<CreateStudentInput>({
     resolver: zodResolver(createStudentSchema),
@@ -31,10 +34,7 @@ export function NewStudentPage() {
       middleName: "",
       gender: undefined,
       dateOfBirth: "",
-      guardianName: "",
-      guardianPhone: "",
-      guardianEmail: "",
-      address: "",
+      guardians: [{ mode: "new", relationship: undefined, isPrimary: true }],
       classArmId: "",
       admissionNumber: "",
     },
@@ -52,7 +52,7 @@ export function NewStudentPage() {
       </div>
     );
   }
-  if (currentUser.data?.role !== "SCHOOL_ADMIN") {
+  if (!isSchoolAdmin(currentUser.data?.role)) {
     return <Navigate to="/students" replace />;
   }
 
@@ -71,13 +71,13 @@ export function NewStudentPage() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <PageHeader title="New student" description="Bio, guardian, and class details." />
+      <PageHeader title="New student" description="Bio, guardians, and class details." />
 
       <Card>
         <CardContent className="pt-6">
           <form className="flex flex-col gap-6" onSubmit={onSubmit} noValidate>
             <StudentBioFields register={register} errors={errors} />
-            <StudentGuardianFields register={register} errors={errors} />
+            <StudentGuardiansFormSection control={control} register={register} setValue={setValue} errors={errors} />
             <StudentClassFields register={register} errors={errors} />
 
             {showGenericError && (

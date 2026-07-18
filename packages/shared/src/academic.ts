@@ -30,6 +30,13 @@ export interface Term {
 // shape used by Student.currentEnrollment) — reused here rather than
 // redeclared to avoid an ambiguous-export collision.
 
+// GET /sessions/:id/activation-preview (v0.2 §2) — currentSession is null
+// if the school has no current session yet.
+export interface ActivationPreview {
+  targetSession: { name: string; enrollmentCount: number };
+  currentSession: { name: string; enrollmentCount: number } | null;
+}
+
 const dateOnly = z.string().min(1, "Date is required");
 
 export const createSessionSchema = z

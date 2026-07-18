@@ -8,12 +8,15 @@ import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
 import { formatDate } from "../../lib/format-date";
+import { humanizeAuditAction } from "../../lib/audit-labels";
 import { useStudent } from "./use-student";
+import { useStudentAuditLog } from "./use-student-audit-log";
 import { studentStatusTone, studentStatusLabel } from "./student-status";
 import { useCanManageStudents } from "./use-can-manage-students";
 import { EditStudentDialog } from "./EditStudentDialog";
 import { TransferClassDialog } from "./TransferClassDialog";
 import { WithdrawStudentDialog } from "./WithdrawStudentDialog";
+import { GuardiansSection } from "./guardians/GuardiansSection";
 
 type TabKey = "overview" | "history";
 
@@ -29,12 +32,18 @@ function InfoRow({ label, value }: { label: string; value: ReactNode }) {
 export function StudentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  // History tab is PROPRIETOR/SCHOOL_ADMIN only, absent for TEACHER — matches
+  // GET /audit-logs's own RBAC (no TEACHER access at all), not just a UI
+  // restriction. See docs/DECISIONS.md.
   const canManage = useCanManageStudents();
   const studentQuery = useStudent(id);
   const [tab, setTab] = useState<TabKey>("overview");
   const [editOpen, setEditOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [historyPage, setHistoryPage] = useState(1);
+
+  const auditLogQuery = useStudentAuditLog(id ?? "", historyPage, canManage);
 
   if (studentQuery.isLoading) {
     return (
@@ -59,6 +68,8 @@ export function StudentDetailPage() {
   const classLabel = student.currentEnrollment
     ? `${student.currentEnrollment.classArm.classLevel.name} ${student.currentEnrollment.classArm.name}`
     : "No current class";
+
+  const tabs: TabKey[] = canManage ? ["overview", "history"] : ["overview"];
 
   return (
     <div>
@@ -102,7 +113,7 @@ export function StudentDetailPage() {
       </div>
 
       <div role="tablist" aria-label="Student sections" className="mb-4 flex gap-1 border-b border-muted/20">
-        {(["overview", "history"] as const).map((key) => (
+        {tabs.map((key) => (
           <button
             key={key}
             type="button"
@@ -121,23 +132,23 @@ export function StudentDetailPage() {
       </div>
 
       {tab === "overview" && (
-        <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
-          <InfoRow label="First name" value={student.firstName} />
-          <InfoRow label="Last name" value={student.lastName} />
-          <InfoRow label="Middle name" value={student.middleName} />
-          <InfoRow label="Gender" value={student.gender === "MALE" ? "Male" : "Female"} />
-          <InfoRow label="Date of birth" value={formatDate(student.dateOfBirth)} />
-          <InfoRow label="Guardian name" value={student.guardianName} />
-          <InfoRow label="Guardian phone" value={student.guardianPhone} />
-          <InfoRow label="Guardian email" value={student.guardianEmail} />
-          <InfoRow label="Address" value={student.address} />
-        </dl>
+        <div className="flex flex-col gap-8">
+          <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
+            <InfoRow label="First name" value={student.firstName} />
+            <InfoRow label="Last name" value={student.lastName} />
+            <InfoRow label="Middle name" value={student.middleName} />
+            <InfoRow label="Gender" value={student.gender === "MALE" ? "Male" : "Female"} />
+            <InfoRow label="Date of birth" value={formatDate(student.dateOfBirth)} />
+          </dl>
+
+          <GuardiansSection studentId={student.id} canManage={canManage} />
+        </div>
       )}
 
-      {tab === "history" && (
+      {tab === "history" && canManage && (
         <div>
           {student.currentEnrollment ? (
-            <div className="rounded-lg border border-muted/20 p-4">
+            <div className="mb-4 rounded-lg border border-muted/20 p-4">
               <p className="font-medium text-text">
                 {student.currentEnrollment.classArm.classLevel.name} {student.currentEnrollment.classArm.name}
               </p>
@@ -147,9 +158,71 @@ export function StudentDetailPage() {
               </p>
             </div>
           ) : (
-            <p className="text-sm text-muted">No enrollment on record.</p>
+            <p className="mb-4 text-sm text-muted">No enrollment on record.</p>
           )}
-          <p className="mt-4 text-sm text-muted">Audit trail will be available in a future version.</p>
+
+          {auditLogQuery.isLoading && (
+            <p className="flex items-center gap-2 text-sm text-muted">
+              <Spinner /> Loading history…
+            </p>
+          )}
+          {auditLogQuery.isError && (
+            <p className="text-sm text-danger">{getErrorMessage(auditLogQuery.error, "Couldn't load history.")}</p>
+          )}
+          {auditLogQuery.data && auditLogQuery.data.items.length === 0 && (
+            <p className="text-sm text-muted">No recorded activity yet.</p>
+          )}
+          {auditLogQuery.data && auditLogQuery.data.items.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {auditLogQuery.data.items.map((entry) => {
+                const reason =
+                  entry.action === "student.withdraw" &&
+                  entry.metadata &&
+                  typeof entry.metadata === "object" &&
+                  "reason" in entry.metadata
+                    ? String((entry.metadata as { reason: unknown }).reason)
+                    : null;
+                return (
+                  <div key={entry.id} className="rounded-lg border border-muted/20 bg-card p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-text">{humanizeAuditAction(entry.action)}</p>
+                      <p className="text-xs text-muted">{formatDate(entry.createdAt)}</p>
+                    </div>
+                    <p className="text-xs text-muted">
+                      {entry.actor.firstName} {entry.actor.lastName}
+                    </p>
+                    {reason && <p className="mt-1 text-sm text-text">Reason: {reason}</p>}
+                  </div>
+                );
+              })}
+              {auditLogQuery.data.total > auditLogQuery.data.pageSize && (
+                <div className="flex items-center justify-between pt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={historyPage <= 1}
+                    onClick={() => setHistoryPage((page) => page - 1)}
+                  >
+                    Previous
+                  </Button>
+                  <p className="text-xs text-muted">
+                    Page {auditLogQuery.data.page} of{" "}
+                    {Math.max(1, Math.ceil(auditLogQuery.data.total / auditLogQuery.data.pageSize))}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={historyPage >= Math.ceil(auditLogQuery.data.total / auditLogQuery.data.pageSize)}
+                    onClick={() => setHistoryPage((page) => page + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

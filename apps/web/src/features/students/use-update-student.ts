@@ -15,14 +15,11 @@ export function useUpdateStudent(id: string) {
           middleName: normalizeOptionalString(input.middleName),
           gender: input.gender,
           dateOfBirth: input.dateOfBirth,
-          guardianName: input.guardianName,
-          guardianPhone: input.guardianPhone,
-          guardianEmail: normalizeOptionalString(input.guardianEmail),
-          address: normalizeOptionalString(input.address),
         },
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["students"] });
+      queryClient.invalidateQueries({ queryKey: ["audit-logs", "student", id] });
     },
   });
 }

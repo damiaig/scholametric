@@ -9,6 +9,7 @@ export function useTransferClass(id: string) {
       apiRequest<Student>(`/api/v1/students/${id}/transfer-class`, { method: "POST", body: input }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["students"] });
+      queryClient.invalidateQueries({ queryKey: ["audit-logs", "student", id] });
     },
   });
 }

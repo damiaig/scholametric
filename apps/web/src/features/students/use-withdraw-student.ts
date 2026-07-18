@@ -9,6 +9,7 @@ export function useWithdrawStudent(id: string) {
       apiRequest<Student>(`/api/v1/students/${id}/withdraw`, { method: "POST", body: input }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["students"] });
+      queryClient.invalidateQueries({ queryKey: ["audit-logs", "student", id] });
     },
   });
 }

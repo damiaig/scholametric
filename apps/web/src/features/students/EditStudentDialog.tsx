@@ -7,7 +7,6 @@ import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
 import { StudentBioFields } from "./StudentBioFields";
-import { StudentGuardianFields } from "./StudentGuardianFields";
 import { useUpdateStudent } from "./use-update-student";
 
 interface EditStudentDialogProps {
@@ -23,16 +22,12 @@ function toDefaults(student: Student): UpdateStudentInput {
     middleName: student.middleName ?? "",
     gender: student.gender,
     dateOfBirth: student.dateOfBirth.slice(0, 10),
-    guardianName: student.guardianName,
-    guardianPhone: student.guardianPhone,
-    guardianEmail: student.guardianEmail ?? "",
-    address: student.address ?? "",
   };
 }
 
-// Reuses the exact same Bio/Guardian section components as NewStudentPage —
-// no Class section (that's the separate transfer-class action) and no
-// admissionNumber (immutable).
+// Bio fields only, v0.2 — guardian fields moved to the Guardians section
+// (GuardiansSection.tsx) on the student detail page, matching
+// UpdateStudentDto's own shape (no guardian fields accepted anymore).
 export function EditStudentDialog({ student, open, onClose }: EditStudentDialogProps) {
   const updateStudent = useUpdateStudent(student.id);
   const {
@@ -45,9 +40,6 @@ export function EditStudentDialog({ student, open, onClose }: EditStudentDialogP
     defaultValues: toDefaults(student),
   });
 
-  // The dialog's *contents* unmount when closed (Dialog returns null), but
-  // this component instance (and its useForm state) stays mounted — reset
-  // explicitly on every open so stale edits never linger.
   useEffect(() => {
     if (open) {
       reset(toDefaults(student));
@@ -64,7 +56,6 @@ export function EditStudentDialog({ student, open, onClose }: EditStudentDialogP
         <div className="flex flex-col gap-6 p-6">
           <h2 className="text-lg font-semibold text-text">Edit student</h2>
           <StudentBioFields register={register} errors={errors} />
-          <StudentGuardianFields register={register} errors={errors} />
           {updateStudent.isError && (
             <p role="alert" className="text-sm text-danger">
               {getErrorMessage(updateStudent.error)}

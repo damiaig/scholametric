@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Plus } from "lucide-react";
-import type { Student, StudentStatus } from "@scholametric/shared";
+import type { StudentListItem, StudentStatus } from "@scholametric/shared";
 import { PageHeader } from "../../components/PageHeader";
 import { DataTable, type DataTableColumn } from "../../components/DataTable";
 import { StatusBadge } from "../../components/StatusBadge";
 import { Avatar } from "../../components/Avatar";
+import { EmptySessionBanner } from "../../components/EmptySessionBanner";
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import { Button } from "../../components/ui/button";
@@ -17,10 +18,11 @@ import { useClassLevels } from "./use-class-levels";
 import { buildClassArmOptions } from "./class-arm-options";
 import { studentStatusTone, studentStatusLabel, STUDENT_STATUS_FILTER_OPTIONS } from "./student-status";
 import { useCanManageStudents } from "./use-can-manage-students";
+import { useDashboardStats } from "../dashboard/use-dashboard-stats";
 
 const PAGE_SIZE = 20;
 
-function classLabel(row: Student): string {
+function classLabel(row: StudentListItem): string {
   return row.currentEnrollment
     ? `${row.currentEnrollment.classArm.classLevel.name} ${row.currentEnrollment.classArm.name}`
     : "—";
@@ -29,6 +31,7 @@ function classLabel(row: Student): string {
 export function StudentsListPage() {
   const navigate = useNavigate();
   const canManage = useCanManageStudents();
+  const stats = useDashboardStats();
 
   const [searchInput, setSearchInput] = useState("");
   const search = useDebouncedValue(searchInput, 300);
@@ -53,7 +56,7 @@ export function StudentsListPage() {
       ? buildClassArmOptions(classLevelsQuery.data, classArmsQuery.data)
       : [];
 
-  const columns: DataTableColumn<Student>[] = [
+  const columns: DataTableColumn<StudentListItem>[] = [
     {
       key: "name",
       header: "Name",
@@ -79,6 +82,21 @@ export function StudentsListPage() {
     { key: "class", header: "Class", cell: classLabel },
     { key: "gender", header: "Gender", cell: (row) => (row.gender === "MALE" ? "Male" : "Female") },
     {
+      key: "primaryGuardian",
+      header: "Primary guardian",
+      cell: (row) =>
+        row.primaryGuardian ? (
+          <div>
+            <p className="text-text">
+              {row.primaryGuardian.firstName} {row.primaryGuardian.lastName}
+            </p>
+            <p className="font-mono text-xs text-muted">{row.primaryGuardian.phone}</p>
+          </div>
+        ) : (
+          <span className="text-muted">—</span>
+        ),
+    },
+    {
       key: "status",
       header: "Status",
       cell: (row) => <StatusBadge label={studentStatusLabel(row.status)} tone={studentStatusTone(row.status)} />,
@@ -98,6 +116,10 @@ export function StudentsListPage() {
           ) : undefined
         }
       />
+
+      {stats.data?.currentSession && stats.data.totalActiveStudents === 0 && (
+        <EmptySessionBanner sessionName={stats.data.currentSession} />
+      )}
 
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
         <Input
@@ -168,6 +190,11 @@ export function StudentsListPage() {
               </p>
               <p className="font-mono text-xs text-muted">{row.admissionNumber}</p>
               <p className="text-xs text-muted">{classLabel(row)}</p>
+              {row.primaryGuardian && (
+                <p className="truncate text-xs text-muted">
+                  {row.primaryGuardian.firstName} {row.primaryGuardian.lastName} · {row.primaryGuardian.phone}
+                </p>
+              )}
             </div>
             <StatusBadge label={studentStatusLabel(row.status)} tone={studentStatusTone(row.status)} />
           </div>

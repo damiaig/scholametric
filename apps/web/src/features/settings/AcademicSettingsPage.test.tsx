@@ -80,12 +80,18 @@ describe("AcademicSettingsPage", () => {
     expect(await within(table).findByText("2027/2028")).toBeInTheDocument();
   });
 
-  it("activates a session with an explicit confirmation message, and confirm stays disabled until clicked through", async () => {
+  it("activation dialog shows enrollment counts, warns on an empty target, and confirm stays disabled until the name is typed exactly", async () => {
     const user = userEvent.setup();
 
     mockedApiRequest.mockImplementation(async (path: string, options?: { method?: string }) => {
       if (path === "/api/v1/sessions" && (!options?.method || options.method === "GET")) {
         return paginated([CURRENT_SESSION, NEXT_SESSION]);
+      }
+      if (path === "/api/v1/sessions/sess-2/activation-preview") {
+        return {
+          targetSession: { name: "2027/2028", enrollmentCount: 0 },
+          currentSession: { name: "2026/2027", enrollmentCount: 125 },
+        };
       }
       if (path === "/api/v1/sessions/sess-2/activate" && options?.method === "POST") {
         return { ...NEXT_SESSION, isCurrent: true };
@@ -107,14 +113,27 @@ describe("AcademicSettingsPage", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "Activate session" });
     expect(within(dialog).getByText(/This will make/)).toBeInTheDocument();
-    expect(within(dialog).getByText("2027/2028")).toBeInTheDocument();
-    expect(within(dialog).getByText(/the current session for the whole school/)).toBeInTheDocument();
 
-    await user.click(within(dialog).getByRole("button", { name: "Activate" }));
+    expect(await within(dialog).findByText("125 enrolled students")).toBeInTheDocument();
+    expect(within(dialog).getByText("0 enrolled students")).toBeInTheDocument();
+    expect(within(dialog).getByText(/has no enrolled students/)).toBeInTheDocument();
+
+    const confirmButton = within(dialog).getByRole("button", { name: "Activate" });
+    expect(confirmButton).toBeDisabled();
+
+    const typedInput = within(dialog).getByLabelText(/Type/);
+    await user.type(typedInput, "wrong name");
+    expect(confirmButton).toBeDisabled();
+
+    await user.clear(typedInput);
+    await user.type(typedInput, "2027/2028");
+    expect(confirmButton).not.toBeDisabled();
+
+    await user.click(confirmButton);
 
     expect(mockedApiRequest).toHaveBeenCalledWith(
       "/api/v1/sessions/sess-2/activate",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST", body: { confirmName: "2027/2028" } }),
     );
   });
 });

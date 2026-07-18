@@ -1,17 +1,19 @@
-import type { ReactNode } from "react";
-import { Info } from "lucide-react";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { CheckCircle2 } from "lucide-react";
+import { updateSchoolSchema, type CurrentUserSchool, type UpdateSchoolInput } from "@scholametric/shared";
 import { Card, CardContent } from "../../components/ui/card";
+import { Input } from "../../components/ui/input";
+import { Label } from "../../components/ui/label";
+import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
+import { FieldError } from "../../components/FieldError";
+import { getErrorMessage } from "../../lib/api-client";
+import { normalizeOptionalString } from "../../lib/normalize-optional";
+import { isSchoolAdmin } from "../../lib/roles";
 import { useCurrentUser } from "../shell/use-current-user";
-
-function InfoRow({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-0.5 py-2">
-      <dt className="text-xs font-medium uppercase tracking-wide text-muted">{label}</dt>
-      <dd className="text-sm text-text">{value || "—"}</dd>
-    </div>
-  );
-}
+import { useUpdateSchool } from "./use-school";
 
 const SCHOOL_TYPE_LABELS: Record<string, string> = {
   NURSERY_PRIMARY: "Nursery & Primary",
@@ -19,8 +21,37 @@ const SCHOOL_TYPE_LABELS: Record<string, string> = {
   COMBINED: "Combined",
 };
 
+function toDefaults(school: CurrentUserSchool): UpdateSchoolInput {
+  return {
+    name: school.name,
+    address: school.address ?? "",
+    phone: school.phone ?? "",
+    email: school.email ?? "",
+  };
+}
+
 export function SchoolProfilePage() {
   const currentUser = useCurrentUser();
+  const school = currentUser.data?.school;
+  const canEdit = isSchoolAdmin(currentUser.data?.role);
+  const updateSchool = useUpdateSchool(school?.id ?? "");
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isDirty },
+  } = useForm<UpdateSchoolInput>({
+    resolver: zodResolver(updateSchoolSchema),
+    defaultValues: school ? toDefaults(school) : undefined,
+  });
+
+  useEffect(() => {
+    if (school) {
+      reset(toDefaults(school));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [school?.id]);
 
   if (currentUser.isLoading) {
     return (
@@ -30,29 +61,86 @@ export function SchoolProfilePage() {
     );
   }
 
-  if (currentUser.isError || !currentUser.data) {
+  if (currentUser.isError || !school) {
     return <p className="text-sm text-danger">Couldn&apos;t load your school&apos;s profile. Please refresh the page.</p>;
   }
 
-  const { school } = currentUser.data;
+  const onSubmit = handleSubmit((values) => {
+    updateSchool.mutate(
+      {
+        name: values.name,
+        address: normalizeOptionalString(values.address),
+        phone: normalizeOptionalString(values.phone),
+        email: normalizeOptionalString(values.email),
+      },
+      { onSuccess: (updated) => reset(toDefaults(updated)) },
+    );
+  });
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-4 text-sm text-text">
-        <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-        <p>Editing your school&apos;s profile isn&apos;t available in this version yet.</p>
-      </div>
-
       <Card>
         <CardContent className="p-6">
-          <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
-            <InfoRow label="School name" value={school.name} />
-            <InfoRow label="Type" value={SCHOOL_TYPE_LABELS[school.type] ?? school.type} />
-            <InfoRow label="Status" value={school.status === "ACTIVE" ? "Active" : "Suspended"} />
-            <InfoRow label="Address" value={school.address} />
-            <InfoRow label="Phone" value={school.phone} />
-            <InfoRow label="Email" value={school.email} />
-          </dl>
+          <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="school-type">Type</Label>
+                <Input id="school-type" value={SCHOOL_TYPE_LABELS[school.type] ?? school.type} disabled />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="school-status">Status</Label>
+                <Input id="school-status" value={school.status === "ACTIVE" ? "Active" : "Suspended"} disabled />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="school-name">School name</Label>
+              <Input id="school-name" disabled={!canEdit} {...register("name")} />
+              <FieldError message={errors.name?.message} />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="school-address">Address</Label>
+              <Input id="school-address" disabled={!canEdit} {...register("address")} />
+              <FieldError message={errors.address?.message} />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="school-phone">Phone</Label>
+                <Input id="school-phone" disabled={!canEdit} {...register("phone")} />
+                <FieldError message={errors.phone?.message} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="school-email">Email</Label>
+                <Input id="school-email" type="email" disabled={!canEdit} {...register("email")} />
+                <FieldError message={errors.email?.message} />
+              </div>
+            </div>
+
+            {updateSchool.isError && (
+              <p role="alert" className="text-sm text-danger">
+                {getErrorMessage(updateSchool.error)}
+              </p>
+            )}
+            {updateSchool.isSuccess && !isDirty && (
+              <p className="flex items-center gap-2 text-sm text-success">
+                <CheckCircle2 className="h-4 w-4" aria-hidden="true" /> Saved.
+              </p>
+            )}
+
+            {canEdit && (
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => reset(toDefaults(school))} disabled={!isDirty}>
+                  Discard changes
+                </Button>
+                <Button type="submit" disabled={!isDirty || updateSchool.isPending}>
+                  {updateSchool.isPending && <Spinner className="mr-2" />}
+                  Save changes
+                </Button>
+              </div>
+            )}
+          </form>
         </CardContent>
       </Card>
     </div>

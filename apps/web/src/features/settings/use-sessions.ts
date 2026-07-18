@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { AcademicSession, CreateSessionInput, Paginated } from "@scholametric/shared";
+import type { ActivationPreview, AcademicSession, CreateSessionInput, Paginated } from "@scholametric/shared";
 import { apiRequest } from "../../lib/api-client";
 
 export function useSessions(page: number, pageSize = 20) {
@@ -19,11 +19,22 @@ export function useCreateSession() {
   });
 }
 
+export function useActivationPreview(id: string | null) {
+  return useQuery({
+    queryKey: ["sessions", id, "activation-preview"],
+    queryFn: () => apiRequest<ActivationPreview>(`/api/v1/sessions/${id}/activation-preview`),
+    enabled: id !== null,
+  });
+}
+
 export function useActivateSession() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) =>
-      apiRequest<AcademicSession>(`/api/v1/sessions/${id}/activate`, { method: "POST" }),
+    mutationFn: ({ id, confirmName }: { id: string; confirmName: string }) =>
+      apiRequest<AcademicSession>(`/api/v1/sessions/${id}/activate`, {
+        method: "POST",
+        body: { confirmName },
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sessions"] });
       queryClient.invalidateQueries({ queryKey: ["terms"] });

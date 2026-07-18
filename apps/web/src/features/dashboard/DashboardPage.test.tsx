@@ -82,4 +82,20 @@ describe("DashboardPage", () => {
     expect(await screen.findByText("Couldn't load dashboard stats.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
+
+  it("shows the empty-session banner when the current session has zero enrollments", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return CURRENT_USER;
+      if (path.includes("/dashboard/stats")) {
+        return { ...STATS, totalActiveStudents: 0, studentsByLevel: [], currentSession: "2027/2028" };
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(
+      await screen.findByText(/No students are enrolled in the current session \(2027\/2028\)/),
+    ).toBeInTheDocument();
+  });
 });

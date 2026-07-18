@@ -1,13 +1,14 @@
 import { useState } from "react";
-import { PlayCircle } from "lucide-react";
+import { PlayCircle, TriangleAlert } from "lucide-react";
 import type { AcademicSession } from "@scholametric/shared";
 import { DataTable, type DataTableColumn } from "../../components/DataTable";
 import { Button } from "../../components/ui/button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { Spinner } from "../../components/ui/spinner";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatDate } from "../../lib/format-date";
 import { getErrorMessage } from "../../lib/api-client";
-import { useSessions, useActivateSession } from "./use-sessions";
+import { useSessions, useActivateSession, useActivationPreview } from "./use-sessions";
 import { CreateSessionDialog } from "./CreateSessionDialog";
 
 interface SessionsSectionProps {
@@ -20,6 +21,7 @@ export function SessionsSection({ onSelectSession }: SessionsSectionProps) {
   const activateSession = useActivateSession();
   const [createOpen, setCreateOpen] = useState(false);
   const [activating, setActivating] = useState<AcademicSession | null>(null);
+  const preview = useActivationPreview(activating?.id ?? null);
 
   function openActivate(event: React.MouseEvent, session: AcademicSession) {
     event.stopPropagation();
@@ -100,12 +102,17 @@ export function SessionsSection({ onSelectSession }: SessionsSectionProps) {
 
       <ConfirmDialog
         open={activating !== null}
-        onClose={() => setActivating(null)}
-        onConfirm={() =>
+        onClose={() => {
+          setActivating(null);
+          activateSession.reset();
+        }}
+        onConfirm={(confirmName) =>
           activating &&
-          activateSession.mutate(activating.id, {
-            onSuccess: () => setActivating(null),
-          })
+          confirmName &&
+          activateSession.mutate(
+            { id: activating.id, confirmName },
+            { onSuccess: () => setActivating(null) },
+          )
         }
         title="Activate session"
         description={
@@ -117,13 +124,55 @@ export function SessionsSection({ onSelectSession }: SessionsSectionProps) {
           ) : undefined
         }
         confirmLabel="Activate"
+        confirmTone="danger"
         isConfirming={activateSession.isPending}
-      />
-      {activateSession.isError && (
-        <p role="alert" className="text-sm text-danger">
-          {getErrorMessage(activateSession.error)}
-        </p>
-      )}
+        requireTypedConfirmation={activating?.name}
+        confirmDisabled={preview.isLoading || preview.isError}
+      >
+        {preview.isLoading && (
+          <p className="flex items-center gap-2 text-sm text-muted">
+            <Spinner /> Loading enrollment counts…
+          </p>
+        )}
+        {preview.isError && <p className="text-sm text-danger">Couldn&apos;t load activation details.</p>}
+        {preview.data && (
+          <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="rounded-md border border-muted/20 p-3">
+                <p className="text-muted">Current session</p>
+                <p className="font-medium text-text">{preview.data.currentSession?.name ?? "—"}</p>
+                <p className="text-muted">
+                  {preview.data.currentSession?.enrollmentCount ?? 0} enrolled students
+                </p>
+              </div>
+              <div className="rounded-md border border-muted/20 p-3">
+                <p className="text-muted">Target session</p>
+                <p className="font-medium text-text">{preview.data.targetSession.name}</p>
+                <p className="text-muted">{preview.data.targetSession.enrollmentCount} enrolled students</p>
+              </div>
+            </div>
+            {preview.data.targetSession.enrollmentCount === 0 && (
+              <p className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 p-3 text-sm text-text">
+                <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+                {preview.data.targetSession.name} has no enrolled students — students will not appear in lists
+                until enrolled.
+              </p>
+            )}
+            {preview.data.currentSession &&
+              preview.data.targetSession.enrollmentCount < preview.data.currentSession.enrollmentCount && (
+                <p className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 p-3 text-sm text-text">
+                  <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+                  {preview.data.targetSession.name} has fewer enrolled students than {preview.data.currentSession.name}.
+                </p>
+              )}
+          </div>
+        )}
+        {activateSession.isError && (
+          <p role="alert" className="text-sm text-danger">
+            {getErrorMessage(activateSession.error)}
+          </p>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

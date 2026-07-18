@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import type { Paginated, Student, StudentStatus } from "@scholametric/shared";
+import type { Paginated, StudentListItem, StudentStatus } from "@scholametric/shared";
 import { apiRequest } from "../../lib/api-client";
 
 export interface StudentsListParams {
@@ -14,7 +14,7 @@ export function useStudents(params: StudentsListParams) {
   return useQuery({
     queryKey: ["students", params],
     queryFn: () =>
-      apiRequest<Paginated<Student>>("/api/v1/students", {
+      apiRequest<Paginated<StudentListItem>>("/api/v1/students", {
         query: {
           page: params.page,
           pageSize: params.pageSize,

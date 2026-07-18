@@ -8,7 +8,8 @@ import { Spinner } from "./ui/spinner";
 interface ConfirmDialogProps {
   open: boolean;
   onClose: () => void;
-  onConfirm: () => void;
+  /** When requireTypedConfirmation is set, called with the exact text the user typed. */
+  onConfirm: (typedValue?: string) => void;
   title: string;
   description?: ReactNode;
   confirmLabel?: string;
@@ -78,7 +79,7 @@ export function ConfirmDialog({
           </Button>
           <Button
             type="button"
-            onClick={onConfirm}
+            onClick={() => onConfirm(typedValue)}
             disabled={disabled}
             className={confirmTone === "danger" ? "bg-danger hover:bg-danger/90" : undefined}
           >
