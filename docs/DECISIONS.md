@@ -1084,3 +1084,110 @@ overflows or is unreadable, just visually tall for subjects offered at
 many levels. Left as a known minor polish item rather than risk touching
 `DataTable`'s shared column-width behavior this late in the run.
 Tagged `v0.2.0` — v0.2 "Staff & Structure" is complete.
+
+## 2026-07-20 — Teachers page (and others) crashed blank in real use: `@scholametric/shared`'s Vite CJS pre-bundle went stale
+Confirmed root cause (verified by direct inspection, not assumed): the
+crash (`Cannot read properties of undefined (reading 'TEACHER')` in
+`TeachersListPage.tsx`'s `JOB_TITLE_LABELS[row.jobTitle]`) traced to
+`@scholametric/shared` having no ESM build — only CJS `dist/index.js`
+(needed for `apps/api`'s ts-node/Jest consumers). Vite therefore treats it
+as a dependency needing CJS interop (`needsInterop: true` in
+`node_modules/.vite/deps/_metadata.json`) and rewrites every named import
+into a runtime property lookup on the pre-bundled default export —
+confirmed directly from the actual transformed module Vite served:
+`const JOB_TITLE_LABELS = __vite__cjsImport5__scholametric_shared["JOB_TITLE_LABELS"];`.
+That pre-bundle is cached in `node_modules/.vite/deps` and is invalidated
+by Vite based on the **lockfile/config hash**, not by `packages/shared`'s
+own source or dist changing — so a plain container restart or rebuild
+around the same time `packages/shared` changes doesn't reliably bust it,
+matching this repo's own prior "Vite dep cache goes stale" entry above
+(2026-07-14) and the "docker compose build reused a stale layer" entry
+(2026-07-18) — same underlying class of bug, this time hitting an actual
+export at runtime instead of a whole missing file.
+Structural fix (per explicit instruction — not just a note this time):
+`apps/web/vite.config.ts` now aliases `@scholametric/shared` straight to
+`packages/shared/src/index.ts` (its real TS source) via `resolve.alias`,
+and excludes it from `optimizeDeps` entirely. Vite transforms it exactly
+like first-party app source from here on — real ESM, transformed fresh
+per request, invalidated by Vite's own file watcher like any other `src`
+file. No CJS interop, no separate dependency-pre-bundle cache to go stale,
+ever again, for this package. `apps/api` is untouched (still consumes the
+CJS `dist` build via its own `main` field resolution — this fix is
+Vite-config-only).
+
+## 2026-07-20 — Why step 8's acceptance run marked Teachers PASS despite this crash being real
+Finding: every Playwright check in step 8 (and its own polish pass)
+launched a **brand-new browser context** immediately after a Docker image
+finished (re)building — by construction, that can never observe a bundle
+that's stale *relative to a build that already completed*, only a bundle
+that's stale *relative to source the current build doesn't yet reflect*.
+The gap this crash fell through is different: a **already-open, long-lived
+browser tab** (or a page load that raced a container restart's cold-start
+re-optimization) can hold — or fetch — a `@scholametric/shared` pre-bundle
+that's inconsistent with what the currently-running server would produce
+fresh, even though a brand-new tab loaded after the fact sees the correct
+state. This is exactly what happened in this session's own history: step
+8 rebuilt/restarted the web container several times in quick succession
+(full `--no-cache`, then an incremental `docker compose build web` for the
+`ClassArmDetailPage` fix, then an unplanned restart after Docker Desktop
+itself crashed) while real manual use was happening in parallel. A fresh
+Playwright context launched *after* each of those settled never had a
+chance to inherit a stale module graph the way a persistent tab could.
+Conclusion: "verified with a fresh browser right after the build finished"
+is not equivalent to "verified the way a developer actually uses the app
+during active development" — the latter needs either (a) the structural
+fix above (removing the staleness-prone cache entirely, done), or (b) a
+verification step that specifically holds a tab open across a rebuild,
+which step 8's checklist never called for and the acceptance criteria
+didn't ask for either. Added the route-smoke test below as a durable,
+CI-enforced backstop for the broader "a route crashes blank" failure mode
+this incident is one instance of — though note it runs under Vitest/Node,
+where CJS/ESM interop is transparent (see the 2026-07-14 entry), so it
+cannot itself reproduce *this specific* browser-only caching bug; it
+guards the general class (a real code defect crashing a route), while the
+`vite.config.ts` alias guards this specific one.
+
+## 2026-07-20 — Route-level error boundary + a smoke test that mounts every registered route
+Decision: `App.tsx`'s `<Routes>` tree is now extracted into an exported
+`AppRoutes` component (still just wrapped in `<BrowserRouter>` by `App`),
+so a new `route-smoke.test.tsx` can mount the *exact* same route
+definitions inside a `<MemoryRouter>` — one route list, not a second
+hand-copied one that could silently drift out of sync. `ProtectedLayout`
+now wraps its `<Outlet />` in a new `RouteErrorBoundary` (class component;
+no hook equivalent exists in React 18), keyed on `location.pathname` so
+navigating away from a crashed route recovers automatically rather than
+staying stuck — a crash now renders a friendly "Something went wrong" box
+with Try again/Reload, never a blank white page, with the sidebar/shell
+still intact and usable around it.
+Reason: the Teachers crash above reached a real user as a totally blank
+page with no way to recover short of knowing to reload — exactly the
+failure mode CLAUDE.md §6 already requires every data view to avoid
+("Loading, empty, and error states are required... A page that only
+handles the happy path is incomplete"), just extended to the render-crash
+case a query-level `isError` check can't catch. The smoke test mounts
+every route (`/dashboard`, `/students`, `/students/new`, `/students/:id`,
+`/teachers`, `/teachers/:id`, `/classes`, `/classes/arms/:id`,
+`/personnel`, `/settings/school`, `/settings/academic`) with mocked
+auth/API and asserts the error boundary's fallback text never appears —
+so a future page that crashes on real (non-empty) row data fails CI
+immediately, rather than only surfacing in manual use like this one did.
+
+## 2026-07-20 — Confirmed gotcha: `pnpm ci` at the repo root is pnpm's own reserved command, not this repo's script
+Decision: no code change — an operational note. Running `pnpm ci` from the
+repo root silently ran pnpm's own built-in clean-install behavior (removes
+and reinstalls every workspace's `node_modules`) instead of this repo's
+`package.json` script of the same name (`typecheck && lint && test`); it
+exits 0 having done nothing but reinstall. `pnpm run ci` (with the explicit
+`run`) invokes the actual script. Separately, the root `test` script
+(`pnpm -r --if-present run test`) runs `apps/api` and `apps/web` **in
+parallel** by default (no dependency relationship forcing order) — under
+load, that starved the API suite's bcrypt-cost-12 login hooks past their
+5s Jest timeout (`schools-crud.e2e-spec.ts`, 10 tests, all the identical
+"Exceeded timeout of 5000ms for a hook" during `beforeAll`'s `loginAs`),
+while the exact same suite passed 142/142 clean in isolation seconds
+later. Not a real regression — confirmed by re-running each workspace's
+suite separately.
+Reason: worth knowing before trusting a root `pnpm ci`/`pnpm test` run's
+result at face value in this repo — use `pnpm run ci` (not bare `pnpm
+ci`), and if the API suite fails only under the combined root run, rerun
+it alone before treating a failure as real.

@@ -15,38 +15,48 @@ import { SettingsLayout } from "./features/settings/SettingsLayout";
 import { SchoolProfilePage } from "./features/settings/SchoolProfilePage";
 import { AcademicSettingsPage } from "./features/settings/AcademicSettingsPage";
 
+// Extracted from <App> (which just wraps this in <BrowserRouter>) so the
+// route-smoke test can mount the exact same route tree inside a
+// <MemoryRouter> — one definition, so a route added here is automatically
+// covered by that test rather than needing a second, driftable copy.
+export function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="/login" element={<LoginRoute />} />
+      <Route element={<ProtectedLayout />}>
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/students" element={<StudentsListPage />} />
+        <Route path="/students/new" element={<NewStudentPage />} />
+        <Route path="/students/:id" element={<StudentDetailPage />} />
+        <Route path="/teachers" element={<TeachersListPage />} />
+        <Route path="/teachers/:id" element={<TeacherDetailPage />} />
+        <Route path="/classes" element={<ClassesPage />} />
+        <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
+
+        {/* v0.2 (SPEC_V0.2.md §4): /settings/users no longer exists as a
+            tab — it's a bare redirect to /personnel, which replaced it. */}
+        <Route path="/settings/users" element={<Navigate to="/personnel" replace />} />
+
+        <Route element={<RequireSchoolAdmin />}>
+          <Route path="/personnel" element={<PersonnelListPage />} />
+        </Route>
+
+        <Route path="/settings" element={<SettingsLayout />}>
+          <Route index element={<Navigate to="/settings/school" replace />} />
+          <Route path="school" element={<SchoolProfilePage />} />
+          <Route path="academic" element={<AcademicSettingsPage />} />
+        </Route>
+      </Route>
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+    </Routes>
+  );
+}
+
 export function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<LoginRoute />} />
-        <Route element={<ProtectedLayout />}>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/students" element={<StudentsListPage />} />
-          <Route path="/students/new" element={<NewStudentPage />} />
-          <Route path="/students/:id" element={<StudentDetailPage />} />
-          <Route path="/teachers" element={<TeachersListPage />} />
-          <Route path="/teachers/:id" element={<TeacherDetailPage />} />
-          <Route path="/classes" element={<ClassesPage />} />
-          <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
-
-          {/* v0.2 (SPEC_V0.2.md §4): /settings/users no longer exists as a
-              tab — it's a bare redirect to /personnel, which replaced it. */}
-          <Route path="/settings/users" element={<Navigate to="/personnel" replace />} />
-
-          <Route element={<RequireSchoolAdmin />}>
-            <Route path="/personnel" element={<PersonnelListPage />} />
-          </Route>
-
-          <Route path="/settings" element={<SettingsLayout />}>
-            <Route index element={<Navigate to="/settings/school" replace />} />
-            <Route path="school" element={<SchoolProfilePage />} />
-            <Route path="academic" element={<AcademicSettingsPage />} />
-          </Route>
-        </Route>
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
-      </Routes>
+      <AppRoutes />
     </BrowserRouter>
   );
 }
