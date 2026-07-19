@@ -68,9 +68,12 @@ describe("ClassArmDetailPage", () => {
     renderPage();
 
     expect(await screen.findByText("JSS 1 A")).toBeInTheDocument();
-    // Same teacher is both class teacher and a subject teacher in this fixture.
+    // Same teacher is both class teacher and a subject teacher in this
+    // fixture; the subject-teachers list also renders twice (mobile card +
+    // desktop table, only one visible per breakpoint via CSS) — jsdom
+    // doesn't apply media queries, so both exist in the DOM at once.
     expect(screen.getAllByText("Bola Ogundare").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("Mathematics")).toBeInTheDocument();
+    expect(screen.getAllByText("Mathematics").length).toBeGreaterThanOrEqual(1);
     const studentsSection = screen.getByText("Students").closest("section")!;
     const studentsTable = within(await within(studentsSection).findByRole("table"));
     expect(studentsTable.getByText("Chidi Okoro")).toBeInTheDocument();

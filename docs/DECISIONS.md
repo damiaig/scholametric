@@ -1021,3 +1021,66 @@ page mount (not lazily on tab click), so it had already cached the
 pre-withdrawal result by the time the mutation completed; nothing told it
 to refetch. The backend was correct throughout (confirmed via direct API
 call) — this was a pure frontend cache-staleness bug.
+
+## 2026-07-19 — Step 8 acceptance run found and fixed a real bug: `totalActiveStudents` wasn't session-scoped
+Decision: `DashboardService.stats()` now counts `totalActiveStudents` as
+`ACTIVE` students with an enrollment in the **current session**
+(`enrollments: { some: { sessionId: currentSession.id } }`), matching
+`studentsByLevel`'s own scoping — previously it was a school-wide count
+ignoring session entirely. `dashboard.e2e-spec.ts` updated to match, plus a
+new regression test that creates an empty session, activates it, and
+asserts `totalActiveStudents` drops to 0 immediately (cleaning up the
+session it creates directly via Prisma afterward, since no `DELETE
+/sessions/:id` exists for real usage — see docs/API.md).
+Reason: found while manually walking SPEC_V0.2.md §8's acceptance
+checklist — activating a freshly-created empty session left the Dashboard
+and Students empty-session banner (built in step 7) permanently silent,
+because the stat it gates on never reached 0 as long as the school had
+*any* active students anywhere. The bug predates v0.2 (the field existed,
+unscoped, since v0.1) but only became user-visible once step 7 built a
+feature that depended on it being session-scoped.
+
+## 2026-07-19 — Step 8 acceptance run: ClassArmDetailPage's subject-teachers table now collapses to cards on mobile
+Decision: `ClassArmDetailPage.tsx`'s subject-teachers list was a plain
+`<table>` with no mobile fallback — at 360px, "English Language" and
+similar two-word cells wrapped mid-word inside cramped table cells. Added
+an `sm:hidden` card list alongside the existing table (now `hidden
+sm:block`), matching the mobile-card convention already used by the
+`DataTable` component and this same page's own Students section.
+Reason: CLAUDE.md §6 requires every table to collapse to cards on mobile;
+this one was hand-rolled outside `DataTable` and was missed. Found during
+the step 8 polish pass (360/768/1280px review of every v0.2 page).
+
+## 2026-07-19 — Step 8 acceptance run: `academic-setup.e2e-spec.ts` assumed a school has exactly one session
+Decision: the suite's `beforeAll` captured "Sunrise's session" via
+`academicSession.findFirstOrThrow({ where: { schoolId } })` — no
+`isCurrent` filter, no ordering — then `afterAll` restored that same row's
+`isCurrent: true` after the suite's own activation test moved the flag
+elsewhere. Fixed by filtering `{ schoolId, isCurrent: true }` so it always
+captures the actually-current session regardless of how many others exist.
+Reason: this session's own manual acceptance-testing created a second,
+permanent session for Sunrise (via the real "New session" UI flow — exactly
+the feature working as intended), which is what exposed the bug:
+`findFirstOrThrow` non-deterministically returned the *other* session,
+and `afterAll` then tried to mark it current while the real current
+session was already marked current, tripping the one-current-per-school
+unique constraint. The test's implicit "exactly one session" assumption
+was safe under the original seed but was never going to survive real
+usage of a feature whose entire purpose is letting a school accumulate
+more sessions over time.
+
+## 2026-07-19 — v0.2 acceptance run: all checklist items PASS
+Decision: ran the full SPEC_V0.2.md §8 acceptance checklist (all v0.1
+regression items + all v0.2 items) against a fresh `docker compose down -v`
+→ migrate → seed stack, via a mix of direct API calls and Playwright
+against the real running app (not mocks). Every item passed after the
+three fixes above; full e2e (142 tests) + web (60 tests) suites green,
+typecheck and lint clean in every workspace, no `any` anywhere in the
+codebase.
+One cosmetic-only, non-blocking item noted but not fixed: the Subjects
+tab's "Levels" column badges wrap one-per-line at exactly 768px (fine at
+360px — collapses to a card — and at 1280px — fits on one line); nothing
+overflows or is unreadable, just visually tall for subjects offered at
+many levels. Left as a known minor polish item rather than risk touching
+`DataTable`'s shared column-width behavior this late in the run.
+Tagged `v0.2.0` — v0.2 "Staff & Structure" is complete.

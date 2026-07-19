@@ -29,7 +29,15 @@ describe("Academic setup (e2e)", () => {
 
     const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
     sunriseSchoolId = sunrise.id;
-    const sunriseSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: sunriseSchoolId } });
+    // Must be the CURRENT session specifically, not just "the first one
+    // found" — a school can accumulate more than one session over time
+    // (that's the whole point of the feature), so an unfiltered
+    // findFirstOrThrow here is a trap: afterAll's restore-isCurrent step
+    // below would target the wrong row and hit the one-current-per-school
+    // unique constraint.
+    const sunriseSession = await prisma.academicSession.findFirstOrThrow({
+      where: { schoolId: sunriseSchoolId, isCurrent: true },
+    });
     sunriseSessionId = sunriseSession.id;
     const sunriseClassArm = await prisma.classArm.findFirstOrThrow({ where: { schoolId: sunriseSchoolId } });
     sunriseClassArmId = sunriseClassArm.id;

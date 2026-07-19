@@ -24,12 +24,18 @@ describe("Dashboard (e2e)", () => {
     await app.close();
   });
 
-  it("returns correct counts scoped to the caller's school", async () => {
+  it("returns correct counts scoped to the caller's school and current session", async () => {
     const schoolId = (await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } })).id;
-    const expectedActive = await prisma.student.count({ where: { schoolId, status: "ACTIVE" } });
     const currentSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId, isCurrent: true } });
     const currentTerm = await prisma.term.findFirst({
       where: { schoolId, sessionId: currentSession.id, isCurrent: true },
+    });
+    // totalActiveStudents is scoped to the CURRENT SESSION's enrollments,
+    // not a school-wide count — otherwise it'd never reach 0 right after
+    // activating a freshly-created session, defeating the empty-session
+    // banner this stat drives on the frontend (SPEC_V0.2.md §4).
+    const expectedActive = await prisma.student.count({
+      where: { schoolId, status: "ACTIVE", enrollments: { some: { sessionId: currentSession.id } } },
     });
 
     const response = await request(app.getHttpServer())
@@ -54,6 +60,50 @@ describe("Dashboard (e2e)", () => {
     expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
   });
 
+  it("totalActiveStudents drops to 0 right after activating a freshly-created, empty session", async () => {
+    const schoolId = (await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } })).id;
+    const originalCurrent = await prisma.academicSession.findFirstOrThrow({ where: { schoolId, isCurrent: true } });
+
+    const emptySession = await prisma.academicSession.create({
+      data: {
+        schoolId,
+        name: `Empty-Session-Regression-${Date.now()}`,
+        startsOn: new Date("2030-09-01"),
+        endsOn: new Date("2031-07-31"),
+        isCurrent: false,
+      },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/sessions/${emptySession.id}/activate`)
+      .set("Authorization", `Bearer ${sunriseAdminToken}`)
+      .send({ confirmName: emptySession.name })
+      .expect(200);
+
+    const response = await request(app.getHttpServer())
+      .get("/api/v1/dashboard/stats")
+      .set("Authorization", `Bearer ${sunriseAdminToken}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.currentSession).toBe(emptySession.name);
+    expect(response.body.totalActiveStudents).toBe(0);
+    expect(response.body.studentsByLevel).toEqual([]);
+
+    // Restore the original current session so later tests/manual use aren't
+    // left on an empty session.
+    await request(app.getHttpServer())
+      .post(`/api/v1/sessions/${originalCurrent.id}/activate`)
+      .set("Authorization", `Bearer ${sunriseAdminToken}`)
+      .send({ confirmName: originalCurrent.name })
+      .expect(200);
+
+    // No DELETE /sessions/:id exists (sessions are permanent records for
+    // real usage — see docs/API.md), so this direct-Prisma cleanup is
+    // test-only: without it, every CI run left one more orphaned session
+    // behind in Settings > Academic forever.
+    await prisma.academicSession.delete({ where: { id: emptySession.id } });
+  });
+
   it("TEACHER can also read dashboard stats", async () => {
     const response = await request(app.getHttpServer())
       .get("/api/v1/dashboard/stats")
@@ -63,7 +113,16 @@ describe("Dashboard (e2e)", () => {
 
   it("a second school's stats reflect only its own students", async () => {
     const hillcrestId = (await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } })).id;
-    const expectedHillcrestActive = await prisma.student.count({ where: { schoolId: hillcrestId, status: "ACTIVE" } });
+    const hillcrestCurrentSession = await prisma.academicSession.findFirstOrThrow({
+      where: { schoolId: hillcrestId, isCurrent: true },
+    });
+    const expectedHillcrestActive = await prisma.student.count({
+      where: {
+        schoolId: hillcrestId,
+        status: "ACTIVE",
+        enrollments: { some: { sessionId: hillcrestCurrentSession.id } },
+      },
+    });
 
     const hillcrestResponse = await request(app.getHttpServer())
       .get("/api/v1/dashboard/stats")

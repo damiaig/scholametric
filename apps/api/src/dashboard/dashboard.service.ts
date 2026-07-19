@@ -33,8 +33,21 @@ export class DashboardService {
 
     // A brand-new school with no session yet has nothing to enroll students
     // into, so there's nothing meaningful to group by level either.
+    //
+    // totalActiveStudents is scoped to the CURRENT session's enrollments,
+    // matching studentsByLevel — not a school-wide count. A school-wide
+    // count would never reach 0 right after activating a freshly-created
+    // session, silently defeating the empty-session banner (SPEC_V0.2.md
+    // §4) that this stat drives on the frontend. See docs/DECISIONS.md.
     const [totalActiveStudents, currentTerm, studentsByLevel] = await Promise.all([
-      this.prisma.student.count({ where: forSchool(schoolId, { status: StudentStatus.ACTIVE }) }),
+      currentSession
+        ? this.prisma.student.count({
+            where: forSchool(schoolId, {
+              status: StudentStatus.ACTIVE,
+              enrollments: { some: { sessionId: currentSession.id } },
+            }),
+          })
+        : 0,
       currentSession
         ? this.prisma.term.findFirst({ where: forSchool(schoolId, { sessionId: currentSession.id, isCurrent: true }) })
         : null,

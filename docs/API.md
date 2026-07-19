@@ -569,6 +569,12 @@ grouped raw SQL query, not one query per level. If the school has no
 current session yet, `studentsByLevel` is `[]` and `currentSession`/
 `currentTerm` are `null` rather than erroring.
 
+`totalActiveStudents` is scoped to the **current session** too (`ACTIVE`
+students with an enrollment in `currentSession`) — not a school-wide count.
+`0` right after activating a freshly-created, empty session is expected and
+correct; that's exactly what the frontend's empty-session banner (v0.2 §4)
+keys off of. If the school has no current session, this is `0`.
+
 ---
 
 ## Personnel (v0.2, SPEC_V0.2.md §2)

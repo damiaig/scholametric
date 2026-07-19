@@ -137,43 +137,76 @@ export function ClassArmDetailPage() {
         {arm.subjectTeachers.length === 0 ? (
           <p className="text-sm text-muted">No subject teachers assigned this session.</p>
         ) : (
-          <div className="overflow-x-auto rounded-lg border border-muted/20 bg-card">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-muted/20">
-                  <th className="px-4 py-3 font-medium text-muted">Subject</th>
-                  <th className="px-4 py-3 font-medium text-muted">Teacher</th>
-                  {canManage && <th className="px-4 py-3 font-medium text-muted" />}
-                </tr>
-              </thead>
-              <tbody>
-                {arm.subjectTeachers.map((entry) => (
-                  <tr key={entry.id} className="border-b border-muted/10 last:border-0">
-                    <td className="px-4 py-3 text-text">{entry.subjectName}</td>
-                    <td className="px-4 py-3">
-                      <Link to={`/teachers/${entry.teacherUserId}`} className="text-primary hover:underline">
-                        {entry.teacherFirstName} {entry.teacherLastName}
-                      </Link>
-                    </td>
-                    {canManage && (
-                      <td className="px-4 py-3 text-right">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          aria-label={`Remove ${entry.subjectName} for ${entry.teacherFirstName} ${entry.teacherLastName}`}
-                          className="text-danger hover:bg-danger/10"
-                          onClick={() => setRemovingAssignmentId(entry.id)}
-                        >
-                          <Trash2 className="h-4 w-4" aria-hidden="true" />
-                        </Button>
-                      </td>
-                    )}
+          <>
+            {/* Mobile: cards (CLAUDE.md §6 — tables collapse to cards below sm).
+                The plain <table> below wraps "Subject"/"Teacher" cell text at
+                360px otherwise (e.g. "English Language" breaking mid-word). */}
+            <div className="flex flex-col gap-2 sm:hidden">
+              {arm.subjectTeachers.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-muted/20 bg-card p-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-text">{entry.subjectName}</p>
+                    <Link to={`/teachers/${entry.teacherUserId}`} className="text-sm text-primary hover:underline">
+                      {entry.teacherFirstName} {entry.teacherLastName}
+                    </Link>
+                  </div>
+                  {canManage && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-label={`Remove ${entry.subjectName} for ${entry.teacherFirstName} ${entry.teacherLastName}`}
+                      className="shrink-0 text-danger hover:bg-danger/10"
+                      onClick={() => setRemovingAssignmentId(entry.id)}
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="hidden overflow-x-auto rounded-lg border border-muted/20 bg-card sm:block">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-muted/20">
+                    <th className="px-4 py-3 font-medium text-muted">Subject</th>
+                    <th className="px-4 py-3 font-medium text-muted">Teacher</th>
+                    {canManage && <th className="px-4 py-3 font-medium text-muted" />}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {arm.subjectTeachers.map((entry) => (
+                    <tr key={entry.id} className="border-b border-muted/10 last:border-0">
+                      <td className="px-4 py-3 text-text">{entry.subjectName}</td>
+                      <td className="px-4 py-3">
+                        <Link to={`/teachers/${entry.teacherUserId}`} className="text-primary hover:underline">
+                          {entry.teacherFirstName} {entry.teacherLastName}
+                        </Link>
+                      </td>
+                      {canManage && (
+                        <td className="px-4 py-3 text-right">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            aria-label={`Remove ${entry.subjectName} for ${entry.teacherFirstName} ${entry.teacherLastName}`}
+                            className="text-danger hover:bg-danger/10"
+                            onClick={() => setRemovingAssignmentId(entry.id)}
+                          >
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          </Button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </section>
 

@@ -1,15 +1,23 @@
 # ScholaMetric
 
 Multi-tenant school management platform for Nigerian schools. See `CLAUDE.md`
-for the project constitution and `docs/SPEC_V0.1.md` for the current version
-spec (v0.1 — Foundation).
+for the project constitution, `docs/SPEC_V0.1.md` for the v0.1 (Foundation)
+spec, and `docs/SPEC_V0.2.md` for the current version spec (v0.2 — Staff &
+Structure).
 
 ## Status
 
-v0.1 step 2 (schema + seed): full Prisma schema, initial migration,
-`PrismaService` + `TenantContext`/`forSchool` scaffolding (no consumers
-yet), and the real seed script. No auth or domain endpoints yet — those
-land in later steps of the v0.1 build order (see `docs/SPEC_V0.1.md` §6).
+**v0.2 complete** (Staff & Structure): school personnel/staff records
+(`staff_profiles`, staff numbers), subjects and per-level subject offerings,
+class-teacher and subject-teacher assignments (session-scoped), guardians
+restructured into a many-to-many `guardians`/`student_guardians` model
+(replacing the v0.1 flat guardian fields, which are frozen but still
+populated for backward compatibility), a real audit-log-backed History tab,
+session-activation safety (typed confirmation + enrollment-count preview),
+and the Personnel/Teachers/Classes web UI. v0.1 (Foundation) — auth, schools,
+students, sessions/terms/classes, dashboard — remains fully in place and
+covered by regression tests. See `docs/DECISIONS.md` for the full build
+history and `docs/API.md` for the endpoint reference.
 
 ## Prerequisites
 
@@ -62,11 +70,15 @@ pnpm seed                                                  # runs apps/api/prism
 The seed is idempotent (upserts on natural keys) — safe to run more than
 once. It creates:
 - the platform school + `super@scholametric.test` (SUPER_ADMIN)
-- Sunrise College (slug `sunrise`) with a SCHOOL_ADMIN, a TEACHER, a
-  2026/2027 session (3 terms, first current), class levels JSS 1–SSS 3
-  with arms A/B, and 25 students
-- Hillcrest Academy (slug `hillcrest`), mirrored setup, 1 SCHOOL_ADMIN,
-  5 students — kept deliberately separate for cross-tenant testing later
+- Sunrise College (slug `sunrise`) with a PROPRIETOR, a SCHOOL_ADMIN, 8
+  TEACHERs (with staff numbers, job titles, and subject/class-teacher
+  assignments), 15 subjects across JSS 1–SSS 3, class levels JSS 1–SSS 3
+  with arms A/B (class teachers assigned), a 2026/2027 session (3 terms,
+  first current), and ~125 students with backfilled guardians (one student
+  seeded with two guardians, to exercise the multi-guardian case)
+- Hillcrest Academy (slug `hillcrest`), mirrored setup at smaller scale
+  (1 SCHOOL_ADMIN, 2 TEACHERs, 5 students) — kept deliberately separate for
+  cross-tenant testing
 
 All seeded passwords are `Passw0rd!` (bcrypt cost 12).
 
