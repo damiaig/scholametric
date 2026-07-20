@@ -1191,3 +1191,38 @@ Reason: worth knowing before trusting a root `pnpm ci`/`pnpm test` run's
 result at face value in this repo — use `pnpm run ci` (not bare `pnpm
 ci`), and if the API suite fails only under the combined root run, rerun
 it alone before treating a failure as real.
+
+## 2026-07-20 — Dashboard chart "0" Y-axis ticks: real cause was label clipping, not fractional-tick rounding
+Decision: the reported bug ("every Y-axis tick label reads 0") was
+diagnosed on report as recharts' classic fractional-tick-rounding issue
+on small integer domains — but `allowDecimals={false}` was already set
+on the YAxis and had been since this chart was first built; that wasn't
+it. Confirmed the real mechanism by dumping the live SVG: the DOM's tick
+`textContent` was always correct (`0`, `30`, `60`, `90`, `120`) — the
+*rendered pixels* were wrong. `BarChart`'s `margin={{ left: -16 }}`
+combined with the Y-axis's right-aligned (`text-anchor="end"`) labels
+pushed any 2+ digit label's left edge into negative SVG-coordinate space,
+which recharts' `overflow: hidden` SVG then clipped — leaving only the
+last digit(s) visible. Every affected value here (0, 30, 60, 90, 120)
+happens to end in the digit "0", which is why the symptom looked like
+uniform zeros rather than obviously-truncated numbers. Single-digit
+domains (e.g. max=3 → ticks 0–4) were never wide enough to clip, which is
+why this had gone unnoticed until a level's count crossed into double
+digits.
+Fix: `margin.left` changed from `-16` to `0` (removing the clipping),
+plus a new `computeIntegerTicks()` (`chart-ticks.ts`) that computes the
+Y-axis's domain max and evenly-spaced integer ticks explicitly, replacing
+reliance on recharts' own auto-fit "nice tick" algorithm — passed via the
+YAxis's `domain`/`ticks` props with `interval={0}` (forces every provided
+tick to render; without it, recharts' own overlap-avoidance filtering
+silently drops most of them under jsdom's fake text metrics — this was
+also what made the DashboardPage test hang at "1 tick rendered" until
+`interval={0}` was added, since explicit `ticks` alone doesn't bypass
+that filtering).
+Reason: confirmed root cause by direct SVG/DOM inspection (bounding
+boxes, raw attribute dump) before changing anything, rather than
+implementing the reported hypothesis on faith — same discipline as the
+Teachers-crash fix above. Explicit computed ticks were chosen over "just
+fix the margin" alone because it also makes the axis's tick count and
+spacing deterministic and unit-testable (`chart-ticks.test.ts`), rather
+than depending on recharts' internal fitting heuristics staying stable.

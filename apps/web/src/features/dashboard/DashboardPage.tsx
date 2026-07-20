@@ -6,10 +6,14 @@ import { Button } from "../../components/ui/button";
 import { EmptySessionBanner } from "../../components/EmptySessionBanner";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useDashboardStats } from "./use-dashboard-stats";
+import { computeIntegerTicks } from "./chart-ticks";
 
 export function DashboardPage() {
   const { data: user } = useCurrentUser();
   const stats = useDashboardStats();
+  const yAxisTicks = stats.data
+    ? computeIntegerTicks(Math.max(0, ...stats.data.studentsByLevel.map((level) => level.count)))
+    : [];
 
   return (
     <div>
@@ -78,10 +82,17 @@ export function DashboardPage() {
               ) : (
                 <div className="h-64 w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={stats.data.studentsByLevel} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                    <BarChart data={stats.data.studentsByLevel} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#6B728033" vertical={false} />
                       <XAxis dataKey="levelName" tick={{ fill: "#6B7280", fontSize: 12 }} interval={0} />
-                      <YAxis allowDecimals={false} tick={{ fill: "#6B7280", fontSize: 12 }} width={32} />
+                      <YAxis
+                        allowDecimals={false}
+                        domain={[0, yAxisTicks[yAxisTicks.length - 1]]}
+                        ticks={yAxisTicks}
+                        interval={0}
+                        tick={{ fill: "#6B7280", fontSize: 12 }}
+                        width={36}
+                      />
                       <Tooltip cursor={{ fill: "#1E4ED80D" }} />
                       <Bar dataKey="count" name="Students" fill="#1E4ED8" radius={[4, 4, 0, 0]} />
                     </BarChart>
