@@ -27,10 +27,10 @@ acceptance criteria pass.
 |------------|------|------------------------------------------------|
 | id         | uuid PK |                                             |
 | school_id  | uuid FK | NOT NULL, indexed                           |
-| name       | text | e.g. "CA 1", "CA 2", "Exam"; UNIQUE(school_id, name) |
+| name       | text | e.g. "CA 1", "CA 2", "Exam"; plain UNIQUE(school_id, name) — not partial (see below) |
 | weight     | int  | percentage; the school's active set must sum to 100 (validated at the API layer on every mutation, not by constraint) |
 | sort_order | int  | display/entry order                            |
-| deleted_at / created_at / updated_at | | soft delete — components with recorded scores (v0.4+) will block hard removal |
+| deleted_at / created_at / updated_at | | `deleted_at` is **reserved, not wired, in v0.3** — column exists so the migration doesn't need to change shape again in v0.4, but no soft-delete logic reads or writes it, and the unique index above is a plain (non-partial) index, not `WHERE deleted_at IS NULL`. `PUT /assessment-components`'s "full-set replace" is a hard delete-and-recreate in v0.3. v0.4 (once scores can reference a component) is what actually turns on soft-delete semantics and needs to migrate the index to partial at that point — noted as a forward debt, not built now. |
 
 School-wide in v0.3 (per-level schemes are a future need — note in
 DECISIONS.md, do not build).
@@ -61,41 +61,68 @@ docs/API.md updated; a DECISIONS.md entry marks the removal.
 ## 2. API (all /api/v1, tenant-scoped per CLAUDE.md §4)
 
 ### Teacher's own view
-- `GET /me/teaching` — TEACHER (also works for any staff with
+- `GET /me/teaching` — its own endpoint (not a param-less alias of
+  `GET /teachers/:userId`), reusing that same detail query's
+  class-teacher/subject-teacher joins plus a current-session enrollment
+  count per class arm. TEACHER (also works for any staff with
   assignments): { classTeacherOf: [{classArm + level + enrollment
   count}], subjects: [{subject, classArm, level}] } for the CURRENT
-  session. One efficient query set, no N+1.
+  session. One efficient query set, no N+1. Exempt from the pagination
+  rule (§5 amendment below) — bounded by the caller's own assignments.
 - Teachers keep read access to the school-wide students list in v0.3
   (unchanged RBAC); whether that stays is a per-school policy question
   deferred until a real school weighs in (DECISIONS.md).
 
-### Assessment structure (PROPRIETOR / SCHOOL_ADMIN)
-- `GET /assessment-components` — ordered by sort_order.
-- `PUT /assessment-components` — replaces the full set atomically:
-  [{name, weight, sortOrder}]. Validates: 1-8 components, weights are
-  positive integers summing to exactly 100, names unique. Replacing is
-  all-or-nothing in one transaction. (Full-set PUT avoids ever having
-  a persisted set that doesn't sum to 100.)
-- `GET /grade-boundaries` — ordered by sort_order.
-- `PUT /grade-boundaries` — replaces the full set atomically.
-  Validates: 2-12 rows, ranges are integers within 0-100, tile the
-  full 0-100 with no gaps/overlaps, grades unique.
-- `GET /grading-presets` — static: the WAEC 9-point preset (A1 75-100
-  Excellent, B2 70-74 Very Good, B3 65-69 Good, C4 60-64 Credit,
-  C5 55-59 Credit, C6 50-54 Credit, D7 45-49 Pass, E8 40-44 Pass,
-  F9 0-39 Fail) and a simple A-F preset — for one-click apply in the
-  UI (apply = client fills the PUT).
+### Assessment structure
+- `GET /assessment-components` (PROPRIETOR / SCHOOL_ADMIN) — ordered by
+  sort_order. Exempt from the pagination rule (§5 amendment below) —
+  bounded to 1-8 rows.
+- `PUT /assessment-components` (PROPRIETOR / SCHOOL_ADMIN) — replaces
+  the full set atomically: [{name, weight, sortOrder}]. Validates: 1-8
+  components, weights are positive integers summing to exactly 100,
+  names unique. Replacing is all-or-nothing in one transaction.
+  (Full-set PUT avoids ever having a persisted set that doesn't sum to
+  100.)
+- `GET /grade-boundaries` — **PROPRIETOR / SCHOOL_ADMIN / TEACHER**
+  (read only — TEACHER will need this reference once score entry
+  lands in v0.4, no reason to gate it until then). Ordered by
+  sort_order. Exempt from the pagination rule (§5 amendment below) —
+  bounded to 2-12 rows.
+- `PUT /grade-boundaries` (PROPRIETOR / SCHOOL_ADMIN only) — replaces
+  the full set atomically. Validates: 2-12 rows, ranges are integers
+  within 0-100, tile the full 0-100 with no gaps/overlaps, grades
+  unique.
+- `GET /grading-presets` (PROPRIETOR / SCHOOL_ADMIN) — static: the WAEC
+  9-point preset (A1 75-100 Excellent, B2 70-74 Very Good, B3 65-69
+  Good, C4 60-64 Credit, C5 55-59 Credit, C6 50-54 Credit, D7 45-49
+  Pass, E8 40-44 Pass, F9 0-39 Fail) and a simple A-F preset — for
+  one-click apply in the UI (apply = client fills the PUT). This is a
+  static, locally-stored percentage→grade table only — no external
+  WAEC/NECO system, API, or result submission is involved, so it does
+  not touch CLAUDE.md §9's "WAEC/NECO integration" out-of-scope line.
+  Exempt from the pagination rule (§5 amendment below) — exactly 2
+  fixed rows.
 - All mutations audited.
 
 ### Forced password change
-- Login response gains mustChangePassword: boolean.
+- Login response AND `GET /auth/me` both gain mustChangePassword:
+  boolean (the frontend must catch this on every load, not just at
+  login — an admin can reset a password mid-session).
 - `POST /auth/change-password` — { currentPassword, newPassword } —
   authenticated, any role. Verifies current, enforces min 8 chars,
-  clears the flag, revokes all OTHER refresh-token families (keep the
-  current session), audited (no password material in the log).
+  clears the flag, audited (no password material in the log). Does
+  **not** revoke other sessions in v0.3 — no refresh-token
+  "family"/session concept exists in the schema to distinguish "this
+  session" from "others" (see docs/DECISIONS.md). Revoking the
+  session that isn't the caller's own is a future item once that
+  concept exists.
 - While mustChangePassword is true, every endpoint EXCEPT
-  change-password, /auth/me, and logout returns 403 with code
-  PASSWORD_CHANGE_REQUIRED (guard-level, like @Public but inverse).
+  change-password, /auth/me, and logout returns `403` using the
+  existing error envelope unchanged, plus a response header
+  `X-Password-Change-Required: true` for the frontend to key off of
+  (alongside `mustChangePassword` from `/auth/me`). No envelope shape
+  change — CLAUDE.md §5's `{statusCode, message, error, path,
+  timestamp}` stays exactly as documented.
 
 ---
 
@@ -125,22 +152,53 @@ docs/API.md updated; a DECISIONS.md entry marks the removal.
    - Grading scale: editable boundary rows with live gap/overlap
      validation mirrored client-side, plus "Apply WAEC 9-point" /
      "Apply A-F" preset buttons (confirm dialog — replaces the set).
-4. Forced password change: after login, if mustChangePassword, route
-   to a full-screen /change-password (no sidebar), friendly copy
-   ("Choose your own password to continue"), then into the app.
-   Deep-links honor the redirect. Reset-password dialog copy gains:
-   "They'll be asked to choose a new password at first login."
+4. Forced password change: after login, if mustChangePassword (also
+   checked on every subsequent load via `/auth/me`, and on any 403
+   carrying `X-Password-Change-Required: true`), route to a
+   full-screen /change-password (no sidebar), friendly copy ("Choose
+   your own password to continue"). After changing, **always redirect
+   to home** (dashboard/My Classes) — v0.3 does not remember and
+   restore a pre-login deep link; that's deferred to a future version
+   (noted in DECISIONS.md), not built now. Reset-password dialog copy
+   gains: "They'll be asked to choose a new password at first login."
 5. Polish debt: fix the Subjects tab level-chip wrapping at 768px.
 6. All states, 360px, tokens — as always.
 
 ---
 
-## 5. CI (mini-step, pre-approved constitution amendment)
-Add to CLAUDE.md §7: "CI runs on GitHub Actions for every push."
-Workflow: .github/workflows/ci.yml — checkout, pnpm install (cached),
-postgres:16 + redis:7 service containers, migrate + seed, then
-pnpm run ci. Must pass on the first real push (iterate locally with
-act or by pushing to a branch if needed).
+## 5. Constitution amendments (pre-approved)
+Two small, pre-approved additions to CLAUDE.md this step:
+
+- **§7 (Testing & definition of done)**: "CI runs on GitHub Actions for
+  every push." Workflow: .github/workflows/ci.yml — checkout, pnpm
+  install (cached), postgres:16 + redis:7 service containers, migrate +
+  seed, then run typecheck/lint/test. Must pass on the first real push
+  (iterate locally with act or by pushing to a branch if needed).
+  Crucially, **do not invoke the root `pnpm test` (or bare `pnpm ci`)
+  as a single step** — this repo's root `pnpm test` runs `apps/api`'s
+  e2e suite and `apps/web`'s Vitest suite concurrently via pnpm's
+  default recursive workspace concurrency, and that contention already
+  starved a bcrypt-cost-12 login hook past Jest's default 5s timeout
+  locally this week (passed 142/142 clean run in isolation seconds
+  later — see docs/DECISIONS.md). GitHub's standard runners are
+  typically *more* resource-constrained than a dev machine, not less.
+  The workflow must instead: (a) run `apps/api`'s e2e suite and
+  `apps/web`'s Vitest suite as separate, sequential steps (e.g.
+  `pnpm --filter @scholametric/api run test` then
+  `pnpm --filter @scholametric/web run test`, not the root aggregate),
+  and (b) raise Jest's hook/test timeout in `apps/api/test/jest-e2e.json`
+  (or via `--testTimeout`) enough to give bcrypt-cost-12 headroom on a
+  slower runner. (`--runInBand` is already the default for the API e2e
+  script itself — the concurrency problem is at the root `pnpm -r`
+  level, between workspaces, not within Jest.) Also remember: bare
+  `pnpm ci` is pnpm's own reserved clean-install command, not this
+  repo's script — always `pnpm run ci` (or the separated steps above).
+- **§5 (Backend rules)**: one-line exception to "all list endpoints are
+  paginated" — bounded, fully-returned config-style endpoints
+  (`GET /assessment-components`, `GET /grade-boundaries`,
+  `GET /grading-presets`, `GET /me/teaching`) are exempt; each is
+  capped at a small fixed size (≤8, ≤12, exactly 2, and one caller's
+  own assignments, respectively) where pagination would add nothing.
 
 ---
 
@@ -148,7 +206,14 @@ act or by pushing to a branch if needed).
 Score entry, results, report cards (v0.4+); promotion/re-enrollment;
 per-level assessment schemes; restricting teachers' school-wide read
 access; parent/student logins; fees; the SUPER_ADMIN school-edit audit
-gap (needs design thought — carry the debt, note it).
+gap (needs design thought — carry the debt, note it). Also carried as
+debt from this step's spec review (docs/DECISIONS.md has the full
+reasoning for each): revoking a change-password caller's OTHER
+sessions (needs a session/family concept the schema doesn't have yet);
+remembering and restoring a pre-login deep link through the forced
+password-change flow; turning `assessment_components.deleted_at` into
+real soft-delete semantics with a partial unique index (that's v0.4's
+job, once scores can reference a component).
 
 ---
 
@@ -158,7 +223,9 @@ gap (needs design thought — carry the debt, note it).
 2. API: /me/teaching, assessment-components + grade-boundaries +
    presets, change-password + the PASSWORD_CHANGE_REQUIRED guard.
    Full e2e incl. atomic-PUT validation edges (sum≠100, gap, overlap),
-   flag lifecycle, other-sessions revocation, cross-tenant.
+   flag lifecycle (set → 403s elsewhere → cleared by change-password →
+   also cleared on /auth/me), cross-tenant. (No other-sessions
+   revocation to test — out of scope in v0.3, see §2.)
 3. CI: GitHub Actions workflow green on a real push.
 4. Web: teacher home + sidebar variant + /change-password flow.
 5. Web: assessment structure + grading scale panels with presets +
@@ -174,8 +241,11 @@ gap (needs design thought — carry the debt, note it).
       assignments; an unassigned teacher sees the friendly empty
       state; admin dashboard unchanged.
 - [ ] newteacher@sunrise.test is forced through change-password
-      before reaching anything; after changing, logs in normally;
-      their other sessions are revoked.
+      before reaching anything (every other endpoint 403s with
+      `X-Password-Change-Required: true`); after changing, the flag
+      clears on both the change-password response and a subsequent
+      `/auth/me`, and they use the app normally. (Other-session
+      revocation is explicitly NOT part of v0.3 — see §2.)
 - [ ] Admin resets a password → dialog mentions first-login change →
       that user is flagged.
 - [ ] Assessment components reject a 90-total save client- and

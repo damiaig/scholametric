@@ -1226,3 +1226,96 @@ Teachers-crash fix above. Explicit computed ticks were chosen over "just
 fix the margin" alone because it also makes the axis's tick count and
 spacing deterministic and unit-testable (`chart-ticks.test.ts`), rather
 than depending on recharts' internal fitting heuristics staying stable.
+
+## 2026-07-21 — SPEC_V0.3.md review: resolutions (recorded before any build work)
+Ten open questions from the pre-build spec review were resolved and the
+spec edited inline to match (docs/SPEC_V0.3.md §§1-2, 4-8). No code
+changed — this is a planning-stage record.
+
+1. **`POST /auth/change-password` does not revoke other sessions in
+   v0.3.** Just verifies the current password, sets the new one, clears
+   `mustChangePassword`. Reason: the schema has no session/family
+   concept to distinguish "the caller's own session" from "others" (a
+   `refresh_tokens` row is keyed only by `userId` — see the existing
+   code comment in `auth.service.ts`'s `refresh()` explaining the same
+   gap for reuse-detection). Revoking every OTHER session requires that
+   concept to exist first; carried as an explicit future item in
+   SPEC_V0.3.md §6, not built now.
+2. **`PASSWORD_CHANGE_REQUIRED` ships as a response header, not an
+   envelope field.** The blocked-endpoint guard returns `403` with the
+   existing, unchanged error envelope (`{statusCode, message, error,
+   path, timestamp}`, per CLAUDE.md §5) plus
+   `X-Password-Change-Required: true`. The frontend also reads
+   `mustChangePassword` directly off `GET /auth/me`, so the header is a
+   secondary/defensive signal, not the only one. Reason: adding a `code`
+   field to the shared envelope would be a global contract change
+   affecting every error response in the API, not just this guard —
+   avoided entirely by using a header instead.
+3. **CLAUDE.md §5's "all list endpoints are paginated" gets a one-line
+   exception** for bounded, fully-returned config-style endpoints:
+   `GET /assessment-components` (≤8), `GET /grade-boundaries` (≤12),
+   `GET /grading-presets` (exactly 2, static), `GET /me/teaching`
+   (bounded by the caller's own assignments). Recorded as a
+   pre-approved constitution amendment in SPEC_V0.3.md §5, same
+   treatment as the CI amendment.
+4. **`GET /me/teaching` is its own endpoint**, reusing
+   `TeachersService`'s existing class-teacher/subject-teacher join
+   logic (already TEACHER-readable via `GET /teachers/:userId`) plus a
+   new current-session enrollment-count join. Reason: extending the
+   shared `ClassTeacherOfEntry` type with `enrollmentCount` would also
+   change what admins see at `GET /teachers/:userId` as a side effect;
+   a separate endpoint keeps that response shape untouched while
+   reusing the underlying query logic.
+5. **`mustChangePassword` is returned by `GET /auth/me` as well as
+   login.** Reason: the flag can become true mid-session (an admin
+   resets someone else's password while they're already logged in), so
+   the frontend can't rely solely on the login response to catch it —
+   it needs to be checked on every load.
+6. **No deep-link memory through the forced password-change flow in
+   v0.3.** After changing, always redirect to home (dashboard/My
+   Classes), never back to a pre-login deep link. Reason: the app has
+   zero "remember where I was going" infrastructure today (confirmed —
+   login always hard-navigates to `/dashboard`); building a 3-hop
+   redirect chain (deep link → login → change-password → destination)
+   is real, undesigned work, not a one-line addition. Carried as a
+   deferred item in SPEC_V0.3.md §6.
+7. **TEACHER gets READ access to `GET /grade-boundaries` in v0.3**
+   (write stays PROPRIETOR/SCHOOL_ADMIN-only). Reason: v0.4's score
+   entry will need teachers to see the grading scale they're entering
+   scores against; no reason to gate read access now just to reopen it
+   next version. `GET /assessment-components` and `GET
+   /grading-presets` stay fully admin-only (no teacher-facing need for
+   either yet).
+8. **`assessment_components.deleted_at` is reserved, not wired, in
+   v0.3.** Column exists (so the migration shape doesn't change again
+   in v0.4), but nothing reads or writes it, and `UNIQUE(school_id,
+   name)` stays a plain (non-partial) index. `PUT
+   /assessment-components`'s full-set replace is a hard
+   delete-and-recreate in v0.3. Reason: nothing in v0.3 can reference a
+   component (no scores exist yet), so soft-delete semantics would sit
+   completely unused; turning it on — and migrating the unique index to
+   partial (`WHERE deleted_at IS NULL`) — is v0.4's job, once scores
+   actually need the protection.
+9. **CI must not run the root `pnpm test` (or bare `pnpm ci`) as a
+   single step**, and must raise Jest's hook/test timeout for the API
+   e2e suite. Reason: proven this week, not hypothetical — the root
+   `pnpm test` runs `apps/api` and `apps/web` concurrently via pnpm's
+   default recursive workspace concurrency, and that contention starved
+   a bcrypt-cost-12 login hook past Jest's default 5s timeout locally
+   (`schools-crud.e2e-spec.ts`, 10 tests, all failing the same way in
+   `beforeAll`) — the identical suite passed 142/142 clean in isolation
+   seconds later. GitHub's standard runners are typically more
+   resource-constrained than a dev machine, not less, so this risk is
+   real for "must pass on the first real push." Fix (recorded in
+   SPEC_V0.3.md §5, to build in v0.3 step 3): run the API and web test
+   suites as separate sequential CI steps, and raise the API e2e
+   timeout. Also noted: bare `pnpm ci` is pnpm's own reserved
+   clean-install command, not this repo's script (already learned the
+   hard way during v0.2 step 8) — the workflow must use `pnpm run ci`
+   or the separated steps, never bare `pnpm ci`.
+10. **"WAEC 9-point preset" does not touch CLAUDE.md §9's "WAEC/NECO
+    integration" out-of-scope line.** It's a static, locally-stored
+    percentage→grade lookup table the school can apply with one click —
+    no external WAEC/NECO system, API, or result submission is
+    involved. Noted explicitly in SPEC_V0.3.md rather than left to a
+    reviewer's assumption, since the term appears in both documents.
