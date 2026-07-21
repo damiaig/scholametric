@@ -1365,3 +1365,88 @@ Also removed the `personnel.e2e-spec.ts` test that exercised the now-gone
 `POST /personnel/:userId/reset-password` instead (the underlying
 "works for a user with no staff profile" case it was actually testing
 still matters; only the removed route it went through changed).
+
+## 2026-07-21 — v0.3 step 2: teaching view + grading config + forced password change
+Decision: built `GET /me/teaching`, `GET`/`PUT /assessment-components`,
+`GET`/`PUT /grade-boundaries`, `GET /grading-presets`, and `POST
+/auth/change-password` + its guard. No schema changes — step 1 already
+added everything needed. Several implementation choices worth recording:
+
+**`mustChangePassword` guard composition.** Embedded as a claim in the
+access token itself (`AccessTokenPayload.mustChangePassword`), copied into
+`request.user` by `JwtAuthGuard` exactly like `role`/`schoolId` already
+are — zero extra DB hit per request, matching that guard's own existing
+"stateless access token" design (its own comment already accepts
+disabled/deleted-user staleness the same way). A new
+`PasswordChangeRequiredGuard` is registered in `APP_GUARD` right after
+`JwtAuthGuard` — before `AppThrottlerGuard`/`RolesGuard`, so a flagged
+user is blocked regardless of role or rate-limit state. It reads
+`request.user.mustChangePassword`; if `request.user` is undefined (a
+`@Public()` route — login/refresh/health), it no-ops, so it never needs
+to know about `@Public()` itself. A new `@AllowWhilePasswordChangeRequired()`
+decorator (mirrors `@Public()`'s `SetMetadata`/`Reflector` pattern exactly)
+exempts `GET /auth/me`, `POST /auth/logout`, and `POST
+/auth/change-password`.
+Reason: because the claim is JWT-sourced, it can go stale for up to the
+access token's remaining lifetime if something ELSE flips it after the
+token was issued (an admin resetting a *different* user's password mid-
+session) — an accepted tradeoff, not a bug, matching `JwtAuthGuard`'s own
+precedent. `GET /auth/me` is unaffected regardless (its own DB read is
+always fresh), so the frontend's primary signal (SPEC_V0.3.md resolution
+5) stays accurate; the guard is a defensive backstop, not the sole
+enforcement.
+
+**`POST /auth/change-password` reissues a fresh token pair.** Not asked
+for explicitly in the spec text, but necessary given the design above:
+without it, the caller's own still-valid access token would keep the
+stale `mustChangePassword: true` claim and the guard would keep blocking
+them even after a successful change, for up to 15 minutes. This doesn't
+conflict with resolution 1 ("no other-session revocation") — it's a new
+token for the *same* caller, not a revocation of anyone else's sessions.
+
+**Three mutations bypass the standard `@Audit()`/`AuditInterceptor`,
+written manually instead.** `AuditInterceptor` reads `entityId` off the
+response body's `.id` field and logs `request.body` verbatim as
+`metadata`. Neither fits: `PUT /assessment-components` and `PUT
+/grade-boundaries` return an *array* (no single `.id` — using the
+school's own id as `entityId` instead, since there's no single row to
+key off for a whole-set replace), and `POST /auth/change-password`'s
+body literally contains both passwords (logged as `{}` instead — no
+password material in the audit log, per spec). All three are still
+audited, just not through the decorator.
+
+**Array-body PUTs are wrapped, not bare.** SPEC_V0.3.md §2's shorthand
+(`[{name, weight, sortOrder}]`) reads as a bare-array request body, but
+both PUTs actually take `{ components: [...] }` / `{ boundaries: [...] }`
+— matching this API's own existing convention for array-body mutations
+(`PUT /subjects/:id/levels` takes `{ classLevelIds }`, not a bare array).
+A bare array would also need `ParseArrayPipe` instead of the standard
+global `ValidationPipe`, fighting the framework for no real benefit here.
+
+**`GET /assessment-components` stayed fully admin-only** (unlike `GET
+/grade-boundaries`, which resolution 7 opened to TEACHER) — nothing in
+v0.3 or the near-term v0.4 score-entry plan gives a teacher a reason to
+see the school's CA/Exam weighting, only the grade scale they'll be
+scoring against.
+
+**"Simple A-F preset" bands**, unspecified by the spec beyond the name:
+A 70-100 Excellent, B 60-69 Very Good, C 50-59 Good, D 45-49 Pass, F
+0-44 Fail — 5 bands, tiles 0-100 cleanly, a plausible simpler alternative
+to the WAEC 9-point scale for a school that wants one.
+
+E2e proves: `/me/teaching` returns real data for `teacher@sunrise.test`
+(their actual seeded class-teacher/subject assignments) and empty arrays
+(not an error) for `admin@sunrise.test` (no assignments); assessment-
+components PUT rejects 90-total and 110-total sets, atomically (GET
+confirms the prior set survives untouched after each rejection), and
+accepts a valid 100-total replacement; grade-boundaries PUT rejects a
+gap (missing 45-49) and an overlap, and accepts the WAEC set; presets
+returns both tables; login and `/auth/me` both expose the flag;
+change-password rejects a wrong current password and a sub-8-character
+new one, then on success clears the flag (confirmed via a fresh
+`/auth/me` call using the reissued token) and immediately unblocks a
+previously-403'd endpoint; the guard 403s a flagged user everywhere
+except the three allowed routes and sends the header; TEACHER can read
+grade-boundaries but gets 403 on both PUTs; cross-tenant is proven on
+every mutating endpoint (one school's PUT never changes another's set).
+167 e2e tests total, typecheck/lint clean.

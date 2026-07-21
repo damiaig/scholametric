@@ -21,9 +21,13 @@ import { SubjectAssignmentsModule } from "./subject-assignments/subject-assignme
 import { SubjectsModule } from "./subjects/subjects.module";
 import { ClassesModule } from "./classes/classes.module";
 import { AuditLogsModule } from "./audit-logs/audit-logs.module";
+import { MeModule } from "./me/me.module";
+import { AssessmentComponentsModule } from "./assessment-components/assessment-components.module";
+import { GradeBoundariesModule } from "./grade-boundaries/grade-boundaries.module";
 import { TenantModule } from "./common/tenant/tenant.module";
 import { AppThrottlerGuard } from "./common/guards/app-throttler.guard";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
+import { PasswordChangeRequiredGuard } from "./common/guards/password-change-required.guard";
 import { RolesGuard } from "./common/guards/roles.guard";
 import { AuditInterceptor } from "./common/interceptors/audit.interceptor";
 
@@ -55,14 +59,20 @@ import { AuditInterceptor } from "./common/interceptors/audit.interceptor";
     SubjectsModule,
     ClassesModule,
     AuditLogsModule,
+    MeModule,
+    AssessmentComponentsModule,
+    GradeBoundariesModule,
   ],
   providers: [
     // Order matters — Nest runs global APP_GUARDs in registration order:
     // JwtAuthGuard first (populates request.user, or short-circuits @Public()
-    // routes with no DB/network cost), then AppThrottlerGuard (its tracker
-    // needs request.user to throttle per-user rather than per-IP), then
-    // RolesGuard (also reads request.user).
+    // routes with no DB/network cost), then PasswordChangeRequiredGuard
+    // (SPEC_V0.3.md §2 — needs request.user already populated, and must run
+    // before role checks so a flagged user is blocked regardless of role),
+    // then AppThrottlerGuard (its tracker needs request.user to throttle
+    // per-user rather than per-IP), then RolesGuard (also reads request.user).
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: PasswordChangeRequiredGuard },
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     // Global but a no-op without @Audit() — see AuditInterceptor.

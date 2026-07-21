@@ -125,6 +125,8 @@ describe("Personnel (e2e)", () => {
         .post("/api/v1/auth/login")
         .send({ email: payload.email, password: payload.password, schoolSlug: "sunrise" });
       expect(login.status).toBe(200);
+      // SPEC_V0.3.md §1: new staff must change their temporary password.
+      expect(login.body.user.mustChangePassword).toBe(true);
 
       const staffProfile = await prisma.staffProfile.findUnique({ where: { userId: response.body.id } });
       expect(staffProfile).not.toBeNull();
@@ -253,6 +255,10 @@ describe("Personnel (e2e)", () => {
       expect(response.status).toBe(200);
       expect(typeof response.body.temporaryPassword).toBe("string");
       expect(response.body.temporaryPassword.length).toBeGreaterThanOrEqual(8);
+
+      // SPEC_V0.3.md §1: a reset also forces change-password on next login.
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: created.body.id } });
+      expect(user.mustChangePassword).toBe(true);
     });
 
     it("TEACHER cannot reset anyone's password via personnel", async () => {

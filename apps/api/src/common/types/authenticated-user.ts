@@ -5,4 +5,5 @@ export interface AuthenticatedUser {
   userId: string;
   schoolId: string;
   role: UserRole;
+  mustChangePassword: boolean;
 }

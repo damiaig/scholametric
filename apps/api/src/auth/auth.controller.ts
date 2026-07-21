@@ -1,11 +1,13 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import { Public } from "../common/decorators/public.decorator";
+import { AllowWhilePasswordChangeRequired } from "../common/decorators/allow-while-password-change-required.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { AuthService } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
+import { ChangePasswordDto } from "./dto/change-password.dto";
 
 @Controller("auth")
 export class AuthController {
@@ -26,6 +28,7 @@ export class AuthController {
     return this.authService.refresh(dto.refreshToken);
   }
 
+  @AllowWhilePasswordChangeRequired()
   @Post("logout")
   @HttpCode(HttpStatus.OK)
   async logout(@CurrentUser() user: AuthenticatedUser, @Body() dto: RefreshTokenDto) {
@@ -33,8 +36,16 @@ export class AuthController {
     return { success: true };
   }
 
+  @AllowWhilePasswordChangeRequired()
   @Get("me")
   me(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.me(user.userId);
+  }
+
+  @AllowWhilePasswordChangeRequired()
+  @Post("change-password")
+  @HttpCode(HttpStatus.OK)
+  changePassword(@CurrentUser() user: AuthenticatedUser, @Body() dto: ChangePasswordDto) {
+    return this.authService.changePassword(user.userId, dto);
   }
 }

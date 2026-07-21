@@ -134,6 +134,9 @@ export class PersonnelService {
             firstName: dto.firstName,
             lastName: dto.lastName,
             role: dto.role,
+            // SPEC_V0.3.md §1: new staff must change their temporary
+            // password on first login.
+            mustChangePassword: true,
           },
         });
       } catch (error) {
@@ -210,9 +213,16 @@ export class PersonnelService {
     const temporaryPassword = generateTemporaryPassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_COST);
 
-    // A password reset should also end that user's other active sessions.
+    // A password reset should also end that user's other active sessions,
+    // and forces them through change-password on next login (SPEC_V0.3.md
+    // §1) — unlike self-service change-password, this IS a different
+    // session (the admin) acting on the target, so revoking the target's
+    // sessions here has no "keep the caller's own session" ambiguity.
     await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: userId }, data: { passwordHash } }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { passwordHash, mustChangePassword: true },
+      }),
       this.prisma.refreshToken.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },

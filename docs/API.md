@@ -43,11 +43,14 @@ schools).
     "firstName": "Adaobi",
     "lastName": "Nwachukwu",
     "role": "SCHOOL_ADMIN",
+    "mustChangePassword": false,
     "schoolId": "...",
     "school": { "id": "...", "name": "Sunrise College", "slug": "sunrise" }
   }
 }
 ```
+`mustChangePassword` added in v0.3 (SPEC_V0.3.md §2) — see "Forced password
+change" below.
 
 **Response `401`** — wrong password, wrong `schoolSlug`, unknown email, and a
 disabled/soft-deleted user all return the exact same generic message (no
@@ -91,6 +94,7 @@ Requires a valid access token.
   "role": "SCHOOL_ADMIN",
   "status": "ACTIVE",
   "lastLoginAt": "2026-07-12T10:00:00.000Z",
+  "mustChangePassword": false,
   "school": {
     "id": "...",
     "name": "Sunrise College",
@@ -106,6 +110,60 @@ Requires a valid access token.
 `school.address`/`phone`/`email` added in step 8 (nullable) so the
 read-only `/settings/school` profile page has data to show — see
 docs/DECISIONS.md.
+
+### `POST /auth/change-password` (v0.3, SPEC_V0.3.md §2)
+
+Requires a valid access token. Any authenticated role.
+
+**Body**: `{ "currentPassword": "...", "newPassword": "..." }` —
+`newPassword` must be at least 8 characters.
+
+Verifies `currentPassword`, sets `newPassword` (bcrypt cost 12), and clears
+`mustChangePassword`. Audited (`user.changePassword`) with empty metadata —
+deliberately not the standard `@Audit()`/`AuditInterceptor` path, which logs
+`request.body` verbatim and would otherwise put both passwords in
+`audit_logs`.
+
+**Does NOT revoke the caller's other active sessions** — no
+session/family concept exists in the schema to distinguish "this session"
+from "others" (docs/DECISIONS.md). It DOES reissue a fresh token pair for
+the caller (same shape as `POST /auth/refresh`), so their own client can
+swap tokens and immediately stop being blocked by the guard below — without
+this, the caller's own pre-existing access token would keep the stale
+`mustChangePassword: true` claim until it naturally expired.
+
+**Response `200`**: `{ accessToken, refreshToken }`.
+
+**Response `401`**: `currentPassword` doesn't match.
+
+**Response `400`**: `newPassword` under 8 characters.
+
+### Forced password change (guard, v0.3)
+
+`users.must_change_password` (set by personnel creation and password
+reset — see Personnel below) is embedded as a claim in the access token
+itself (`mustChangePassword`), read by a global `PasswordChangeRequiredGuard`
+with **no extra DB query per request** — same stateless-token design as the
+rest of `JwtAuthGuard`. Registered right after `JwtAuthGuard` in the guard
+chain (before rate limiting/role checks), so a flagged user is blocked
+regardless of role.
+
+While the flag is true, every endpoint **except** `POST
+/auth/change-password`, `GET /auth/me`, and `POST /auth/logout` returns
+`403` using the unchanged standard error envelope, plus a response header:
+```
+X-Password-Change-Required: true
+```
+The frontend should key off `mustChangePassword` from login/`/auth/me`
+directly (always fresh — that endpoint does its own DB read) rather than
+waiting to hit this 403; the header is a defensive backstop for any request
+made before the frontend has synced.
+
+Because the claim is read from the JWT and not the DB, it can lag up to the
+access token's remaining lifetime if some OTHER action flips it after the
+token was issued (e.g. an admin resets a *different* user's password while
+that user is mid-session) — accepted the same way `JwtAuthGuard` already
+accepts staleness for disabled/deleted users.
 
 ---
 
@@ -570,10 +628,13 @@ change them to `TEACHER`.
 
 ### `POST /personnel/:userId/reset-password`
 
-Sets a new server-generated temporary password and revokes all of that
-user's active refresh tokens. Works for any user in the tenant, not only
-ones with a `staff_profile` (also reachable via the deprecated
-`POST /users/:id/reset-password` alias).
+Sets a new server-generated temporary password, revokes all of that
+user's active refresh tokens, and (v0.3) sets `mustChangePassword: true`
+so they're forced through `POST /auth/change-password` on next login.
+Works for any user in the tenant, not only ones with a `staff_profile`.
+The v0.2 `POST /users/:id/reset-password` alias this used to also be
+reachable through was removed in v0.3 (see "Users — removed in v0.3"
+above).
 
 **Response `200`**: `{ temporaryPassword }` — shown once, never retrievable again.
 
@@ -600,6 +661,31 @@ size — no N+1 (SPEC_V0.2.md §5).
 
 **Response `404`**: `:userId` isn't a `TEACHER` with a staff profile in the
 caller's school.
+
+### `GET /me/teaching` (v0.3, SPEC_V0.3.md §2)
+
+The caller's **own** current-session teaching load — any authenticated
+role (works for a PROPRIETOR/SCHOOL_ADMIN who also happens to hold a
+class-teacher/subject-teacher assignment, not just `TEACHER`). A separate
+endpoint from `GET /teachers/:userId` (not a param-less alias of it) —
+reuses the same class-teacher/subject-teacher join shape, plus a
+current-session enrollment count per class arm that `GET
+/teachers/:userId` doesn't return (so that endpoint's response for admins
+stays unchanged). Exempt from pagination (bounded by the caller's own
+assignments — see CLAUDE.md §5 amendment, SPEC_V0.3.md §5).
+
+**Response `200`**
+```json
+{
+  "classTeacherOf": [
+    { "classArmId": "...", "className": "JSS 1 A", "sessionId": "...", "sessionName": "2026/2027", "enrollmentCount": 42 }
+  ],
+  "subjects": [
+    { "id": "...", "subjectId": "...", "subjectName": "Mathematics", "classArmId": "...", "className": "JSS 1 A" }
+  ]
+}
+```
+Both arrays are `[]`, not an error, for staff with no assignments.
 
 ---
 
@@ -713,6 +799,112 @@ returns one student's full history (create, withdraw with its reason in
   "total": 1, "page": 1, "pageSize": 20
 }
 ```
+
+---
+
+## Assessment structure (v0.3, SPEC_V0.3.md §2)
+
+The school's scoring structure — school-wide in v0.3 (per-level schemes
+are a future need, not built — docs/DECISIONS.md). Read and write both
+`PROPRIETOR`/`SCHOOL_ADMIN` only (unlike grade boundaries below, TEACHER
+has no access at all here). Both endpoints exempt from pagination
+(CLAUDE.md §5 amendment, SPEC_V0.3.md §5) — bounded to 1-8 rows.
+
+### `GET /assessment-components`
+
+Ordered by `sortOrder`, tiebreak `id`.
+
+### `PUT /assessment-components`
+
+Body: `{ "components": [{ "name", "weight", "sortOrder" }, ...] }` — a
+named-property wrapper, not a bare array (matches this API's existing
+array-body convention, e.g. `PUT /subjects/:id/levels`'s `{
+classLevelIds }` — see docs/DECISIONS.md).
+
+Replaces the school's **entire** set atomically: validates 1-8 items,
+positive integer weights summing to **exactly** 100, and unique names —
+all in one transaction, so a rejected `PUT` never touches the persisted
+set (a partial replace could never leave a non-100 total visible to any
+concurrent reader) and the whole operation is all-or-nothing.
+`deleted_at` is reserved/unwired in v0.3 (no soft-delete logic, no
+partial unique index — resolution 8) — this is a real hard
+delete-and-recreate under the hood.
+
+**Response `200`**: the new set, an array (not the request body echoed
+back) — ordered by `sortOrder`.
+
+**Response `400`**: wrong count, weights not summing to 100, or duplicate
+names — message names the specific problem.
+
+Audited manually (`assessmentComponents.replace`, `entityId` = the
+school's own id — there's no single row's id to key off for a whole-set
+replace), not via the standard `@Audit()`/`AuditInterceptor` (which reads
+`response.id` off a single-entity response and would silently skip
+logging an array response).
+
+---
+
+## Grade boundaries + grading presets (v0.3, SPEC_V0.3.md §2)
+
+Score → grade mapping. `PUT` is `PROPRIETOR`/`SCHOOL_ADMIN` only; `GET
+/grade-boundaries` additionally allows `TEACHER` (read-only — they'll
+need this reference once score entry lands in v0.4, no reason to gate it
+until then). All three endpoints exempt from pagination (CLAUDE.md §5
+amendment) — bounded to 2-12 rows, or exactly 2 static tables for presets.
+
+### `GET /grade-boundaries`
+
+Ordered by `sortOrder`, tiebreak `id`.
+
+### `PUT /grade-boundaries`
+
+Body: `{ "boundaries": [{ "grade", "minScore", "maxScore", "remark",
+"sortOrder" }, ...] }` (same wrapped-array convention as assessment
+components above).
+
+Replaces the school's entire set atomically: validates 2-12 rows,
+integer scores in 0-100, the full set **tiles 0-100 with no gaps or
+overlaps** (starts at 0, ends at 100, each row's `minScore` is exactly
+the previous row's `maxScore + 1` once sorted by score), and unique
+grades. Same all-or-nothing transaction shape as `PUT
+/assessment-components`.
+
+**Response `200`**: the new set, ordered by `sortOrder`.
+
+**Response `400`**: a gap, an overlap, a duplicate grade, or a set that
+doesn't start at 0 / end at 100 — message names the specific problem
+(e.g. `"D7" (45-49) and "E8" (44-48) overlap.` or `There's a gap between
+49 and 55.`).
+
+Audited manually (`gradeBoundaries.replace`), same reasoning as
+assessment components above.
+
+### `GET /grading-presets`
+
+`PROPRIETOR`/`SCHOOL_ADMIN` only. Static, no DB — two apply-with-one-click
+tables for the `PUT /grade-boundaries` UI to fill from:
+
+```json
+{
+  "waec9Point": [
+    { "grade": "A1", "minScore": 75, "maxScore": 100, "remark": "Excellent", "sortOrder": 1 },
+    "... B2, B3, C4, C5, C6, D7, E8, F9 ...",
+    { "grade": "F9", "minScore": 0, "maxScore": 39, "remark": "Fail", "sortOrder": 9 }
+  ],
+  "simpleAToF": [
+    { "grade": "A", "minScore": 70, "maxScore": 100, "remark": "Excellent", "sortOrder": 1 },
+    "... B, C, D ...",
+    { "grade": "F", "minScore": 0, "maxScore": 44, "remark": "Fail", "sortOrder": 5 }
+  ]
+}
+```
+Both tile 0-100 with no gaps/overlaps, same as the rule the `PUT` enforces
+on whatever a school actually saves. `simpleAToF`'s exact bands aren't
+specified in SPEC_V0.3.md beyond "a simple A-F preset" — this 5-band
+scheme was chosen for this step (docs/DECISIONS.md). Purely a local
+lookup table — no external WAEC/NECO system, API, or result submission
+involved (doesn't touch CLAUDE.md §9's "WAEC/NECO integration"
+out-of-scope line).
 
 ---
 

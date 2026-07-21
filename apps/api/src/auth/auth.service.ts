@@ -5,6 +5,7 @@ import bcrypt from "bcrypt";
 import type { School, User } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { LoginDto } from "./dto/login.dto";
+import { ChangePasswordDto } from "./dto/change-password.dto";
 import { ACCESS_TOKEN_TTL, BCRYPT_COST, REFRESH_TOKEN_TTL_MS } from "./auth.constants";
 import { generateOpaqueToken, hashToken } from "./refresh-token.util";
 import type { AccessTokenPayload } from "./types/jwt-payload.type";
@@ -41,7 +42,7 @@ export class AuthService {
 
     await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
-    const tokens = await this.issueTokenPair(user.id, school.id, user.role);
+    const tokens = await this.issueTokenPair(user.id, school.id, user.role, user.mustChangePassword);
     return { ...tokens, user: this.toUserSummary(user, school) };
   }
 
@@ -71,7 +72,7 @@ export class AuthService {
     }
 
     await this.prisma.refreshToken.update({ where: { id: row.id }, data: { revokedAt: new Date() } });
-    return this.issueTokenPair(user.id, user.schoolId, user.role);
+    return this.issueTokenPair(user.id, user.schoolId, user.role, user.mustChangePassword);
   }
 
   async logout(userId: string, refreshToken: string): Promise<void> {
@@ -98,6 +99,7 @@ export class AuthService {
       role: user.role,
       status: user.status,
       lastLoginAt: user.lastLoginAt,
+      mustChangePassword: user.mustChangePassword,
       school: {
         id: user.school.id,
         name: user.school.name,
@@ -111,8 +113,50 @@ export class AuthService {
     };
   }
 
-  private async issueTokenPair(userId: string, schoolId: string, role: User["role"]) {
-    const payload: AccessTokenPayload = { sub: userId, schoolId, role };
+  // SPEC_V0.3.md §2: verifies current password, sets the new one, clears the
+  // flag. Deliberately does NOT revoke other refresh tokens (resolution 1 —
+  // no session/family concept exists to distinguish "this session" from
+  // "others"; see docs/DECISIONS.md). DOES reissue a fresh token pair for
+  // the caller, though: otherwise their own still-valid access token would
+  // keep the stale mustChangePassword:true claim and PasswordChangeRequiredGuard
+  // would keep blocking them for up to the token's remaining lifetime even
+  // after a successful change.
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const user = await this.prisma.user.findFirst({ where: { id: userId, deletedAt: null } });
+    if (!user) {
+      throw new UnauthorizedException("Unauthorized");
+    }
+
+    const currentValid = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+    if (!currentValid) {
+      throw new UnauthorizedException("Current password is incorrect.");
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, BCRYPT_COST);
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { passwordHash, mustChangePassword: false },
+      }),
+      // No password material logged — deliberately not request.body via the
+      // standard @Audit()/AuditInterceptor (see docs/DECISIONS.md).
+      this.prisma.auditLog.create({
+        data: {
+          schoolId: user.schoolId,
+          actorUserId: userId,
+          action: "user.changePassword",
+          entityType: "user",
+          entityId: userId,
+          metadata: {},
+        },
+      }),
+    ]);
+
+    return this.issueTokenPair(updated.id, updated.schoolId, updated.role, updated.mustChangePassword);
+  }
+
+  private async issueTokenPair(userId: string, schoolId: string, role: User["role"], mustChangePassword: boolean) {
+    const payload: AccessTokenPayload = { sub: userId, schoolId, role, mustChangePassword };
     const accessToken = await this.jwtService.signAsync(payload, {
       secret: this.configService.getOrThrow<string>("JWT_ACCESS_SECRET"),
       expiresIn: ACCESS_TOKEN_TTL,
@@ -137,6 +181,7 @@ export class AuthService {
       firstName: user.firstName,
       lastName: user.lastName,
       role: user.role,
+      mustChangePassword: user.mustChangePassword,
       schoolId: school.id,
       school: { id: school.id, name: school.name, slug: school.slug },
     };
