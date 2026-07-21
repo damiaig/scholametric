@@ -487,63 +487,15 @@ immediately, since they all point at the same row.
 
 ---
 
-## Users — deprecated, superseded by Personnel (v0.2)
+## Users — removed in v0.3
 
-Added in step 8 (SPEC_V0.1.md §2 described this in step 4 but it was never
-built then — see docs/DECISIONS.md). `SCHOOL_ADMIN` only; unlike Students,
-`TEACHER` has no access at all here, not even read (`403`). Scoped to the
-caller's school. Every mutation writes an `audit_logs` row.
-
-**v0.2**: superseded by `/personnel` below, which additionally creates a
-`staff_profile` (staff number, job title, ...) and recognizes `PROPRIETOR`.
-`GET`/`POST`/`PATCH /users` are unchanged and still work exactly as before —
-they are **not** extended to `PROPRIETOR` and deliberately do not create a
-`staff_profile`, so prefer `/personnel` for any new integration.
-`POST /users/:id/reset-password` is a true alias: it now delegates to the
-same logic as `POST /personnel/:userId/reset-password` (and also accepts
-`PROPRIETOR`), kept working for one version per SPEC_V0.2.md §2.
-
-**All of `GET`/`POST`/`PATCH`/`reset-password /users`** are now marked
-`@deprecated` (step 3 housekeeping, pre-approved) — behavior is unchanged,
-this is a documentation-only marker. Planned removal: v0.3. Prefer
-`/personnel` and `/teachers` for anything new.
-
-### `GET /users?role=&search=&page=&pageSize=`
-
-Paginated, ordered by `firstName`, tiebreak `id`. `role` filters to
-`SCHOOL_ADMIN` or `TEACHER`. `search` is ILIKE against first name, last
-name, or email. Soft-deleted users always excluded. Response items never
-include `passwordHash`.
-
-### `POST /users`
-
-Body: `{ email, firstName, lastName, role }` — `role` must be
-`SCHOOL_ADMIN` or `TEACHER` (`400` otherwise; `SUPER_ADMIN` accounts are
-only provisioned via school creation). No password is supplied by the
-caller — the server generates a temporary one.
-
-**Response `201`**: `{ user, temporaryPassword }`. `temporaryPassword` is
-returned once and never stored in retrievable form; there is no way to
-fetch it again — use reset-password below if it's lost.
-
-**Response `409`**: a user with this email already exists in this school.
-
-### `PATCH /users/:id`
-
-Body: any of `firstName`, `lastName`, `role` (`SCHOOL_ADMIN`/`TEACHER`
-only), `status` (`ACTIVE`/`DISABLED`).
-
-**Response `400`**: caller attempted to change their **own** `role`.
-
-**Response `404`**: `:id` isn't a user in the caller's school.
-
-### `POST /users/:id/reset-password`
-
-Sets a new server-generated temporary password and revokes all of that
-user's active refresh tokens (any other active session is logged out).
-
-**Response `200`**: `{ temporaryPassword }` — shown once, same rule as
-creation above.
+`GET`/`POST`/`PATCH /users` and `POST /users/:id/reset-password` existed
+from step 8 of v0.1 through v0.2 (`SCHOOL_ADMIN` only), superseded by
+`/personnel` in v0.2 and marked `@deprecated` with a planned v0.3 removal.
+That removal happened in v0.3 step 1 (SPEC_V0.3.md §1) — the controller,
+service, and DTOs are deleted entirely; all four routes now `404`. Use
+`/personnel` (create/update/reset-password) and `/teachers` (read) for
+everything this used to cover.
 
 ---
 

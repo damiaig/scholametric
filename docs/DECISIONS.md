@@ -1319,3 +1319,49 @@ changed — this is a planning-stage record.
     no external WAEC/NECO system, API, or result submission is
     involved. Noted explicitly in SPEC_V0.3.md rather than left to a
     reviewer's assumption, since the term appears in both documents.
+
+## 2026-07-21 — v0.3 step 1: assessment schema + seed + /users removal
+Decision: added `assessment_components`/`grade_boundaries` tables and
+`users.must_change_password` (additive), seeded both schools' WAEC
+9-point boundaries and CA1/CA2/Exam components, seeded
+`newteacher@sunrise.test` (TEACHER, `must_change_password: true`), and
+deleted the entire deprecated `/users` controller/service/module/DTOs
+(all four routes now 404). Proved: seed is idempotent (identical row
+counts across two runs), each school's components sum to exactly 100,
+each school's boundaries tile 0-100 with no gaps/overlaps (window-
+function check, not just eyeballing the rows), `newteacher@sunrise.test`
+has the flag true while pre-existing users default false, and all four
+removed routes 404 live. Full e2e (132 tests, down from 142 — the old
+`users.e2e-spec.ts`'s ~10 CRUD-behavior tests were replaced with 4
+"route is gone" tests) + web (79) green, typecheck/lint clean
+everywhere.
+
+Two new gotchas found and worth carrying forward:
+- **`prisma migrate dev` (no flag) hangs non-interactively after
+  applying, because it also runs a post-apply drift check** — and this
+  repo's hand-maintained trigram indexes (see the 2026-07-12 entry
+  above) are invisible to Prisma's schema model, so it always looks
+  like drift and prompts for a new migration name. With stdin closed
+  (as under this tool's Bash), that prompt hangs forever with 0% CPU,
+  not a visible error. `prisma migrate status` confirms the actual
+  migration was already applied cleanly regardless — the hang is purely
+  the CLI's own follow-up drift-reconciliation prompt, safe to kill.
+  **Use `prisma migrate deploy` to apply an already-created migration
+  non-interactively** (what `--create-only` migrations should be applied
+  with from now on in this repo) instead of bare `prisma migrate dev`.
+- **`staff_profiles` has a real `UNIQUE(school_id, staff_number)`
+  constraint** — a hardcoded "next sequential number" for a new seed
+  fixture collided with leftover manual-testing residue in this
+  long-lived dev database (`newteacher.NNNNNN@sunrise.test` rows at
+  `SUN/STF/0011-0013` from v0.2 step 7/8's own acceptance testing).
+  Fixed by giving `newteacher@sunrise.test` a deliberately
+  out-of-sequence staff number (99) instead of the next slot. Worth
+  remembering before assuming a fresh sequential number is safe against
+  a dev database that already has real usage history, not just a
+  from-scratch seed.
+
+Also removed the `personnel.e2e-spec.ts` test that exercised the now-gone
+`POST /users/:id/reset-password` alias directly — rewritten to hit
+`POST /personnel/:userId/reset-password` instead (the underlying
+"works for a user with no staff profile" case it was actually testing
+still matters; only the removed route it went through changed).

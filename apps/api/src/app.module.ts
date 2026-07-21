@@ -14,7 +14,6 @@ import { ClassLevelsModule } from "./class-levels/class-levels.module";
 import { ClassArmsModule } from "./class-arms/class-arms.module";
 import { StudentsModule } from "./students/students.module";
 import { GuardiansModule } from "./guardians/guardians.module";
-import { UsersModule } from "./users/users.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
 import { PersonnelModule } from "./personnel/personnel.module";
 import { TeachersModule } from "./teachers/teachers.module";
@@ -49,7 +48,6 @@ import { AuditInterceptor } from "./common/interceptors/audit.interceptor";
     ClassArmsModule,
     StudentsModule,
     GuardiansModule,
-    UsersModule,
     DashboardModule,
     PersonnelModule,
     TeachersModule,

@@ -263,8 +263,8 @@ describe("Personnel (e2e)", () => {
     });
   });
 
-  describe("deprecated alias: POST /users/:id/reset-password", () => {
-    it("still works, delegating to the same personnel logic, including for a user with no staff profile", async () => {
+  describe("POST /personnel/:userId/reset-password — user with no staff profile", () => {
+    it("still works for a user with no staff profile (the deprecated /users/:id/reset-password alias it used to be reachable through was removed in v0.3)", async () => {
       // A user created before staff_profiles existed (or via any path that
       // skips it) must still be able to have their password reset here.
       const bareUser = await prisma.user.create({
@@ -280,7 +280,7 @@ describe("Personnel (e2e)", () => {
       createdUserIds.push(bareUser.id);
 
       const response = await request(app.getHttpServer())
-        .post(`/api/v1/users/${bareUser.id}/reset-password`)
+        .post(`/api/v1/personnel/${bareUser.id}/reset-password`)
         .set(auth(sunriseAdminToken));
       expect(response.status).toBe(200);
       expect(typeof response.body.temporaryPassword).toBe("string");

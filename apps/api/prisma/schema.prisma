@@ -108,23 +108,28 @@ model School {
   subjectTeacherAssignments SubjectTeacherAssignment[]
   guardians                 Guardian[]
   studentGuardians          StudentGuardian[]
+  assessmentComponents      AssessmentComponent[]
+  gradeBoundaries           GradeBoundary[]
 
   @@map("schools")
 }
 
 model User {
-  id           String     @id @default(uuid(7)) @db.Uuid
-  schoolId     String     @map("school_id") @db.Uuid
-  email        String     @db.Citext
-  passwordHash String     @map("password_hash")
-  firstName    String     @map("first_name")
-  lastName     String     @map("last_name")
-  role         UserRole
-  status       UserStatus @default(ACTIVE)
-  lastLoginAt  DateTime?  @map("last_login_at")
-  deletedAt    DateTime?  @map("deleted_at")
-  createdAt    DateTime   @default(now()) @map("created_at")
-  updatedAt    DateTime   @updatedAt @map("updated_at")
+  id                 String     @id @default(uuid(7)) @db.Uuid
+  schoolId           String     @map("school_id") @db.Uuid
+  email              String     @db.Citext
+  passwordHash       String     @map("password_hash")
+  firstName          String     @map("first_name")
+  lastName           String     @map("last_name")
+  role               UserRole
+  status             UserStatus @default(ACTIVE)
+  lastLoginAt        DateTime?  @map("last_login_at")
+  // Set true by personnel creation and password reset; cleared by a
+  // successful POST /auth/change-password (SPEC_V0.3.md §1/§2).
+  mustChangePassword Boolean    @default(false) @map("must_change_password")
+  deletedAt          DateTime?  @map("deleted_at")
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
 
   school                    School                     @relation(fields: [schoolId], references: [id])
   refreshTokens             RefreshToken[]
@@ -446,4 +451,54 @@ model StudentGuardian {
   @@unique([studentId, guardianId])
   @@index([schoolId])
   @@map("student_guardians")
+}
+
+// The school's scoring structure (SPEC_V0.3.md §1) — school-wide in v0.3,
+// per-level schemes are a future need (docs/DECISIONS.md, do not build).
+// The active set summing to exactly 100 is validated at the API layer on
+// every mutation, not by a DB constraint.
+model AssessmentComponent {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  schoolId  String    @map("school_id") @db.Uuid
+  name      String
+  weight    Int
+  sortOrder Int       @map("sort_order")
+  // Reserved, not wired, in v0.3 (resolution 8, docs/DECISIONS.md): no
+  // soft-delete logic reads or writes this column, and @@unique below is
+  // a plain (non-partial) index — PUT /assessment-components's full-set
+  // replace is a hard delete-and-recreate in v0.3. Turning on real
+  // soft-delete semantics (and migrating the unique index to partial,
+  // `WHERE deleted_at IS NULL`) is v0.4's job, once scores can reference
+  // a component and hard removal needs to be blocked.
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@map("assessment_components")
+}
+
+// Score → grade mapping (SPEC_V0.3.md §1). Ranges must tile 0-100 with no
+// gaps or overlaps across the school's active set — validated at the API
+// layer on every mutation (PUT replaces the full set atomically), not by
+// a DB constraint.
+model GradeBoundary {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  schoolId  String   @map("school_id") @db.Uuid
+  grade     String
+  minScore  Int      @map("min_score")
+  maxScore  Int      @map("max_score")
+  remark    String
+  sortOrder Int      @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@unique([schoolId, grade])
+  @@index([schoolId])
+  @@map("grade_boundaries")
 }

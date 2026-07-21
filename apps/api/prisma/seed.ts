@@ -268,6 +268,45 @@ async function seedSubjectTeacherAssignments(
   }
 }
 
+// SPEC_V0.3.md §3: assessment components CA 1 (20), CA 2 (20), Exam (60)
+// — summing to 100 — and the WAEC 9-point grade boundaries, for both
+// schools. Upserted on each school's natural unique keys (schoolId+name,
+// schoolId+grade), so idempotent across reseeds.
+const ASSESSMENT_COMPONENTS: { name: string; weight: number; sortOrder: number }[] = [
+  { name: "CA 1", weight: 20, sortOrder: 1 },
+  { name: "CA 2", weight: 20, sortOrder: 2 },
+  { name: "Exam", weight: 60, sortOrder: 3 },
+];
+
+const WAEC_GRADE_BOUNDARIES: { grade: string; minScore: number; maxScore: number; remark: string; sortOrder: number }[] = [
+  { grade: "A1", minScore: 75, maxScore: 100, remark: "Excellent", sortOrder: 1 },
+  { grade: "B2", minScore: 70, maxScore: 74, remark: "Very Good", sortOrder: 2 },
+  { grade: "B3", minScore: 65, maxScore: 69, remark: "Good", sortOrder: 3 },
+  { grade: "C4", minScore: 60, maxScore: 64, remark: "Credit", sortOrder: 4 },
+  { grade: "C5", minScore: 55, maxScore: 59, remark: "Credit", sortOrder: 5 },
+  { grade: "C6", minScore: 50, maxScore: 54, remark: "Credit", sortOrder: 6 },
+  { grade: "D7", minScore: 45, maxScore: 49, remark: "Pass", sortOrder: 7 },
+  { grade: "E8", minScore: 40, maxScore: 44, remark: "Pass", sortOrder: 8 },
+  { grade: "F9", minScore: 0, maxScore: 39, remark: "Fail", sortOrder: 9 },
+];
+
+async function seedAssessmentStructure(schoolId: string) {
+  for (const component of ASSESSMENT_COMPONENTS) {
+    await prisma.assessmentComponent.upsert({
+      where: { schoolId_name: { schoolId, name: component.name } },
+      update: {},
+      create: { schoolId, ...component },
+    });
+  }
+  for (const boundary of WAEC_GRADE_BOUNDARIES) {
+    await prisma.gradeBoundary.upsert({
+      where: { schoolId_grade: { schoolId, grade: boundary.grade } },
+      update: {},
+      create: { schoolId, ...boundary },
+    });
+  }
+}
+
 // SPEC_V0.2.md §3: give one seeded student a second guardian (mother) to
 // exercise the multi-guardian path. Guardians/student_guardians have no
 // natural unique key to upsert against (see docs/DECISIONS.md), so
@@ -589,6 +628,32 @@ async function main() {
   );
 
   await seedSecondGuardian(sunrise.id, "SUN/2026/0001");
+  await seedAssessmentStructure(sunrise.id);
+
+  // SPEC_V0.3.md §3: a teacher forced through change-password on first
+  // login — seeded separately from SUNRISE_TEACHERS (not added to that
+  // array) so it never enters the class-teacher/subject-teacher
+  // assignment cycling above; it exists purely to exercise the
+  // must_change_password flow, no assignments needed. Staff number 99
+  // (not the next sequential slot) deliberately, to never collide with
+  // real staff numbers or with prior manual-testing residue in a
+  // long-lived dev database (staff_profiles has a real UNIQUE(school_id,
+  // staff_number) constraint — confirmed the hard way).
+  const sunriseNewTeacher = await seedStaffUser(
+    sunrise.id,
+    "SUN",
+    99,
+    {
+      email: "newteacher@sunrise.test",
+      firstName: "New",
+      lastName: "Teacher",
+      jobTitle: JobTitle.TEACHER,
+      qualification: "B.Ed",
+      phone: "+2348030000099",
+    },
+    UserRole.TEACHER,
+  );
+  await prisma.user.update({ where: { id: sunriseNewTeacher.id }, data: { mustChangePassword: true } });
 
   const hillcrest = await prisma.school.upsert({
     where: { slug: "hillcrest" },
@@ -640,6 +705,8 @@ async function main() {
     [hillcrestAcademics.arms["JSS 1-A"]],
     [hillcrestTeacherUserIds[0]],
   );
+
+  await seedAssessmentStructure(hillcrest.id);
 
   console.log("Seed complete.");
 }
