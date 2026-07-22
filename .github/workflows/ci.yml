@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_ENV: development
+  PORT: 3000
+  DATABASE_URL: postgresql://scholametric:scholametric@localhost:5432/scholametric
+  REDIS_URL: redis://localhost:6379
+  CORS_ORIGIN: http://localhost:5173
+  # Throwaway secrets for the ephemeral CI service DB only — not used anywhere else.
+  JWT_ACCESS_SECRET: ci-access-secret-throwaway-not-a-real-secret-000
+  JWT_REFRESH_SECRET: ci-refresh-secret-throwaway-not-a-real-secret-00
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: scholametric
+          POSTGRES_PASSWORD: scholametric
+          POSTGRES_DB: scholametric
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scholametric -d scholametric"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations
+        run: pnpm --filter @scholametric/api exec prisma migrate deploy
+
+      - name: Seed database
+        run: pnpm seed
+
+      - name: Typecheck, lint, test
+        run: pnpm run ci

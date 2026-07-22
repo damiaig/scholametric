@@ -1,23 +1,31 @@
 # ScholaMetric
 
+[![CI](https://github.com/damiaig/scholametric/actions/workflows/ci.yml/badge.svg)](https://github.com/damiaig/scholametric/actions/workflows/ci.yml)
+
 Multi-tenant school management platform for Nigerian schools. See `CLAUDE.md`
 for the project constitution, `docs/SPEC_V0.1.md` for the v0.1 (Foundation)
-spec, and `docs/SPEC_V0.2.md` for the current version spec (v0.2 — Staff &
-Structure).
+spec, and `docs/SPEC_V0.3.md` for the current version spec (v0.3 — The
+Teacher's School).
 
 ## Status
 
-**v0.2 complete** (Staff & Structure): school personnel/staff records
+**v0.3 in progress** (The Teacher's School): a teacher-facing "my teaching
+load" endpoint, admin-configurable assessment components and grade
+boundaries (atomic full-set replace, WAEC 9-point + simple A-F presets),
+forced password change on first login / after a reset, and now CI via
+GitHub Actions on every push and pull request to `main` (typecheck, lint,
+and the full e2e/unit suite against real Postgres/Redis service
+containers). v0.2 (Staff & Structure) and v0.1 (Foundation) remain fully in
+place and covered by regression tests: school personnel/staff records
 (`staff_profiles`, staff numbers), subjects and per-level subject offerings,
 class-teacher and subject-teacher assignments (session-scoped), guardians
 restructured into a many-to-many `guardians`/`student_guardians` model
 (replacing the v0.1 flat guardian fields, which are frozen but still
 populated for backward compatibility), a real audit-log-backed History tab,
 session-activation safety (typed confirmation + enrollment-count preview),
-and the Personnel/Teachers/Classes web UI. v0.1 (Foundation) — auth, schools,
-students, sessions/terms/classes, dashboard — remains fully in place and
-covered by regression tests. See `docs/DECISIONS.md` for the full build
-history and `docs/API.md` for the endpoint reference.
+and the Personnel/Teachers/Classes web UI, plus auth, schools, students,
+sessions/terms/classes, and the dashboard. See `docs/DECISIONS.md` for the
+full build history and `docs/API.md` for the endpoint reference.
 
 ## Prerequisites
 
@@ -96,7 +104,17 @@ alone can silently propose dropping the existing trigram indexes.
 | `pnpm lint`       | ESLint in every workspace                           |
 | `pnpm test`       | Jest e2e (api) + Vitest (web) in every workspace    |
 | `pnpm seed`       | Runs `apps/api/prisma/seed.ts` (idempotent)          |
-| `pnpm ci`         | typecheck && lint && test                           |
+| `pnpm run ci`     | typecheck && lint && test (note: `run`, not bare `pnpm ci` — that's pnpm's own reserved clean-install command) |
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`:
+Postgres 16 and Redis 7 as health-gated service containers, `prisma migrate
+deploy` + `pnpm seed` against them, then `pnpm run ci` (typecheck, lint,
+and the full test suite — the API e2e suite runs with `--runInBand` and a
+30s per-test timeout so bcrypt-cost-12 login hooks in `beforeAll` blocks
+don't flake on shared runners). No deployment step yet — that's a
+post-v1.0 concern.
 
 ## Repository layout
 

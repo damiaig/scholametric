@@ -151,6 +151,8 @@ A task is done only when ALL of the following are true:
 7. Anything surprising or decided along the way is appended to
    `docs/DECISIONS.md` (date, decision, reason — 3 lines max each).
 
+CI runs on GitHub Actions for every push.
+
 ---
 
 ## 8. How Claude Code must work in this repo

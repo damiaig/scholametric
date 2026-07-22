@@ -1450,3 +1450,30 @@ except the three allowed routes and sends the header; TEACHER can read
 grade-boundaries but gets 403 on both PUTs; cross-tenant is proven on
 every mutating endpoint (one school's PUT never changes another's set).
 167 e2e tests total, typecheck/lint clean.
+
+## 2026-07-22 — v0.3 step 3: GitHub Actions CI
+Decision: `.github/workflows/ci.yml` runs Postgres 16 and Redis 7 as GH
+Actions *service containers* (not docker-compose — that's dev/prod
+tooling, out of scope here), port-mapped straight to their native
+5432/6379 on the runner. DATABASE_URL/REDIS_URL and two throwaway JWT
+secrets are set as job-level env vars, read directly by `prisma migrate
+deploy`, `pnpm seed`, and the app under test — no secrets store needed
+since the DB is destroyed with the runner.
+
+`apps/api`'s `test` script already ran `jest --runInBand`, so e2e
+execution was already serial. The one real gap: `jest-e2e.json` had no
+`testTimeout` (Jest default 5000ms), and some spec files do up to 5
+sequential bcrypt-cost-12 logins in one `beforeAll` — fine locally, risky
+on a shared CI runner. Added `"testTimeout": 30000`.
+
+Gotcha for future reference: `pnpm/action-setup` must run *before*
+`actions/setup-node`'s `cache: pnpm` step — the cache step shells out to
+`pnpm store path`, which fails if pnpm isn't on PATH yet. Also: the
+literal command in the workflow is `pnpm run ci`, never bare `pnpm ci` —
+the latter is pnpm's own reserved clean-install command and silently
+does something else entirely. Fixed a pre-existing README table row that
+had this exact mistake while touching that section.
+
+CI badge added to README, pointed at `damiaig/scholametric`'s Actions
+tab. First real run watched to green before considering this step done
+(see commit history / Actions tab for the run, not reproduced here).
