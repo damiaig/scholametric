@@ -1484,6 +1484,16 @@ the latter is pnpm's own reserved clean-install command and silently
 does something else entirely. Fixed a pre-existing README table row that
 had this exact mistake while touching that section.
 
+Second gotcha, found on the run after the Node fix: `packages/shared`'s
+`dist/*.d.ts` files weren't present when `apps/api`/`apps/web` typecheck
+ran, even though `pnpm install` normally triggers the root `prepare`
+script (`pnpm --filter @scholametric/shared build`) locally. Root cause
+not fully pinned down (possibly `--frozen-lockfile` + CI affecting
+lifecycle-script timing) — rather than chase pnpm's implicit `prepare`
+behavior further, added an explicit `pnpm --filter @scholametric/shared
+build` step right after install. Deterministic, and it's what `prepare`
+was already doing anyway.
+
 CI badge added to README, pointed at `damiaig/scholametric`'s Actions
 tab. First real run watched to green before considering this step done
 (see commit history / Actions tab for the run, not reproduced here).

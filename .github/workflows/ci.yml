@@ -64,6 +64,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build shared package
+        run: pnpm --filter @scholametric/shared build
+
       - name: Apply migrations
         run: pnpm --filter @scholametric/api exec prisma migrate deploy
 
