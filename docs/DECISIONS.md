@@ -1466,7 +1466,17 @@ execution was already serial. The one real gap: `jest-e2e.json` had no
 sequential bcrypt-cost-12 logins in one `beforeAll` — fine locally, risky
 on a shared CI runner. Added `"testTimeout": 30000`.
 
-Gotcha for future reference: `pnpm/action-setup` must run *before*
+Gotcha for future reference, discovered on the first real run (not
+locally reproducible without a matching Node version): `pnpm@11.12.0`
+(this repo's pinned `packageManager`) requires Node >=22.13 to run at
+all — `actions/setup-node` with `node-version: "20"` crashed *during
+its own cache-detection step* (`pnpm store path`) with `Error
+[ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite`,
+before any of our steps even ran. Switched CI to Node 22, matching the
+API Dockerfile's `node:22-alpine` base (engines still says `>=20`, so
+this isn't a spec violation, just a pnpm-version floor).
+
+Also: `pnpm/action-setup` must run *before*
 `actions/setup-node`'s `cache: pnpm` step — the cache step shells out to
 `pnpm store path`, which fails if pnpm isn't on PATH yet. Also: the
 literal command in the workflow is `pnpm run ci`, never bare `pnpm ci` —
