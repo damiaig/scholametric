@@ -1484,15 +1484,25 @@ the latter is pnpm's own reserved clean-install command and silently
 does something else entirely. Fixed a pre-existing README table row that
 had this exact mistake while touching that section.
 
-Second gotcha, found on the run after the Node fix: `packages/shared`'s
-`dist/*.d.ts` files weren't present when `apps/api`/`apps/web` typecheck
-ran, even though `pnpm install` normally triggers the root `prepare`
-script (`pnpm --filter @scholametric/shared build`) locally. Root cause
-not fully pinned down (possibly `--frozen-lockfile` + CI affecting
-lifecycle-script timing) — rather than chase pnpm's implicit `prepare`
-behavior further, added an explicit `pnpm --filter @scholametric/shared
-build` step right after install. Deterministic, and it's what `prepare`
-was already doing anyway.
+Second gotcha, found on the run after the Node fix: `apps/api`/`apps/web`
+typecheck failed with "Could not find a declaration file for module
+'@scholametric/shared'" even though the build-shared step itself
+reported success. Root cause, reproduced locally via a genuinely fresh
+`git clone`: `packages/shared/tsconfig.tsbuildinfo` (TypeScript's
+incremental-build cache, produced because the package's tsconfig sets
+`composite: true`) was committed to git back in the initial scaffold
+commit, while `dist/` itself is correctly gitignored. On a fresh clone,
+`dist/` starts empty but the stale, committed `tsbuildinfo` still
+records most source files as "already built" — so `tsc` silently skips
+re-emitting their `.d.ts` (a partial, confusing failure: some files
+like `classes.d.ts` DID emit, most others didn't, depending on what the
+stale cache remembered). This was invisible locally because no one had
+done a truly clean clone+install before — every local run incrementally
+rebuilt against an already-populated `dist/`. Fixed by adding
+`*.tsbuildinfo` to `.gitignore` and `git rm --cached` on the tracked
+file — not a workflow-file change at all, a real repo hygiene bug that
+CI's clean-checkout model exposed. The earlier explicit "Build shared
+package" CI step is kept regardless — deterministic and harmless.
 
 CI badge added to README, pointed at `damiaig/scholametric`'s Actions
 tab. First real run watched to green before considering this step done
