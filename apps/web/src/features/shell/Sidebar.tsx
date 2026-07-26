@@ -26,7 +26,14 @@ interface SidebarProps {
 
 export function Sidebar({ onNavigate }: SidebarProps) {
   const { data: user, isLoading, isError } = useCurrentUser();
-  const navItems = isSchoolAdmin(user?.role) ? [...BASE_NAV_ITEMS, PERSONNEL_ITEM, SETTINGS_ITEM] : BASE_NAV_ITEMS;
+  // TEACHER (SPEC_V0.3.md §4 item 2): same /dashboard route, different
+  // label — that route renders "My Classes" instead of the admin dashboard
+  // for this role (DashboardPage.tsx).
+  const baseItems =
+    user?.role === "TEACHER"
+      ? BASE_NAV_ITEMS.map((item) => (item.to === "/dashboard" ? { ...item, label: "My Classes" } : item))
+      : BASE_NAV_ITEMS;
+  const navItems = isSchoolAdmin(user?.role) ? [...baseItems, PERSONNEL_ITEM, SETTINGS_ITEM] : baseItems;
 
   return (
     <div className="flex h-full flex-col gap-6 p-4">

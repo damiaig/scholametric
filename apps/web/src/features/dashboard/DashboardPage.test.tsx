@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { screen, cleanup } from "@testing-library/react";
-import type { DashboardStats } from "@scholametric/shared";
+import type { DashboardStats, MyTeaching } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
@@ -31,6 +31,18 @@ const CURRENT_USER = {
     phone: null,
     email: null,
   },
+};
+
+const TEACHER_USER = { ...CURRENT_USER, id: "u2", email: "teacher@sunrise.test", role: "TEACHER" };
+
+const TEACHING: MyTeaching = {
+  classTeacherOf: [
+    { classArmId: "arm1", className: "SSS 2 A", sessionId: "sess1", sessionName: "2026/2027", enrollmentCount: 2 },
+    { classArmId: "arm2", className: "JSS 1 A", sessionId: "sess1", sessionName: "2026/2027", enrollmentCount: 4 },
+  ],
+  subjects: [
+    { id: "sa1", subjectId: "sub1", subjectName: "Mathematics", classArmId: "arm2", className: "JSS 1 A" },
+  ],
 };
 
 const STATS: DashboardStats = {
@@ -168,6 +180,43 @@ describe("DashboardPage", () => {
 
     expect(
       await screen.findByText(/No students are enrolled in the current session \(2027\/2028\)/),
+    ).toBeInTheDocument();
+  });
+
+  it("TEACHER: renders My Classes (class-teacher cards + subjects table) from mocked /me/teaching, not the admin dashboard", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return TEACHER_USER;
+      if (path.includes("/me/teaching")) return TEACHING;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(await screen.findByRole("heading", { name: "My Classes" })).toBeInTheDocument();
+    expect(await screen.findByText("SSS 2 A")).toBeInTheDocument();
+    expect(screen.getByText("2 students")).toBeInTheDocument();
+    // "JSS 1 A" appears twice: the class-teacher card and the subjects
+    // table's link to the same arm.
+    expect(screen.getAllByText("JSS 1 A")).toHaveLength(2);
+    expect(screen.getByText("4 students")).toBeInTheDocument();
+    expect(screen.getByText("Mathematics")).toBeInTheDocument();
+
+    // Not the admin dashboard's content.
+    expect(screen.queryByText("Students by class level")).not.toBeInTheDocument();
+    expect(screen.queryByText("Active students")).not.toBeInTheDocument();
+  });
+
+  it("TEACHER with no assignments sees the empty state, not an error", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return TEACHER_USER;
+      if (path.includes("/me/teaching")) return { classTeacherOf: [], subjects: [] };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(
+      await screen.findByText("You have no class assignments yet — your school admin assigns these."),
     ).toBeInTheDocument();
   });
 });

@@ -1507,3 +1507,73 @@ package" CI step is kept regardless — deterministic and harmless.
 CI badge added to README, pointed at `damiaig/scholametric`'s Actions
 tab. First real run watched to green before considering this step done
 (see commit history / Actions tab for the run, not reproduced here).
+
+## 2026-07-27 — v0.3 step 4: teacher home + forced password change (frontend)
+Decision: the forced-password-change guard lives in `ProtectedLayout`
+(loading-aware — spinner while `useCurrentUser()` resolves, then redirect
+to `/change-password` if `mustChangePassword`), the exact same pattern
+`RequireSchoolAdmin` already used for role-gating. A new `ChangePasswordRoute`
+mirrors `LoginRoute` (unauthenticated → `/login`, not-flagged → `/dashboard`,
+loading-aware in between). `LoginRoute` itself was deliberately NOT given its
+own duplicate `mustChangePassword` check — `ProtectedLayout`'s gate already
+catches the rare "visit /login while authenticated and still flagged" case
+before any real content renders, so a second check there would be pure
+redundancy.
+
+`useChangePassword` swaps tokens immediately via `authStore.setTokens()` on
+success (the caller's OWN pre-existing access token still carries the stale
+`mustChangePassword:true` claim — see step 2's decision) and invalidates the
+`["auth","me"]` query so the guard clears without waiting on the token's
+natural expiry. `LoginPage` navigates directly off the login response's own
+`mustChangePassword` (zero extra round trip) rather than letting `LoginRoute`
+re-derive the same thing from a fresh `/auth/me` fetch.
+
+`DashboardPage` splits on `role === "TEACHER"` at the top; the existing admin
+body was extracted verbatim into `AdminDashboard()` — zero behavioral diff
+for SCHOOL_ADMIN/PROPRIETOR, confirmed both by the pre-existing test suite
+passing unmodified and by a live screenshot. `GET /me/teaching` is bounded/
+unpaginated per the backend's own design (step 2), so `MyClassesView` needs
+no pagination UI.
+
+Gotcha: `AppShell.test.tsx`'s existing TEACHER sidebar test matched nav
+links via a loose regex (`/Classes/`), which — once the Dashboard item's
+label became "My Classes" for TEACHER — ambiguously matched BOTH "My
+Classes" and "Classes", throwing a "multiple elements found" error. Fixed
+by switching to exact-string role queries; a good reminder that loose
+regex matchers in tests are landmines for future copy changes.
+
+New shared types (`packages/shared`): `mustChangePassword` added to
+`AuthUserSummary`/`CurrentUser` (auth.ts, matching what the API already
+returns since step 2); new `me.ts` for `GET /me/teaching`'s response shape;
+`changePasswordSchema`/`ChangePasswordInput` in auth.ts. Reused the existing
+`RefreshResponse` type for `POST /auth/change-password`'s response — same
+`{accessToken, refreshToken}` shape, no new type needed.
+
+No backend/API changes this step (frontend-only, as scoped) — confirmed
+before starting that every endpoint this step needed already existed from
+step 2.
+
+**Manual verification (Playwright against the real Docker stack, not just
+mocked tests)**: `teacher@sunrise.test` lands on My Classes showing the
+real seeded assignments (SSS 2 A / JSS 1 A as class teacher, Mathematics
+across 4 arms) and a class-card click navigates to that arm's page.
+`newteacher@sunrise.test` (flagged) is forced to `/change-password`;
+attempting an in-SPA client-side navigation to `/students` (pushState +
+popstate — what a real `<Link>` click does, as opposed to a hard reload,
+which this app's deliberately memory-only auth store treats as a fresh
+logout regardless of any flag) bounces straight back to
+`/change-password` with no flash of Students content; changing the
+password lands on My Classes directly; logging out and back in with the
+NEW password is fully normal, no longer forced. `admin@sunrise.test`'s
+dashboard (stat cards + chart) is pixel-identical to before. All of the
+above confirmed again at a 360px viewport, including the mobile nav
+drawer showing the correct label per role. `newteacher@sunrise.test`'s
+password/flag restored to the exact seed state afterward (bcrypt hash of
+`Passw0rd!` at cost 12, `mustChangePassword:true`, stale refresh tokens
+revoked) — same restore shape as the backend e2e suite's own `afterAll`.
+
+Environment note, not a repo issue: local verification found port 3000
+already bound by an unrelated `next-server` process on this machine —
+docker-compose's `API_PORT` override (`API_PORT=3001 docker compose up
+-d`) was used for this session's verification only; `docker-compose.yml`
+itself is untouched and still defaults to 3000.

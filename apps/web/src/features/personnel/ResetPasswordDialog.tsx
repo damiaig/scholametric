@@ -49,7 +49,8 @@ export function ResetPasswordDialog({ person, open, onClose }: ResetPasswordDial
           <span className="font-semibold text-text">
             {person.firstName} {person.lastName}
           </span>{" "}
-          and signs them out of any other active session.
+          and signs them out of any other active session. They&apos;ll be asked to choose a new password when they
+          first log in.
         </p>
         {resetPassword.isError && (
           <p role="alert" className="text-sm text-danger">

@@ -9,10 +9,13 @@ Teacher's School).
 
 ## Status
 
-**v0.3 in progress** (The Teacher's School): a teacher-facing "my teaching
-load" endpoint, admin-configurable assessment components and grade
-boundaries (atomic full-set replace, WAEC 9-point + simple A-F presets),
-forced password change on first login / after a reset, and now CI via
+**v0.3 in progress** (The Teacher's School): a teacher home ("My Classes" —
+class-teacher cards and a subjects table, both driven by `GET
+/me/teaching`) in place of the admin dashboard for the TEACHER role, a
+full-screen forced-password-change flow enforced on both the API
+(`PASSWORD_CHANGE_REQUIRED` guard) and the frontend (no flash of blocked
+content), admin-configurable assessment components and grade boundaries
+(atomic full-set replace, WAEC 9-point + simple A-F presets), and CI via
 GitHub Actions on every push and pull request to `main` (typecheck, lint,
 and the full e2e/unit suite against real Postgres/Redis service
 containers). v0.2 (Staff & Structure) and v0.1 (Foundation) remain fully in

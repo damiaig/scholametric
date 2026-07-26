@@ -54,6 +54,7 @@ describe("AppShell", () => {
     renderShell();
 
     expect(await screen.findByText("Sunrise College")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/dashboard");
   });
 
   it("logging out clears auth state and redirects to /login", async () => {
@@ -84,10 +85,24 @@ describe("AppShell", () => {
 
     renderShell();
 
-    expect(await screen.findByRole("link", { name: /Teachers/ })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Classes/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Teachers" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Classes" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Personnel/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Settings/ })).not.toBeInTheDocument();
+  });
+
+  it("TEACHER: the Dashboard nav item reads 'My Classes' (same route); SCHOOL_ADMIN sees 'Dashboard'", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    const link = await screen.findByRole("link", { name: "My Classes" });
+    expect(link).toHaveAttribute("href", "/dashboard");
+    expect(screen.queryByRole("link", { name: "Dashboard" })).not.toBeInTheDocument();
   });
 
   it("PROPRIETOR sees everything SCHOOL_ADMIN does, including Personnel and Settings", async () => {

@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { LoginRoute } from "./app/LoginRoute";
+import { ChangePasswordRoute } from "./app/ChangePasswordRoute";
 import { ProtectedLayout } from "./app/ProtectedLayout";
 import { RequireSchoolAdmin } from "./app/RequireSchoolAdmin";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
@@ -23,6 +24,7 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginRoute />} />
+      <Route path="/change-password" element={<ChangePasswordRoute />} />
       <Route element={<ProtectedLayout />}>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />

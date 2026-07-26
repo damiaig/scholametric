@@ -11,3 +11,4 @@ export * from "./academic";
 export * from "./personnel";
 export * from "./classes";
 export * from "./audit";
+export * from "./me";

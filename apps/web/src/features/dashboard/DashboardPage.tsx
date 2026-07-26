@@ -7,8 +7,27 @@ import { EmptySessionBanner } from "../../components/EmptySessionBanner";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useDashboardStats } from "./use-dashboard-stats";
 import { computeIntegerTicks } from "./chart-ticks";
+import { MyClassesView } from "./MyClassesView";
 
 export function DashboardPage() {
+  const { data: user } = useCurrentUser();
+
+  // SPEC_V0.3.md §4 item 1: TEACHER sees their own teaching load in place
+  // of the admin dashboard, same /dashboard route. Admin/proprietor
+  // dashboards below are unchanged.
+  if (user?.role === "TEACHER") {
+    return (
+      <div>
+        <PageHeader title="My Classes" description={user.school.name} />
+        <MyClassesView />
+      </div>
+    );
+  }
+
+  return <AdminDashboard />;
+}
+
+function AdminDashboard() {
   const { data: user } = useCurrentUser();
   const stats = useDashboardStats();
   const yAxisTicks = stats.data

@@ -22,6 +22,7 @@ export interface AuthUserSummary {
   role: UserRole;
   schoolId: string;
   school: { id: string; name: string; slug: string };
+  mustChangePassword: boolean;
 }
 
 export interface LoginResponse {
@@ -55,4 +56,11 @@ export interface CurrentUser {
   status: string;
   lastLoginAt: string | null;
   school: CurrentUserSchool;
+  mustChangePassword: boolean;
 }
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Current password is required"),
+  newPassword: z.string().min(8, "Password must be at least 8 characters"),
+});
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;

@@ -36,7 +36,10 @@ export function LoginPage() {
 
   const onSubmit = handleSubmit((values) => {
     login.mutate(values, {
-      onSuccess: () => navigate("/dashboard"),
+      // Navigate off the login response's own mustChangePassword directly
+      // (freshest data, no extra /auth/me round trip) rather than waiting
+      // on LoginRoute's redirect to re-derive the same thing.
+      onSuccess: (data) => navigate(data.user.mustChangePassword ? "/change-password" : "/dashboard"),
     });
   });
 
