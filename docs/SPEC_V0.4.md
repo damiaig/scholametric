@@ -34,6 +34,25 @@ pass.
 Seed update: CA1 (weight 20, max_score 20, requires_approval false),
 CA2 (20, 20, false), Exam (weight 60, max_score 100, requires_approval true).
 
+**Resolution (review, pre-step-1):** `assessment_components.deleted_at` was
+added but deliberately left unwired in v0.3 — see `docs/DECISIONS.md`
+resolution 8: "turning it on ... is v0.4's job, once scores actually need
+the protection." That's now. `student_scores.component_id` will FK to this
+table, so `PUT /assessment-components`'s current hard delete-and-recreate
+(every save nukes and rebuilds the whole set) must change once any score
+references a component — otherwise the first post-scoring edit either
+FK-violates or (if the FK is ever made CASCADE) silently deletes every
+score for that component. Step 1 must: wire real soft-delete (removed
+components get `deleted_at` set, not hard-deleted, once they have any
+`student_scores` row referencing them — components with zero scores can
+still be hard-deleted, matching today's behavior), migrate
+`@@unique([school_id, name])` to a partial index (`WHERE deleted_at IS
+NULL`) so a re-added component with the same name doesn't collide with a
+soft-deleted one, and make `PUT /assessment-components`'s replace logic
+match existing rows (by id, not just recreate-everything) so unchanged
+components keep their id and referencing scores stay valid. Design this
+explicitly in the step-1 plan — it's more than a column addition.
+
 ### student_scores (the core new table)
 One row per (student, subject, component, term, session).
 | column        | type    | notes                                              |
@@ -54,7 +73,11 @@ One row per (student, subject, component, term, session).
 UNIQUE(student_id, subject_id, component_id, term_id, session_id).
 Indexes: (school_id, class_arm_id, subject_id, term_id, session_id) for grid
 loads; (school_id, student_id, term_id, session_id) for a student's results.
-Every score write is audited.
+Every score write is audited. (Note: follow the existing precedent from
+`PUT /assessment-components` / `PUT /grade-boundaries` — one manual
+`audit_logs` row summarizing the whole bulk save, not one row per student
+score; the standard `@Audit()`/`AuditInterceptor` doesn't fit an
+array-bodied bulk endpoint. Same for `POST /grades/publish`/`unpublish`.)
 
 ### term_subject_results (computed, per student per subject per term)
 Cached computation so results and positions don't recompute on every read.
@@ -88,6 +111,13 @@ UNIQUE(student_id, term_id, session_id).
 Computation rules (make these explicit in code + DECISIONS.md):
 - A subject's total = Σ over components of (raw_score / max_score × weight),
   giving a 0–100 total; only counts components that have scores.
+  **Resolution (review, pre-step-1):** missing components contribute 0, NOT
+  a rescale to the entered weight's own 100% — a class average shown while
+  only CA1+CA2 (40% weight) are entered reads as "40-ish out of 100 so
+  far," not "100." This is the simpler, more literal reading ("points
+  earned so far out of 100") and avoids an average that visibly *drops*
+  once Exam scores start landing, which would look like a bug. Same rule
+  applies to the live class-average display in the entry grid (§4 item 1).
 - final_grade = override_grade if set, else the grade_boundary band the total
   falls into.
 - Class average per subject = mean of that class arm's students' subject totals,
@@ -118,12 +148,32 @@ Computation rules (make these explicit in code + DECISIONS.md):
 Score ENTRY: TEACHER (only their assigned subject+arm, current session/term via
 subject_teacher_assignments), and SCHOOL_ADMIN/PROPRIETOR (any). SUPER_ADMIN: no
 access to school academic data (403), consistent with the codebase.
+(Note: `subject_teacher_assignments` is scoped per SESSION, not per term —
+no `term_id` column exists on it. "Current session/term" scoping means: the
+teacher's subject+arm assignment is checked at the session level; term is
+just which term's score-set they're entering within that assignment. No
+schema change implied.)
 REVIEW/PUBLISH: PROPRIETOR (the "owner", highest authority, can override grades
 and unpublish) and SCHOOL_ADMIN acting as "director" (can review + publish, but
 owner-only actions — force-unpublish after publish, grade override on a
-published result — are PROPRIETOR-only). Resolve the exact director-vs-owner
-split in the step-1 plan; if the current role set is insufficient, flag it
-(do NOT silently add a role).
+published result — are PROPRIETOR-only).
+
+**Resolution (review, pre-step-1):** the existing role set is sufficient —
+no new role needed. `RolesGuard` already supports per-endpoint role lists
+(`@Roles(...)` is a plain OR-list), so this is `@Roles(SCHOOL_ADMIN,
+PROPRIETOR)` on entry/review/publish and `@Roles(PROPRIETOR)` alone on
+unpublish + override-on-a-published-result. The one real gap: this is the
+FIRST time `PROPRIETOR` and `SCHOOL_ADMIN` get different permissions
+anywhere in this app — every existing check (`lib/roles.ts`'s
+`isSchoolAdmin()`, frontend) treats them as fully interchangeable, and no
+`isProprietor()`/owner-only helper exists yet, frontend or backend. Step 1
+must add one (mirroring `isSchoolAdmin()`'s shape) rather than scatter raw
+`role === "PROPRIETOR"` checks per call site. "Director"/"owner" here are
+plain-English labels for the `SCHOOL_ADMIN`/`PROPRIETOR` *roles* — unrelated
+to `JobTitle.DIRECTOR_PROPRIETOR` (a `staff_profiles` display title with no
+permission effect). Nothing constrains a school to exactly one SCHOOL_ADMIN
+or PROPRIETOR; "the director"/"the owner" means "any user holding that
+role," not one designated person.
 
 ### Score entry
 - `GET /grades/grid?classArmId=&subjectId=&componentId=&termId=` — returns the

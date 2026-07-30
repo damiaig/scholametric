@@ -92,9 +92,12 @@ Violating tenancy is a data breach, not a bug. Treat it accordingly.
 - Every endpoint requires authentication (`JwtAuthGuard` applied globally)
   except: `POST /auth/login`, `POST /auth/refresh`, `GET /health`.
   Public endpoints must be explicitly marked with a `@Public()` decorator.
-- Authorization uses a `@Roles(...)` decorator + `RolesGuard`. Roles in v0.1:
-  `SUPER_ADMIN`, `SCHOOL_ADMIN`, `TEACHER`, `PARENT`, `STUDENT`
-  (only the first three are usable in v0.1; the enum ships complete).
+- Authorization uses a `@Roles(...)` decorator + `RolesGuard`. Roles:
+  `SUPER_ADMIN`, `PROPRIETOR`, `SCHOOL_ADMIN`, `TEACHER`, `PARENT`, `STUDENT`
+  (`PROPRIETOR` added in v0.2 — identical access to `SCHOOL_ADMIN` everywhere
+  except where a version's spec explicitly splits them, e.g. v0.4's
+  owner-only publish actions; `PARENT`/`STUDENT` remain unusable until their
+  accounts ship in v0.9 — the enum ships complete).
 - Every mutation endpoint has a class-validator DTO. No `@Body() body: any`.
 - API responses use a consistent envelope:
   - Success: the resource or `{ items, total, page, pageSize }` for lists.
