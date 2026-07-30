@@ -204,7 +204,7 @@ export function GradingScalePanel() {
                     />
                     <FieldError message={errors.boundaries?.[index]?.maxScore?.message} />
                   </div>
-                  <div className="flex flex-1 flex-col gap-1.5">
+                  <div className="flex flex-1 flex-col gap-1.5 max-lg:basis-full">
                     <Label htmlFor={`boundary-${index}-remark`}>Remark</Label>
                     <Input id={`boundary-${index}-remark`} {...register(`boundaries.${index}.remark`)} />
                     <FieldError message={errors.boundaries?.[index]?.remark?.message} />

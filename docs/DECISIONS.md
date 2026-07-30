@@ -1684,3 +1684,55 @@ Verified: `rm -rf node_modules **/node_modules && pnpm install
 typecheck` passes; `docker compose build --no-cache api web` (forcing
 the Dockerfiles' `corepack prepare` line to actually re-run rather than
 reuse a cached layer) succeeds for both images.
+
+## 2026-07-30 — v0.3 step 6: acceptance run + polish — v0.3 complete
+Decision/summary: ran the full SPEC_V0.1/V0.2/V0.3 acceptance checklists
+(29 items total) against a genuinely fresh stack (`docker compose down
+-v` → build → up → migrate → seed), via a mix of direct API curl checks
+and live Playwright walkthroughs of the real running stack. Every item
+passed — see the commit message / conversation for the itemized
+PASS list; not duplicated here.
+
+Rate-limit test (`auth-rate-limit.e2e-spec.ts`), flagged twice before as
+"environmental": root-caused, not just re-flagged. `auth.service.ts`'s
+`login()` deliberately runs a real bcrypt-cost-12 compare even for a
+nonexistent user (against a dummy hash) so response timing can't leak
+which part of a bad credential was wrong — correct, load-bearing
+security behavior, left untouched. The test's own hardcoded 20000ms
+timeout was the actual failure mode (confirmed: a prior failure hit
+exactly 20007ms). Attempted genuine reproduction under both a raw CPU
+busy-loop (4× `yes`) and a real concurrent `docker compose build
+--no-cache` — neither reproduced meaningful slowdown (test stayed at
+~1.7-1.9s in both cases); 8 consecutive clean runs afterward. Raised the
+test's own timeout to 45000ms — comfortably under the login throttle's
+own 60000ms TTL window (`AuthController`'s
+`@Throttle({default:{limit:10,ttl:60000}})`), which is the real ceiling
+this test needs to stay inside for its own assertions to remain
+meaningful, rather than an arbitrary larger number.
+
+Polish fix: `GradingScalePanel`'s Remark field truncated longer values
+("Excellent" → "Exceller", "Very Good" → "Very Go") at exactly 768px —
+the row's `sm:flex-wrap` left Remark sharing a line with Grade/Min/Max,
+leaving too little width for longer words. Fixed with
+`max-lg:basis-full` (Tailwind's built-in max-width variant, available
+since 3.2) so Remark forces its own full-width row only below the `lg`
+(1024px) breakpoint — confirmed clean at 768px, at the 1024px boundary
+itself, and unchanged at 1280px (three separate screenshots, not just
+eyeballed). `AssessmentStructurePanel`'s equivalent Name field wasn't
+affected — that row has no `sm:flex-wrap` (only 3 fields, always fits
+on one line) and its typical values (CA1, Exam) are short.
+
+Regression discovered and fixed mid-run (not a product bug — my own
+test-data pollution): walking the v0.2 class-teacher reassignment check
+left JSS 1 A's class teacher pointing at a throwaway test account
+instead of the seeded `teacher@sunrise.test`, which then made the v0.3
+"My Classes" polish screenshot look like a real data bug (only one
+class-teacher card instead of two) until traced back to my own earlier
+test action. Restored via the UI (not a DB hack) to keep the fix
+provably going through the real assign flow. Also restored
+`teacher@sunrise.test` and `newteacher@sunrise.test`'s passwords/
+`mustChangePassword` flags to exact seed values after exercising the
+reset-password and forced-change-password flows on them.
+
+No backend/schema changes this step (verification + polish only, per
+scope). `docs/API.md` unchanged — no endpoint behavior changed.
