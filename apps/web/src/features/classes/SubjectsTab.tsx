@@ -47,6 +47,15 @@ export function SubjectsTab({ canManage }: SubjectsTabProps) {
     {
       key: "levels",
       header: "Levels",
+      // min-w so the auto-layout table gives this cell's flex-wrap chip
+      // list a real width to wrap against — without it, browsers size a
+      // flex container's table cell to its narrowest child (one chip),
+      // forcing every chip onto its own line at tighter viewports (768px)
+      // even though there's ample unused width beside it. px-2 (tighter
+      // than the table's default px-4) reclaims just enough room to fit
+      // 2 chips/row at exactly 768px without the table needing horizontal
+      // scroll — see docs/DECISIONS.md.
+      className: "min-w-[125px] px-2",
       cell: (row) =>
         row.classLevels.length === 0 ? (
           <span className="text-muted">—</span>
@@ -61,9 +70,13 @@ export function SubjectsTab({ canManage }: SubjectsTabProps) {
     {
       key: "actions",
       header: "",
+      // Tighter padding + gap than this row's other buttons — reclaims the
+      // horizontal room the Levels column's min-width needs at 768px (see
+      // that column's comment) without touching the shared Button component.
+      className: "px-2",
       cell: (row) =>
         canManage ? (
-          <div className="flex gap-2">
+          <div className="flex gap-1">
             <Button type="button" variant="outline" size="sm" aria-label={`Edit ${row.name}`} onClick={(e) => openEdit(e, row)}>
               <Pencil className="h-4 w-4" aria-hidden="true" />
             </Button>

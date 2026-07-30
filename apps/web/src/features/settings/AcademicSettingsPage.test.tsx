@@ -136,4 +136,34 @@ describe("AcademicSettingsPage", () => {
       expect.objectContaining({ method: "POST", body: { confirmName: "2027/2028" } }),
     );
   });
+
+  it("TEACHER does not see the assessment structure or grading scale panels", async () => {
+    mockedApiRequest.mockImplementation(async (path: string, options?: { method?: string }) => {
+      const method = options?.method ?? "GET";
+      if (path === "/api/v1/auth/me") {
+        return {
+          id: "u1",
+          email: "teacher@sunrise.test",
+          firstName: "Bola",
+          lastName: "Ogundare",
+          role: "TEACHER",
+          status: "ACTIVE",
+          lastLoginAt: null,
+          mustChangePassword: false,
+          school: { id: "s1", name: "Sunrise College", slug: "sunrise", type: "SECONDARY", status: "ACTIVE", address: null, phone: null, email: null },
+        };
+      }
+      if (path === "/api/v1/sessions" && (!options?.method || method === "GET")) {
+        return paginated([CURRENT_SESSION]);
+      }
+      if (path === "/api/v1/terms") return paginated([]);
+      throw new Error(`unexpected apiRequest call: ${path} ${method}`);
+    });
+
+    renderWithProviders(<AcademicSettingsPage />);
+
+    await screen.findByRole("table");
+    expect(screen.queryByText("Assessment structure")).not.toBeInTheDocument();
+    expect(screen.queryByText("Grading scale")).not.toBeInTheDocument();
+  });
 });

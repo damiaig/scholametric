@@ -1577,3 +1577,84 @@ already bound by an unrelated `next-server` process on this machine —
 docker-compose's `API_PORT` override (`API_PORT=3001 docker compose up
 -d`) was used for this session's verification only; `docker-compose.yml`
 itself is untouched and still defaults to 3000.
+
+## 2026-07-30 — v0.3 step 5: grading config admin panels (frontend)
+Decision: cross-item validation (weights summing to exactly 100, unique
+names; grade boundaries tiling 0-100 with no gaps/overlaps, unique
+grades) lives in a new `packages/shared/src/grading-config.ts` as plain,
+framework-free functions (`validateAssessmentComponentsSet`,
+`validateGradeBoundariesSet`) — a deliberate MIRROR of the backend's
+class-validator/service rules (step 2), not a single shared source. The
+two sides use different validation paradigms by design (CLAUDE.md §6:
+Zod on the frontend, class-validator on the API) and there's no
+compiler/test link enforcing they stay in sync — only this comment and
+the fact that both were written by reading the same backend service
+files line-by-line. If the backend's rules ever change, this file needs
+a matching update. `validateGradeBoundariesSet` takes a `keyOf` callback
+so the frontend can highlight the exact offending rows without relying
+on array index (which shifts on add/remove/reorder).
+
+Real bug found and fixed during manual verification: `react-hook-form`'s
+`register()` returns the RAW STRING from the DOM for number inputs
+unless `valueAsNumber: true` is passed. `useWatch` reads that raw form
+state directly — it does NOT go through zod's `coerce.number()`, which
+only runs at resolver-validation time. Without `valueAsNumber: true`,
+typing "50" into the Exam weight field made the live total silently
+compute as 40 (20+20+0), since `Number.isFinite("50")` is `false` and
+the shared validator's NaN-guard treated the string as 0. Fixed by
+adding `valueAsNumber: true` to every numeric-field `register()` call in
+both new panels. Caught only by actually driving the browser — the
+per-field zod validation still passed fine (coercion IS applied at
+submit time), so this would NOT have been caught by a submit-only test.
+
+Preset buttons use `useFieldArray`'s `replace()`, not the form's own
+`reset()`, to fill rows — `reset()` would also reset react-hook-form's
+internal "dirty" baseline to the just-applied preset, which would
+incorrectly (a) hide the Save button (nothing looks "changed") and (b)
+make "Discard changes" revert to the preset instead of the actual
+server-persisted set. `replace()` swaps only the current values, leaving
+the original loaded baseline intact for both purposes.
+
+Subjects tab polish debt (SPEC_V0.3.md §4 item 5): at exactly 768px (the
+sidebar's own `md` breakpoint, so the least horizontal room the table
+view ever gets), the Levels column's `flex flex-wrap` chip list
+collapsed to one chip per line — auto-layout tables size a flex-wrap
+cell to its narrowest child's width during column-width calculation, not
+its wrapped/preferred width, even though the row had plenty of unused
+space beside it. Fixed with `min-w-[125px] px-2` on that column (gives
+the flex-wrap container a real width to wrap 2 chips/row against) plus
+tightening the actions column's own gap/padding (`gap-1`, `px-2`) to
+reclaim just enough room that the table needs zero horizontal scroll at
+768px — confirmed via exact pixel measurement (`scrollWidth` vs
+`clientWidth`) rather than eyeballing, since an earlier wider attempt
+"fixed" the wrapping but silently pushed 2 of 3 row-action buttons
+off-screen, which would have been an easy miss on a screenshot alone
+without checking horizontal scroll. No regression at 1280px (confirmed).
+
+Manual verification method note: iterated on both the panels and the
+768px CSS fix against a local `pnpm --filter web exec vite --port 5173`
+dev server (with the Docker `web` container stopped to free the port)
+talking to the real Docker `api`/`postgres`/`redis` — this bypasses the
+~3-5 minute no-volume-mount Docker image rebuild for every CSS/JS
+tweak, which would have been the dominant cost of this step otherwise.
+The Docker `web` image was rebuilt and the full manual-verification
+checklist re-run against it once complete, matching this session's
+established "prove it against the real running Docker stack" convention
+for the final, reported verification.
+
+**Manual verification (Playwright)**: Assessment structure — changing
+Exam to 50 turns the total red ("currently 90") and disables Save;
+changing a genuinely different valid combination (CA2 25 / Exam 55 = 100)
+enables Save and persists via `PUT /assessment-components` with the
+exact expected payload. Grading scale — deleting the 45-49 (D7) row
+highlights the two bordering rows (C6, E8) red with "There's a gap
+between 44 and 50."; Apply A-F (behind its ConfirmDialog) fills rows and
+saves; reloading confirms persistence; re-applying WAEC 9-point restores
+the seeded set. TEACHER sees neither panel (confirmed both by rendering
+`AcademicSettingsPage` directly with a TEACHER fixture, and by the
+existing outer `SettingsLayout` route guard, which already excludes
+non-admins from `/settings/*` entirely — the panels' own
+`isSchoolAdmin()` check is defense-in-depth, per the task's explicit
+instruction to use it, not the only gate). 768px chip fix and 360px pass
+both confirmed. All seeded values (assessment components, WAEC grade
+boundaries) restored to their exact seed state afterward.

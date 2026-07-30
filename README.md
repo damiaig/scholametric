@@ -14,11 +14,13 @@ class-teacher cards and a subjects table, both driven by `GET
 /me/teaching`) in place of the admin dashboard for the TEACHER role, a
 full-screen forced-password-change flow enforced on both the API
 (`PASSWORD_CHANGE_REQUIRED` guard) and the frontend (no flash of blocked
-content), admin-configurable assessment components and grade boundaries
-(atomic full-set replace, WAEC 9-point + simple A-F presets), and CI via
-GitHub Actions on every push and pull request to `main` (typecheck, lint,
-and the full e2e/unit suite against real Postgres/Redis service
-containers). v0.2 (Staff & Structure) and v0.1 (Foundation) remain fully in
+content), admin-configurable assessment components and grade boundaries in
+Settings → Academic (live client-side validation mirroring the API's
+rules, atomic full-set replace, WAEC 9-point + simple A-F presets behind
+a confirmation), and CI via GitHub Actions on every push and pull request
+to `main` (typecheck, lint, and the full e2e/unit suite against real
+Postgres/Redis service containers). v0.2 (Staff & Structure) and v0.1
+(Foundation) remain fully in
 place and covered by regression tests: school personnel/staff records
 (`staff_profiles`, staff numbers), subjects and per-level subject offerings,
 class-teacher and subject-teacher assignments (session-scoped), guardians
