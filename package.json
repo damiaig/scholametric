@@ -13,5 +13,5 @@
     "seed": "pnpm --filter @scholametric/api exec prisma db seed",
     "ci": "pnpm typecheck && pnpm lint && pnpm test"
   },
-  "packageManager": "pnpm@11.12.0"
+  "packageManager": "pnpm@11.18.0"
 }

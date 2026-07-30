@@ -1658,3 +1658,29 @@ non-admins from `/settings/*` entirely — the panels' own
 instruction to use it, not the only gate). 768px chip fix and 360px pass
 both confirmed. All seeded values (assessment components, WAEC grade
 boundaries) restored to their exact seed state afterward.
+
+## 2026-07-30 — chore: pnpm 11.12.0 (broken) → 11.18.0
+Decision: `pnpm@11.12.0` — pinned in root `package.json#packageManager`
+and both Dockerfiles' `corepack prepare` lines since the project's
+initial scaffold — turns out to ship a broken `@pnpm/exe` on at least
+this machine's platform (Apple Silicon): a from-scratch install fails
+outright, which would have broken the very next CI run (CI always does
+a fresh `pnpm install --frozen-lockfile` on a clean runner, no cached
+`node_modules` to fall back on). Root `package.json` had already been
+bumped to `11.18.0` by the time this was caught; this change brings
+every remaining pin in sync: `apps/api/Dockerfile`, `apps/web/Dockerfile`
+(both `corepack prepare pnpm@...`), and the CI workflow's explanatory
+comment (`.github/workflows/ci.yml` — the workflow itself never
+hardcodes a pnpm version; `pnpm/action-setup` reads it from
+`packageManager` automatically, so only the comment needed updating).
+
+Not touched: the OLDER `11.12.0` mention inside this file's own
+2026-07-22 CI entry, above — that's a historical record of what was true
+at the time and this log is append-only (CLAUDE.md §3); this entry is
+the correction, not a rewrite of that one.
+
+Verified: `rm -rf node_modules **/node_modules && pnpm install
+--frozen-lockfile` succeeds cleanly under `pnpm@11.18.0`; `pnpm
+typecheck` passes; `docker compose build --no-cache api web` (forcing
+the Dockerfiles' `corepack prepare` line to actually re-run rather than
+reuse a cached layer) succeeds for both images.
