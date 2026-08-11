@@ -5,9 +5,9 @@ import { loginAs } from "./utils/login";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 const SEEDED_COMPONENTS = [
-  { name: "CA 1", weight: 20, sortOrder: 1 },
-  { name: "CA 2", weight: 20, sortOrder: 2 },
-  { name: "Exam", weight: 60, sortOrder: 3 },
+  { name: "CA 1", weight: 20, sortOrder: 1, maxScore: 20, requiresApproval: false },
+  { name: "CA 2", weight: 20, sortOrder: 2, maxScore: 20, requiresApproval: false },
+  { name: "Exam", weight: 60, sortOrder: 3, maxScore: 100, requiresApproval: true },
 ];
 
 describe("Assessment components (e2e)", () => {
@@ -28,13 +28,17 @@ describe("Assessment components (e2e)", () => {
   });
 
   afterAll(async () => {
-    // Restore the seeded set — every PUT test below replaces the whole
-    // school's set, and this suite must leave the dev DB the way it found
-    // it (other suites, and manual exploration, rely on the seeded rows).
-    await prisma.assessmentComponent.deleteMany({ where: { schoolId: sunriseSchoolId } });
-    for (const component of SEEDED_COMPONENTS) {
-      await prisma.assessmentComponent.create({ data: { schoolId: sunriseSchoolId, ...component } });
-    }
+    // Restore the seeded set through the real endpoint, not a raw hard
+    // delete — once student_scores can reference these rows (SPEC_V0.4.md
+    // §1), a raw deleteMany FK-violates. PUT already handles this
+    // correctly (soft-deletes any removed component with referencing
+    // scores instead of destroying it), which is exactly what's needed
+    // here since prior tests in this suite may have left a set that no
+    // longer matches the originally-seeded rows other suites rely on.
+    await request(app.getHttpServer())
+      .put("/api/v1/assessment-components")
+      .set(auth(sunriseAdminToken))
+      .send({ components: SEEDED_COMPONENTS });
     await app.close();
   });
 

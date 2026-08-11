@@ -10,3 +10,13 @@ import type { UserRole } from "@scholametric/shared";
 export function isSchoolAdmin(role: UserRole | undefined): boolean {
   return role === "PROPRIETOR" || role === "SCHOOL_ADMIN";
 }
+
+/**
+ * Owner-only actions (SPEC_V0.4.md §2: force-unpublish a result, override a
+ * grade on an already-published result) — the first place PROPRIETOR and
+ * SCHOOL_ADMIN diverge in this app. Mirrors isSchoolAdmin()'s shape so
+ * call sites don't scatter raw `role === "PROPRIETOR"` checks.
+ */
+export function isProprietor(role: UserRole | undefined): boolean {
+  return role === "PROPRIETOR";
+}

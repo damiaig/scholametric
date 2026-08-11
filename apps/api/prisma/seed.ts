@@ -1,5 +1,16 @@
 import { PrismaClient, SchoolType, UserRole, TermName, Gender, JobTitle, GuardianRelationship } from "@prisma/client";
 import bcrypt from "bcrypt";
+import {
+  computeSubjectTotal,
+  computeSubjectStatus,
+  computeOverallStatus,
+  computeOverallAverage,
+  computeStandardCompetitionRanking,
+  resolveGradeBand,
+  type ComponentInput,
+  type GradeBoundaryInput,
+  type ResultStatus,
+} from "../src/grades/grade-computation";
 
 const prisma = new PrismaClient();
 const BCRYPT_COST = 12;
@@ -268,14 +279,17 @@ async function seedSubjectTeacherAssignments(
   }
 }
 
-// SPEC_V0.3.md §3: assessment components CA 1 (20), CA 2 (20), Exam (60)
-// — summing to 100 — and the WAEC 9-point grade boundaries, for both
-// schools. Upserted on each school's natural unique keys (schoolId+name,
-// schoolId+grade), so idempotent across reseeds.
-const ASSESSMENT_COMPONENTS: { name: string; weight: number; sortOrder: number }[] = [
-  { name: "CA 1", weight: 20, sortOrder: 1 },
-  { name: "CA 2", weight: 20, sortOrder: 2 },
-  { name: "Exam", weight: 60, sortOrder: 3 },
+// SPEC_V0.3.md §3 / SPEC_V0.4.md §3: assessment components CA 1 (20, out of
+// 20, no approval), CA 2 (20, out of 20, no approval), Exam (60, out of 100,
+// approval-required) — weights summing to 100 — and the WAEC 9-point grade
+// boundaries, for both schools. Upserted on each school's natural unique
+// keys (schoolId+name, schoolId+grade), so idempotent across reseeds; the
+// update branch is non-empty (unlike most other seed upserts here) so a
+// pre-v0.4 dev database gets max_score/requires_approval backfilled too.
+const ASSESSMENT_COMPONENTS: { name: string; weight: number; maxScore: number; requiresApproval: boolean; sortOrder: number }[] = [
+  { name: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, sortOrder: 1 },
+  { name: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, sortOrder: 2 },
+  { name: "Exam", weight: 60, maxScore: 100, requiresApproval: true, sortOrder: 3 },
 ];
 
 const WAEC_GRADE_BOUNDARIES: { grade: string; minScore: number; maxScore: number; remark: string; sortOrder: number }[] = [
@@ -291,12 +305,26 @@ const WAEC_GRADE_BOUNDARIES: { grade: string; minScore: number; maxScore: number
 ];
 
 async function seedAssessmentStructure(schoolId: string) {
+  // Not an upsert on schoolId_name: that compound unique no longer exists
+  // in the Prisma client — it's now a hand-written partial index (WHERE
+  // deleted_at IS NULL) that Prisma's DSL/client can't target directly.
   for (const component of ASSESSMENT_COMPONENTS) {
-    await prisma.assessmentComponent.upsert({
-      where: { schoolId_name: { schoolId, name: component.name } },
-      update: {},
-      create: { schoolId, ...component },
+    const existing = await prisma.assessmentComponent.findFirst({
+      where: { schoolId, name: component.name, deletedAt: null },
     });
+    if (existing) {
+      await prisma.assessmentComponent.update({
+        where: { id: existing.id },
+        data: {
+          weight: component.weight,
+          maxScore: component.maxScore,
+          requiresApproval: component.requiresApproval,
+          sortOrder: component.sortOrder,
+        },
+      });
+    } else {
+      await prisma.assessmentComponent.create({ data: { schoolId, ...component } });
+    }
   }
   for (const boundary of WAEC_GRADE_BOUNDARIES) {
     await prisma.gradeBoundary.upsert({
@@ -305,6 +333,17 @@ async function seedAssessmentStructure(schoolId: string) {
       create: { schoolId, ...boundary },
     });
   }
+  // Converge to exactly the WAEC set: a per-grade upsert alone never
+  // removes a boundary outside it (e.g. a "Simple A-F" preset applied via
+  // PUT /grade-boundaries during manual/UI testing), which leaves two grade
+  // scales coexisting with overlapping ranges — an ambiguous grade-band
+  // lookup for any score both cover. Same self-healing idea as
+  // assessment_components' soft-delete-on-replace, applied here as a plain
+  // delete since grade_boundaries carries no historical references to
+  // preserve.
+  await prisma.gradeBoundary.deleteMany({
+    where: { schoolId, grade: { notIn: WAEC_GRADE_BOUNDARIES.map((b) => b.grade) } },
+  });
 }
 
 // SPEC_V0.2.md §3: give one seeded student a second guardian (mother) to
@@ -357,12 +396,14 @@ async function seedSchoolAcademics(schoolId: string) {
     { name: TermName.SECOND, startsOn: new Date("2027-01-05"), endsOn: new Date("2027-04-02"), isCurrent: false },
     { name: TermName.THIRD, startsOn: new Date("2027-04-20"), endsOn: new Date("2027-07-31"), isCurrent: false },
   ];
+  const termIds: Record<string, string> = {};
   for (const term of terms) {
-    await prisma.term.upsert({
+    const created = await prisma.term.upsert({
       where: { sessionId_name: { sessionId: session.id, name: term.name } },
       update: {},
       create: { schoolId, sessionId: session.id, ...term },
     });
+    termIds[term.name] = created.id;
   }
 
   const arms: Record<string, string> = {};
@@ -384,7 +425,7 @@ async function seedSchoolAcademics(schoolId: string) {
     }
   }
 
-  return { sessionId: session.id, arms, classLevels };
+  return { sessionId: session.id, arms, classLevels, termIds };
 }
 
 // A from-scratch bootstrap (empty DB -> migrate -> seed) runs the v0.2
@@ -510,6 +551,188 @@ async function seedBulkClassArm(
   }
 }
 
+// Deterministic pseudo-random in [0,1) from an integer seed (sin-hash trick)
+// — NOT Math.random(). Scores must be stable across reseeds so the "prove
+// it" numbers in docs/DECISIONS.md and manual verification stay correct.
+function pseudoRandom(seed: number): number {
+  const x = Math.sin(seed) * 43758.5453123;
+  return x - Math.floor(x);
+}
+
+// Gives each student a consistent per-subject "ability" (45%-90% of max,
+// stable across all three components) plus small per-component noise
+// (+/-10%), so scores/ranks/positions form a realistic, reproducible
+// distribution instead of flat or fully random numbers.
+function deterministicScore(studentIndex: number, componentIndex: number, subjectIndex: number, maxScore: number): number {
+  const abilitySeed = studentIndex * 3 + subjectIndex * 97 + 11;
+  const noiseSeed = studentIndex * 7 + componentIndex * 13 + subjectIndex * 31 + 1;
+  const ability = 0.45 + pseudoRandom(abilitySeed) * 0.45;
+  const noise = (pseudoRandom(noiseSeed) - 0.5) * 0.2;
+  const percent = Math.min(1, Math.max(0.15, ability + noise));
+  return Math.round(percent * maxScore);
+}
+
+// Seeds CA1/CA2/Exam raw scores for every enrolled student in a class arm
+// for one subject, then computes and stores each student's
+// term_subject_result. `publish` simulates the director/owner publish
+// action (SPEC_V0.4.md §2 POST /grades/publish) — there's no HTTP surface
+// yet, so the seed writes the resulting state directly.
+async function seedSubjectGrades(params: {
+  schoolId: string;
+  sessionId: string;
+  termId: string;
+  classArmId: string;
+  subjectId: string;
+  subjectIndex: number;
+  components: ComponentInput[];
+  boundaries: GradeBoundaryInput[];
+  enteredByUserId: string;
+  publish: boolean;
+}): Promise<string[]> {
+  const { schoolId, sessionId, termId, classArmId, subjectId, subjectIndex, components, boundaries, enteredByUserId, publish } = params;
+
+  const enrollments = await prisma.studentEnrollment.findMany({
+    where: { schoolId, classArmId, sessionId },
+    orderBy: { studentId: "asc" },
+  });
+  const studentIds = enrollments.map((e) => e.studentId);
+
+  for (let i = 0; i < studentIds.length; i++) {
+    const studentId = studentIds[i];
+    for (let c = 0; c < components.length; c++) {
+      const component = components[c];
+      const rawScore = deterministicScore(i, c, subjectIndex, component.maxScore);
+      await prisma.studentScore.upsert({
+        where: {
+          studentId_subjectId_componentId_termId_sessionId: {
+            studentId,
+            subjectId,
+            componentId: component.id,
+            termId,
+            sessionId,
+          },
+        },
+        update: { rawScore, enteredBy: enteredByUserId, enteredAt: new Date() },
+        create: {
+          schoolId,
+          studentId,
+          subjectId,
+          componentId: component.id,
+          sessionId,
+          termId,
+          classArmId,
+          rawScore,
+          enteredBy: enteredByUserId,
+          enteredAt: new Date(),
+        },
+      });
+    }
+  }
+
+  const totals = new Map<string, number>();
+  const draftOrPending = new Map<string, "DRAFT" | "PENDING_APPROVAL">();
+  for (const studentId of studentIds) {
+    const scores = await prisma.studentScore.findMany({ where: { studentId, subjectId, termId, sessionId } });
+    const scoreInputs = scores.map((s) => ({
+      componentId: s.componentId,
+      rawScore: s.rawScore === null ? null : Number(s.rawScore),
+    }));
+    totals.set(studentId, computeSubjectTotal(components, scoreInputs));
+    draftOrPending.set(studentId, computeSubjectStatus(components, scoreInputs));
+  }
+
+  let positions: Map<string, number> | null = null;
+  if (publish) {
+    const ranking = computeStandardCompetitionRanking(studentIds, (id) => totals.get(id)!);
+    positions = new Map(ranking.map((r) => [r.item, r.position]));
+  }
+
+  for (const studentId of studentIds) {
+    const total = totals.get(studentId)!;
+    const autoGrade = resolveGradeBand(total, boundaries);
+    const status: ResultStatus = publish ? "PUBLISHED" : draftOrPending.get(studentId)!;
+    const data = {
+      schoolId,
+      classArmId,
+      totalScore: total,
+      autoGrade,
+      finalGrade: autoGrade,
+      subjectPosition: positions?.get(studentId) ?? null,
+      status,
+      publishedAt: publish ? new Date() : null,
+    };
+    await prisma.termSubjectResult.upsert({
+      where: { studentId_subjectId_termId_sessionId: { studentId, subjectId, termId, sessionId } },
+      update: data,
+      create: { ...data, studentId, subjectId, sessionId, termId },
+    });
+  }
+
+  return studentIds;
+}
+
+// Computes and stores each student's term_overall_result from whatever
+// term_subject_results already exist for them this term — status and
+// overall positions derive automatically from the subject statuses
+// (SPEC_V0.4.md §1: "publishes when all its subject results are
+// published"), no separate publish flag needed here.
+async function seedOverallResults(params: {
+  schoolId: string;
+  sessionId: string;
+  termId: string;
+  classArmId: string;
+  studentIds: string[];
+  boundaries: GradeBoundaryInput[];
+}) {
+  const { schoolId, sessionId, termId, classArmId, studentIds, boundaries } = params;
+  if (studentIds.length === 0) return;
+
+  const allResults = await prisma.termSubjectResult.findMany({
+    where: { studentId: { in: studentIds }, termId, sessionId },
+  });
+  const byStudent = new Map<string, typeof allResults>();
+  for (const result of allResults) {
+    const arr = byStudent.get(result.studentId) ?? [];
+    arr.push(result);
+    byStudent.set(result.studentId, arr);
+  }
+
+  const averages = new Map<string, number>();
+  const statuses = new Map<string, "DRAFT" | "PENDING_APPROVAL" | "PUBLISHED">();
+  for (const studentId of studentIds) {
+    const results = byStudent.get(studentId) ?? [];
+    averages.set(studentId, computeOverallAverage(results.map((r) => Number(r.totalScore))));
+    statuses.set(studentId, computeOverallStatus(results.map((r) => r.status)));
+  }
+
+  const allPublished = studentIds.every((id) => statuses.get(id) === "PUBLISHED");
+  let positions: Map<string, number> | null = null;
+  if (allPublished) {
+    const ranking = computeStandardCompetitionRanking(studentIds, (id) => averages.get(id)!);
+    positions = new Map(ranking.map((r) => [r.item, r.position]));
+  }
+
+  for (const studentId of studentIds) {
+    const results = byStudent.get(studentId) ?? [];
+    const avg = averages.get(studentId)!;
+    const avgGrade = resolveGradeBand(avg, boundaries);
+    const data = {
+      schoolId,
+      classArmId,
+      averageScore: avg,
+      averageGrade: avgGrade,
+      subjectsCount: results.length,
+      overallPosition: positions?.get(studentId) ?? null,
+      status: statuses.get(studentId)!,
+    };
+    await prisma.termOverallResult.upsert({
+      where: { studentId_termId_sessionId: { studentId, termId, sessionId } },
+      update: data,
+      create: { ...data, studentId, sessionId, termId },
+    });
+  }
+}
+
 async function main() {
   const platform = await prisma.school.upsert({
     where: { slug: "platform" },
@@ -630,6 +853,60 @@ async function main() {
   await seedSecondGuardian(sunrise.id, "SUN/2026/0001");
   await seedAssessmentStructure(sunrise.id);
 
+  const sunriseComponents = await prisma.assessmentComponent.findMany({
+    where: { schoolId: sunrise.id, deletedAt: null },
+    orderBy: { sortOrder: "asc" },
+  });
+  const sunriseBoundaries = await prisma.gradeBoundary.findMany({
+    where: { schoolId: sunrise.id },
+    orderBy: { sortOrder: "asc" },
+  });
+  const sunriseFirstTermId = sunriseAcademics.termIds[TermName.FIRST];
+
+  // SPEC_V0.4.md §3: realistic First Term scores for Mathematics + English
+  // across JSS 1 A and the ~100-student JSS 2 A. JSS 1 A Mathematics is left
+  // PENDING_APPROVAL (exam scored, not yet published) and English PUBLISHED
+  // — both states demoable from seed, per spec. JSS 2 A publishes both, so
+  // its overall results and positions are also exercised end to end.
+  for (const armKey of ["JSS 1-A", "JSS 2-A"]) {
+    const classArmId = sunriseAcademics.arms[armKey];
+    const publishMath = armKey !== "JSS 1-A";
+
+    const mathStudentIds = await seedSubjectGrades({
+      schoolId: sunrise.id,
+      sessionId: sunriseAcademics.sessionId,
+      termId: sunriseFirstTermId,
+      classArmId,
+      subjectId: sunriseSubjectIds["Mathematics"],
+      subjectIndex: 0,
+      components: sunriseComponents,
+      boundaries: sunriseBoundaries,
+      enteredByUserId: sunriseTeacherUserIds[0],
+      publish: publishMath,
+    });
+    await seedSubjectGrades({
+      schoolId: sunrise.id,
+      sessionId: sunriseAcademics.sessionId,
+      termId: sunriseFirstTermId,
+      classArmId,
+      subjectId: sunriseSubjectIds["English Language"],
+      subjectIndex: 1,
+      components: sunriseComponents,
+      boundaries: sunriseBoundaries,
+      enteredByUserId: sunriseTeacherUserIds[1],
+      publish: true,
+    });
+
+    await seedOverallResults({
+      schoolId: sunrise.id,
+      sessionId: sunriseAcademics.sessionId,
+      termId: sunriseFirstTermId,
+      classArmId,
+      studentIds: mathStudentIds,
+      boundaries: sunriseBoundaries,
+    });
+  }
+
   // SPEC_V0.3.md §3: a teacher forced through change-password on first
   // login — seeded separately from SUNRISE_TEACHERS (not added to that
   // array) so it never enters the class-teacher/subject-teacher
@@ -696,7 +973,7 @@ async function main() {
     hillcrestTeacherUserIds.push(teacherUser.id);
   }
 
-  await seedSubjects(hillcrest.id, hillcrestAcademics.classLevels, HILLCREST_SUBJECTS);
+  const hillcrestSubjectIds = await seedSubjects(hillcrest.id, hillcrestAcademics.classLevels, HILLCREST_SUBJECTS);
 
   // One class-teacher assignment — enough for cross-tenant tests.
   await seedClassTeacherAssignments(
@@ -707,6 +984,40 @@ async function main() {
   );
 
   await seedAssessmentStructure(hillcrest.id);
+
+  // SPEC_V0.4.md §3: a smaller slice — one subject, one class — so
+  // cross-tenant grade tests have real data to assert 404 against.
+  const hillcrestComponents = await prisma.assessmentComponent.findMany({
+    where: { schoolId: hillcrest.id, deletedAt: null },
+    orderBy: { sortOrder: "asc" },
+  });
+  const hillcrestBoundaries = await prisma.gradeBoundary.findMany({
+    where: { schoolId: hillcrest.id },
+    orderBy: { sortOrder: "asc" },
+  });
+  const hillcrestFirstTermId = hillcrestAcademics.termIds[TermName.FIRST];
+  const hillcrestJss1AArmId = hillcrestAcademics.arms["JSS 1-A"];
+
+  const hillcrestMathStudentIds = await seedSubjectGrades({
+    schoolId: hillcrest.id,
+    sessionId: hillcrestAcademics.sessionId,
+    termId: hillcrestFirstTermId,
+    classArmId: hillcrestJss1AArmId,
+    subjectId: hillcrestSubjectIds["Mathematics"],
+    subjectIndex: 0,
+    components: hillcrestComponents,
+    boundaries: hillcrestBoundaries,
+    enteredByUserId: hillcrestTeacherUserIds[0],
+    publish: true,
+  });
+  await seedOverallResults({
+    schoolId: hillcrest.id,
+    sessionId: hillcrestAcademics.sessionId,
+    termId: hillcrestFirstTermId,
+    classArmId: hillcrestJss1AArmId,
+    studentIds: hillcrestMathStudentIds,
+    boundaries: hillcrestBoundaries,
+  });
 
   console.log("Seed complete.");
 }

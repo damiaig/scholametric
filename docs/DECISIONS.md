@@ -1736,3 +1736,90 @@ reset-password and forced-change-password flows on them.
 
 No backend/schema changes this step (verification + polish only, per
 scope). `docs/API.md` unchanged — no endpoint behavior changed.
+
+## 2026-08-11 — v0.4 step 1: grades schema + seed
+Decision: added `student_scores`, `term_subject_results`,
+`term_overall_results` (all school_id-scoped per CLAUDE.md §4, exactly
+per SPEC_V0.4.md §1) and `assessment_components.requires_approval`/
+`max_score`. Wired the soft-delete resolution from the pre-step-1 spec
+review (resolution 8's "v0.4's job"): `PUT /assessment-components` now
+matches incoming items to existing rows by `id` (new optional DTO
+field) and only removes what's unmatched — soft-deleting a removed
+component if any `student_scores` row references it (FK is `ON DELETE
+RESTRICT`), hard-deleting it otherwise (matching pre-v0.4 behavior for
+untouched components). `@@unique([school_id, name])` became a
+hand-written partial index (`WHERE deleted_at IS NULL`), same pattern
+as the three prior partial/trigram indexes in this repo — Prisma's
+client no longer exposes a `schoolId_name` compound-unique input for
+this table, so `seed.ts`'s own component upsert had to move from
+`upsert(where: schoolId_name)` to an explicit find-then-write.
+
+Computation lives in `apps/api/src/grades/grade-computation.ts` as
+plain exported functions, not a NestJS `@Injectable()` — `seed.ts` uses
+a bare `PrismaClient` with no DI container, so an injectable service
+would be uncallable from it. Three implementation choices, not spelled
+out in the spec:
+- Grade-boundary lookup rounds a decimal total to the nearest whole
+  point (clamped [0,100]) before the boundary lookup, since boundaries
+  are integer-tiled but totals are decimal.
+- `term_overall_results.average_score` is a simple unweighted mean of
+  the student's subject totals (SPEC_V0.4.md §6 flagged the weighted
+  alternative as a future refinement, not this step's job).
+- `term_overall_results.status` derives automatically from its subject
+  statuses (PUBLISHED only once every subject is; PENDING_APPROVAL if
+  there's any activity short of that) — publishing is a real per-
+  subject action seed must simulate explicitly (no endpoint exists
+  yet), but overall status/positions are always computed, never a
+  separate manual step, matching "publishes when all its subject
+  results are published."
+
+Seed: realistic First Term Mathematics + English scores (deterministic
+sin-hash pseudo-random per student/component, not `Math.random()` —
+stable across reseeds) across Sunrise's JSS 1 A and JSS 2 A, one
+subject/class slice at Hillcrest. JSS 1 A Mathematics left
+PENDING_APPROVAL, English PUBLISHED (both demoable); JSS 2 A and
+Hillcrest fully published, exercising positions end to end. Proved:
+seed ran 3× with identical row counts (657 student_scores / 219
+term_subject_results / 110 term_overall_results on the live dev DB);
+migrations + seed also run clean against a genuinely empty database (a
+throwaway container, not the persistent dev DB); a named student's
+hand-recomputed weighted total (17/20×20 + 17/20×20 + 87/100×60 =
+86.20) matches the stored `term_subject_result` exactly; each school's
+active (non-deleted) components still sum to 100 after seeding;
+soft-deleting a component with scores via the real `PUT
+/assessment-components` endpoint and re-adding one with the same name
+in the same call left all 218 referencing `student_scores` rows
+intact and un-orphaned, with the active set still summing to 100.
+
+Found and fixed a real, pre-existing data-hygiene gap while producing
+that proof evidence, unrelated to this step's own schema work:
+`seed.ts`'s grade-boundary seeding only ever upserted the 9 WAEC grades
+by name and never removed anything outside that set, so Sunrise's
+`grade_boundaries` had accumulated a second, overlapping "Simple A-F"
+preset (5 rows) left over from earlier manual/acceptance UI testing —
+both sets active simultaneously made grade-band resolution ambiguous
+for any score both covered (confirmed: it silently returned whichever
+boundary the DB happened to return first for a tied `sort_order`).
+Fixed by having `seedAssessmentStructure` delete any boundary outside
+the WAEC set after upserting it, converging to exactly 9 rows per
+school on every run — same self-healing idea as the
+assessment-components fix above, applied as a plain delete since
+`grade_boundaries` carries no historical references to preserve. Also
+fixed `test/assessment-components.e2e-spec.ts`'s `afterAll`, which used
+to hard `deleteMany` the whole school's component set directly via
+Prisma to reset state between test files — that now FK-violates once
+`student_scores` can reference these rows, so it goes through the real
+`PUT /assessment-components` endpoint instead (soft-deletes correctly
+on its own).
+
+Added `isProprietor()` to `apps/web/src/lib/roles.ts`, mirroring
+`isSchoolAdmin()` — the first owner-only permission split in this app
+(step 3's unpublish/override-on-published actions), per the pre-step-1
+spec resolution. No new role; `RolesGuard`'s existing `@Roles(...)`
+OR-list already supports it server-side.
+
+Out of scope, confirmed unchanged: no `/grades/*` endpoints (step 2),
+no frontend UI for grades. `docs/API.md` updated only for the existing
+`PUT /assessment-components`'s new optional request fields (`id`,
+`requiresApproval`, `maxScore`) and its soft-delete replace semantics —
+no new endpoints, no response shape changes.

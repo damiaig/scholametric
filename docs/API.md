@@ -816,19 +816,27 @@ Ordered by `sortOrder`, tiebreak `id`.
 
 ### `PUT /assessment-components`
 
-Body: `{ "components": [{ "name", "weight", "sortOrder" }, ...] }` — a
-named-property wrapper, not a bare array (matches this API's existing
-array-body convention, e.g. `PUT /subjects/:id/levels`'s `{
-classLevelIds }` — see docs/DECISIONS.md).
+Body: `{ "components": [{ "id"?, "name", "weight", "sortOrder",
+"requiresApproval"?, "maxScore"? }, ...] }` — a named-property wrapper,
+not a bare array (matches this API's existing array-body convention,
+e.g. `PUT /subjects/:id/levels`'s `{ classLevelIds }` — see
+docs/DECISIONS.md). `requiresApproval` (default `false`) and
+`maxScore` (default `100`, validated 1-100) drive SPEC_V0.4.md's score
+entry/approval flow. `id` is optional (added v0.4 step 1): present for
+an existing component the caller wants updated in place, absent for a
+new one.
 
-Replaces the school's **entire** set atomically: validates 1-8 items,
-positive integer weights summing to **exactly** 100, and unique names —
-all in one transaction, so a rejected `PUT` never touches the persisted
-set (a partial replace could never leave a non-100 total visible to any
-concurrent reader) and the whole operation is all-or-nothing.
-`deleted_at` is reserved/unwired in v0.3 (no soft-delete logic, no
-partial unique index — resolution 8) — this is a real hard
-delete-and-recreate under the hood.
+Validates the **submitted (active) set** atomically: 1-8 items,
+positive integer weights summing to **exactly** 100, and unique names
+— all in one transaction, so a rejected `PUT` never touches the
+persisted set and the whole operation is all-or-nothing. Items are
+matched to existing rows by `id`; anything existing with no matching
+`id` in the request is removed — soft-deleted (`deleted_at` set) if any
+`student_scores` row references it (the FK is `ON DELETE RESTRICT`;
+scores must survive a later assessment-structure edit), otherwise hard-
+deleted. `@@unique(school_id, name)` is a partial index (`WHERE
+deleted_at IS NULL`), so a new component can reuse a soft-deleted one's
+name. `findAll`/`GET` exclude soft-deleted rows.
 
 **Response `200`**: the new set, an array (not the request body echoed
 back) — ordered by `sortOrder`.
