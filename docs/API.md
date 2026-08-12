@@ -959,10 +959,14 @@ own tenant.
 ### `PUT /grades/grid`
 
 Body: `{ classArmId, subjectId, componentId, termId, scores: [{ studentId, rawScore }] }`.
-`rawScore` is nullable (clears a previously entered score) and validated
-against this **specific component's** `max_score` (not a generic 0-100) —
-the DTO's own bound is 0-100 as an outer sanity check only. Every
-`studentId` must be in the resolved roster.
+`rawScore` is nullable (clears a previously entered score); its only lower
+bound at the DTO level is `>= 0` — the **only** upper bound is this
+specific component's actual `max_score`, checked in `GradesService`
+against the real row. There is deliberately no DTO-level upper cap: one
+would either duplicate that check redundantly or (worse, a real bug this
+step) silently false-reject a legitimate score for any component whose
+`max_score` exceeds the cap. Every `studentId` must be in the resolved
+roster.
 
 Bulk upsert, **atomic per request**: every score and every `studentId` is
 validated before anything is written; a single bad entry rejects the whole
@@ -1007,7 +1011,15 @@ plus the freshly recomputed subject-result summary.
 
 **Response `409`**: any affected student's `term_subject_results` for this
 subject/term is already `PUBLISHED` — must unpublish first (step 3).
-Nothing is written.
+Nothing is written. Body carries the locked students as structured data,
+not just a count, since a director/owner UI needs to know exactly which
+students are blocking the save:
+```json
+{ "statusCode": 409, "message": "Cannot save scores: ... PUBLISHED for 2 student(s) ...", "error": "Conflict", "path": "...", "timestamp": "...", "lockedStudentIds": ["...", "..."] }
+```
+(`AllExceptionsFilter` passes through any extra fields an exception
+attaches beyond the standard envelope — `lockedStudentIds` here — see
+docs/DECISIONS.md.)
 
 **Response `403`/`404`**: same rules as `GET /grades/grid` above.
 

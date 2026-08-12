@@ -157,11 +157,9 @@ export class GradesService {
             sessionId: term.sessionId,
           },
         });
-        const publishedCount = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).length;
-        if (publishedCount > 0) {
-          throw new ConflictException(
-            `Cannot save scores: this subject's result is already PUBLISHED for ${publishedCount} student(s) in this batch — unpublish first.`,
-          );
+        const lockedStudentIds = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).map((r) => r.studentId);
+        if (lockedStudentIds.length > 0) {
+          throw this.publishedLockException("save scores", lockedStudentIds);
         }
 
         await Promise.all(
@@ -265,11 +263,9 @@ export class GradesService {
         const existingResults = await tx.termSubjectResult.findMany({
           where: { studentId: { in: studentIds }, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId },
         });
-        const publishedCount = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).length;
-        if (publishedCount > 0) {
-          throw new ConflictException(
-            `Cannot recompute: this subject's result is already PUBLISHED for ${publishedCount} student(s) — unpublish first.`,
-          );
+        const lockedStudentIds = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).map((r) => r.studentId);
+        if (lockedStudentIds.length > 0) {
+          throw this.publishedLockException("recompute", lockedStudentIds);
         }
 
         const recomputed = await this.recomputeStudents(
@@ -357,6 +353,18 @@ export class GradesService {
       });
     }
     return results;
+  }
+
+  // Structured, not just a count: the caller (a director/owner UI) needs
+  // to know exactly WHICH students are locked, not just how many.
+  // AllExceptionsFilter passes any extra fields on the exception's
+  // response payload through the standard error envelope alongside
+  // statusCode/message/error/path/timestamp.
+  private publishedLockException(action: string, lockedStudentIds: string[]): ConflictException {
+    return new ConflictException({
+      message: `Cannot ${action}: this subject's result is already PUBLISHED for ${lockedStudentIds.length} student(s) — unpublish first.`,
+      lockedStudentIds,
+    });
   }
 
   private async getRoster(schoolId: string, classArmId: string, sessionId: string) {

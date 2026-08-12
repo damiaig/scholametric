@@ -1,8 +1,10 @@
-import { IsNumber, IsOptional, IsUUID, Max, Min } from "class-validator";
+import { IsNumber, IsOptional, IsUUID, Min } from "class-validator";
 
-// Outer sanity bound only (0-100) — the real bound is the specific
-// component's max_score (1-100, dynamic per component), checked in
-// GradesService against the actual row, not expressible here.
+// No upper bound here on purpose: the only valid ceiling is the specific
+// component's max_score, which is dynamic per component and checked in
+// GradesService against the actual row. A DTO-level cap (even a generous
+// one) would silently false-reject a legitimate score for any component
+// whose max_score exceeds that cap.
 export class GridScoreItemDto {
   @IsUUID()
   studentId!: string;
@@ -10,6 +12,5 @@ export class GridScoreItemDto {
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  @Max(100)
   rawScore?: number | null;
 }

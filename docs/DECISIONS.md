@@ -1901,3 +1901,51 @@ database twice.
 Full ci green (typecheck, lint, e2e ×2 including a fresh-DB run, frontend
 unaffected). No schema/migration changes this step, confirmed — `grade-
 computation.ts` itself untouched, only imported.
+
+## 2026-08-12 — v0.4 step 2 review fixes: DTO bound, structured 409, two regression e2e
+Decision (post-review follow-up to the same-day step-2 commit): four
+fixes, all pre-approved by review before building.
+
+1. Dropped `GridScoreItemDto.rawScore`'s `@Max(100)` entirely — the only
+   valid upper bound is the specific component's actual `max_score`
+   (already checked in `GradesService`), which the real `PUT
+   /assessment-components` endpoint happens to cap at 100 today but the
+   DTO shouldn't assume that will always hold; a DTO-level cap duplicates
+   a check that belongs solely to the service and would silently false-
+   reject a legitimate score the moment any component's `max_score`
+   exceeds it. Proved with an e2e that creates a component with
+   `max_score: 120` directly (bypassing the assessment-components
+   endpoint's own 1-100 validation, same as this suite's existing
+   scratch-subject pattern) and asserts a `rawScore` of 110 saves.
+
+2. `PUT /grades/grid`'s and `POST /grades/recompute`'s `409` now return
+   `lockedStudentIds: string[]`, not just a count in the message — a
+   director/owner UI needs to know exactly which students are blocking a
+   save. This required extending `AllExceptionsFilter` itself (shared
+   infrastructure, not grades-local): it now spreads any extra
+   properties an exception's response payload carries beyond
+   `statusCode`/`message`/`error` into the response body, so a thrower
+   can attach structured data (`new ConflictException({ message, extra
+   })`) while every existing exception across the app — which never adds
+   extra fields — is completely unaffected (confirmed: full e2e suite,
+   198 tests, unchanged pass count aside from the 2 new tests below).
+   `statusCode`/`message`/`error` stay filter-controlled regardless — a
+   thrower's payload can't override them, only add to them. This is a
+   real, deliberate widening of CLAUDE.md §5's error envelope (additive:
+   the 5 mandated fields are always present and always filter-derived);
+   worth knowing before assuming the envelope is closed to extension.
+
+3. New e2e regression guard: score CA1, then Exam (status flips
+   `DRAFT`→`PENDING_APPROVAL`), then re-save a *different* CA1 value with
+   Exam untouched — asserts status stays `PENDING_APPROVAL`, not reset to
+   `DRAFT`. Was already correct by construction (`recomputeStudents`
+   always re-derives status from the student's full current score set,
+   never from "was this particular write the approval component"), but
+   had no test pinning it down before a future change to that function
+   could regress it silently.
+
+4. The ~100-student bulk-save timing assertion now `console.log`s the
+   elapsed ms (visible in CI output, not just pass/fail) and the ceiling
+   tightened from 10s to 5s — observed ~130-165ms locally across several
+   runs, so 5s still has generous headroom to catch a real regression
+   without being flaky on a slower CI runner.

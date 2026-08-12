@@ -327,6 +327,48 @@ describe("Grades grid (e2e)", () => {
       expect(after.body.rows[0].totalScore).toBe(40);
     });
 
+    it("re-saving a non-approval component after PENDING_APPROVAL does not reset status to DRAFT", async () => {
+      const [student] = jss2ARoster.slice(6, 7);
+      await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 10 }],
+        });
+      const scored = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 50 }],
+        });
+      expect(scored.body.rows[0].status).toBe("PENDING_APPROVAL");
+
+      // Re-save CA1 with a different value — Exam is untouched by this
+      // call, so status must recompute from the CURRENT state (Exam still
+      // scored), not reset just because this particular write wasn't the
+      // approval-required component. A regression here would silently
+      // un-gate a result that should still require director/owner
+      // approval (step 3).
+      const resaved = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 15 }],
+        });
+      expect(resaved.status).toBe(200);
+      expect(resaved.body.rows[0].status).toBe("PENDING_APPROVAL");
+      // 15/20*20 + 50/100*60 = 15 + 30 = 45.
+      expect(resaved.body.rows[0].totalScore).toBe(45);
+
+      const persisted = await prisma.termSubjectResult.findUniqueOrThrow({
+        where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: scratchSubjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
+      });
+      expect(persisted.status).toBe("PENDING_APPROVAL");
+    });
+
     it("the ~100-student JSS 2 A bulk save writes and computes every row in one transaction", async () => {
       const start = Date.now();
       const response = await request(app.getHttpServer())
@@ -340,10 +382,12 @@ describe("Grades grid (e2e)", () => {
           scores: jss2ARoster.map((s, i) => ({ studentId: s.id, rawScore: 5 + (i % 16) })),
         });
       const elapsedMs = Date.now() - start;
+      // eslint-disable-next-line no-console
+      console.log(`[grades-grid] ~100-student bulk save: ${elapsedMs}ms for ${jss2ARoster.length} students`);
       expect(response.status).toBe(200);
       expect(response.body.savedCount).toBe(jss2ARoster.length);
       expect(response.body.rows).toHaveLength(jss2ARoster.length);
-      expect(elapsedMs).toBeLessThan(10000);
+      expect(elapsedMs).toBeLessThan(5000);
 
       const scoreCount = await prisma.studentScore.count({ where: { subjectId: scratchSubjectId, componentId: ca1Id } });
       expect(scoreCount).toBe(jss2ARoster.length);
@@ -412,6 +456,33 @@ describe("Grades grid (e2e)", () => {
         },
       });
       expect(after?.rawScore?.toString()).toBe(before?.rawScore?.toString());
+    });
+
+    it("accepts a rawScore above 100 when the component's own max_score allows it", async () => {
+      // Nothing in the real seeded/assessment-components-validated set
+      // exceeds 100 (PUT /assessment-components caps max_score at 100),
+      // so this component is created directly, bypassing that endpoint —
+      // the point is proving GradesService checks the ACTUAL component
+      // row, not a hardcoded 100, which a DTO-level @Max(100) would have
+      // silently violated.
+      const highMaxComponent = await prisma.assessmentComponent.create({
+        data: { schoolId: sunriseId, name: "E2E High Max", weight: 1, sortOrder: 99, maxScore: 120, requiresApproval: false },
+      });
+      try {
+        const [student] = jss2ARoster.slice(7, 8);
+        const response = await request(app.getHttpServer())
+          .put("/api/v1/grades/grid")
+          .set(auth(sunriseAdminToken))
+          .send({
+            classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: highMaxComponent.id, termId: sunriseTermId,
+            scores: [{ studentId: student.id, rawScore: 110 }],
+          });
+        expect(response.status).toBe(200);
+        expect(response.body.rows[0].rawScore).toBe(110);
+      } finally {
+        await prisma.studentScore.deleteMany({ where: { componentId: highMaxComponent.id } });
+        await prisma.assessmentComponent.delete({ where: { id: highMaxComponent.id } });
+      }
     });
 
     it("400s a negative rawScore", async () => {
@@ -495,6 +566,7 @@ describe("Grades grid (e2e)", () => {
           scores: [{ studentId: student.id, rawScore: 1 }],
         });
       expect(response.status).toBe(409);
+      expect(response.body.lockedStudentIds).toEqual([student.id]);
 
       const after = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: englishId, termId: sunriseTermId, sessionId: sunriseSessionId } },
@@ -566,12 +638,13 @@ describe("Grades grid (e2e)", () => {
       expect(response.status).toBe(404);
     });
 
-    it("409s against the real, seeded PUBLISHED JSS 1 A English result", async () => {
+    it("409s against the real, seeded PUBLISHED JSS 1 A English result, naming every locked student", async () => {
       const response = await request(app.getHttpServer())
         .post("/api/v1/grades/recompute")
         .set(auth(sunriseAdminToken))
         .send({ classArmId: jss1AArmId, subjectId: englishId, termId: sunriseTermId });
       expect(response.status).toBe(409);
+      expect(new Set(response.body.lockedStudentIds)).toEqual(new Set(jss1ARoster.map((s) => s.id)));
     });
   });
 });

@@ -7,6 +7,7 @@ interface ErrorBody {
   error: string;
   path: string;
   timestamp: string;
+  [extra: string]: unknown;
 }
 
 /** CLAUDE.md §5: every error response uses one envelope; never leak stack traces or SQL. */
@@ -26,6 +27,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       error: this.resolveError(exception, status),
       path: request.url,
       timestamp: new Date().toISOString(),
+      // Lets a specific throw site attach structured data beyond the
+      // envelope (e.g. grades' 409 lockedStudentIds) by passing an object
+      // to an HttpException subclass — statusCode/message/error stay
+      // filter-controlled either way, so a thrower can't override them.
+      ...this.resolveExtra(exception),
     };
 
     if (status === HttpStatus.INTERNAL_SERVER_ERROR) {
@@ -55,5 +61,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
       }
     }
     return HttpStatus[status] ?? "Error";
+  }
+
+  private resolveExtra(exception: unknown): Record<string, unknown> {
+    if (!(exception instanceof HttpException)) {
+      return {};
+    }
+    const payload = exception.getResponse();
+    if (typeof payload !== "object" || payload === null) {
+      return {};
+    }
+    const envelopeKeys = new Set(["statusCode", "message", "error"]);
+    return Object.fromEntries(Object.entries(payload).filter(([key]) => !envelopeKeys.has(key)));
   }
 }
