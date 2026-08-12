@@ -1949,3 +1949,152 @@ fixes, all pre-approved by review before building.
    tightened from 10s to 5s — observed ~130-165ms locally across several
    runs, so 5s still has generous headroom to catch a real regression
    without being flaky on a slower CI runner.
+
+## 2026-08-12 — v0.4 step 3: review/publish/override API + position computation
+Decision: `POST /grades/publish`, `POST /grades/unpublish`, `PUT
+/grades/override`, per-subject and overall position computation. All
+three of the pre-approved plan's flagged questions resolved before
+building (recorded here, not re-derived): results-viewing endpoints
+(`GET /grades/review` and friends) deferred to step 5, shaped by the web
+that consumes them; override is `409`-blocked entirely while `DRAFT`
+(the total isn't final pre-approval); a student's overall is ranked only
+once *every* subject they have a result for is published — 5-of-6 stays
+excluded, not partial-ranked, even though this means overall positions
+can cluster near the end of a term's publish cycle rather than filling
+in gradually. `grade-computation.ts` needed zero changes — every pure
+function step 3 uses (`computeStandardCompetitionRanking`,
+`resolveFinalGrade`, `computeOverallStatus`) already existed from step 1.
+
+**Locking**: publish/unpublish/override all acquire the same per-subject
+`pg_advisory_xact_lock` (`grades:{school}:{subject}:{classArm}:{term}`)
+`saveGrid`/`recompute` already used — this is what stops a publish from
+racing a concurrent score save. Publish/unpublish additionally acquire a
+second, broader lock (`grades:{school}:{classArm}:{term}`, no subject)
+before recomputing `term_overall_results`, which reads across every
+subject a student has — proved necessary with a concrete race: two
+different subjects for the same student, both `PENDING_APPROVAL`,
+published concurrently; without the second lock each transaction's
+overall-recompute phase can independently observe "not all published
+yet" (since it can't see the other's uncommitted work) and neither ever
+correctly flips the student's overall to `PUBLISHED` — a lost update, not
+just a stale read. Proved via a real concurrent-publish e2e, not just
+reasoning. Deadlock-free by construction: every caller that touches both
+locks acquires them in the same fixed order (subject-lock, then
+class-arm-lock) and nothing that only needs the subject-lock ever waits
+on the class-arm-lock — no circular wait is possible.
+
+**Position computation**: per-subject `subject_position` is recomputed
+across the *entire* currently-published set for that subject/class/term
+on every publish call, not just the rows that just transitioned —
+publishing can happen in stages as stragglers' exam scores land, and a
+second call must produce positions consistent with the first batch, not
+a disconnected scale. `POST /grades/publish` is therefore idempotent when
+called with nothing newly pending (`publishedCount: 0`, positions
+reconfirmed). Overall positions only ever rank the "fully published"
+cohort (established above); removing a student from that cohort (an
+unpublish) re-ranks everyone who remains, proved with a dedicated e2e
+(two students' positions both shift up after a third is unpublished out).
+
+**Two real bugs found and fixed, not new step-3 scope creep — both in
+step 2's `recomputeStudents`**, exposed once override made them
+observable:
+1. `finalGrade` was computed as `resolveFinalGrade(autoGrade, null)` —
+   hardcoded `null` instead of the row's actual `override_grade`. Once
+   override exists, a score write between setting an override and
+   publishing would silently drop the override's effect on `final_grade`
+   while `override_grade` itself stayed stored, correct-looking on its
+   own but disagreeing with what the row displayed.
+2. `subject_position`/`published_at` were never cleared by a recompute.
+   Harmless in step 2 (nothing ever set them), but once `unpublish`
+   reuses `recomputeStudents` to revert a formerly-published row, a stale
+   position would otherwise survive unless cleared explicitly.
+   `recomputeStudents` now unconditionally clears both on every call —
+   safe because it only ever runs on rows that are not (or are mid-
+   transition out of) `PUBLISHED`.
+
+**Override's DRAFT-block invariant is enforced at two points, per
+resolution**: the override endpoint itself (`409` on a `DRAFT` target),
+and `recomputeStudents` (when a score write reverts a result's computed
+status to `DRAFT`, any stored `override_grade` is nulled in the same
+upsert, not left stale) — a `PENDING_APPROVAL` result can revert to
+`DRAFT` via a plain score write clearing the approval-required
+component's score, which would otherwise strand a previously-set
+override on a total that's no longer final. Regression-tested directly.
+
+**Publish/unpublish "nothing to do"**: both reject with `409` rather than
+a silent `200`/no-op — publish when zero rows are `PENDING_APPROVAL` and
+none are already `PUBLISHED` (message names how many are still `DRAFT`
+vs. never scored at all); unpublish when zero rows are currently
+`PUBLISHED`. Chosen over a quiet `200` because a director's misclick
+against an untouched subject deserves a clear answer, not a response
+that looks identical to genuine idempotent success — that idempotent
+`200` case is real and distinct (re-publishing an already-fully-published
+subject, or a subject with some already-published and none newly
+pending, correctly succeeds with `publishedCount: 0`).
+
+**Known, named, unsolved gap**: a school's assessment structure can be
+configured with zero `requires_approval` components (nothing forces at
+least one). If so, `computeSubjectStatus` can never return
+`PENDING_APPROVAL` for that school — every result stays `DRAFT` forever,
+which under this step's resolution means it can also never be published
+*or* overridden (both require leaving `DRAFT`). Not solved this step —
+would need either a validation rule in `PUT /assessment-components`
+(require ≥1 approval-required component) or a spec resolution allowing
+publish/override from `DRAFT` directly. Flagging per instruction rather
+than silently building around it.
+
+**Known, named, unsolved gap #2, found while constructing the e2e
+fixtures, not by design review**: `saveGrid` still doesn't touch
+`term_overall_results` (correctly out of scope — confirmed in the step-3
+plan). But there's a specific stale-data path this enables: if a
+student's overall is already `PUBLISHED` (every subject they've been
+scored in so far is published) and a teacher then enters that student's
+*first* score in a brand-new subject, the resulting new
+`term_subject_result` row starts `DRAFT`/`PENDING_APPROVAL` — but nothing
+recomputes `term_overall_results` for that student until some *other*
+subject's publish/unpublish call happens to sweep through the class arm.
+Until then, the student's overall keeps showing `PUBLISHED` with a real
+(now-stale) `overall_position`, which is exactly the kind of leak
+SPEC_V0.4.md §5 warns against — just via a different trigger (a score
+write, not a publish action) than this step was scoped to close. Not
+fixed here: doing so would mean `saveGrid` sometimes needs the class-arm-
+level lock too, a real scope expansion beyond "wire publish/unpublish/
+override," not something to slip in unapproved. Worth a decision next
+time grades work resumes.
+
+**Related nuance surfaced while building the partial-term e2e**:
+`term_overall_results.subjects_count` counts *existing*
+`term_subject_result` rows, not a student's full expected course load
+(unchanged from step 1). A student who's only ever been scored in 1 of
+their real N subjects reads as "complete" (1-of-1) the moment that one
+subject publishes — the "5-of-6 excluded" framing only actually applies
+to a student who has *multiple* touched subjects with at least one still
+unpublished, not to a subject they simply haven't been scored in yet.
+Confirmed correct given step 1's frozen `subjectsCount` semantics; the
+e2e's "partial-term" student was constructed accordingly (two touched
+subjects, one published, one deliberately left pending) rather than the
+simpler-but-not-actually-testing-the-rule "only one subject, never
+touched a second."
+
+**e2e isolation, one level deeper than step 2's**: step 2's scratch-
+subject-only isolation isn't enough here, because
+`term_overall_results` ranking is scoped to the whole `(class_arm_id,
+term_id)` — every subject *any* student in that arm has ever been
+scored in, not just the one subject under test. Reusing JSS 2 A (step
+1's real, hand-verified Math/English data) for any step-3 scratch fixture
+would have pulled that real data into every overall computation this
+suite triggers. Fixed two ways: (a) all of this suite's fixtures live in
+an untouched real arm (Sunrise's JSS 2 B — confirmed zero
+`term_subject_results` from seed) rather than JSS 1 A/2 A; (b) the
+specific tests that assert on *absolute* `overall_position` values
+(partial-term, the two-concurrent-publishes race) additionally use their
+own freshly-created scratch `ClassArm`, torn down in `afterAll`, since
+even JSS 2 B is shared across every other test in the same file and
+those tests' own scratch subjects would otherwise pollute one shared
+ranking pool. Caught by a real, reproducible test failure (expected
+position 2, got 5) before it shipped, not by inspection.
+
+Full ci green: typecheck, lint, full e2e suite (219 tests, 21 suites) ×2
+including a from-scratch database, the publish/unpublish/override suite
+alone re-run 3× back to back to rule out concurrency-test flakiness. No
+schema/migration changes this step.

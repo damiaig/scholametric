@@ -1045,6 +1045,132 @@ write — unlike the score writes it reads from).
 
 **Response `200`**: `{ "recomputedCount": 6 }`.
 
+### `POST /grades/publish`
+
+`SCHOOL_ADMIN` or `PROPRIETOR` (director-or-owner). `200`, not `201` (same
+action-not-creation convention as `.../recompute` above).
+
+Body: `{ classArmId, subjectId, termId }`. Transitions every currently
+`PENDING_APPROVAL` `term_subject_results` row for that subject/class/term
+to `PUBLISHED` (`published_at = now`), then computes `subject_position`
+(standard competition ranking — ties share a rank, the next rank skips)
+across the **entire** now-published set for that subject/class/term, not
+just the rows this call transitioned — publishing can legitimately happen
+more than once as stragglers' scores land, and a second call must produce
+positions consistent with the first, not a scale disconnected from it.
+Re-publishing an already-fully-published subject is an idempotent `200`
+(`publishedCount: 0`, positions reconfirmed). Then recomputes
+`term_overall_results` for every student in the class arm/term (see
+below) — a student whose last remaining subject just became published
+may now qualify for an overall position.
+
+**Response `200`**
+```json
+{
+  "classArmId": "...", "subjectId": "...", "termId": "...",
+  "publishedCount": 2,
+  "subjectPositions": [
+    { "studentId": "...", "totalScore": 80, "finalGrade": "A1", "subjectPosition": 1 }
+  ],
+  "overallPublishedCount": 1
+}
+```
+
+**Response `409`**: nothing to publish — zero rows `PENDING_APPROVAL` and
+zero already `PUBLISHED` for this subject/class/term (message names how
+many are still `DRAFT`, awaiting an approval-required score, vs. none
+entered at all). A director's misclick against an untouched subject gets
+a clear answer instead of a silent no-op.
+
+**Response `403`/`404`**: same rules as the rest of `/grades/*` — a
+category role rejection (`TEACHER`/`SUPER_ADMIN`) happens at the route
+level before any tenant lookup runs (there's no id combination that would
+change the outcome, so this can't leak cross-tenant existence); a
+cross-tenant `classArmId`/`subjectId`/`termId` 404s.
+
+Audited (`grades.publish`, `entityId` = `classArmId`, metadata carries
+`subjectId`/`termId`/`publishedCount`).
+
+### `POST /grades/unpublish`
+
+`PROPRIETOR` only (owner authority — `SCHOOL_ADMIN` 403s here even though
+it can publish). `200`, not `201`.
+
+Body: `{ classArmId, subjectId, termId }`. Reverts every currently
+`PUBLISHED` row for that subject/class/term — deterministically back to
+`PENDING_APPROVAL` (score writes are blocked while `PUBLISHED`, so
+nothing could have changed underneath; implemented as a real recompute
+from current scores, not a hardcoded status, so it stays correct even if
+that invariant ever changes), clearing `subject_position`/`published_at`.
+Then recomputes `term_overall_results` for the whole class arm/term —
+removing a student from the "fully published" cohort re-ranks everyone
+else still in it.
+
+**Response `200`**: `{ classArmId, subjectId, termId, unpublishedCount, overallRevertedCount }`.
+
+**Response `409`**: nothing is currently published for this subject —
+symmetric with publish's "nothing to do" rejection.
+
+**Response `403`/`404`**: same shape as publish.
+
+Audited (`grades.unpublish`).
+
+### `PUT /grades/override`
+
+`SCHOOL_ADMIN` or `PROPRIETOR` may reach the route; whether the request
+actually succeeds is data-dependent (checked inside the service, not by
+`@Roles()`) — the one place in `/grades/*` that mirrors `GET`/`PUT
+/grades/grid`'s tenant-404-before-role-403 ordering exactly, since "can
+override" depends on the target row's current state, not just the
+caller's role.
+
+Body: `{ termSubjectResultId, overrideGrade }` — `overrideGrade` is
+required but nullable (`null` clears an existing override; the key must
+still be present — omitting it is a `400`, not "leave it alone"). Sets
+`override_grade`; `final_grade` is recomputed (`override_grade ??
+auto_grade`). `total_score` and `subject_position` are never touched —
+override is a display-layer correction, not a ranking input.
+
+- **`409`** if the result is currently `DRAFT`: the total isn't final yet
+  (no approval-required score entered), so a stored override would
+  silently strand itself once the real total lands. Override is only
+  available once a result reaches `PENDING_APPROVAL` or `PUBLISHED`. This
+  invariant (`override_grade` non-null only when status is
+  `PENDING_APPROVAL`/`PUBLISHED`) is enforced at a second point too: if a
+  later score write reverts a result from `PENDING_APPROVAL` back to
+  `DRAFT` (clearing the approval-required component's score),
+  `PUT /grades/grid`'s recompute nulls any stored override in the same
+  write, not just leaves it stale.
+- **`403`** if the result is `PUBLISHED` and the caller isn't `PROPRIETOR`.
+- **`400`** if `overrideGrade` isn't `null` and doesn't match one of the
+  school's configured `grade_boundaries` grades.
+
+**Response `200`**: the updated result — `{ id, studentId, subjectId, termId, overrideGrade, autoGrade, finalGrade, status }`.
+
+**Response `404`**: `termSubjectResultId` doesn't resolve within the
+caller's own tenant.
+
+Audited (`grades.override`, `entityId` = `termSubjectResultId`, metadata
+records `studentId`/`subjectId`/`classArmId`/`termId` plus
+`oldOverrideGrade`/`newOverrideGrade` — spec requires old→new, which the
+standard `@Audit()`/`AuditInterceptor` can't capture since it only sees
+the new request body).
+
+### Locking (publish/unpublish/override, alongside `PUT /grades/grid`)
+
+All four acquire the same per-subject `pg_advisory_xact_lock` keyed on
+`(school_id, subject_id, class_arm_id, term_id)` before touching
+`term_subject_results`/`student_scores` for that grid — this is what
+stops a publish from racing a concurrent score save. Publish and
+unpublish additionally acquire a **second, broader** lock — keyed on
+`(school_id, class_arm_id, term_id)`, no `subject_id` — before recomputing
+`term_overall_results`, since that computation reads across every subject
+a student has, not just the one that was just published. Both locks are
+always acquired in the same order (subject-lock, then class-arm-lock;
+`saveGrid`/`recompute`/`override` never acquire the class-arm-lock at
+all) — a fixed global lock order, so no caller can deadlock against
+another.
+
 ---
 
 ## Misc

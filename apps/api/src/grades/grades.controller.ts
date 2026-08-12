@@ -7,13 +7,18 @@ import { GradesService } from "./grades.service";
 import { GetGradesGridQueryDto } from "./dto/get-grades-grid-query.dto";
 import { SaveGradesGridDto } from "./dto/save-grades-grid.dto";
 import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
+import { PublishGradesDto } from "./dto/publish-grades.dto";
+import { UnpublishGradesDto } from "./dto/unpublish-grades.dto";
+import { OverrideGradeDto } from "./dto/override-grade.dto";
 
-// TEACHER: only their own assigned subject+arm (enforced inside
-// GradesService, not here — fine-grained authorization lives in the
-// service layer throughout this codebase; RolesGuard only ever does
-// coarse role-list gating). SCHOOL_ADMIN/PROPRIETOR: any class in their
-// school. SUPER_ADMIN is deliberately absent — no school academic data
-// access (SPEC_V0.4.md §2).
+// TEACHER: only their own assigned subject+arm, and only for score entry
+// (enforced inside GradesService, not here — fine-grained authorization
+// lives in the service layer throughout this codebase; RolesGuard only
+// ever does coarse role-list gating). SCHOOL_ADMIN/PROPRIETOR: any class
+// in their school for entry, review, and publish. Owner-only actions
+// (unpublish, override-on-published) narrow further via a per-route
+// @Roles() override below. SUPER_ADMIN is deliberately absent everywhere
+// — no school academic data access (SPEC_V0.4.md §2).
 @Roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
 @Controller("grades")
 export class GradesController {
@@ -39,5 +44,30 @@ export class GradesController {
   @HttpCode(HttpStatus.OK)
   recompute(@Body() dto: RecomputeGradesDto) {
     return this.gradesService.recompute(dto);
+  }
+
+  // Director-or-owner: SCHOOL_ADMIN and PROPRIETOR may both publish.
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  @Post("publish")
+  @HttpCode(HttpStatus.OK)
+  publish(@Body() dto: PublishGradesDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.publish(dto, user);
+  }
+
+  // Owner-only: unpublishing is PROPRIETOR-only, unlike publish.
+  @Roles(UserRole.PROPRIETOR)
+  @Post("unpublish")
+  @HttpCode(HttpStatus.OK)
+  unpublish(@Body() dto: UnpublishGradesDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.unpublish(dto, user);
+  }
+
+  // Both roles may reach this route; the PUBLISHED-result PROPRIETOR-only
+  // restriction and the DRAFT block are data-dependent, enforced inside
+  // GradesService (see its override() doc comment).
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  @Put("override")
+  override(@Body() dto: OverrideGradeDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.override(dto, user);
   }
 }
