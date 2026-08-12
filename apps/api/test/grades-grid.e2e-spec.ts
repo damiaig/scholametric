@@ -1,0 +1,577 @@
+import { INestApplication } from "@nestjs/common";
+import request from "supertest";
+import { createTestApp } from "./utils/create-test-app";
+import { loginAs } from "./utils/login";
+import { PrismaService } from "../src/prisma/prisma.service";
+
+describe("Grades grid (e2e)", () => {
+  let app: INestApplication;
+  let prisma: PrismaService;
+
+  let sunriseAdminToken: string;
+  let sunriseMathTeacherToken: string; // teacher@sunrise.test — assigned Mathematics + scratch subject, JSS 1 A + JSS 2 A
+  let sunriseEnglishTeacherToken: string; // teacher2@sunrise.test — assigned English only
+  let hillcrestAdminToken: string;
+
+  let sunriseId: string;
+  let sunriseSessionId: string;
+  let sunriseTermId: string;
+  let jss1AArmId: string;
+  let jss2AArmId: string;
+  let mathematicsId: string;
+  let englishId: string;
+  let ca1Id: string;
+  let ca2Id: string;
+  let examId: string;
+
+  let hillcrestId: string;
+  let hillcrestSessionId: string;
+  let hillcrestTermId: string;
+  let hillcrestArmId: string;
+  let hillcrestSubjectId: string;
+  let hillcrestComponentId: string;
+
+  let scratchSubjectId: string;
+  let jss2ARoster: { id: string }[];
+  let jss1ARoster: { id: string }[];
+
+  const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+  beforeAll(async () => {
+    app = await createTestApp();
+    prisma = app.get(PrismaService);
+
+    sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
+    sunriseMathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
+    sunriseEnglishTeacherToken = await loginAs(app, "teacher2@sunrise.test", "sunrise");
+    hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
+
+    const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
+    sunriseId = sunrise.id;
+    const sunriseSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: sunriseId, isCurrent: true } });
+    sunriseSessionId = sunriseSession.id;
+    const sunriseTerm = await prisma.term.findFirstOrThrow({ where: { sessionId: sunriseSessionId, name: "FIRST" } });
+    sunriseTermId = sunriseTerm.id;
+
+    const jss1 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 1" } });
+    const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
+    jss1AArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: sunriseId, classLevelId: jss1.id, name: "A" } })).id;
+    jss2AArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: sunriseId, classLevelId: jss2.id, name: "A" } })).id;
+
+    mathematicsId = (await prisma.subject.findFirstOrThrow({ where: { schoolId: sunriseId, name: "Mathematics" } })).id;
+    englishId = (await prisma.subject.findFirstOrThrow({ where: { schoolId: sunriseId, name: "English Language" } })).id;
+
+    const components = await prisma.assessmentComponent.findMany({
+      where: { schoolId: sunriseId, deletedAt: null },
+      orderBy: { sortOrder: "asc" },
+    });
+    ca1Id = components[0].id;
+    ca2Id = components[1].id;
+    examId = components[2].id;
+
+    const hillcrest = await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } });
+    hillcrestId = hillcrest.id;
+    const hillcrestSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: hillcrestId, isCurrent: true } });
+    hillcrestSessionId = hillcrestSession.id;
+    hillcrestTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: hillcrestSessionId, name: "FIRST" } })).id;
+    const hillcrestJss1 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: hillcrestId, name: "JSS 1" } });
+    hillcrestArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: hillcrestId, classLevelId: hillcrestJss1.id, name: "A" } })).id;
+    hillcrestSubjectId = (await prisma.subject.findFirstOrThrow({ where: { schoolId: hillcrestId, name: "Mathematics" } })).id;
+    hillcrestComponentId = (
+      await prisma.assessmentComponent.findFirstOrThrow({ where: { schoolId: hillcrestId, deletedAt: null } })
+    ).id;
+
+    // Scratch subject, isolated from the real Mathematics/English seeded
+    // data (step 1's hand-verified totals/positions) — reuses the real
+    // school-wide CA1/CA2/Exam components (assessment structure is
+    // school-wide, not per-subject, so no scratch component is needed).
+    const scratchSubject = await prisma.subject.create({
+      data: { schoolId: sunriseId, name: "E2E Grades Scratch", code: "E2ESCR" },
+    });
+    scratchSubjectId = scratchSubject.id;
+    const mathTeacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
+    await prisma.subjectTeacherAssignment.create({
+      data: { schoolId: sunriseId, subjectId: scratchSubjectId, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacher.id },
+    });
+
+    // Same filter GradesService.getRoster applies (deletedAt: null,
+    // status != WITHDRAWN) — this dev DB has real withdrawn-student
+    // residue from earlier acceptance testing, so an unfiltered roster
+    // here would disagree with the service's own roster.
+    jss2ARoster = await prisma.student.findMany({
+      where: {
+        schoolId: sunriseId,
+        deletedAt: null,
+        status: { not: "WITHDRAWN" },
+        enrollments: { some: { classArmId: jss2AArmId, sessionId: sunriseSessionId } },
+      },
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
+      select: { id: true },
+    });
+    jss1ARoster = await prisma.student.findMany({
+      where: {
+        schoolId: sunriseId,
+        deletedAt: null,
+        status: { not: "WITHDRAWN" },
+        enrollments: { some: { classArmId: jss1AArmId, sessionId: sunriseSessionId } },
+      },
+      select: { id: true },
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.studentScore.deleteMany({ where: { subjectId: scratchSubjectId } });
+    await prisma.termSubjectResult.deleteMany({ where: { subjectId: scratchSubjectId } });
+    await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: scratchSubjectId } });
+    await prisma.subject.delete({ where: { id: scratchSubjectId } });
+    await app.close();
+  });
+
+  describe("GET /grades/grid", () => {
+    it("TEACHER can load the grid for their own assignment, reflecting a just-saved score", async () => {
+      // Round-trips against the scratch subject rather than asserting on
+      // Mathematics' pre-existing seeded scores: the assessment-components
+      // e2e suite's own afterAll restores CA1/CA2/Exam by re-PUTting with
+      // no ids, which — correctly, per the soft-delete design — swaps in
+      // fresh component ids with no history every time that suite runs,
+      // so "the active CA1 has historical scores" isn't a stable
+      // assumption across a full test-suite run.
+      // teacher@sunrise.test's scratch assignment is on JSS 2 A.
+      const [student] = jss2ARoster;
+      await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseMathTeacherToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 9 }],
+        });
+
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId })
+        .set(auth(sunriseMathTeacherToken));
+      expect(response.status).toBe(200);
+      expect(response.body.rows.length).toBe(jss2ARoster.length);
+      expect(response.body.maxScore).toBe(20);
+      expect(response.body.requiresApproval).toBe(false);
+      expect(response.body.rows.find((r: { studentId: string }) => r.studentId === student.id)?.rawScore).toBe(9);
+    });
+
+    it("SCHOOL_ADMIN can load the grid for any class", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: jss1AArmId, subjectId: englishId, componentId: ca1Id, termId: sunriseTermId })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(200);
+      expect(response.body.rows.length).toBe(jss1ARoster.length);
+    });
+
+    it("rejects unauthenticated requests", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: jss1AArmId, subjectId: mathematicsId, componentId: ca1Id, termId: sunriseTermId });
+      expect(response.status).toBe(401);
+    });
+
+    it("403s a TEACHER on a same-tenant class/subject they aren't assigned to", async () => {
+      // teacher@sunrise.test teaches Mathematics, not English.
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: jss1AArmId, subjectId: englishId, componentId: ca1Id, termId: sunriseTermId })
+        .set(auth(sunriseMathTeacherToken));
+      expect(response.status).toBe(403);
+    });
+
+    it("404s (not 403) when Sunrise's admin reaches for Hillcrest's grid", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: hillcrestArmId, subjectId: hillcrestSubjectId, componentId: hillcrestComponentId, termId: hillcrestTermId })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(404);
+    });
+
+    it("404s (not 403) when Hillcrest's admin reaches for Sunrise's grid", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: jss1AArmId, subjectId: mathematicsId, componentId: ca1Id, termId: sunriseTermId })
+        .set(auth(hillcrestAdminToken));
+      expect(response.status).toBe(404);
+    });
+
+    it("404s a nonexistent id within the caller's own tenant", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: "00000000-0000-0000-0000-000000000000", subjectId: mathematicsId, componentId: ca1Id, termId: sunriseTermId })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(404);
+    });
+
+    it("400s on a missing query param", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: jss1AArmId, subjectId: mathematicsId, componentId: ca1Id })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(400);
+    });
+
+    it("400s on a malformed query param", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: "not-a-uuid", subjectId: mathematicsId, componentId: ca1Id, termId: sunriseTermId })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(400);
+    });
+  });
+
+  describe("PUT /grades/grid", () => {
+    it("happy path: saves a small subset and recomputes term_subject_results", async () => {
+      const subset = jss2ARoster.slice(0, 3);
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId,
+          subjectId: scratchSubjectId,
+          componentId: ca1Id,
+          termId: sunriseTermId,
+          scores: subset.map((s) => ({ studentId: s.id, rawScore: 14 })),
+        });
+      expect(response.status).toBe(200);
+      expect(response.body.savedCount).toBe(3);
+      expect(response.body.rows).toHaveLength(3);
+      for (const row of response.body.rows) {
+        expect(row.rawScore).toBe(14);
+        // CA1: weight 20, maxScore 20 -> 14/20*20 = 14, others missing = 0.
+        expect(row.totalScore).toBe(14);
+        expect(row.status).toBe("DRAFT");
+      }
+
+      const persisted = await prisma.studentScore.findMany({
+        where: { subjectId: scratchSubjectId, componentId: ca1Id, studentId: { in: subset.map((s) => s.id) } },
+      });
+      expect(persisted).toHaveLength(3);
+    });
+
+    it("writes exactly one audit_logs row for the bulk save", async () => {
+      const [student] = jss2ARoster.slice(3, 4);
+      const before = await prisma.auditLog.count({ where: { schoolId: sunriseId, action: "grades.saveGrid" } });
+      await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId,
+          subjectId: scratchSubjectId,
+          componentId: ca1Id,
+          termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 10 }],
+        });
+      const after = await prisma.auditLog.count({ where: { schoolId: sunriseId, action: "grades.saveGrid" } });
+      expect(after).toBe(before + 1);
+
+      const log = await prisma.auditLog.findFirst({
+        where: { schoolId: sunriseId, action: "grades.saveGrid" },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(log?.entityType).toBe("grades");
+      expect(log?.entityId).toBe(jss2AArmId);
+      expect((log?.metadata as { subjectId: string }).subjectId).toBe(scratchSubjectId);
+    });
+
+    it("missing components count as 0 (not rescaled)", async () => {
+      const [student] = jss2ARoster.slice(4, 5);
+      await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId,
+          subjectId: scratchSubjectId,
+          componentId: ca1Id,
+          termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 15 }],
+        });
+
+      const result = await prisma.termSubjectResult.findUniqueOrThrow({
+        where: {
+          studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: scratchSubjectId, termId: sunriseTermId, sessionId: sunriseSessionId },
+        },
+      });
+      // Only CA1 (weight 20, maxScore 20) has a score: 15/20*20 = 15. CA2
+      // and Exam are entirely unscored for this student/subject and
+      // contribute 0 each, not a rescale to CA1's own 100%.
+      expect(Number(result.totalScore)).toBe(15);
+      expect(result.status).toBe("DRAFT");
+      expect(result.autoGrade).toBe("F9"); // WAEC: 0-39
+    });
+
+    it("scoring the approval-required component flips status to PENDING_APPROVAL", async () => {
+      const [student] = jss2ARoster.slice(5, 6);
+      const before = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 10 }],
+        });
+      expect(before.body.rows[0].status).toBe("DRAFT");
+
+      const after = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 50 }],
+        });
+      expect(after.status).toBe(200);
+      expect(after.body.rows[0].status).toBe("PENDING_APPROVAL");
+      // 10/20*20 + 50/100*60 = 10 + 30 = 40.
+      expect(after.body.rows[0].totalScore).toBe(40);
+    });
+
+    it("the ~100-student JSS 2 A bulk save writes and computes every row in one transaction", async () => {
+      const start = Date.now();
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseMathTeacherToken))
+        .send({
+          classArmId: jss2AArmId,
+          subjectId: scratchSubjectId,
+          componentId: ca1Id,
+          termId: sunriseTermId,
+          scores: jss2ARoster.map((s, i) => ({ studentId: s.id, rawScore: 5 + (i % 16) })),
+        });
+      const elapsedMs = Date.now() - start;
+      expect(response.status).toBe(200);
+      expect(response.body.savedCount).toBe(jss2ARoster.length);
+      expect(response.body.rows).toHaveLength(jss2ARoster.length);
+      expect(elapsedMs).toBeLessThan(10000);
+
+      const scoreCount = await prisma.studentScore.count({ where: { subjectId: scratchSubjectId, componentId: ca1Id } });
+      expect(scoreCount).toBe(jss2ARoster.length);
+      const resultCount = await prisma.termSubjectResult.count({ where: { subjectId: scratchSubjectId } });
+      expect(resultCount).toBe(jss2ARoster.length);
+    });
+
+    it("re-sending the identical 100-student payload is idempotent", async () => {
+      const beforeScores = await prisma.studentScore.count({ where: { subjectId: scratchSubjectId, componentId: ca1Id } });
+      const beforeResults = await prisma.termSubjectResult.count({ where: { subjectId: scratchSubjectId } });
+
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseMathTeacherToken))
+        .send({
+          classArmId: jss2AArmId,
+          subjectId: scratchSubjectId,
+          componentId: ca1Id,
+          termId: sunriseTermId,
+          scores: jss2ARoster.map((s, i) => ({ studentId: s.id, rawScore: 5 + (i % 16) })),
+        });
+      expect(response.status).toBe(200);
+
+      const afterScores = await prisma.studentScore.count({ where: { subjectId: scratchSubjectId, componentId: ca1Id } });
+      const afterResults = await prisma.termSubjectResult.count({ where: { subjectId: scratchSubjectId } });
+      expect(afterScores).toBe(beforeScores);
+      expect(afterResults).toBe(beforeResults);
+
+      const sample = jss2ARoster[0];
+      const persisted = await prisma.studentScore.findUniqueOrThrow({
+        where: {
+          studentId_subjectId_componentId_termId_sessionId: {
+            studentId: sample.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
+          },
+        },
+      });
+      expect(Number(persisted.rawScore)).toBe(5);
+    });
+
+    it("400s a rawScore above this component's actual max_score, writing nothing", async () => {
+      const [student] = jss2ARoster.slice(10, 11);
+      const before = await prisma.studentScore.findUnique({
+        where: {
+          studentId_subjectId_componentId_termId_sessionId: {
+            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
+          },
+        },
+      });
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId,
+          subjectId: scratchSubjectId,
+          componentId: ca1Id, // max_score 20
+          termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 25 }],
+        });
+      expect(response.status).toBe(400);
+
+      const after = await prisma.studentScore.findUnique({
+        where: {
+          studentId_subjectId_componentId_termId_sessionId: {
+            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
+          },
+        },
+      });
+      expect(after?.rawScore?.toString()).toBe(before?.rawScore?.toString());
+    });
+
+    it("400s a negative rawScore", async () => {
+      const [student] = jss2ARoster.slice(10, 11);
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: -1 }],
+        });
+      expect(response.status).toBe(400);
+    });
+
+    it("400s a studentId not enrolled in this class arm", async () => {
+      const foreignStudent = jss1ARoster[0]; // enrolled in JSS 1 A, not JSS 2 A
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId,
+          scores: [{ studentId: foreignStudent.id, rawScore: 10 }],
+        });
+      expect(response.status).toBe(400);
+    });
+
+    it("rejects unauthenticated requests", async () => {
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [] });
+      expect(response.status).toBe(401);
+    });
+
+    it("403s a TEACHER writing to a same-tenant class/subject they aren't assigned to", async () => {
+      // teacher2@sunrise.test teaches English only — no assignment on the scratch subject.
+      const [student] = jss2ARoster.slice(0, 1);
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseEnglishTeacherToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 10 }],
+        });
+      expect(response.status).toBe(403);
+    });
+
+    it("404s (not 403) a cross-tenant write — Sunrise admin targeting Hillcrest's grid", async () => {
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: hillcrestArmId, subjectId: hillcrestSubjectId, componentId: hillcrestComponentId, termId: hillcrestTermId,
+          scores: [{ studentId: "00000000-0000-0000-0000-000000000000", rawScore: 10 }],
+        });
+      expect(response.status).toBe(404);
+    });
+
+    it("404s (not 403) a cross-tenant write — Hillcrest admin targeting Sunrise's grid", async () => {
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(hillcrestAdminToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId,
+          scores: [{ studentId: "00000000-0000-0000-0000-000000000000", rawScore: 10 }],
+        });
+      expect(response.status).toBe(404);
+    });
+
+    it("409s a write against the real, seeded PUBLISHED JSS 1 A English result, leaving it unchanged", async () => {
+      const [student] = jss1ARoster;
+      const before = await prisma.termSubjectResult.findUniqueOrThrow({
+        where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: englishId, termId: sunriseTermId, sessionId: sunriseSessionId } },
+      });
+      expect(before.status).toBe("PUBLISHED");
+
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss1AArmId, subjectId: englishId, componentId: ca1Id, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 1 }],
+        });
+      expect(response.status).toBe(409);
+
+      const after = await prisma.termSubjectResult.findUniqueOrThrow({
+        where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: englishId, termId: sunriseTermId, sessionId: sunriseSessionId } },
+      });
+      expect(after).toEqual(before);
+    });
+
+    it("concurrent saves to different components for the same student don't lose an update", async () => {
+      const [student] = jss2ARoster.slice(50, 51);
+
+      const [responseA, responseB] = await Promise.all([
+        request(app.getHttpServer())
+          .put("/api/v1/grades/grid")
+          .set(auth(sunriseAdminToken))
+          .send({
+            classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId,
+            scores: [{ studentId: student.id, rawScore: 12 }],
+          }),
+        request(app.getHttpServer())
+          .put("/api/v1/grades/grid")
+          .set(auth(sunriseMathTeacherToken))
+          .send({
+            classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca2Id, termId: sunriseTermId,
+            scores: [{ studentId: student.id, rawScore: 8 }],
+          }),
+      ]);
+      expect(responseA.status).toBe(200);
+      expect(responseB.status).toBe(200);
+
+      const result = await prisma.termSubjectResult.findUniqueOrThrow({
+        where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: scratchSubjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
+      });
+      // CA1 12/20*20=12, CA2 8/20*20=8 — both writes must be reflected, not
+      // whichever transaction happened to read student_scores last.
+      expect(Number(result.totalScore)).toBe(20);
+    });
+  });
+
+  describe("POST /grades/recompute", () => {
+    it("SCHOOL_ADMIN can re-trigger recompute for a class/subject/term", async () => {
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/recompute")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, termId: sunriseTermId });
+      expect(response.status).toBe(200);
+      expect(response.body.recomputedCount).toBe(jss2ARoster.length);
+    });
+
+    it("403s a TEACHER, even on their own assignment", async () => {
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/recompute")
+        .set(auth(sunriseMathTeacherToken))
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, termId: sunriseTermId });
+      expect(response.status).toBe(403);
+    });
+
+    it("rejects unauthenticated requests", async () => {
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/recompute")
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, termId: sunriseTermId });
+      expect(response.status).toBe(401);
+    });
+
+    it("404s (not 403) cross-tenant", async () => {
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/recompute")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: hillcrestArmId, subjectId: hillcrestSubjectId, termId: hillcrestTermId });
+      expect(response.status).toBe(404);
+    });
+
+    it("409s against the real, seeded PUBLISHED JSS 1 A English result", async () => {
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/recompute")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: jss1AArmId, subjectId: englishId, termId: sunriseTermId });
+      expect(response.status).toBe(409);
+    });
+  });
+});

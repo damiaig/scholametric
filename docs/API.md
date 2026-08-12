@@ -916,6 +916,125 @@ out-of-scope line).
 
 ---
 
+## Grades — score entry (v0.4 step 2, SPEC_V0.4.md §2)
+
+`TEACHER`: only their own `subject_teacher_assignments` (checked at the
+session level — assignments carry no `term_id`; `termId` in these requests
+is just which term's scores within that session-level assignment).
+`SCHOOL_ADMIN`/`PROPRIETOR`: any class/subject in their school. `SUPER_ADMIN`
+has no access (403, via `@Roles()` — it's absent from the list). Cross-tenant
+ids (a `classArmId`/`subjectId`/`componentId`/`termId` belonging to another
+school) always 404, checked before role/assignment — a cross-tenant probe
+gets a uniform 404 regardless of caller role (CLAUDE.md §4).
+
+### `GET /grades/grid`
+
+Query: `classArmId`, `subjectId`, `componentId`, `termId` (all required
+UUIDs). Returns the entry grid for one class + subject + component + term:
+the class arm's current-session roster (excludes soft-deleted/withdrawn
+students) each with their existing `raw_score` for this component (`null`
+if unentered), plus the component's `maxScore`/`requiresApproval`.
+Unpaginated (CLAUDE.md §5 exception, same as assessment-components/grade-
+boundaries above — a class arm is bounded ~150, SPEC_V0.4.md §2 says return
+all rather than paginate).
+
+**Response `200`**
+```json
+{
+  "classArmId": "...", "subjectId": "...", "componentId": "...", "termId": "...",
+  "maxScore": 20,
+  "requiresApproval": false,
+  "rows": [
+    { "studentId": "...", "firstName": "...", "lastName": "...", "admissionNumber": "SUN/2026/0001", "rawScore": 17 }
+  ]
+}
+```
+
+**Response `403`**: `TEACHER` requesting a class/subject they aren't
+assigned to (same tenant).
+
+**Response `404`**: any of the four ids don't resolve within the caller's
+own tenant.
+
+### `PUT /grades/grid`
+
+Body: `{ classArmId, subjectId, componentId, termId, scores: [{ studentId, rawScore }] }`.
+`rawScore` is nullable (clears a previously entered score) and validated
+against this **specific component's** `max_score` (not a generic 0-100) —
+the DTO's own bound is 0-100 as an outer sanity check only. Every
+`studentId` must be in the resolved roster.
+
+Bulk upsert, **atomic per request**: every score and every `studentId` is
+validated before anything is written; a single bad entry rejects the whole
+batch with nothing persisted. "Partial-safe" means the caller may submit
+any subset of the roster per call (save-as-you-go), not that some rows in
+one call can fail while others succeed. **Idempotent**: re-sending an
+identical payload is safe — `student_scores`' existing
+`(studentId, subjectId, componentId, termId, sessionId)` unique is the
+upsert key, so a retry just re-writes the same value (`enteredBy`/
+`enteredAt` refresh to the retry, which is correct "last save wins," not a
+break in idempotency). A `pg_advisory_xact_lock` keyed on
+`(schoolId, subjectId, classArmId, termId)` serializes concurrent saves to
+the same grid, so two overlapping saves (e.g. different components for the
+same student) can't produce a lost update on the derived total.
+
+Recomputes each affected student's `term_subject_results` row at the end
+of the same transaction — re-derived from **all** of that student's
+current scores across every active component for this subject/term, not
+just the one this call wrote (`grades/grade-computation.ts`'s pure
+functions, unchanged since step 1): `total_score` (missing components
+contribute 0), `auto_grade`, `final_grade` (`override_grade` is always
+`null` here — override is step 3), and `status` (`DRAFT` until an
+approval-required component has a score, then `PENDING_APPROVAL` — never
+`PUBLISHED`, that's step 3's publish action only). Positions and
+`term_overall_results` are untouched (step 3, computed at publish time).
+
+**Response `200`**: the touched rows only (not the whole roster — the
+frontend already has the rest from `GET`), each with its saved `rawScore`
+plus the freshly recomputed subject-result summary.
+```json
+{
+  "classArmId": "...", "subjectId": "...", "componentId": "...", "termId": "...",
+  "savedCount": 3,
+  "rows": [
+    { "studentId": "...", "rawScore": 14, "totalScore": 14, "autoGrade": "F9", "finalGrade": "F9", "status": "DRAFT" }
+  ]
+}
+```
+
+**Response `400`**: a `rawScore` outside `0..component.maxScore`, or a
+`studentId` not enrolled in this class arm's current-session roster.
+
+**Response `409`**: any affected student's `term_subject_results` for this
+subject/term is already `PUBLISHED` — must unpublish first (step 3).
+Nothing is written.
+
+**Response `403`/`404`**: same rules as `GET /grades/grid` above.
+
+Audited manually (`grades.saveGrid`, `entityId` = `classArmId`), one row
+per bulk save — same reasoning as `PUT /assessment-components`/`PUT
+/grade-boundaries` (`@Audit()`/`AuditInterceptor` reads `response.id` off a
+single-entity response, which doesn't fit an array-bodied bulk endpoint).
+
+### `POST /grades/recompute`
+
+`SCHOOL_ADMIN`/`PROPRIETOR` only (`TEACHER` 403s even on their own
+assignment) — `200`, not the `POST` default `201` (an action on existing
+data, same convention as `.../withdraw`, `.../transfer-class`, auth's
+login/refresh/logout/change-password).
+
+Body: `{ classArmId, subjectId, termId }` (no `componentId` — re-derives
+`term_subject_results` for every student in the roster from whatever
+`student_scores` currently exist across all active components, e.g. after
+a roster fix). Same recompute path `PUT /grades/grid` triggers internally,
+just manually re-run; same `409` lock if any target result is already
+`PUBLISHED`; not audited (a derived-state refresh, not a source-of-truth
+write — unlike the score writes it reads from).
+
+**Response `200`**: `{ "recomputedCount": 6 }`.
+
+---
+
 ## Misc
 
 ### `GET /health`

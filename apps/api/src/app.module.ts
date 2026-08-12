@@ -24,6 +24,7 @@ import { AuditLogsModule } from "./audit-logs/audit-logs.module";
 import { MeModule } from "./me/me.module";
 import { AssessmentComponentsModule } from "./assessment-components/assessment-components.module";
 import { GradeBoundariesModule } from "./grade-boundaries/grade-boundaries.module";
+import { GradesModule } from "./grades/grades.module";
 import { TenantModule } from "./common/tenant/tenant.module";
 import { AppThrottlerGuard } from "./common/guards/app-throttler.guard";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
@@ -62,6 +63,7 @@ import { AuditInterceptor } from "./common/interceptors/audit.interceptor";
     MeModule,
     AssessmentComponentsModule,
     GradeBoundariesModule,
+    GradesModule,
   ],
   providers: [
     // Order matters — Nest runs global APP_GUARDs in registration order:

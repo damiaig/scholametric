@@ -1823,3 +1823,81 @@ no frontend UI for grades. `docs/API.md` updated only for the existing
 `PUT /assessment-components`'s new optional request fields (`id`,
 `requiresApproval`, `maxScore`) and its soft-delete replace semantics —
 no new endpoints, no response shape changes.
+
+## 2026-08-12 — v0.4 step 2: score-entry API + computation engine
+Decision: `GET /grades/grid`, `PUT /grades/grid`, `POST /grades/recompute`
+(planned and approved before building — see the step-2 plan in
+conversation). Fine-grained authorization (tenant-scope 404s, TEACHER
+assignment 403s) lives inside `GradesService`, not a dedicated Guard —
+matches every other fine-grained check in this codebase (subject-
+assignments, students); `RolesGuard` only ever does coarse role-list
+gating, and GET's query params vs PUT's body have different shapes
+anyway, so a generic Guard would need per-route param extraction with
+little reuse benefit. Resolution order matters: tenant-scope check first
+(404 on any miss, unconditional), TEACHER-assignment check second (403) —
+guarantees a cross-tenant probe always gets a uniform 404 regardless of
+role, never leaking "this exists but you can't touch it" via a 403.
+
+`PUT /grades/grid` is atomic per request (all validation before any
+write, one transaction) and idempotent via `student_scores`' existing
+composite unique as the upsert key. A `pg_advisory_xact_lock` keyed on
+`(schoolId, subjectId, classArmId, termId)` — not per-student, not per-
+component — serializes concurrent grid saves to the same subject+class+
+term, same discipline as `StudentsService`'s admission-number lock;
+proved with a real concurrent-request e2e test (two `PUT`s writing
+different components for the same student via `Promise.all`, asserting
+the final `total_score` reflects both, not a lost update) rather than
+just reasoning about it.
+
+A `term_subject_results.status = PUBLISHED` lock rejects the **whole
+batch** with `409` if any affected student's result is already published
+(vs. silently skipping just the locked ones) — simpler, and matches
+"atomic per request." `POST /grades/recompute` reuses the identical
+recompute path and the identical `409` lock; unlike score writes it isn't
+audited (a derived-state refresh, not a source-of-truth mutation) and
+returns `200` via `@HttpCode(OK)`, not the `POST` default `201` — same
+convention this codebase already uses for `.../withdraw`,
+`.../transfer-class`, and auth's login/refresh/logout/change-password
+(action-on-existing-data, not resource creation).
+
+`PUT /grades/grid`'s response returns only the **touched** rows (each
+with its saved `rawScore` plus the freshly recomputed `total_score`/
+`autoGrade`/`finalGrade`/`status`), not a full-roster echo like `GET` —
+the frontend already holds the rest of the grid from its last `GET`, and
+fetching the whole roster's `term_subject_results` on every save added
+real cost for no proven value this step.
+
+Real gotcha found while writing the e2e proof, not by reasoning: running
+`assessment-components.e2e-spec.ts`'s full test suite (whose `afterAll`
+restores CA1/CA2/Exam by re-`PUT`ting with no `id`s) always swaps in
+fresh, score-less component ids — correct per step 1's soft-delete design
+(old ids soft-delete, keeping their history intact), but it means "the
+currently-active CA1 has historical scores" is not a stable assumption
+across a full-suite run. A `GET /grades/grid` e2e test that asserted this
+against the real seeded Mathematics data was flaky depending on whether
+`assessment-components.e2e-spec.ts` had run first in the same `pnpm test`
+invocation. Fixed by making that test round-trip against the isolated
+scratch subject instead (write a known score, then assert `GET` reflects
+it) rather than depending on external seed history.
+
+e2e fixture strategy: tests that only exercise rejection paths (401/403/
+404/409) run directly against the real step-1 seed data, since a rejected
+write never mutates anything — including the `409` test, which reads and
+attempts a write against the real, seeded **PUBLISHED** JSS 1 A English
+result and asserts it's byte-for-byte unchanged after. Tests that actually
+write (happy path, idempotency, missing-score-as-0, the ~100-student JSS
+2 A bulk save, concurrency) run against a dedicated scratch `Subject`
+created in `beforeAll` and torn down in `afterAll` — no scratch
+`AssessmentComponent` needed, since assessment components are school-wide
+(not per-subject), so the real CA1/CA2/Exam can be reused safely against
+the scratch subject without affecting Mathematics/English's own cached
+totals (a component missing a score always contributes 0 regardless of
+which subject it's scored against). This keeps the whole new suite fully
+isolated from step 1's hand-verified demo state while still exercising
+every real code path, proved by running the full e2e suite (196 tests,
+20 suites) against both the live dev DB and a from-scratch throwaway
+database twice.
+
+Full ci green (typecheck, lint, e2e ×2 including a fresh-DB run, frontend
+unaffected). No schema/migration changes this step, confirmed — `grade-
+computation.ts` itself untouched, only imported.
