@@ -2,7 +2,6 @@ import { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs } from "./utils/login";
-import { PrismaService } from "../src/prisma/prisma.service";
 
 const SEEDED_COMPONENTS = [
   { name: "CA 1", weight: 20, sortOrder: 1, maxScore: 20, requiresApproval: false },
@@ -12,19 +11,15 @@ const SEEDED_COMPONENTS = [
 
 describe("Assessment components (e2e)", () => {
   let app: INestApplication;
-  let prisma: PrismaService;
   let sunriseAdminToken: string;
   let sunriseTeacherToken: string;
   let hillcrestAdminToken: string;
-  let sunriseSchoolId: string;
 
   beforeAll(async () => {
     app = await createTestApp();
-    prisma = app.get(PrismaService);
     sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
     sunriseTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
     hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
-    sunriseSchoolId = (await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } })).id;
   });
 
   afterAll(async () => {
