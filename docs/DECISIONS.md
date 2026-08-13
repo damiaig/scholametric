@@ -2211,3 +2211,47 @@ call empirically rather than just architecturally.
 Full ci green: typecheck + lint (api/web/shared), full e2e suite
 (220 tests, 21 suites) on a from-scratch database, existing suite
 otherwise unchanged. No schema/migration changes this step.
+
+## 2026-08-13 — v0.4 step 4 fix: a slow flush could strand a later edit with no timer armed
+
+Bug (web only, `use-score-entry-save-queue.ts`): if an edit landed while a
+flush was already in flight, and that edit's own debounce (600ms
+default) *and* max-wait (2000ms default) timers both elapsed before the
+in-flight flush resolved — reachable whenever a save outlasts
+`MAX_WAIT_MS`, e.g. a >2s `PUT` on a bad 2G connection — both of those
+timer callbacks early-returned on `flushInFlightRef` and were gone
+(one-shot `setTimeout`s, never rearmed). `attemptFlush`'s `finally` only
+reset `flushInFlightRef`; it never re-checked for work that had piled up
+during the flight. The stranded cell sat `pending` with literally nothing
+scheduled to save it — not until the next keystroke or component unmount.
+The offline/error path already self-heals via `sendBatch`'s
+`scheduleRetry`; this was the same class of gap on the plain-success path.
+
+Fixed by re-checking `stateRef.current` for `pending` cells at the end of
+`attemptFlush`'s `finally` (after `flushInFlightRef.current = false`) and
+immediately calling `attemptFlush()` again if any remain — a safe
+self-recursive closure reference (`attemptFlush` isn't in its own
+`useCallback` deps; the reference only resolves when the callback
+actually runs, well after the `const` assignment completes, same
+established pattern as `sendBatch`'s existing lint-suppressed self-
+references in this file). Deliberately scoped to `pending` only, not
+`error`: an `error` cell already has its own `scheduleRetry(ERROR_RETRY_MS)`
+backoff armed independently inside `sendBatch`'s `catch`; re-triggering it
+here too would bypass that backoff and hammer the server on a persistent
+failure instead of respecting the retry delay.
+
+Regression test added with `vi.useFakeTimers()` — the first use of fake
+timers in this codebase's Vitest suite (existing debounce tests all use
+real timers + small millisecond overrides + `waitFor`, per established
+convention; fake timers were the right tool here specifically because the
+scenario needs both of a *second* cell's timers to deterministically
+elapse while a *first* cell's flush is deliberately held open). Drives
+edits via `fireEvent.change` (not `userEvent`, which has its own internal
+real-time delays that don't mix well with a faked clock) and advances via
+`vi.advanceTimersByTimeAsync` inside `act()`. Confirmed the test fails
+without the fix (`git stash` on just the source file, re-ran: stuck at 1
+batch sent, never reaches 2) and passes with it, before committing either.
+
+Full ci green: typecheck + lint, web Vitest (103 tests, 23 files), full
+backend e2e suite (220 tests, 21 suites) — unaffected, confirming this is
+a self-contained frontend fix. No schema/migration/API changes.

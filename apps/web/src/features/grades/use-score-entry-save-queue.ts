@@ -236,6 +236,19 @@ export function useScoreEntrySaveQueue(
       }
     } finally {
       flushInFlightRef.current = false;
+      // An edit made WHILE this flush was in flight has its own debounce/
+      // max-wait timers — on a slow save (>MAX_WAIT_MS, e.g. a bad 2G
+      // connection) both can fire before this flush resolves, find
+      // flushInFlightRef still true, and early-return with nothing armed
+      // (one-shot timers, not rearmed). Left alone, that cell would sit
+      // "pending" until the next keystroke or unmount. Re-check for
+      // leftover pending work now and flush again immediately — "error"
+      // cells are excluded since sendBatch's catch already arms its own
+      // scheduleRetry backoff independently; re-triggering them here too
+      // would bypass that backoff and hammer the server on a persistent
+      // failure.
+      const strandedDuringFlight = [...stateRef.current.entries()].some(([, cell]) => cell.status === "pending");
+      if (strandedDuringFlight) void attemptFlush();
     }
   }, [clearTimers, sendBatch]);
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { screen, waitFor, cleanup } from "@testing-library/react";
+import { screen, waitFor, cleanup, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { GradesGridResponse, SaveGradesGridResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
@@ -178,6 +178,74 @@ describe("ScoreEntryGrid", () => {
     // The display must stay 15, not revert to the stale confirmed 10.
     await waitFor(() => expect(input).toHaveValue("15"));
     expect(input).not.toHaveValue("10");
+  });
+
+  it("a flush completing re-arms for an edit stranded during its flight (both the edit's debounce and max-wait timers elapsed mid-flight)", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveFirst!: (value: SaveGradesGridResponse) => void;
+      const seenBatches: { studentId: string; rawScore: number | null }[][] = [];
+      mockedApiRequest.mockImplementation(async (path, options) => {
+        const method = (options as { method?: string })?.method;
+        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/grid" && method === "PUT") {
+          const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null }[] } };
+          seenBatches.push(body.body.scores);
+          if (seenBatches.length === 1) {
+            // s1's flush hangs here — deliberately slow, standing in for a
+            // >MAX_WAIT_MS save on a bad connection.
+            return new Promise<SaveGradesGridResponse>((resolve) => {
+              resolveFirst = resolve;
+            });
+          }
+          return savedResponse(body.body.scores);
+        }
+        throw new Error("unexpected call");
+      });
+
+      renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 100, maxWaitMs: 300 }} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const input1 = screen.getByLabelText("Score for Ada Bello");
+      const input2 = screen.getByLabelText("Score for Bola Coker");
+
+      // Edit s1, then advance past its debounce so the (slow) flush starts.
+      fireEvent.change(input1, { target: { value: "10" } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+      });
+      expect(seenBatches.length).toBe(1); // s1's flush is now in flight, hung on resolveFirst
+
+      // Edit s2 WHILE s1's flush is still in flight.
+      fireEvent.change(input2, { target: { value: "14" } });
+
+      // Advance past BOTH s2's debounce (100ms) and max-wait (300ms) — both
+      // fire while flushInFlightRef is still true and early-return with
+      // nothing sent. Confirms the bug precondition: no second batch yet.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+      expect(seenBatches.length).toBe(1);
+
+      // Now let the slow first flush resolve. Without any further user
+      // edit, the fix's post-flight recheck must pick up s2's still-
+      // "pending" cell and flush it — no new timer needs to fire, since
+      // the recheck flushes immediately.
+      await act(async () => {
+        resolveFirst(savedResponse([{ studentId: "s1", rawScore: 10 }]));
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(seenBatches.length).toBe(2);
+      expect(seenBatches[1]).toEqual([{ studentId: "s2", rawScore: 14 }]);
+      expect(screen.getAllByLabelText("Saved")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("400 on a multi-cell batch: splits and retries individually so the valid cells still save", async () => {
