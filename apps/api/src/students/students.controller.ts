@@ -17,6 +17,10 @@ import {
 import { UserRole } from "@prisma/client";
 import { Roles } from "../common/decorators/roles.decorator";
 import { Audit } from "../common/decorators/audit.decorator";
+import { CurrentUser } from "../common/decorators/current-user.decorator";
+import type { AuthenticatedUser } from "../common/types/authenticated-user";
+import { GradesService } from "../grades/grades.service";
+import { GetStudentResultsQueryDto } from "../grades/dto/get-student-results-query.dto";
 import { StudentsService } from "./students.service";
 import { StudentGuardiansService } from "./student-guardians.service";
 import { CreateStudentDto } from "./dto/create-student.dto";
@@ -36,6 +40,7 @@ export class StudentsController {
   constructor(
     private readonly studentsService: StudentsService,
     private readonly studentGuardiansService: StudentGuardiansService,
+    private readonly gradesService: GradesService,
   ) {}
 
   @Get()
@@ -46,6 +51,21 @@ export class StudentsController {
   @Get(":id")
   findOne(@Param("id", ParseUUIDPipe) id: string) {
     return this.studentsService.findOne(id);
+  }
+
+  // Results tab (SPEC_V0.4.md §2/§4 step 5). TEACHER access is a plain
+  // allow/deny inside GradesService (any relationship to the student's
+  // class arm — deliberately looser than the class-arm overview's
+  // per-subject filter, see getStudentResults()'s doc comment) — NOT the
+  // same as findOne() above, which has no teacher-scoping at all
+  // (unchanged, out of scope for this step).
+  @Get(":id/results")
+  getResults(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Query() query: GetStudentResultsQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.gradesService.getStudentResults(id, query, user);
   }
 
   @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN)

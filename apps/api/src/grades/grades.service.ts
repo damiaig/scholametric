@@ -22,6 +22,9 @@ import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
 import { PublishGradesDto } from "./dto/publish-grades.dto";
 import { UnpublishGradesDto } from "./dto/unpublish-grades.dto";
 import { OverrideGradeDto } from "./dto/override-grade.dto";
+import { GetGradesReviewQueryDto } from "./dto/get-grades-review-query.dto";
+import { GetClassArmResultsQueryDto } from "./dto/get-class-arm-results-query.dto";
+import { GetStudentResultsQueryDto } from "./dto/get-student-results-query.dto";
 
 export interface GradesGridRow {
   studentId: string;
@@ -123,6 +126,110 @@ export interface OverrideResponse {
 interface OverallRecomputeResult {
   publishedCount: number;
   revertedCount: number;
+}
+
+export interface ClassArmResultsStudent {
+  studentId: string;
+  firstName: string;
+  lastName: string;
+  admissionNumber: string;
+}
+
+export interface ClassArmResultsSubjectRow {
+  // The term_subject_result id — lets an admin/owner viewer target this
+  // exact row for PUT /grades/override without a second lookup.
+  id: string;
+  studentId: string;
+  totalScore: number;
+  autoGrade: string | null;
+  overrideGrade: string | null;
+  finalGrade: string | null;
+  subjectPosition: number | null;
+  status: ResultStatus;
+}
+
+export interface ClassArmResultsSubject {
+  subjectId: string;
+  subjectName: string;
+  averageScore: number;
+  averageGrade: string | null;
+  results: ClassArmResultsSubjectRow[];
+}
+
+export interface ClassArmResultsOverallRow {
+  studentId: string;
+  averageScore: number;
+  averageGrade: string | null;
+  overallPosition: number | null;
+  status: ResultStatus;
+  subjectsCount: number;
+}
+
+export interface ClassArmResultsResponse {
+  classArmId: string;
+  termId: string;
+  students: ClassArmResultsStudent[];
+  subjects: ClassArmResultsSubject[];
+  // null (not []) when the caller is a subject-only TEACHER — distinguishes
+  // "you may not see any overall picture" from "no one has any results yet".
+  overall: ClassArmResultsOverallRow[] | null;
+}
+
+export interface GradesReviewSubject {
+  subjectId: string;
+  subjectName: string;
+  rosterSize: number;
+  draftCount: number;
+  pendingApprovalCount: number;
+  publishedCount: number;
+  averageScore: number;
+  averageGrade: string | null;
+  // Mirrors publish()'s own "nothing to do" 409 condition exactly
+  // (pendingApprovalCount > 0 OR publishedCount > 0) so the UI can disable
+  // the Publish button instead of offering an action that will just 409.
+  canPublish: boolean;
+}
+
+export interface GradesReviewResponse {
+  classArmId: string;
+  termId: string;
+  subjects: GradesReviewSubject[];
+}
+
+export interface StudentResultSubject {
+  subjectId: string;
+  subjectName: string;
+  totalScore: number;
+  autoGrade: string | null;
+  overrideGrade: string | null;
+  finalGrade: string | null;
+  classAverageScore: number;
+  classAverageGrade: string | null;
+  subjectPosition: number | null;
+  status: ResultStatus;
+}
+
+export interface StudentResultOverall {
+  averageScore: number;
+  averageGrade: string | null;
+  overallPosition: number | null;
+  status: ResultStatus;
+  subjectsCount: number;
+}
+
+export interface StudentResultsResponse {
+  studentId: string;
+  termId: string;
+  sessionId: string;
+  subjects: StudentResultSubject[];
+  // null when the student has zero term_subject_results this term (nothing
+  // entered at all yet) — distinct from a real overall stuck at DRAFT.
+  overall: StudentResultOverall | null;
+}
+
+interface TeacherAccess {
+  isClassTeacher: boolean;
+  subjectIds: string[];
 }
 
 @Injectable()
@@ -606,6 +713,271 @@ export class GradesService {
     );
   }
 
+  // Class-wide results table for staff (SPEC_V0.4.md §2) — powers the
+  // grades overview UI and, unfiltered for admin/owner, doubles as the
+  // future report-card generation source. TEACHER visibility uses the one
+  // unifying rule shared with getStudentResults() below: class-teacher of
+  // this arm/session sees every subject and the overall column; a
+  // subject-only teacher sees just their own subject(s) and no overall
+  // column (that aggregates data across subjects they don't teach). Every
+  // read here is a single batched findMany over the whole class arm/term —
+  // no loop issuing one query per subject or per student (SPEC_V0.4.md §5).
+  async getClassArmResults(
+    classArmId: string,
+    query: GetClassArmResultsQueryDto,
+    user: AuthenticatedUser,
+  ): Promise<ClassArmResultsResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const { term } = await this.resolveTenantScopeArmTermOnly(schoolId, classArmId, query.termId);
+
+    let visibleSubjectIds: Set<string> | null = null; // null = no filter (admin/owner/class-teacher)
+    let includeOverall = true;
+    if (user.role === UserRole.TEACHER) {
+      const access = await this.resolveTeacherAccess(schoolId, user.userId, classArmId, term.sessionId);
+      if (!access.isClassTeacher && access.subjectIds.length === 0) {
+        throw new ForbiddenException("You are not assigned to this class.");
+      }
+      includeOverall = access.isClassTeacher;
+      visibleSubjectIds = access.isClassTeacher ? null : new Set(access.subjectIds);
+    }
+
+    const [students, subjectResults, overallResults, boundaries] = await Promise.all([
+      this.getRoster(schoolId, classArmId, term.sessionId),
+      this.prisma.termSubjectResult.findMany({
+        where: { schoolId, classArmId, termId: query.termId, sessionId: term.sessionId },
+        include: { subject: { select: { id: true, name: true } } },
+      }),
+      includeOverall
+        ? this.prisma.termOverallResult.findMany({
+            where: { schoolId, classArmId, termId: query.termId, sessionId: term.sessionId },
+          })
+        : Promise.resolve(null),
+      this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
+    ]);
+    const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
+    const studentOrder = new Map(students.map((s, index) => [s.id, index]));
+
+    const bySubject = new Map<string, { name: string; rows: typeof subjectResults }>();
+    for (const row of subjectResults) {
+      if (visibleSubjectIds && !visibleSubjectIds.has(row.subjectId)) continue;
+      const bucket = bySubject.get(row.subjectId) ?? { name: row.subject.name, rows: [] };
+      bucket.rows.push(row);
+      bySubject.set(row.subjectId, bucket);
+    }
+
+    const subjects: ClassArmResultsSubject[] = [...bySubject.entries()]
+      .map(([subjectId, { name, rows }]) => {
+        const averageScore = computeOverallAverage(rows.map((r) => Number(r.totalScore)));
+        return {
+          subjectId,
+          subjectName: name,
+          averageScore,
+          averageGrade: resolveGradeBand(averageScore, boundaryInputs),
+          results: rows
+            .map((r) => ({
+              id: r.id,
+              studentId: r.studentId,
+              totalScore: Number(r.totalScore),
+              autoGrade: r.autoGrade,
+              overrideGrade: r.overrideGrade,
+              finalGrade: r.finalGrade,
+              subjectPosition: r.subjectPosition,
+              status: r.status,
+            }))
+            .sort((a, b) => (studentOrder.get(a.studentId) ?? 0) - (studentOrder.get(b.studentId) ?? 0)),
+        };
+      })
+      .sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+
+    return {
+      classArmId,
+      termId: query.termId,
+      students: students.map((s) => ({ studentId: s.id, firstName: s.firstName, lastName: s.lastName, admissionNumber: s.admissionNumber })),
+      subjects,
+      overall: overallResults
+        ? overallResults
+            .map((o) => ({
+              studentId: o.studentId,
+              averageScore: Number(o.averageScore),
+              averageGrade: o.averageGrade,
+              overallPosition: o.overallPosition,
+              status: o.status,
+              subjectsCount: o.subjectsCount,
+            }))
+            .sort((a, b) => (studentOrder.get(a.studentId) ?? 0) - (studentOrder.get(b.studentId) ?? 0))
+        : null,
+    };
+  }
+
+  // Director/owner publish-readiness view (SPEC_V0.4.md §2). A subject's
+  // state is deliberately returned as COUNTS, not one status: saveGrid's
+  // per-student PUBLISHED lock means stragglers can land in
+  // PENDING_APPROVAL after their classmates are already PUBLISHED for the
+  // very same subject (see publish()'s own doc comment — publishing can
+  // legitimately happen more than once), so draft/pending/published can
+  // genuinely coexist for one subject. canPublish mirrors publish()'s own
+  // "nothing to do" 409 condition exactly, so the UI never has to
+  // reimplement that rule to decide whether the button should be enabled.
+  // No TEACHER path at all — SCHOOL_ADMIN/PROPRIETOR only, enforced by
+  // @Roles() at the controller.
+  async getReview(query: GetGradesReviewQueryDto): Promise<GradesReviewResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const { term } = await this.resolveTenantScopeArmTermOnly(schoolId, query.classArmId, query.termId);
+
+    const [students, subjectResults, boundaries] = await Promise.all([
+      this.getRoster(schoolId, query.classArmId, term.sessionId),
+      this.prisma.termSubjectResult.findMany({
+        where: { schoolId, classArmId: query.classArmId, termId: query.termId, sessionId: term.sessionId },
+        include: { subject: { select: { id: true, name: true } } },
+      }),
+      this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
+    ]);
+    const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
+    const rosterSize = students.length;
+
+    const bySubject = new Map<string, { name: string; rows: typeof subjectResults }>();
+    for (const row of subjectResults) {
+      const bucket = bySubject.get(row.subjectId) ?? { name: row.subject.name, rows: [] };
+      bucket.rows.push(row);
+      bySubject.set(row.subjectId, bucket);
+    }
+
+    let subjects: GradesReviewSubject[] = [...bySubject.entries()].map(([subjectId, { name, rows }]) => {
+      const draftCount = rows.filter((r) => r.status === ResultStatus.DRAFT).length;
+      const pendingApprovalCount = rows.filter((r) => r.status === ResultStatus.PENDING_APPROVAL).length;
+      const publishedCount = rows.filter((r) => r.status === ResultStatus.PUBLISHED).length;
+      const averageScore = computeOverallAverage(rows.map((r) => Number(r.totalScore)));
+      return {
+        subjectId,
+        subjectName: name,
+        rosterSize,
+        draftCount,
+        pendingApprovalCount,
+        publishedCount,
+        averageScore,
+        averageGrade: resolveGradeBand(averageScore, boundaryInputs),
+        canPublish: pendingApprovalCount > 0 || publishedCount > 0,
+      };
+    });
+
+    // "At least one student in this status" — a subject's state is a
+    // breakdown, not a single value (see the doc comment above), so this
+    // is the only filter semantic that makes sense here.
+    if (query.status) {
+      subjects = subjects.filter((s) =>
+        query.status === ResultStatus.DRAFT
+          ? s.draftCount > 0
+          : query.status === ResultStatus.PENDING_APPROVAL
+            ? s.pendingApprovalCount > 0
+            : s.publishedCount > 0,
+      );
+    }
+
+    subjects.sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+
+    return { classArmId: query.classArmId, termId: query.termId, subjects };
+  }
+
+  // One student's results across subjects for a term (SPEC_V0.4.md §2) —
+  // the Results tab. TEACHER access uses the SAME unifying rule as
+  // getClassArmResults() above, but consumed differently: there it filters
+  // WHICH subjects render; here it's a plain allow/deny — once a teacher
+  // has any relationship to this student's class arm (class-teacher of it,
+  // or any subject assignment there), they see the student's FULL results,
+  // all subjects, not just their own lane. Deliberately looser than the
+  // class-arm overview: this is "do I know this student", not "which
+  // subjects in this shared classroom screen are mine". Cross-tenant/
+  // missing-resource 404s always resolve before this check.
+  //
+  // Class averages come from a SQL-side groupBy _avg over just the
+  // student's own subject IDs — not a full class-arm fetch (that's
+  // getClassArmResults()'s job) and not one query per subject.
+  async getStudentResults(
+    studentId: string,
+    query: GetStudentResultsQueryDto,
+    user: AuthenticatedUser,
+  ): Promise<StudentResultsResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const [student, term] = await Promise.all([
+      this.prisma.student.findFirst({ where: forSchool(schoolId, { id: studentId, deletedAt: null }) }),
+      this.prisma.term.findFirst({ where: forSchool(schoolId, { id: query.termId }) }),
+    ]);
+    if (!student) throw new NotFoundException("Student not found.");
+    if (!term) throw new NotFoundException("Term not found.");
+
+    const enrollment = await this.prisma.studentEnrollment.findFirst({
+      where: forSchool(schoolId, { studentId, sessionId: query.sessionId }),
+    });
+    if (!enrollment) throw new NotFoundException("Student has no enrollment for this session.");
+
+    if (user.role === UserRole.TEACHER) {
+      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, query.sessionId);
+      if (!access.isClassTeacher && access.subjectIds.length === 0) {
+        throw new ForbiddenException("You do not teach this student.");
+      }
+    }
+
+    const [subjectResults, overall, boundaries] = await Promise.all([
+      this.prisma.termSubjectResult.findMany({
+        where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
+        include: { subject: { select: { id: true, name: true } } },
+      }),
+      this.prisma.termOverallResult.findFirst({ where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId } }),
+      this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
+    ]);
+    const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
+
+    let classAverageBySubject = new Map<string, number>();
+    if (subjectResults.length > 0) {
+      const classAverages = await this.prisma.termSubjectResult.groupBy({
+        by: ["subjectId"],
+        where: {
+          schoolId,
+          classArmId: enrollment.classArmId,
+          termId: query.termId,
+          sessionId: query.sessionId,
+          subjectId: { in: subjectResults.map((r) => r.subjectId) },
+        },
+        _avg: { totalScore: true },
+      });
+      classAverageBySubject = new Map(classAverages.map((c) => [c.subjectId, Number(c._avg.totalScore ?? 0)]));
+    }
+
+    const subjects: StudentResultSubject[] = subjectResults
+      .map((r) => {
+        const classAverageScore = Math.round((classAverageBySubject.get(r.subjectId) ?? 0) * 100) / 100;
+        return {
+          subjectId: r.subjectId,
+          subjectName: r.subject.name,
+          totalScore: Number(r.totalScore),
+          autoGrade: r.autoGrade,
+          overrideGrade: r.overrideGrade,
+          finalGrade: r.finalGrade,
+          classAverageScore,
+          classAverageGrade: resolveGradeBand(classAverageScore, boundaryInputs),
+          subjectPosition: r.subjectPosition,
+          status: r.status,
+        };
+      })
+      .sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+
+    return {
+      studentId,
+      termId: query.termId,
+      sessionId: query.sessionId,
+      subjects,
+      overall: overall
+        ? {
+            averageScore: Number(overall.averageScore),
+            averageGrade: overall.averageGrade,
+            overallPosition: overall.overallPosition,
+            status: overall.status,
+            subjectsCount: overall.subjectsCount,
+          }
+        : null,
+    };
+  }
+
   // Re-derives term_subject_results for each given student from ALL of
   // their current student_scores for (subjectId, termId, sessionId) —
   // across every active component, not just whichever one triggered this
@@ -894,5 +1266,36 @@ export class GradesService {
     if (!subject) throw new NotFoundException("Subject not found.");
     if (!term) throw new NotFoundException("Term not found.");
     return { term };
+  }
+
+  private async resolveTenantScopeArmTermOnly(schoolId: string, classArmId: string, termId: string): Promise<{ term: Term }> {
+    const [classArm, term] = await Promise.all([
+      this.prisma.classArm.findFirst({ where: forSchool(schoolId, { id: classArmId }) }),
+      this.prisma.term.findFirst({ where: forSchool(schoolId, { id: termId }) }),
+    ]);
+    if (!classArm) throw new NotFoundException("Class arm not found.");
+    if (!term) throw new NotFoundException("Term not found.");
+    return { term };
+  }
+
+  // The one unifying "what can this teacher see in this class arm" rule,
+  // shared by getClassArmResults() and getStudentResults() — each consumes
+  // it differently (row-filter vs. plain allow/deny), but there is exactly
+  // one definition of "class-teacher sees everything, subject-teacher sees
+  // their lane" in this codebase, not two slightly different ones.
+  private async resolveTeacherAccess(
+    schoolId: string,
+    teacherUserId: string,
+    classArmId: string,
+    sessionId: string,
+  ): Promise<TeacherAccess> {
+    const [classTeacher, subjectAssignments] = await Promise.all([
+      this.prisma.classTeacherAssignment.findFirst({ where: forSchool(schoolId, { classArmId, sessionId, teacherUserId }) }),
+      this.prisma.subjectTeacherAssignment.findMany({
+        where: forSchool(schoolId, { classArmId, sessionId, teacherUserId }),
+        select: { subjectId: true },
+      }),
+    ]);
+    return { isClassTeacher: Boolean(classTeacher), subjectIds: subjectAssignments.map((a) => a.subjectId) };
   }
 }

@@ -17,8 +17,9 @@ import { EditStudentDialog } from "./EditStudentDialog";
 import { TransferClassDialog } from "./TransferClassDialog";
 import { WithdrawStudentDialog } from "./WithdrawStudentDialog";
 import { GuardiansSection } from "./guardians/GuardiansSection";
+import { StudentResultsTab } from "./StudentResultsTab";
 
-type TabKey = "overview" | "history";
+type TabKey = "overview" | "results" | "history";
 
 function InfoRow({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -69,7 +70,7 @@ export function StudentDetailPage() {
     ? `${student.currentEnrollment.classArm.classLevel.name} ${student.currentEnrollment.classArm.name}`
     : "No current class";
 
-  const tabs: TabKey[] = canManage ? ["overview", "history"] : ["overview"];
+  const tabs: TabKey[] = canManage ? ["overview", "results", "history"] : ["overview", "results"];
 
   return (
     <div>
@@ -126,7 +127,7 @@ export function StudentDetailPage() {
                 : "border-b-2 border-transparent px-3 py-2 text-sm font-medium text-muted hover:text-text"
             }
           >
-            {key === "overview" ? "Overview" : "History"}
+            {key === "overview" ? "Overview" : key === "results" ? "Results" : "History"}
           </button>
         ))}
       </div>
@@ -144,6 +145,8 @@ export function StudentDetailPage() {
           <GuardiansSection studentId={student.id} canManage={canManage} />
         </div>
       )}
+
+      {tab === "results" && <StudentResultsTab studentId={student.id} />}
 
       {tab === "history" && canManage && (
         <div>

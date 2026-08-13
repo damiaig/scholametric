@@ -2255,3 +2255,127 @@ batch sent, never reaches 2) and passes with it, before committing either.
 Full ci green: typecheck + lint, web Vitest (103 tests, 23 files), full
 backend e2e suite (220 tests, 21 suites) — unaffected, confirming this is
 a self-contained frontend fix. No schema/migration/API changes.
+
+## 2026-08-13 — v0.4 step 5: grades overview + review/publish/override UI + student Results tab
+
+Built the three read endpoints SPEC_V0.4.md §2 deferred from step 3, plus
+the web that consumes them (SPEC_V0.4.md §4 items 2-4). No schema change.
+
+**Three endpoints, kept separate on purpose**: `GET /class-arms/:id/results`
+(overview — per-student-per-subject matrix, ~O(subjects×students) sized,
+readable by TEACHER/admin/owner), `GET /grades/review` (director/owner-
+only publish-readiness dashboard — per-subject counts only, no per-student
+rows, small regardless of roster size), `GET /students/:id/results`
+(one student's own results). Consolidating any two would have either
+forced the teacher-facing overview to pay for review's missing-count
+aggregate it doesn't need, or forced review's response down to a subset
+shape the client would have to guess at. **Route naming**: spec text said
+`GET /classes/arms/:id/results`; the real controller is `@Controller
+("class-arms")` (`class-arms.controller.ts`), so the actual route is
+`GET /class-arms/:id/results` — spec's `/classes/arms/...` was shorthand,
+not a literal path; corrected in docs/API.md.
+
+**One unifying teacher-visibility rule** (`GradesService.
+resolveTeacherAccess()`), shared by both `getClassArmResults()` and
+`getStudentResults()` but consumed differently: class-teacher of an arm+
+session sees everything there; a subject-only teacher sees just their own
+subject(s). The overview endpoint uses it to *filter which subjects
+render* (and whether the `overall` column appears at all — a subject-only
+teacher never sees it, since it aggregates data across subjects they
+don't teach). The student-results endpoint uses the SAME underlying
+check but as a plain allow/deny: once a teacher has *any* relationship to
+the student's class arm, they see the student's FULL results, all
+subjects — deliberately looser than the overview, because "do I know this
+student" and "which subjects on this shared classroom screen are mine"
+are different questions. `students.service.ts`'s `findOne` remains
+unchanged (no teacher-scoping at all, pre-existing since v0.1) — the
+Results tab is reachable from a page with looser access than the tab
+itself, so a 403 there renders as a graceful in-tab message, not a hidden
+tab (no other tab on that page gates on relationship-to-student either).
+
+**Review returns per-status COUNTS, not one enum**: `saveGrid`'s per-
+student `PUBLISHED` lock means stragglers can land in `PENDING_APPROVAL`
+after classmates are already `PUBLISHED` for the same subject (publish()
+already documented this: "can legitimately happen more than once"), so a
+subject's state is genuinely a breakdown. `canPublish` is server-derived,
+mirroring `publish()`'s exact `409` condition
+(`pendingApprovalCount > 0 || publishedCount > 0`) — proven against the
+REAL `409`, not just asserted in isolation (grades-review.e2e-spec.ts).
+`status=` filters to "at least one student in this status" — the only
+filter semantic that makes sense on a breakdown rather than a scalar.
+
+**Overview rows carry `id`/`autoGrade`/`overrideGrade`, not just
+`finalGrade`** — added after starting the frontend, once it became clear
+the override dialog (spec: "clearly marked as a manual override with the
+auto grade still shown") needs the `term_subject_result` id to target and
+the auto grade to display underneath a possibly-already-set override;
+`finalGrade` alone collapses that distinction. Mirrored in
+`packages/shared/src/grades.ts` and asserted directly in
+class-arm-results.e2e-spec.ts's happy-path test.
+
+**Owner-vs-admin override permission is three-valued, not boolean**:
+`"none"` (TEACHER) / `"pendingOnly"` (SCHOOL_ADMIN — matches `override()`'s
+existing DRAFT-block, but SCHOOL_ADMIN additionally can't touch a
+`PUBLISHED` row) / `"any"` (PROPRIETOR). `ClassArmResultsView` computes
+per-row eligibility from this and the row's own status, so the override
+pencil icon is simply **absent** (not disabled) wherever the server would
+403 or 409 it — same "don't offer a control that'll just error" principle
+as every prior step. Proven via DOM-presence assertions
+(`getAllByLabelText(...).length`), not just a disabled-attribute check.
+
+**Unpublish dialog names the blast radius, per explicit instruction**:
+danger tone, no typed-confirmation, but the description states the
+cascade outright — "reverts {subject} to pending and recomputes overall
+positions for the whole class" — since unpublish re-triggers step 3's
+whole-class-arm overall recompute, not just a revert of the one subject.
+A proprietor clicking Unpublish should never be surprised other students'
+standings moved too.
+
+**RBAC-in-UI mechanism corrected mid-build**: the step-4 plan assumed no
+client-side route guard existed anywhere in this app. Wrong — `apps/web/
+src/app/RequireSchoolAdmin.tsx` already exists (used for `/personnel`,
+loading-aware so it doesn't bounce a legitimate admin before `/auth/me`
+resolves). `/grades/review` now uses it, matching `/personnel`'s exact
+pattern, instead of relying purely on "no nav link + a raw 403 render."
+`/grades/overview` (TEACHER-readable too) has no such guard, correctly.
+
+**A real "fail open while role unknown" bug, caught by a failing test,
+not by inspection**: `GradesOverviewPage`'s picker reuses the SAME
+`id="overview-class"`/label "Class" for both the TEACHER and admin-only
+JSX branches (unlike `ScoreEntryGridPage`, which uses distinctly-labeled
+pickers per role). `isTeacher` defaults `false` before `/auth/me`
+resolves — the SAME class of bug already fixed once this session
+(`ScoreEntryGridPage`'s admin-only query firing early) — but here it
+doesn't just fire a doomed query, it renders the *wrong branch's select*
+under the right-looking label for one render. A Vitest assertion
+(`findByLabelText("Class")` grabbing 0 real options instead of 2) caught
+it directly: `screen.debug()` on the resolved element showed a disabled,
+placeholder-only `<select>` — the admin branch, rendered for a TEACHER,
+during the brief window role was still unknown. Fixed by adding a
+`roleKnown` guard that renders a neutral loading state instead of
+defaulting into either branch. `ScoreEntryGridPage` doesn't have this
+exact symptom (its teacher/admin picker labels don't collide, so no
+`getByLabelText` grabs the wrong one) but likely has the same underlying
+one-tick flash — left alone as out-of-scope, already-shipped, already-
+reviewed step-4 code; not touched here.
+
+**Live-stack proof** (scratchpad-only Playwright, same pattern as every
+prior step, against the real docker-compose Postgres + host `pnpm start:
+dev`/`pnpm dev`): logged in as `admin@sunrise.test`, published JSS 1 A
+Mathematics First Term (seeded `PENDING_APPROVAL` exactly per
+SPEC_V0.4.md §3) from the Review & Publish screen — confirmed the confirm
+dialog's exact wording, confirmed the subject's counts flipped from
+"0 published · 7 pending" to "7 published · 0 pending" on the SAME page
+without a reload; confirmed the Grades overview for the same arm+term now
+shows real `#N` positions instead of "Not yet ranked"; confirmed a real
+seeded student's (Oluwaseun Adeyemi) Results tab renders both the
+newly-published Mathematics row and the already-published English
+Language row plus an Overall section. Left the publish in place afterward
+(a real, harmless director action on seed data, same as leaving typed
+scores in place after step 4's walk).
+
+Full ci green: typecheck + lint (api/web/shared), full e2e suite
+(241 tests, 24 suites — 21 new tests across the three new spec files) on
+a from-scratch database, web Vitest (126 tests, 27 files — 21 new tests
+across four new spec files, plus the existing route-smoke test extended
+with the two new routes). No schema/migration changes this step.

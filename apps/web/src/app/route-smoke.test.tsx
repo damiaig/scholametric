@@ -154,6 +154,8 @@ const ROUTES = [
   "/teachers/route-smoke-id",
   "/classes",
   "/classes/arms/route-smoke-id",
+  "/grades/overview",
+  "/grades/review",
   "/personnel",
   "/settings/school",
   "/settings/academic",

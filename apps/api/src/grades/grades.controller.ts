@@ -10,6 +10,7 @@ import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
 import { PublishGradesDto } from "./dto/publish-grades.dto";
 import { UnpublishGradesDto } from "./dto/unpublish-grades.dto";
 import { OverrideGradeDto } from "./dto/override-grade.dto";
+import { GetGradesReviewQueryDto } from "./dto/get-grades-review-query.dto";
 
 // TEACHER: only their own assigned subject+arm, and only for score entry
 // (enforced inside GradesService, not here — fine-grained authorization
@@ -69,5 +70,13 @@ export class GradesController {
   @Put("override")
   override(@Body() dto: OverrideGradeDto, @CurrentUser() user: AuthenticatedUser) {
     return this.gradesService.override(dto, user);
+  }
+
+  // Director/owner publish-readiness view (SPEC_V0.4.md §2 step 5) — no
+  // TEACHER path at all, unlike every other route on this controller.
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  @Get("review")
+  getReview(@Query() query: GetGradesReviewQueryDto) {
+    return this.gradesService.getReview(query);
   }
 }

@@ -370,6 +370,52 @@ so the arm page's remove action can target
 `DELETE /subject-assignments/:id` directly — mirrors the same fix already
 made to `GET /teachers/:userId`'s `subjectsTaught` in step 5.
 
+### `GET /class-arms/:id/results?termId=` (v0.4 step 5, SPEC_V0.4.md §2)
+
+Grades overview — same role list as the plain `:id` GET above
+(`PROPRIETOR`/`SCHOOL_ADMIN`/`TEACHER`), but `TEACHER` gets a
+**row-filtered** response, computed by the same rule `GET
+/students/:id/results` below uses: class-teacher of this arm+session sees
+every subject and the `overall` column; a subject-only teacher sees just
+their own subject(s) and `overall: null` (that column aggregates data
+across subjects they don't teach). A teacher with no relationship to the
+arm at all gets `403`.
+
+```json
+{
+  "classArmId": "...", "termId": "...",
+  "students": [{ "studentId": "...", "firstName": "...", "lastName": "...", "admissionNumber": "..." }],
+  "subjects": [{
+    "subjectId": "...", "subjectName": "Mathematics",
+    "averageScore": 68.8, "averageGrade": "B3",
+    "results": [{ "id": "...", "studentId": "...", "totalScore": 56, "autoGrade": "C5", "overrideGrade": null, "finalGrade": "C5", "subjectPosition": null, "status": "PENDING_APPROVAL" }]
+  }],
+  "overall": [{ "studentId": "...", "averageScore": 80, "averageGrade": "A1", "overallPosition": 1, "status": "PUBLISHED", "subjectsCount": 3 }]
+}
+```
+
+`results[].id` is the `term_subject_result` id — lets an admin/owner
+viewer target this exact row for `PUT /grades/override` without a second
+lookup. `subjectPosition`/`overallPosition` are `null` until published
+(same gate as everywhere else in `/grades/*`); a student with no row for
+a subject at all just doesn't appear in that subject's `results` array
+(the entry grid's "row absence = untouched" convention, one level up).
+`overall` is `null` (not `[]`) specifically when the caller is a
+subject-only `TEACHER` — distinct from "no one has any results yet" (an
+empty array, which is what admin/owner/class-teacher get before any
+`publish()`/`unpublish()` has ever run for this arm/term, since only
+those two actions write `term_overall_results`).
+
+Every read here is a fixed, small number of batched queries regardless of
+roster size or subject count — one `findMany` for the whole class arm's
+`term_subject_results` (grouped by subject in application code), one for
+`term_overall_results`, one for the roster — never a query per subject or
+per student.
+
+**Response `403`**: a `TEACHER` with no class-teacher/subject-teacher
+relationship to this arm+session at all. **Response `404`**: `id` (the
+class arm) or `termId` don't resolve within the caller's tenant.
+
 ---
 
 ## Students
@@ -408,7 +454,51 @@ Full profile plus `currentEnrollment` (`{ classArm: { classLevel }, session }`
 for the current session, or `null`), plus `guardians` (v0.2 step 4 — see the
 Guardians section below): every linked guardian, primary first, shaped as
 `{ guardianId, relationship, isPrimary, firstName, lastName, phone, email,
-address }`. `404` outside the caller's school.
+address }`. `404` outside the caller's school. **Note**: unlike `results`
+below, this route has no `TEACHER`-scoping at all — any `TEACHER` can view
+any student's basic profile (unchanged since v0.1, out of scope for v0.4).
+
+### `GET /students/:id/results?termId=&sessionId=` (v0.4 step 5, SPEC_V0.4.md §2)
+
+The Results tab — a student's results across subjects for one term.
+`PROPRIETOR`/`SCHOOL_ADMIN` always allowed. `TEACHER` access is a plain
+allow/deny, resolved via the student's enrollment for the given
+`sessionId`: allowed if the caller is the class-teacher of that
+enrollment's arm, or holds *any* subject assignment there (any subject —
+not just the one being viewed); denied (`403`) otherwise. Deliberately
+**looser** than `GET /class-arms/:id/results`'s per-subject row
+filtering: this endpoint answers "do I know this student," not "which
+subjects in this shared classroom screen are mine" — once a teacher is
+confirmed to teach the student *something*, they see the student's full
+results, every subject, same as flipping through a paper report card.
+
+```json
+{
+  "studentId": "...", "termId": "...", "sessionId": "...",
+  "subjects": [{
+    "subjectId": "...", "subjectName": "Mathematics",
+    "totalScore": 56, "autoGrade": "C5", "overrideGrade": null, "finalGrade": "C5",
+    "classAverageScore": 33, "classAverageGrade": "F9",
+    "subjectPosition": null, "status": "PENDING_APPROVAL"
+  }],
+  "overall": { "averageScore": 56, "averageGrade": "C5", "overallPosition": null, "status": "PENDING_APPROVAL", "subjectsCount": 1 }
+}
+```
+
+`overall` is `null` specifically when the student has zero
+`term_subject_results` this term (nothing entered at all) — distinct from
+a real overall genuinely stuck at `DRAFT`. Unpublished subjects appear
+with `status` set rather than being hidden ("not yet published" is a
+staff-facing label, not an omission). `classAverageScore`/
+`classAverageGrade` come from a single SQL-side `groupBy` `_avg` over just
+this student's own subject ids — not a fetch of the whole class arm (that
+full fetch is `GET /class-arms/:id/results`'s job) and not one query per
+subject.
+
+**Response `403`**: a `TEACHER` with no relationship to the student's
+enrolled class arm for the given session. **Response `404`**: the
+student, `termId`, or the student's enrollment for `sessionId` don't
+resolve within the caller's tenant.
 
 ### `POST /students`
 
@@ -1189,6 +1279,52 @@ always acquired in the same order (subject-lock, then class-arm-lock;
 `saveGrid`/`recompute`/`override` never acquire the class-arm-lock at
 all) — a fixed global lock order, so no caller can deadlock against
 another.
+
+### `GET /grades/review?classArmId=&termId=&status=` (v0.4 step 5, SPEC_V0.4.md §2)
+
+Director/owner publish-readiness view — `SCHOOL_ADMIN`/`PROPRIETOR` only,
+no `TEACHER` path exists on this route at all (unlike every other
+`/grades/*` route). One row per subject that has at least one
+`term_subject_result` in this class arm/term (a subject nobody's touched
+simply isn't in the list — same "row absence = untouched" convention as
+the grid).
+
+A subject's state is returned as **counts**, not one status: `saveGrid`'s
+per-student `PUBLISHED` lock means stragglers can land in
+`PENDING_APPROVAL` after their classmates are already `PUBLISHED` for the
+very same subject (publishing can legitimately happen more than once as
+stragglers' exam scores land — see `POST /grades/publish` above), so
+draft/pending/published can genuinely coexist for one subject.
+
+```json
+{
+  "classArmId": "...", "termId": "...",
+  "subjects": [
+    {
+      "subjectId": "...", "subjectName": "Mathematics",
+      "rosterSize": 20, "draftCount": 2, "pendingApprovalCount": 5, "publishedCount": 13,
+      "averageScore": 68.8, "averageGrade": "B3",
+      "canPublish": true
+    }
+  ]
+}
+```
+
+`averageScore`/`averageGrade` cover every student with a row (draft or
+pending too, not published-only) — same "unpublished still counts toward
+the average, only the position is gated" rule as the live class-average
+display. `canPublish` mirrors `POST /grades/publish`'s own "nothing to
+do" `409` condition exactly (`pendingApprovalCount > 0 || publishedCount
+> 0`), so the UI can disable the Publish button instead of offering an
+action that will just `409`.
+
+The optional `status=` query filters to subjects with **at least one**
+student in that status (a subject's state is a breakdown, not a single
+value, so "only subjects whose status is exactly X" isn't a coherent
+filter here).
+
+**Response `403`**: any `TEACHER`. **Response `404`**: `classArmId`/`termId`
+don't resolve within the caller's tenant.
 
 ---
 

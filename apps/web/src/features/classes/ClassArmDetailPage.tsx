@@ -89,6 +89,18 @@ export function ClassArmDetailPage() {
       <PageHeader
         title={armLabel}
         description={`${arm.students.total} student${arm.students.total === 1 ? "" : "s"} enrolled this session`}
+        actions={
+          <>
+            <Button type="button" variant="outline" size="sm" onClick={() => navigate(`/grades/overview?classArmId=${arm.id}`)}>
+              Grades overview
+            </Button>
+            {canManage && (
+              <Button type="button" variant="outline" size="sm" onClick={() => navigate(`/grades/review?classArmId=${arm.id}`)}>
+                Review &amp; publish
+              </Button>
+            )}
+          </>
+        }
       />
 
       <section className="mb-8">

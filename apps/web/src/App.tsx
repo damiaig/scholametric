@@ -12,6 +12,8 @@ import { TeacherDetailPage } from "./features/teachers/TeacherDetailPage";
 import { ClassesPage } from "./features/classes/ClassesPage";
 import { ClassArmDetailPage } from "./features/classes/ClassArmDetailPage";
 import { ScoreEntryGridPage } from "./features/grades/ScoreEntryGridPage";
+import { GradesOverviewPage } from "./features/grades/GradesOverviewPage";
+import { ReviewPublishPage } from "./features/grades/ReviewPublishPage";
 import { PersonnelListPage } from "./features/personnel/PersonnelListPage";
 import { SettingsLayout } from "./features/settings/SettingsLayout";
 import { SchoolProfilePage } from "./features/settings/SchoolProfilePage";
@@ -37,6 +39,7 @@ export function AppRoutes() {
         <Route path="/classes" element={<ClassesPage />} />
         <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
         <Route path="/grades/grid" element={<ScoreEntryGridPage />} />
+        <Route path="/grades/overview" element={<GradesOverviewPage />} />
 
         {/* v0.2 (SPEC_V0.2.md §4): /settings/users no longer exists as a
             tab — it's a bare redirect to /personnel, which replaced it. */}
@@ -44,6 +47,7 @@ export function AppRoutes() {
 
         <Route element={<RequireSchoolAdmin />}>
           <Route path="/personnel" element={<PersonnelListPage />} />
+          <Route path="/grades/review" element={<ReviewPublishPage />} />
         </Route>
 
         <Route path="/settings" element={<SettingsLayout />}>
