@@ -81,6 +81,7 @@ export function MyClassesView() {
                 <tr className="border-b border-muted/20">
                   <th className="px-4 py-3 font-medium text-muted">Subject</th>
                   <th className="px-4 py-3 font-medium text-muted">Class</th>
+                  <th className="px-4 py-3 font-medium text-muted">&nbsp;</th>
                 </tr>
               </thead>
               <tbody>
@@ -90,6 +91,14 @@ export function MyClassesView() {
                     <td className="px-4 py-3">
                       <Link to={`/classes/arms/${entry.classArmId}`} className="text-primary hover:underline">
                         {entry.className}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Link
+                        to={`/grades/grid?classArmId=${entry.classArmId}&subjectId=${entry.subjectId}`}
+                        className="text-primary hover:underline"
+                      >
+                        Enter grades
                       </Link>
                     </td>
                   </tr>

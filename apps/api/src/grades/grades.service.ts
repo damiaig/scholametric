@@ -29,6 +29,16 @@ export interface GradesGridRow {
   lastName: string;
   admissionNumber: string;
   rawScore: number | null;
+  // The student's SUBJECT-level status (term_subject_result), not
+  // component-level — independent of which component this grid is
+  // currently viewing. A student with no term_subject_result row yet
+  // (nothing scored in this subject at all) reads as DRAFT, matching the
+  // semantics of a subject that's never been touched. Lets the UI render
+  // a PUBLISHED row read-only from load, not reactively on the first 409
+  // (SPEC_V0.4.md step-4 resolution — status can genuinely be mixed
+  // across one grid's roster, e.g. stragglers still DRAFT after the rest
+  // of the class published, so this can't be a single grid-wide flag).
+  status: ResultStatus;
 }
 
 export interface GradesGridResponse {
@@ -128,16 +138,22 @@ export class GradesService {
     await this.assertTeacherAssignment(schoolId, user, query.subjectId, query.classArmId, term.sessionId);
 
     const students = await this.getRoster(schoolId, query.classArmId, term.sessionId);
-    const scores = await this.prisma.studentScore.findMany({
-      where: {
-        schoolId,
-        subjectId: query.subjectId,
-        componentId: query.componentId,
-        termId: query.termId,
-        sessionId: term.sessionId,
-      },
-    });
+    const [scores, subjectResults] = await Promise.all([
+      this.prisma.studentScore.findMany({
+        where: {
+          schoolId,
+          subjectId: query.subjectId,
+          componentId: query.componentId,
+          termId: query.termId,
+          sessionId: term.sessionId,
+        },
+      }),
+      this.prisma.termSubjectResult.findMany({
+        where: { schoolId, subjectId: query.subjectId, termId: query.termId, sessionId: term.sessionId },
+      }),
+    ]);
     const rawByStudent = new Map(scores.map((s) => [s.studentId, s.rawScore === null ? null : Number(s.rawScore)]));
+    const statusByStudent = new Map(subjectResults.map((r) => [r.studentId, r.status]));
 
     return {
       classArmId: query.classArmId,
@@ -152,6 +168,7 @@ export class GradesService {
         lastName: s.lastName,
         admissionNumber: s.admissionNumber,
         rawScore: rawByStudent.get(s.id) ?? null,
+        status: statusByStudent.get(s.id) ?? ResultStatus.DRAFT,
       })),
     };
   }

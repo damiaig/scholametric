@@ -1,0 +1,101 @@
+import { useRef } from "react";
+import { RefreshCw } from "lucide-react";
+import { Button } from "../../components/ui/button";
+import { Spinner } from "../../components/ui/spinner";
+import { getErrorMessage } from "../../lib/api-client";
+import { useGradesGrid, type GradesGridParams } from "./use-grades-grid";
+import { useScoreEntrySaveQueue, type CellState, type ScoreEntrySaveQueueTiming } from "./use-score-entry-save-queue";
+import { ScoreEntryRow } from "./ScoreEntryRow";
+
+const DEFAULT_CELL: CellState = { value: null, serverValue: null, status: "idle" };
+
+interface ScoreEntryGridProps {
+  params: GradesGridParams;
+  /** Test-only: overrides the save queue's debounce/max-wait/retry timing. */
+  saveQueueTiming?: ScoreEntrySaveQueueTiming;
+}
+
+// The bulk score-entry grid (SPEC_V0.4.md §4 item 1) — one row per
+// student, keyboard-first tab-through, save-as-you-go. No virtualization
+// (see docs/DECISIONS.md): a flat list of ~100 single-input rows is well
+// within what React handles natively, and virtualizing would break native
+// Tab traversal across rows that aren't mounted.
+export function ScoreEntryGrid({ params, saveQueueTiming }: ScoreEntryGridProps) {
+  const gridQuery = useGradesGrid(params);
+  const queue = useScoreEntrySaveQueue(params, gridQuery.data, saveQueueTiming);
+  const inputRefs = useRef(new Map<string, HTMLInputElement>());
+
+  function registerInput(studentId: string, el: HTMLInputElement | null) {
+    if (el) inputRefs.current.set(studentId, el);
+    else inputRefs.current.delete(studentId);
+  }
+
+  function handleNavigate(fromStudentId: string, direction: "next" | "prev") {
+    const roster = gridQuery.data?.rows ?? [];
+    const index = roster.findIndex((row) => row.studentId === fromStudentId);
+    if (index === -1) return;
+    const target = roster[direction === "next" ? index + 1 : index - 1];
+    if (target) {
+      inputRefs.current.get(target.studentId)?.focus();
+    }
+  }
+
+  if (gridQuery.isLoading) {
+    return (
+      <div className="flex items-center gap-2 p-10 text-sm text-muted">
+        <Spinner /> Loading grid…
+      </div>
+    );
+  }
+
+  if (gridQuery.isError || !gridQuery.data) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
+        <p className="text-sm text-danger">{getErrorMessage(gridQuery.error, "Couldn't load the grid.")}</p>
+        <Button type="button" variant="outline" size="sm" onClick={() => gridQuery.refetch()}>
+          Try again
+        </Button>
+      </div>
+    );
+  }
+
+  const roster = gridQuery.data.rows;
+
+  if (roster.length === 0) {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-lg border border-muted/20 bg-card p-10 text-center">
+        <p className="text-sm text-muted">No students enrolled in this class.</p>
+      </div>
+    );
+  }
+
+  const enteredCount = roster.filter((row) => (queue.cells.get(row.studentId) ?? DEFAULT_CELL).value !== null).length;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted">
+          {enteredCount} of {roster.length} entered · out of {gridQuery.data.maxScore}
+        </p>
+        <Button type="button" variant="outline" size="sm" onClick={() => gridQuery.refetch()}>
+          <RefreshCw className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
+          Refresh
+        </Button>
+      </div>
+
+      <div className="rounded-lg border border-muted/20 bg-card">
+        {roster.map((row) => (
+          <ScoreEntryRow
+            key={row.studentId}
+            student={row}
+            cellState={queue.cells.get(row.studentId) ?? DEFAULT_CELL}
+            maxScore={gridQuery.data.maxScore}
+            onEdit={queue.onCellEdit}
+            onNavigate={handleNavigate}
+            registerInput={registerInput}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}

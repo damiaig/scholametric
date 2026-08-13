@@ -157,6 +157,58 @@ describe("Grades grid (e2e)", () => {
       expect(response.body.rows.find((r: { studentId: string }) => r.studentId === student.id)?.rawScore).toBe(9);
     });
 
+    it("returns each row's subject-level status, correctly mixed within one grid", async () => {
+      // A dedicated, self-contained scratch subject — not the shared
+      // scratchSubjectId every other test in this file writes to. This
+      // test PUBLISHES a student, and publish's write-lock (409) would
+      // poison every later "write to the whole roster" test that reuses
+      // the shared subject.
+      const statusSubject = await prisma.subject.create({
+        data: { schoolId: sunriseId, name: "E2E Grid Status", code: "E2ESTA" },
+      });
+      try {
+        const [published, draftScored, neverScored] = jss2ARoster.slice(0, 3);
+
+        // published: CA1 + Exam scored, then the subject published.
+        await request(app.getHttpServer())
+          .put("/api/v1/grades/grid")
+          .set(auth(sunriseAdminToken))
+          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: published.id, rawScore: 15 }] });
+        await request(app.getHttpServer())
+          .put("/api/v1/grades/grid")
+          .set(auth(sunriseAdminToken))
+          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, componentId: examId, termId: sunriseTermId, scores: [{ studentId: published.id, rawScore: 60 }] });
+        const publishRes = await request(app.getHttpServer())
+          .post("/api/v1/grades/publish")
+          .set(auth(sunriseAdminToken))
+          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, termId: sunriseTermId });
+        expect(publishRes.status).toBe(200);
+
+        // draftScored: only CA1 scored, no approval-required component yet -> DRAFT.
+        await request(app.getHttpServer())
+          .put("/api/v1/grades/grid")
+          .set(auth(sunriseAdminToken))
+          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: draftScored.id, rawScore: 10 }] });
+
+        // neverScored: no student_scores row at all for this subject -> DRAFT (default).
+
+        const response = await request(app.getHttpServer())
+          .get("/api/v1/grades/grid")
+          .query({ classArmId: jss2AArmId, subjectId: statusSubject.id, componentId: ca1Id, termId: sunriseTermId })
+          .set(auth(sunriseAdminToken));
+        expect(response.status).toBe(200);
+
+        const byStudent = new Map(response.body.rows.map((r: { studentId: string; status: string }) => [r.studentId, r.status]));
+        expect(byStudent.get(published.id)).toBe("PUBLISHED");
+        expect(byStudent.get(draftScored.id)).toBe("DRAFT");
+        expect(byStudent.get(neverScored.id)).toBe("DRAFT");
+      } finally {
+        await prisma.studentScore.deleteMany({ where: { subjectId: statusSubject.id } });
+        await prisma.termSubjectResult.deleteMany({ where: { subjectId: statusSubject.id } });
+        await prisma.subject.delete({ where: { id: statusSubject.id } });
+      }
+    });
+
     it("SCHOOL_ADMIN can load the grid for any class", async () => {
       const response = await request(app.getHttpServer())
         .get("/api/v1/grades/grid")

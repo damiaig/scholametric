@@ -154,16 +154,24 @@ export function ClassArmDetailPage() {
                     </Link>
                   </div>
                   {canManage && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      aria-label={`Remove ${entry.subjectName} for ${entry.teacherFirstName} ${entry.teacherLastName}`}
-                      className="shrink-0 text-danger hover:bg-danger/10"
-                      onClick={() => setRemovingAssignmentId(entry.id)}
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Link
+                        to={`/grades/grid?classArmId=${arm.id}&subjectId=${entry.subjectId}`}
+                        className="text-sm text-primary hover:underline"
+                      >
+                        Enter grades
+                      </Link>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-label={`Remove ${entry.subjectName} for ${entry.teacherFirstName} ${entry.teacherLastName}`}
+                        className="text-danger hover:bg-danger/10"
+                        onClick={() => setRemovingAssignmentId(entry.id)}
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                    </div>
                   )}
                 </div>
               ))}
@@ -189,16 +197,24 @@ export function ClassArmDetailPage() {
                       </td>
                       {canManage && (
                         <td className="px-4 py-3 text-right">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            aria-label={`Remove ${entry.subjectName} for ${entry.teacherFirstName} ${entry.teacherLastName}`}
-                            className="text-danger hover:bg-danger/10"
-                            onClick={() => setRemovingAssignmentId(entry.id)}
-                          >
-                            <Trash2 className="h-4 w-4" aria-hidden="true" />
-                          </Button>
+                          <div className="flex items-center justify-end gap-3">
+                            <Link
+                              to={`/grades/grid?classArmId=${arm.id}&subjectId=${entry.subjectId}`}
+                              className="text-primary hover:underline"
+                            >
+                              Enter grades
+                            </Link>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              aria-label={`Remove ${entry.subjectName} for ${entry.teacherFirstName} ${entry.teacherLastName}`}
+                              className="text-danger hover:bg-danger/10"
+                              onClick={() => setRemovingAssignmentId(entry.id)}
+                            >
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            </Button>
+                          </div>
                         </td>
                       )}
                     </tr>

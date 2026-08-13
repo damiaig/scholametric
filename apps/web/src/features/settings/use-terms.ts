@@ -2,12 +2,13 @@ import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tansta
 import type { CreateTermInput, Paginated, Term } from "@scholametric/shared";
 import { apiRequest } from "../../lib/api-client";
 
-export function useTerms(sessionId: string | undefined, page: number, pageSize = 20) {
+// GET /terms is admin-only server-side — see useSessions' matching comment.
+export function useTerms(sessionId: string | undefined, page: number, pageSize = 20, enabled = true) {
   return useQuery({
     queryKey: ["terms", sessionId, { page, pageSize }],
     queryFn: () =>
       apiRequest<Paginated<Term>>("/api/v1/terms", { query: { sessionId, page, pageSize } }),
-    enabled: Boolean(sessionId),
+    enabled: enabled && Boolean(sessionId),
     placeholderData: keepPreviousData,
   });
 }

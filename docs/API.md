@@ -682,10 +682,18 @@ assignments — see CLAUDE.md §5 amendment, SPEC_V0.3.md §5).
   ],
   "subjects": [
     { "id": "...", "subjectId": "...", "subjectName": "Mathematics", "classArmId": "...", "className": "JSS 1 A" }
-  ]
+  ],
+  "currentSessionId": "...",
+  "currentTermId": "...",
+  "currentTermName": "FIRST"
 }
 ```
 Both arrays are `[]`, not an error, for staff with no assignments.
+`currentSessionId`/`currentTermId`/`currentTermName` (added v0.4 step 4)
+are the school's current `isCurrent` session/term, `null` if none is set —
+`TEACHER` has no other way to discover the current term (`GET /sessions`
+and `GET /terms` are both admin-only), and the bulk score-entry grid's
+picker needs it.
 
 ---
 
@@ -805,14 +813,16 @@ returns one student's full history (create, withdraw with its reason in
 ## Assessment structure (v0.3, SPEC_V0.3.md §2)
 
 The school's scoring structure — school-wide in v0.3 (per-level schemes
-are a future need, not built — docs/DECISIONS.md). Read and write both
-`PROPRIETOR`/`SCHOOL_ADMIN` only (unlike grade boundaries below, TEACHER
-has no access at all here). Both endpoints exempt from pagination
+are a future need, not built — docs/DECISIONS.md). Write is
+`PROPRIETOR`/`SCHOOL_ADMIN` only. Both endpoints exempt from pagination
 (CLAUDE.md §5 amendment, SPEC_V0.3.md §5) — bounded to 1-8 rows.
 
 ### `GET /assessment-components`
 
-Ordered by `sortOrder`, tiebreak `id`.
+Ordered by `sortOrder`, tiebreak `id`. `PROPRIETOR`/`SCHOOL_ADMIN`/
+`TEACHER` (read extended to `TEACHER` in v0.4 step 4, matching the
+precedent already set by `GET /grade-boundaries` below — the bulk
+score-entry grid's component picker needs it).
 
 ### `PUT /assessment-components`
 
@@ -938,6 +948,15 @@ Unpaginated (CLAUDE.md §5 exception, same as assessment-components/grade-
 boundaries above — a class arm is bounded ~150, SPEC_V0.4.md §2 says return
 all rather than paginate).
 
+Each row also carries `status`: `"DRAFT" | "PENDING_APPROVAL" | "PUBLISHED"`,
+sourced from the student's `term_subject_results` row for this subject/term
+(defaults to `"DRAFT"` if none exists yet). This is **subject-level, not
+component-level** — the same value repeats across every component's grid
+for a given student/subject/term, and can be genuinely mixed within one
+response (e.g. one student published, another still draft). Added in
+v0.4 step 4 so the bulk score-entry grid can render published rows locked
+from initial load rather than reactively on the first `409`.
+
 **Response `200`**
 ```json
 {
@@ -945,7 +964,7 @@ all rather than paginate).
   "maxScore": 20,
   "requiresApproval": false,
   "rows": [
-    { "studentId": "...", "firstName": "...", "lastName": "...", "admissionNumber": "SUN/2026/0001", "rawScore": 17 }
+    { "studentId": "...", "firstName": "...", "lastName": "...", "admissionNumber": "SUN/2026/0001", "rawScore": 17, "status": "DRAFT" }
   ]
 }
 ```

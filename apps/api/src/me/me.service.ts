@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import type { TermName } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
@@ -22,6 +23,16 @@ export interface MySubjectTaughtEntry {
 export interface TeachingLoad {
   classTeacherOf: MyClassTeacherOfEntry[];
   subjects: MySubjectTaughtEntry[];
+  // v0.4 step 4: the score-entry grid's term picker needs to know "the
+  // current term" to default to, and TEACHER has no other accessible way
+  // to discover it — GET /sessions and GET /terms are both admin-only.
+  // Null if the school has no current session/term configured yet (same
+  // "empty session" state the admin dashboard already handles).
+  // currentTermName rides along for free (already fetched) so the UI
+  // doesn't have to display a raw id.
+  currentSessionId: string | null;
+  currentTermId: string | null;
+  currentTermName: TermName | null;
 }
 
 @Injectable()
@@ -43,7 +54,7 @@ export class MeService {
   async findMyTeaching(userId: string): Promise<TeachingLoad> {
     const schoolId = this.tenantContext.schoolId;
 
-    const [classTeacherAssignments, subjectTeacherAssignments] = await Promise.all([
+    const [classTeacherAssignments, subjectTeacherAssignments, currentSession, currentTerm] = await Promise.all([
       this.prisma.classTeacherAssignment.findMany({
         where: forSchool(schoolId, { teacherUserId: userId, session: { isCurrent: true } }),
         include: { classArm: { include: { classLevel: true } }, session: true },
@@ -52,6 +63,8 @@ export class MeService {
         where: forSchool(schoolId, { teacherUserId: userId, session: { isCurrent: true } }),
         include: { subject: true, classArm: { include: { classLevel: true } } },
       }),
+      this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) }),
+      this.prisma.term.findFirst({ where: forSchool(schoolId, { isCurrent: true }) }),
     ]);
 
     const enrollmentCounts = classTeacherAssignments.length
@@ -81,6 +94,9 @@ export class MeService {
         classArmId: assignment.classArmId,
         className: `${assignment.classArm.classLevel.name} ${assignment.classArm.name}`,
       })),
+      currentSessionId: currentSession?.id ?? null,
+      currentTermId: currentTerm?.id ?? null,
+      currentTermName: currentTerm?.name ?? null,
     };
   }
 }

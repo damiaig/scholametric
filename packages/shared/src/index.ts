@@ -13,3 +13,4 @@ export * from "./classes";
 export * from "./audit";
 export * from "./me";
 export * from "./grading-config";
+export * from "./grades";

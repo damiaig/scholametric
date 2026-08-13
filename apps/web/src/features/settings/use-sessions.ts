@@ -2,11 +2,17 @@ import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tansta
 import type { ActivationPreview, AcademicSession, CreateSessionInput, Paginated } from "@scholametric/shared";
 import { apiRequest } from "../../lib/api-client";
 
-export function useSessions(page: number, pageSize = 20) {
+// GET /sessions is admin-only server-side (unlike /classes, /subjects) —
+// enabled defaults true for every existing call site; v0.4 step 4's grid
+// picker passes false for a TEACHER caller, who'd otherwise fire a doomed
+// 403 in the background just from this hook being unconditionally called
+// (React hooks can't be called conditionally, so the gate has to live here).
+export function useSessions(page: number, pageSize = 20, enabled = true) {
   return useQuery({
     queryKey: ["sessions", { page, pageSize }],
     queryFn: () => apiRequest<Paginated<AcademicSession>>("/api/v1/sessions", { query: { page, pageSize } }),
     placeholderData: keepPreviousData,
+    enabled,
   });
 }
 

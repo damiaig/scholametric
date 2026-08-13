@@ -43,6 +43,9 @@ const TEACHING: MyTeaching = {
   subjects: [
     { id: "sa1", subjectId: "sub1", subjectName: "Mathematics", classArmId: "arm2", className: "JSS 1 A" },
   ],
+  currentSessionId: "sess1",
+  currentTermId: "term1",
+  currentTermName: "FIRST",
 };
 
 const STATS: DashboardStats = {

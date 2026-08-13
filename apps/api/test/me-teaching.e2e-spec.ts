@@ -40,6 +40,11 @@ describe("GET /me/teaching (e2e)", () => {
         (s: { subjectName: string; className: string }) => s.subjectName === "Mathematics" && s.className === "JSS 1 A",
       ),
     ).toBe(true);
+    // v0.4 step 4: TEACHER has no other accessible way to discover the
+    // current term (GET /sessions and GET /terms are both admin-only).
+    expect(typeof response.body.currentSessionId).toBe("string");
+    expect(typeof response.body.currentTermId).toBe("string");
+    expect(["FIRST", "SECOND", "THIRD"]).toContain(response.body.currentTermName);
   });
 
   it("returns empty arrays (not an error) for a staff member with no assignments", async () => {

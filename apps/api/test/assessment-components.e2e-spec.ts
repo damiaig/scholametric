@@ -49,11 +49,11 @@ describe("Assessment components (e2e)", () => {
       expect(response.body.reduce((sum: number, c: { weight: number }) => sum + c.weight, 0)).toBe(100);
     });
 
-    it("TEACHER is forbidden (read is admin-only here, unlike grade-boundaries)", async () => {
+    it("TEACHER can read (v0.4 step 4: the score-entry grid's component picker needs this)", async () => {
       const response = await request(app.getHttpServer())
         .get("/api/v1/assessment-components")
         .set(auth(sunriseTeacherToken));
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(200);
     });
 
     it("rejects unauthenticated requests", async () => {

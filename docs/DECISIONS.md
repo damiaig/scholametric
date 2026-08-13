@@ -2098,3 +2098,116 @@ Full ci green: typecheck, lint, full e2e suite (219 tests, 21 suites) ×2
 including a from-scratch database, the publish/unpublish/override suite
 alone re-run 3× back to back to rule out concurrency-test flakiness. No
 schema/migration changes this step.
+
+## 2026-08-13 — v0.4 step 4: bulk score-entry grid (web) + two targeted API extensions
+
+Built the score-entry grid (SPEC_V0.4.md §4 item 1): class-arm+subject+
+component+term picker → a flat, non-virtualized list of one row per
+student, keyboard-first (Tab/Enter/ArrowUp/ArrowDown), save-as-you-go via
+a debounced (600ms) + max-wait-capped (2000ms) batched `PUT /grades/grid`.
+No schema change; two small, pre-approved API extensions plus one
+additive field:
+
+- **`GET /grades/grid` rows now carry `status`** (`DRAFT`/
+  `PENDING_APPROVAL`/`PUBLISHED`, subject-level, sourced from
+  `term_subject_results`) so the grid can render published rows locked
+  from initial load rather than reactively on the first `409`. Proven at
+  the source: a new e2e in `grades-grid.e2e-spec.ts` asserts a single
+  `GET` returns a genuinely mixed published/draft/never-scored roster.
+- **`GET /assessment-components` extended to `TEACHER` (read-only)** —
+  matches the precedent already set by `GET /grade-boundaries`; the
+  grid's component picker needs it and `TEACHER` had no other path to it.
+- **`GET /me/teaching` now returns `currentSessionId`/`currentTermId`/
+  `currentTermName`** — `TEACHER` has no access to `GET /sessions`/`GET
+  /terms` (admin-only) and needed a way to discover the current term
+  without opening those endpoints up.
+
+**Save-as-you-go design**: a 6-state per-cell reducer
+(`idle|pending|saving|saved|error|locked`), buffer-is-the-retry-queue (a
+failed or re-edited cell just stays `pending`/`error` and gets swept into
+the next flush — no separate retry-tracking structure). A global (not
+per-cell) in-flight lock serializes flushes; a "check-before-applying"
+clobber guard on every flush response (only transition a cell if
+`current.value === sentValue`) makes this safe without
+`AbortController`— a stale response for an already-re-edited cell is
+silently ignored. `400` on a >1-cell batch splits and retries each cell
+individually (the batch is atomic; we don't know which cell was bad
+without parsing an error string). `409`'s `lockedStudentIds` locks
+exactly those cells and immediately retries the rest as one fresh batch.
+
+**Three scope decisions, made explicitly rather than assumed**:
+1. **No permanent browser-e2e suite added.** Proven live instead via a
+   scratchpad-only Playwright script (installed under the session
+   scratchpad, never touching `apps/web/package.json` — CLAUDE.md's fixed
+   stack has no browser-e2e tool yet). A standalone Playwright/Vitest-
+   browser-mode suite remains a deferred option for whenever browser-e2e
+   coverage becomes a standing need, not folded into this step.
+2. **No localStorage persistence for the save buffer.** In-memory-
+   survives-a-network-blip is the bar for this step (the actual ask:
+   "Nigerian realities, 2G/flaky" — a mid-typing network drop, not a
+   crash/full-reload). `beforeunload` warns against accidental
+   navigation but can't guarantee a save completes on unload. **Known
+   limitation**: a hard browser crash or reload mid-edit loses any
+   `pending`/`error` cells not yet flushed — add localStorage buffering
+   only if a pilot teacher actually hits this in practice.
+3. **Live class-average display deferred to step 5's grades overview** —
+   this step is score entry only; an aggregate view belongs with the
+   overview/review UI, not bolted onto the entry grid.
+
+**No virtualization** — a flat DOM list of ~150 single-input rows,
+`React.memo` per row plus stable reducer object identities (only the
+edited cell's object changes) keeps re-render cost scoped to the touched
+row. Virtualizing would break native `Tab` traversal across unmounted
+off-screen rows. Empirically proven, not just argued: see the live-stack
+walk below.
+
+**RBAC bug caught by a failing test, not review**: the picker's admin-
+only current-term hook was gated `useAdminCurrentTerm(!isTeacher)`.
+`isTeacher` is `false` on the very first render (before `/auth/me`
+resolves, role is unknown) — so `!isTeacher` is `true` regardless of the
+caller's real role, firing an admin-only `GET /sessions` once before
+`TanStack Query`'s `enabled` flag can stop it (a query already in flight
+doesn't un-fire). Fixed by gating on `isConfirmedAdmin =
+role === SCHOOL_ADMIN || role === PROPRIETOR` — defaults to disabled
+("fail closed") while role is unknown, instead of defaulting to enabled
+("fail open"). General lesson for this codebase: any role check used to
+gate a hook's `enabled` must default to the safe state during the
+role-unknown window, not just check the negation of one specific role.
+
+**Two small, unrelated component bugs found while building the row**:
+`useRef<HTMLInputElement>(null)` produces a read-only ref (TS overload
+resolution) — needed `useRef<HTMLInputElement | null>(null)` for the
+callback-ref pattern. The shared `Spinner` component only forwards
+`className`, not `aria-label` — wrapped it in a labelled `<span>` at the
+one call site that needed it rather than extending the shared primitive.
+
+**e2e isolation, same lesson as step 3, hit again**: the new mixed-status
+`GET` test initially reused the shared `scratchSubjectId` with "unused"
+student indices to avoid collision — still broke three *later* tests,
+because publishing even one student 409-locks that whole subject for any
+subsequent "write to the whole roster" call, regardless of which student
+indices are involved. Publish/lock is per-subject-batch, not per-student.
+Fixed with a fully dedicated, self-contained scratch `Subject` created
+and torn down inside the test itself. Caught by an actual failing test,
+not by inspection — worth remembering as a standing rule for this suite:
+any state-mutating scratch fixture (publish, override, unpublish) needs
+its own dedicated resource, not a shared one with "safe" indices.
+
+**Live-stack proof** (scratchpad-only Playwright driver against the real
+docker-compose Postgres + host `pnpm start:dev`/`pnpm dev`, logged in as
+`teacher@sunrise.test` against the real ~102-student JSS 2 A Mathematics
+roster): keyboard-only entry (type + `Enter` to advance, explicit
+`ArrowUp`/`ArrowDown` check) confirmed saving; values confirmed to
+survive both an in-session refetch and a full logout → relogin → refetch
+(the meaningful "reload persists" proof — a *hard* page reload discards
+the in-memory-only access token by design, see `auth-store.ts`, so a raw
+`F5` mid-edit always re-prompts login, which is expected and unrelated to
+this step); a simulated offline edit correctly showed the error/retry
+glyph and auto-recovered to saved within ~1s of reconnecting; 100+-row
+timing showed no jank (scroll+click+type on the last row: ~84ms;
+mid-roster keystroke latency: ~5ms), validating the no-virtualization
+call empirically rather than just architecturally.
+
+Full ci green: typecheck + lint (api/web/shared), full e2e suite
+(220 tests, 21 suites) on a from-scratch database, existing suite
+otherwise unchanged. No schema/migration changes this step.
