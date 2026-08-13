@@ -2379,3 +2379,75 @@ Full ci green: typecheck + lint (api/web/shared), full e2e suite
 a from-scratch database, web Vitest (126 tests, 27 files — 21 new tests
 across four new spec files, plus the existing route-smoke test extended
 with the two new routes). No schema/migration changes this step.
+
+## 2026-08-14 — v0.4 step 6 part 1: gap #2 fix — saveGrid no longer strands a published overall
+
+Fixed the gap flagged (not built) at the end of step 3: `saveGrid`
+creating a student's FIRST-EVER `term_subject_result` for a subject,
+while that student's `term_overall_result` is currently `PUBLISHED`,
+used to leave the overall stale — still `PUBLISHED`, still carrying its
+old `overall_position`, even though the student now has an unpublished
+subject. Surfaces as a wrong published rank on a future report card.
+
+**Trigger, made decidable rather than heuristic**: the only reachable
+case is "no existing `term_subject_result` row for this (subject, term)"
+AND "the student's overall is currently `PUBLISHED`". Nothing else can
+reach it — if the student already has a row for this subject and their
+overall is `PUBLISHED`, that row must itself already be `PUBLISHED` (an
+overall can only be `PUBLISHED` if every touched subject is), and
+`saveGrid`'s pre-existing `lockedStudentIds` check already 409s that case
+before any recompute logic runs. Detection reuses `existingResults`
+(already fetched for that same 409 check, zero new queries) to find
+`studentsWithNoExistingRow`; the one additional `term_overall_result`
+query fires only when that list is non-empty, and "no overall row" reads
+as not-published rather than throwing. Net effect: the ordinary
+"re-save an already-touched grid" path — the overwhelming majority of
+real `saveGrid` calls — costs nothing extra, proven behaviorally (not
+just argued) by a dedicated e2e asserting no `term_overall_result` row
+appears as a side effect of either a create-only or an edit-only save
+when no gap-#2 candidate exists.
+
+**Lock order, unchanged from publish()/unpublish()**: subject lock always
+first (unconditional, as before), class-arm lock conditionally second —
+acquired only when `needsOverallRecompute` is true, always strictly after
+the subject lock, and `saveGrid` never acquires any other subject's lock
+afterward. That's the whole no-deadlock argument: the only lock any two
+of these transactions ever contend on is the class-arm lock, and nothing
+here ever holds it while attempting to acquire a *different* subject
+lock — concurrent contention on the class-arm lock alone can only
+serialize, never cycle. Transaction timeout bumped 15000ms → 20000ms to
+match `publish()`'s existing budget for the same added class-arm-wide
+phase (only actually spent when the branch fires).
+
+**`POST /grades/recompute` carries the identical latent gap, left
+untouched**: it drives the same `recomputeStudents` across a whole
+roster and can equally create a first-ever row for a student whose
+overall is published. Not fixed here — out of this step's explicit ask
+(`saveGrid` only); flagged here rather than silently left undocumented,
+for whenever it's picked up.
+
+**Proof** — new describe block in `grades-publish.e2e-spec.ts`, with two
+MORE dedicated scratch arms (`gapTwoArmId`, `gapTwoConcurrencyArmId`),
+kept separate from the file's existing `overallArmId` so none of these
+tests' students enter that arm's already-asserted absolute-position
+ranking pool, and vice versa (same isolation discipline as `overallArmId`
+itself):
+- Stale-rank reproduction: 3 students published in one subject (positions
+  1/2/3 by score); a brand-new second subject for the middle student
+  reverts their overall to `PENDING_APPROVAL` with a null position and
+  `subjectsCount: 2`, while the other two — untouched by the save itself —
+  re-rank as the published cohort shrinks (3rd → 2nd).
+- Hot-path no-op: proven behaviorally (no `term_overall_result` row
+  appears) across both a create-only and an edit-only save with no
+  gap-#2 candidate in play.
+- Concurrency: a gap-#2-triggering `saveGrid` and a `publish()` on a
+  *different* subject of the same arm, fired together — both `200`, no
+  deadlock/timeout, and the final state is correct regardless of which
+  transaction's class-arm-lock acquisition won the race (no lost
+  update) — same verification style as the file's existing
+  "two concurrent publishes" test.
+
+Full ci green: typecheck + lint, full e2e suite (244 tests, 24 suites — 3
+new tests) on a from-scratch database, existing `grades-grid`/
+`grades-publish` suites otherwise unchanged and still green. No schema/
+migration changes.

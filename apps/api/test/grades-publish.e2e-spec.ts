@@ -36,6 +36,16 @@ describe("Grades publish/unpublish/override (e2e)", () => {
   // pollute the same ranking pool. This arm is used ONLY by the "Overall
   // cascade" and "two concurrent publishes" tests.
   let overallArmId: string;
+  // Two more dedicated arms for the gap-#2 fix's tests (saveGrid
+  // triggering an overall recompute) — same isolation reasoning as
+  // overallArmId above, kept SEPARATE from it (not reused) so this suite's
+  // pre-existing absolute-position tests never see gap-#2's students, and
+  // vice versa. gapTwoArmId: the stale-rank reproduction + hot-path no-op
+  // tests (order-independent, relative positions only). gapTwoConcurrencyArmId:
+  // the concurrency test alone, since it needs a clean, fully predictable
+  // ranked cohort to assert an exact final position against.
+  let gapTwoArmId: string;
+  let gapTwoConcurrencyArmId: string;
   let ca1Id: string; // weight 20, max_score 20, requiresApproval false
   let examId: string; // weight 60, max_score 100, requiresApproval true
   let ca2Id: string; // weight 20, max_score 20, requiresApproval false
@@ -123,6 +133,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     overallArmId = (
       await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Overall-${Date.now()}` } })
     ).id;
+    gapTwoArmId = (
+      await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Gap2-${Date.now()}` } })
+    ).id;
+    gapTwoConcurrencyArmId = (
+      await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Gap2Conc-${Date.now()}` } })
+    ).id;
 
     const components = await prisma.assessmentComponent.findMany({
       where: { schoolId: sunriseId, deletedAt: null },
@@ -189,6 +205,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     }
     if (overallArmId) {
       await prisma.classArm.delete({ where: { id: overallArmId } });
+    }
+    if (gapTwoArmId) {
+      await prisma.classArm.delete({ where: { id: gapTwoArmId } });
+    }
+    if (gapTwoConcurrencyArmId) {
+      await prisma.classArm.delete({ where: { id: gapTwoConcurrencyArmId } });
     }
     if (hillcrestScratchProprietorId) {
       // Real login flow (loginAs) issued a refresh token for this user —
@@ -647,6 +669,167 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       expect(tAfter.overallPosition).toBe(1); // was 2, shifted up
       expect(qAfter.status).toBe("PUBLISHED");
       expect(qAfter.overallPosition).toBe(2); // was 3, shifted up
+    });
+  });
+
+  // Gap #2 (docs/DECISIONS.md, fixed this step): saveGrid creating a
+  // student's FIRST-EVER term_subject_result for a subject, while that
+  // student's term_overall_result is currently PUBLISHED, must revert the
+  // overall to PENDING_APPROVAL and re-rank the shrunken published
+  // cohort — not leave a stale PUBLISHED status/position behind.
+  describe("saveGrid triggering an overall recompute (gap #2 fix)", () => {
+    it("stale-rank reproduction: a brand-new subject for a published-overall student reverts their overall and re-ranks the rest of the cohort", async () => {
+      const subjectA = await createScratchSubject("E2E Gap2 SubjectA");
+      const [s0, s1, s2] = await createScratchStudents(3, "Gap2Stale", gapTwoArmId);
+
+      // s0: 20 + 60 = 80 (rank 1). s1: 15 + 45 = 60 (rank 2). s2: 10 + 30 = 40 (rank 3).
+      await scoreComponent(sunriseAdminToken, subjectA, ca1Id, [
+        { studentId: s0, rawScore: 20 },
+        { studentId: s1, rawScore: 15 },
+        { studentId: s2, rawScore: 10 },
+      ], gapTwoArmId);
+      await scoreComponent(sunriseAdminToken, subjectA, examId, [
+        { studentId: s0, rawScore: 100 },
+        { studentId: s1, rawScore: 75 },
+        { studentId: s2, rawScore: 50 },
+      ], gapTwoArmId);
+
+      const publishRes = await request(app.getHttpServer())
+        .post("/api/v1/grades/publish")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: gapTwoArmId, subjectId: subjectA, termId: sunriseTermId });
+      expect(publishRes.status).toBe(200);
+      expect(publishRes.body.publishedCount).toBe(3);
+
+      // Each student's ONLY subject (A) is now published, so each overall
+      // is PUBLISHED too, ranked in the same order as their subject A total.
+      const [s0Before, s1Before, s2Before] = await Promise.all(
+        [s0, s1, s2].map((id) =>
+          prisma.termOverallResult.findUniqueOrThrow({
+            where: { studentId_termId_sessionId: { studentId: id, termId: sunriseTermId, sessionId: sunriseSessionId } },
+          }),
+        ),
+      );
+      expect(s0Before.status).toBe("PUBLISHED");
+      expect(s0Before.overallPosition).toBe(1);
+      expect(s1Before.status).toBe("PUBLISHED");
+      expect(s1Before.overallPosition).toBe(2);
+      expect(s2Before.status).toBe("PUBLISHED");
+      expect(s2Before.overallPosition).toBe(3);
+
+      // s1 (middle-ranked) gets their FIRST-EVER score in a brand-new
+      // subject B — no existing term_subject_result row for it, and s1's
+      // overall is currently PUBLISHED: exactly the gap-#2 trigger.
+      const subjectB = await createScratchSubject("E2E Gap2 SubjectB");
+      const saveRes = await scoreComponent(sunriseAdminToken, subjectB, ca1Id, [{ studentId: s1, rawScore: 5 }], gapTwoArmId);
+      expect(saveRes.status).toBe(200);
+
+      const [s0After, s1After, s2After] = await Promise.all(
+        [s0, s1, s2].map((id) =>
+          prisma.termOverallResult.findUniqueOrThrow({
+            where: { studentId_termId_sessionId: { studentId: id, termId: sunriseTermId, sessionId: sunriseSessionId } },
+          }),
+        ),
+      );
+
+      // s1: reverted — subject B is DRAFT (no exam score yet), so overall
+      // is no longer fully published. subjectsCount grows to 2. No leaked
+      // position.
+      expect(s1After.status).toBe("PENDING_APPROVAL");
+      expect(s1After.overallPosition).toBeNull();
+      expect(s1After.subjectsCount).toBe(2);
+
+      // s0, s2 are untouched by this save but their COHORT shrank (s1
+      // dropped out of the ranked set) — they re-rank: s0 stays 1st, s2
+      // shifts from 3rd to 2nd.
+      expect(s0After.status).toBe("PUBLISHED");
+      expect(s0After.overallPosition).toBe(1);
+      expect(s2After.status).toBe("PUBLISHED");
+      expect(s2After.overallPosition).toBe(2); // was 3, shifted up
+    });
+
+    it("hot-path no-op: saveGrid creating OR editing a row never touches term_overall_results unless a real gap-#2 candidate exists", async () => {
+      const subjectId = await createScratchSubject("E2E Gap2 HotPath");
+      const [s0] = await createScratchStudents(1, "Gap2HotPath", gapTwoArmId);
+
+      // First save: CREATES the row. s0 has no term_overall_result at all
+      // yet (never published anything) — "no overall row" must read as
+      // not-published, not throw, and not spuriously create one.
+      const createRes = await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 10 }], gapTwoArmId);
+      expect(createRes.status).toBe(200);
+      const afterCreate = await prisma.termOverallResult.findUnique({
+        where: { studentId_termId_sessionId: { studentId: s0, termId: sunriseTermId, sessionId: sunriseSessionId } },
+      });
+      expect(afterCreate).toBeNull();
+
+      // Second save: EDITS the same (existing) row. The perf-critical
+      // assertion — this must stay a zero-extra-query, zero-extra-lock
+      // no-op, proven behaviorally: still no term_overall_result row.
+      const editRes = await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }], gapTwoArmId);
+      expect(editRes.status).toBe(200);
+      const afterEdit = await prisma.termOverallResult.findUnique({
+        where: { studentId_termId_sessionId: { studentId: s0, termId: sunriseTermId, sessionId: sunriseSessionId } },
+      });
+      expect(afterEdit).toBeNull();
+    });
+
+    it("concurrency: a saveGrid triggering the recompute and a publish on a different subject of the same arm don't deadlock and both land correctly", async () => {
+      const subjectA2 = await createScratchSubject("E2E Gap2 Conc SubjectA2");
+      const subjectB2 = await createScratchSubject("E2E Gap2 Conc SubjectB2");
+      const subjectC2 = await createScratchSubject("E2E Gap2 Conc SubjectC2");
+      const [sA, sB] = await createScratchStudents(2, "Gap2Conc", gapTwoConcurrencyArmId);
+
+      // sA: fully scored + published in subject A2 (their only subject so
+      // far) -> overall PUBLISHED, position 1 (sole ranked student).
+      await scoreComponent(sunriseAdminToken, subjectA2, ca1Id, [{ studentId: sA, rawScore: 20 }], gapTwoConcurrencyArmId);
+      await scoreComponent(sunriseAdminToken, subjectA2, examId, [{ studentId: sA, rawScore: 100 }], gapTwoConcurrencyArmId);
+      const publishA2 = await request(app.getHttpServer())
+        .post("/api/v1/grades/publish")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: gapTwoConcurrencyArmId, subjectId: subjectA2, termId: sunriseTermId });
+      expect(publishA2.status).toBe(200);
+
+      // sB: fully scored in subject C2, left PENDING_APPROVAL (not
+      // published yet) — this is what the concurrent publish() call will
+      // publish.
+      await scoreComponent(sunriseAdminToken, subjectC2, ca1Id, [{ studentId: sB, rawScore: 20 }], gapTwoConcurrencyArmId);
+      await scoreComponent(sunriseAdminToken, subjectC2, examId, [{ studentId: sB, rawScore: 100 }], gapTwoConcurrencyArmId);
+
+      // Fire concurrently: sA's first-ever score in subject B2 (triggers
+      // the gap-#2 recompute — sA's overall is currently PUBLISHED) vs.
+      // publishing subject C2 for sB. Different subjects -> no subject-lock
+      // contention; both want the class-arm lock -> must serialize, never
+      // deadlock.
+      const [saveRes, publishRes] = await Promise.all([
+        request(app.getHttpServer())
+          .put("/api/v1/grades/grid")
+          .set(auth(sunriseAdminToken))
+          .send({ classArmId: gapTwoConcurrencyArmId, subjectId: subjectB2, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: sA, rawScore: 5 }] }),
+        request(app.getHttpServer())
+          .post("/api/v1/grades/publish")
+          .set(auth(sunriseAdminToken))
+          .send({ classArmId: gapTwoConcurrencyArmId, subjectId: subjectC2, termId: sunriseTermId }),
+      ]);
+      expect(saveRes.status).toBe(200);
+      expect(publishRes.status).toBe(200);
+
+      const [sAOverall, sBOverall] = await Promise.all(
+        [sA, sB].map((id) =>
+          prisma.termOverallResult.findUniqueOrThrow({
+            where: { studentId_termId_sessionId: { studentId: id, termId: sunriseTermId, sessionId: sunriseSessionId } },
+          }),
+        ),
+      );
+
+      // No lost update, regardless of which transaction's class-arm-lock
+      // acquisition won the race: sA reverted (subject B2 is DRAFT — no
+      // exam score), sB published and now the sole ranked student.
+      expect(sAOverall.status).toBe("PENDING_APPROVAL");
+      expect(sAOverall.overallPosition).toBeNull();
+      expect(sAOverall.subjectsCount).toBe(2);
+      expect(sBOverall.status).toBe("PUBLISHED");
+      expect(sBOverall.overallPosition).toBe(1);
+      expect(sBOverall.subjectsCount).toBe(1);
     });
   });
 

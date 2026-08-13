@@ -309,6 +309,7 @@ export class GradesService {
 
     const affectedStudentIds = [...new Set(dto.scores.map((s) => s.studentId))];
     const lockKey = this.subjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+    const classArmLockKey = this.classArmLockKey(schoolId, dto.classArmId, dto.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
@@ -330,6 +331,28 @@ export class GradesService {
         const lockedStudentIds = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).map((r) => r.studentId);
         if (lockedStudentIds.length > 0) {
           throw this.publishedLockException("save scores", lockedStudentIds);
+        }
+
+        // Gap #2 (docs/DECISIONS.md): a student's overall can only be
+        // PUBLISHED if every subject they've been scored in so far is
+        // itself PUBLISHED — and a student whose row for THIS subject is
+        // already PUBLISHED already 409'd above. So the only way this
+        // save can strand a stale overall is by creating a genuinely NEW
+        // subject-result (no existing row) for a student whose overall is
+        // currently PUBLISHED — editing an existing row can never reach
+        // this. Detected from `existingResults` (already fetched, no new
+        // query) so the common "re-save an already-touched grid" path
+        // costs nothing extra; the one additional query only fires when a
+        // real candidate exists.
+        const studentsWithNoExistingRow = affectedStudentIds.filter(
+          (id) => !existingResults.some((r) => r.studentId === id),
+        );
+        let needsOverallRecompute = false;
+        if (studentsWithNoExistingRow.length > 0) {
+          const overallRows = await tx.termOverallResult.findMany({
+            where: { studentId: { in: studentsWithNoExistingRow }, termId: dto.termId, sessionId: term.sessionId },
+          });
+          needsOverallRecompute = overallRows.some((r) => r.status === ResultStatus.PUBLISHED);
         }
 
         await Promise.all(
@@ -368,6 +391,22 @@ export class GradesService {
           affectedStudentIds,
         );
 
+        // Class-arm lock ALWAYS after the subject lock, never before —
+        // same fixed order publish()/unpublish() already use, so no
+        // caller can deadlock against another (only ever contend ON the
+        // class-arm lock itself, never hold it while trying to acquire a
+        // different subject lock). Only acquired when genuinely needed
+        // (gap #2, see above) — the normal save path never touches it.
+        if (needsOverallRecompute) {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${classArmLockKey}))`;
+          await this.recomputeOverallForClassArm(tx, {
+            schoolId,
+            classArmId: dto.classArmId,
+            termId: dto.termId,
+            sessionId: term.sessionId,
+          });
+        }
+
         // One row for the whole bulk save, not one per score — matches the
         // PUT /assessment-components / PUT /grade-boundaries precedent
         // (@Audit()/AuditInterceptor only reads response.id, which doesn't
@@ -405,7 +444,7 @@ export class GradesService {
           })),
         };
       },
-      { timeout: 15000 }, // generous ceiling for a ~150-row roster save, not a raised default for every transaction
+      { timeout: 20000 }, // was 15000 — bumped to match publish()'s budget for the same added class-arm-wide phase (only spent when needsOverallRecompute fires)
     );
   }
 
@@ -414,6 +453,13 @@ export class GradesService {
   // whatever student_scores currently exist, e.g. after a roster fix.
   // No new computation logic: same recomputeStudents() PUT /grades/grid
   // already uses.
+  //
+  // Carries the same latent gap #2 saveGrid() was just fixed for (see its
+  // comment): this can also create a first-ever term_subject_result for a
+  // student whose overall is currently PUBLISHED, and doesn't (yet)
+  // trigger an overall recompute for that case. Not fixed here —
+  // deliberately out of this fix's scope (docs/DECISIONS.md), not slipped
+  // in unapproved.
   async recompute(dto: RecomputeGradesDto): Promise<{ recomputedCount: number }> {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await this.resolveTenantScopeSubjectOnly(schoolId, dto);
