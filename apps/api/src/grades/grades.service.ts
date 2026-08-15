@@ -16,6 +16,7 @@ import {
   type ComponentScoreInput,
   type GradeBoundaryInput,
 } from "../grades/grade-computation";
+import { termLockKey, subjectLockKey as buildSubjectLockKey, classArmLockKey as buildClassArmLockKey } from "./lock-keys";
 import { GetGradesGridQueryDto } from "./dto/get-grades-grid-query.dto";
 import { SaveGradesGridDto } from "./dto/save-grades-grid.dto";
 import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
@@ -312,17 +313,44 @@ export class GradesService {
     }
 
     const affectedStudentIds = [...new Set(dto.scores.map((s) => s.studentId))];
-    const lockKey = this.subjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
-    const classArmLockKey = this.classArmLockKey(schoolId, dto.classArmId, dto.termId);
+    const termLock = termLockKey(schoolId, dto.termId);
+    const subjLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+    const armLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
+        // Term-level lock FIRST, always — same fixed order close()/unlock()/
+        // relock() use for THEIR only lock (SPEC_V0.5.md §2.3, step 3).
+        // Serializes this save against a concurrent close/unlock/relock so
+        // the closed-term check just below can never read a stale value —
+        // whichever transaction gets here first fully commits before the
+        // other's read runs, closing the race a pre-transaction check would
+        // leave open.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
+
+        // Fresh read, not the `term` object from resolveTenantScopeWithComponent
+        // above (fetched before this lock — could be stale by now). Outer
+        // gate: fires before the PUBLISHED-lock below, and deliberately
+        // doesn't relax it — an unlock grants "may edit this slice," not
+        // "may also bypass the separate publish safeguard" (docs/DECISIONS.md).
+        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
+        if (freshTerm.closedAt !== null) {
+          const activeUnlock = await tx.termUnlock.findFirst({
+            where: { termId: dto.termId, classArmId: dto.classArmId, subjectId: dto.subjectId, relockedAt: null },
+          });
+          if (!activeUnlock) {
+            throw new ConflictException(
+              "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
+            );
+          }
+        }
+
         // Serializes concurrent grid saves for the same subject+class+term
         // (SPEC_V0.4.md §5) — without this, two overlapping saves could
         // both read student_scores before either commits and produce a
         // lost update on the derived total_score. Same discipline as
         // StudentsService's admission-number advisory lock.
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
 
         const existingResults = await tx.termSubjectResult.findMany({
           where: {
@@ -412,7 +440,7 @@ export class GradesService {
         // different subject lock). Only acquired when genuinely needed
         // (gap #2, see above) — the normal save path never touches it.
         if (needsOverallRecompute) {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${classArmLockKey}))`;
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${armLockKey}))`;
           await this.recomputeOverallForClassArm(tx, {
             schoolId,
             classArmId: dto.classArmId,
@@ -470,12 +498,16 @@ export class GradesService {
   // No new computation logic: same recomputeStudents() PUT /grades/grid
   // already uses.
   //
-  // Carries the same latent gap #2 saveGrid() was just fixed for (see its
-  // comment): this can also create a first-ever term_subject_result for a
-  // student whose overall is currently PUBLISHED, and doesn't (yet)
-  // trigger an overall recompute for that case. Not fixed here —
-  // deliberately out of this fix's scope (docs/DECISIONS.md), not slipped
-  // in unapproved.
+  // Gap-2-twin (SPEC_V0.5.md §3, fixed this step): carried the same latent
+  // gap #2 saveGrid() was fixed for in v0.4 (af94921) — re-deriving a
+  // first-ever term_subject_result for a student whose overall is
+  // currently PUBLISHED left the overall stale. Mirrors that fix exactly:
+  // conditional class-arm lock ALWAYS after the subject lock, same fixed
+  // order, only acquired when a real candidate exists. NOT gated by the
+  // closed-term/unlock check below (docs/DECISIONS.md) — this only
+  // re-derives from student_scores rows that already passed that gate at
+  // write time, introduces no new data, and stays off the term-lock
+  // entirely, preserving the existing no-deadlock argument.
   async recompute(dto: RecomputeGradesDto): Promise<{ recomputedCount: number }> {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await this.resolveTenantScopeSubjectOnly(schoolId, dto);
@@ -486,7 +518,8 @@ export class GradesService {
       return { recomputedCount: 0 };
     }
 
-    const lockKey = this.subjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+    const lockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+    const armLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
@@ -500,14 +533,34 @@ export class GradesService {
           throw this.publishedLockException("recompute", lockedStudentIds);
         }
 
+        const studentsWithNoExistingRow = studentIds.filter((id) => !existingResults.some((r) => r.studentId === id));
+        let needsOverallRecompute = false;
+        if (studentsWithNoExistingRow.length > 0) {
+          const overallRows = await tx.termOverallResult.findMany({
+            where: { studentId: { in: studentsWithNoExistingRow }, termId: dto.termId, sessionId: term.sessionId },
+          });
+          needsOverallRecompute = overallRows.some((r) => r.status === ResultStatus.PUBLISHED);
+        }
+
         const recomputed = await this.recomputeStudents(
           tx,
           { schoolId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, classArmId: dto.classArmId },
           studentIds,
         );
+
+        if (needsOverallRecompute) {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${armLockKey}))`;
+          await this.recomputeOverallForClassArm(tx, {
+            schoolId,
+            classArmId: dto.classArmId,
+            termId: dto.termId,
+            sessionId: term.sessionId,
+          });
+        }
+
         return { recomputedCount: recomputed.length };
       },
-      { timeout: 15000 },
+      { timeout: 20000 }, // was 15000 — bumped to match saveGrid's budget for the same added class-arm-wide phase (only spent when needsOverallRecompute fires)
     );
   }
 
@@ -527,8 +580,8 @@ export class GradesService {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await this.resolveTenantScopeSubjectOnly(schoolId, dto);
 
-    const subjectLockKey = this.subjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
-    const classArmLockKey = this.classArmLockKey(schoolId, dto.classArmId, dto.termId);
+    const subjectLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+    const classArmLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
@@ -662,8 +715,8 @@ export class GradesService {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await this.resolveTenantScopeSubjectOnly(schoolId, dto);
 
-    const subjectLockKey = this.subjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
-    const classArmLockKey = this.classArmLockKey(schoolId, dto.classArmId, dto.termId);
+    const subjectLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+    const classArmLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
@@ -744,7 +797,7 @@ export class GradesService {
       }
     }
 
-    const lockKey = this.subjectLockKey(schoolId, row.subjectId, row.classArmId, row.termId);
+    const lockKey = buildSubjectLockKey(schoolId, row.subjectId, row.classArmId, row.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
@@ -1341,14 +1394,6 @@ export class GradesService {
       }
     }
     return incomplete;
-  }
-
-  private subjectLockKey(schoolId: string, subjectId: string, classArmId: string, termId: string): string {
-    return `grades:${schoolId}:${subjectId}:${classArmId}:${termId}`;
-  }
-
-  private classArmLockKey(schoolId: string, classArmId: string, termId: string): string {
-    return `grades:${schoolId}:${classArmId}:${termId}`;
   }
 
   // Structured, not just a count: the caller (a director/owner UI) needs

@@ -2616,3 +2616,92 @@ tests all green on a freshly rebuilt, freshly seeded stack; typecheck +
 lint clean; web Vitest and the new unit suite unaffected (no schema, no
 web changes this step — API only, per the explicit scope). No migration —
 `is_absent` and the CHECK already existed from step 1.
+
+## 2026-08-15 — v0.5 step 3: term lifecycle API (close/unlock/relock) + gap-2-twin fix
+
+**Endpoints**: `POST /terms/:id/close`, `POST /terms/:id/unlock`,
+`POST /terms/:id/relock` — all SCHOOL_ADMIN + PROPRIETOR, no owner-only
+split (same tier as `publish()`, not `unpublish()`). No "reopen the whole
+term" endpoint exists or was added — `Term.closedAt`'s own schema comment
+already ruled that out; editing a closed term is always per-slice via
+unlock, matching the schema's original design intent.
+
+**DELIBERATE DEFERRAL — recorded per explicit instruction**: SPEC_V0.5.md
+§2.3's prose describes a teacher editing scores "freely, anytime,
+including after publishing... re-publishes the corrected number" while a
+term is open. The current v0.4 `saveGrid` doesn't do this — a `PUBLISHED`
+row is unconditionally locked; `unpublish()` is required first, regardless
+of term state. This step does NOT resolve that gap. The new closed-term
+check is an OUTER gate that fires first (409, before the existing
+PUBLISHED-lock check); the PUBLISHED-lock itself is completely untouched.
+An active unlock grants "you may edit this slice despite the closed
+term," not "you may also bypass the separate publish safeguard." Whether
+v0.4's `saveGrid` should someday allow free post-publish editing within an
+open term (per the spec's prose) is a separate, future decision.
+
+**Race-safety — the actual point of this step's design**: a naive
+pre-transaction read of `term.closedAt` would leave a real window where a
+concurrent `close()` commits between the check and the write. Fixed with
+a new term-level advisory lock (`termLockKey`), acquired FIRST by
+`saveGrid` (every call, unconditionally) and by `close`/`unlock`/`relock`
+(their only lock) — whichever transaction gets there first fully commits
+before the other's read runs. Inside the lock, `saveGrid` re-fetches
+`closedAt` fresh, never the object from the pre-transaction
+`resolveTenantScopeWithComponent` call. Fixed acquisition order across the
+whole module, extended by one position: `term -> subject -> (conditional)
+class-arm`, never reversed — `publish`/`unpublish`/`recompute`/`override`
+never touch the term lock at all, so the existing no-deadlock argument
+(af94921) extends cleanly rather than needing to be re-proven from
+scratch. `termLockKey`/`subjectLockKey`/`classArmLockKey` extracted into
+one shared pure-function module (`grades/lock-keys.ts`) so
+`GradesService` and `TermsService` can never compute even slightly
+different strings for the same lock — a silent drift there would break
+the whole serialization guarantee. Mechanical refactor of the existing
+two key builders (identical strings) — proven by the full pre-existing
+e2e suite staying green through it, unchanged.
+
+**`recompute()` deliberately NOT gated by closed-term/unlock** — it only
+re-derives `term_subject_result` from `student_scores` rows that already
+passed the gate at write time; introduces no new data. Stays off the term
+lock entirely.
+
+**Unlock lifecycle**: "currently unlocked" = the partial-unique row
+(`relocked_at IS NULL`) — an index lookup on `term_unlocks_active_unique`,
+never a scan. Re-closing an already-closed term 409s (not idempotent like
+`publish()` — there's no "reconfirm a close" semantic, and silently
+overwriting `closed_at`/`closed_by` would destroy the original close
+record). Unlocking an already-unlocked slice, relocking with nothing
+active, or unlocking a term that isn't closed — all 409, checked before
+any write.
+
+**`close()` response (Q4 — warn-but-allow)**: returns the term plus
+`unpublishedCount` and a `{classArmId, subjectId, draftCount,
+pendingApprovalCount}[]` breakdown — ids only, no name joins (step 5
+already has its own classes/subjects lists to resolve names against).
+
+**Gap-2-twin fix**: `POST /grades/recompute` mirrors `saveGrid`'s af94921
+fix exactly — conditional class-arm lock always after the subject lock,
+only acquired when a real candidate exists (a student with no existing
+row for this subject AND a currently-PUBLISHED overall). One real
+difference from the original: `recompute()` re-derives the WHOLE roster
+(no payload to scope an "affected" subset), so every untouched roster
+student is a candidate, not just whichever ones a specific save touched —
+proven by a stale-rank reproduction where recomputing a brand-new subject
+reverts EVERY published-overall student in the roster at once, not just
+one. The concurrency proof (recompute racing a publish on a different
+subject of the same arm) converges to exactly ONE valid final state
+regardless of interleaving (not two, unlike the saveGrid-vs-publish race)
+— since `recompute()` touches the whole roster, both students end up with
+a claim on the class-arm lock's cascade, and whichever runs second reads
+both subjects' latest committed state.
+
+**Proof**: new `terms.e2e-spec.ts` (20 tests — close/unlock/relock RBAC +
+cross-tenant 404, warn-but-allow breakdown, re-close 409, the full
+unlock→edit→relock→blocked-again round trip, per-slice isolation, every
+409 case, close-vs-saveGrid and unlock-vs-saveGrid concurrency) plus 2 new
+gap-2-twin tests in `grades-publish.e2e-spec.ts`. Every scratch fixture is
+its own session+term+class-arm+subject+roster bundle (`createScratchBundle`)
+— term close is one-way with no reopen, so reusing the real seeded First
+Term (which every other e2e file depends on staying open) was never an
+option. Full suite green on a freshly rebuilt, freshly seeded stack;
+typecheck + lint clean. No migration — schema untouched, as scoped.
