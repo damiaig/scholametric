@@ -178,6 +178,11 @@ describe("Grades grid (e2e)", () => {
           .put("/api/v1/grades/grid")
           .set(auth(sunriseAdminToken))
           .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, componentId: examId, termId: sunriseTermId, scores: [{ studentId: published.id, rawScore: 60 }] });
+        // CA2 = 0 (decided, not blank) — completeness gate (SPEC_V0.5.md §2.2).
+        await request(app.getHttpServer())
+          .put("/api/v1/grades/grid")
+          .set(auth(sunriseAdminToken))
+          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, componentId: ca2Id, termId: sunriseTermId, scores: [{ studentId: published.id, rawScore: 0 }] });
         const publishRes = await request(app.getHttpServer())
           .post("/api/v1/grades/publish")
           .set(auth(sunriseAdminToken))
@@ -654,6 +659,190 @@ describe("Grades grid (e2e)", () => {
       // CA1 12/20*20=12, CA2 8/20*20=8 — both writes must be reflected, not
       // whichever transaction happened to read student_scores last.
       expect(Number(result.totalScore)).toBe(20);
+    });
+  });
+
+  describe("PUT /grades/grid — absent (SPEC_V0.5.md §2.1, v0.5 step 2)", () => {
+    it("marking a student absent persists (rawScore null, isAbsent true) and flows through the existing recompute — excluded from the total, and an absent EXAM reaches PENDING_APPROVAL", async () => {
+      const [student] = jss2ARoster.slice(70, 71);
+      await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 15 }] });
+
+      const absentRes = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId, scores: [{ studentId: student.id, isAbsent: true }] });
+      expect(absentRes.status).toBe(200);
+      const row = absentRes.body.rows[0];
+      expect(row.rawScore).toBeNull();
+      expect(row.isAbsent).toBe(true);
+      // Absent is a DECIDED outcome for the approval-required component
+      // (step 1's computeSubjectStatus extension) — PENDING_APPROVAL, not
+      // stuck in DRAFT. Total excludes the absent Exam entirely: only CA1
+      // counts, 15/20*20=15 — NOT a 0 and NOT rescaled.
+      expect(row.status).toBe("PENDING_APPROVAL");
+      expect(row.totalScore).toBe(15);
+
+      const persisted = await prisma.studentScore.findUniqueOrThrow({
+        where: {
+          studentId_subjectId_componentId_termId_sessionId: {
+            studentId: student.id, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId, sessionId: sunriseSessionId,
+          },
+        },
+      });
+      expect(persisted.rawScore).toBeNull();
+      expect(persisted.isAbsent).toBe(true);
+    });
+
+    it("a real score entered after a prior absent mark clears isAbsent back to false (not left stale)", async () => {
+      const [student] = jss2ARoster.slice(71, 72);
+      const absentRes = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, isAbsent: true }] });
+      expect(absentRes.body.rows[0].isAbsent).toBe(true);
+      expect(absentRes.body.rows[0].rawScore).toBeNull();
+
+      const scoredRes = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 18 }] });
+      expect(scoredRes.status).toBe(200);
+      expect(scoredRes.body.rows[0].rawScore).toBe(18);
+      expect(scoredRes.body.rows[0].isAbsent).toBe(false);
+
+      // Not just the response echo — the persisted row itself, which is
+      // what the DB CHECK constraint actually guards. A stale isAbsent:
+      // true left behind here alongside the new rawScore would violate
+      // student_scores_raw_score_or_absent_check.
+      const persisted = await prisma.studentScore.findUniqueOrThrow({
+        where: {
+          studentId_subjectId_componentId_termId_sessionId: {
+            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
+          },
+        },
+      });
+      expect(Number(persisted.rawScore)).toBe(18);
+      expect(persisted.isAbsent).toBe(false);
+    });
+
+    it("marking absent after a prior real score clears rawScore to null (the other direction)", async () => {
+      const [student] = jss2ARoster.slice(72, 73);
+      const scoredRes = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 12 }] });
+      expect(scoredRes.body.rows[0].rawScore).toBe(12);
+      expect(scoredRes.body.rows[0].isAbsent).toBe(false);
+
+      const absentRes = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, isAbsent: true }] });
+      expect(absentRes.status).toBe(200);
+      expect(absentRes.body.rows[0].rawScore).toBeNull();
+      expect(absentRes.body.rows[0].isAbsent).toBe(true);
+
+      const persisted = await prisma.studentScore.findUniqueOrThrow({
+        where: {
+          studentId_subjectId_componentId_termId_sessionId: {
+            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
+          },
+        },
+      });
+      expect(persisted.rawScore).toBeNull();
+      expect(persisted.isAbsent).toBe(true);
+    });
+
+    it("400s a payload with both rawScore and isAbsent set, writing nothing (DTO-level mutual exclusion)", async () => {
+      // ca1Id at ANY index already has a row by this point in the file (the
+      // ~100-student bulk save test above touches every student) — so
+      // "writing nothing" is proven by before/after EQUALITY, not by
+      // assuming no prior row, same pattern as the existing "400s a
+      // rawScore above max_score" test above.
+      const [student] = jss2ARoster.slice(73, 74);
+      const before = await prisma.studentScore.findUnique({
+        where: {
+          studentId_subjectId_componentId_termId_sessionId: {
+            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
+          },
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 10, isAbsent: true }] });
+      expect(response.status).toBe(400);
+
+      const after = await prisma.studentScore.findUnique({
+        where: {
+          studentId_subjectId_componentId_termId_sessionId: {
+            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
+          },
+        },
+      });
+      expect(after).toEqual(before);
+    });
+
+    it("GET /grades/grid round-trips isAbsent alongside a normally-scored classmate in the same response", async () => {
+      const [absentStudent, scoredStudent] = jss2ARoster.slice(74, 76);
+      await request(app.getHttpServer())
+        .put("/api/v1/grades/grid")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId,
+          scores: [{ studentId: absentStudent.id, isAbsent: true }, { studentId: scoredStudent.id, rawScore: 45 }],
+        });
+
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(200);
+      const rows = response.body.rows as Array<{ studentId: string; rawScore: number | null; isAbsent: boolean }>;
+      const absentRow = rows.find((r) => r.studentId === absentStudent.id);
+      const scoredRow = rows.find((r) => r.studentId === scoredStudent.id);
+      expect(absentRow?.isAbsent).toBe(true);
+      expect(absentRow?.rawScore).toBeNull();
+      expect(scoredRow?.isAbsent).toBe(false);
+      expect(scoredRow?.rawScore).toBe(45);
+    });
+
+    it("the DB CHECK constraint still rejects a hand-crafted both-set row, entirely bypassing the DTO", async () => {
+      // A canary against a future regression removing/weakening
+      // student_scores_raw_score_or_absent_check — goes straight through
+      // Prisma, never through the DTO's own mutual-exclusion validator
+      // proven above, so this is the last line of defense, not the first.
+      const canaryComponent = await prisma.assessmentComponent.create({
+        data: { schoolId: sunriseId, name: "E2E CHECK Canary", weight: 1, sortOrder: 97, maxScore: 100, requiresApproval: false },
+      });
+      try {
+        const [student] = jss2ARoster.slice(76, 77);
+        const admin = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "admin@sunrise.test" } });
+        await expect(
+          prisma.studentScore.create({
+            data: {
+              schoolId: sunriseId,
+              studentId: student.id,
+              subjectId: scratchSubjectId,
+              componentId: canaryComponent.id,
+              sessionId: sunriseSessionId,
+              termId: sunriseTermId,
+              classArmId: jss2AArmId,
+              rawScore: 50,
+              isAbsent: true,
+              enteredBy: admin.id,
+              enteredAt: new Date(),
+            },
+          }),
+        ).rejects.toThrow();
+      } finally {
+        await prisma.studentScore.deleteMany({ where: { componentId: canaryComponent.id } });
+        await prisma.assessmentComponent.delete({ where: { id: canaryComponent.id } });
+      }
     });
   });
 

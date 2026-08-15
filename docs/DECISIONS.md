@@ -2530,3 +2530,89 @@ v0.4 e2e suite (244 tests, 24 suites) still green on the freshly seeded DB
 suite (7 tests) green. `pnpm run ci` green end-to-end (typecheck, lint,
 244 e2e, 126 web Vitest, 7 unit) at both the api and root level. No API or
 UI changes — schema/computation/seed only, per this step's explicit scope.
+
+## 2026-08-15 — v0.5 step 2: absent API + completeness gate + gap-1 fix
+
+**Absent entry**: `GridScoreItemDto` gained `isAbsent?: boolean` plus a
+custom class-validator constraint (`RawScoreConsistentWithAbsenceConstraint`,
+first custom validator in this codebase) enforcing the same mutual
+exclusion as `student_scores`' DB CHECK — belt (DTO, 400) and suspenders
+(DB CHECK, last resort) both live, proven independently by two different
+e2e tests. `saveGrid`'s upsert now sets `isAbsent` EXPLICITLY on every
+write (create and update), never a partial update — the same discipline
+`rawScore` already had. This matters concretely: a student marked absent
+last save who gets a real score entered this save must have `isAbsent`
+flipped back to `false` in the SAME write, or the stale flag survives
+alongside the new `rawScore` and violates the CHECK on that exact row.
+Proven both directions (score-after-absent, absent-after-score) — both are
+paths to the same CHECK-violating state. `GET /grades/grid` and `saveGrid`'s
+response both surface `isAbsent` per row now (round-trip, not just write).
+
+**Completeness gate (SPEC_V0.5.md §2.2)**: enforced inside `publish()`
+only — the only finalization surface that exists. Reading of the spec's
+"every student in the roster" wording: scoped to **publish CANDIDATES
+only** (rows currently `PENDING_APPROVAL`, about to transition this call),
+not the whole class-arm roster and not already-`PUBLISHED` rows. A literal
+whole-roster reading would have required 100% of a class to be scored
+before ANY student could publish, directly regressing v0.4's tested,
+documented staggered/repeatable publish (stragglers finishing later, re-
+publish calls that only pick up new PENDING_APPROVAL rows). The per-
+candidate reading satisfies "no student is ever silently published with a
+blank component" without that regression. "Blank" = no `student_scores`
+row for (student, active component), or a row with `rawScore IS NULL AND
+isAbsent = false` — both are indistinguishable today (both silently
+contribute 0), which is exactly the bug being closed. Absent is NOT
+blank — a decided outcome, so an all-absent-on-one-component cohort still
+publishes (proven). Rejection is atomic: one incomplete candidate blocks
+the WHOLE `publish()` call, including classmates who were individually
+complete (proven — a complete classmate's row is asserted still
+`PENDING_APPROVAL`, not partially transitioned). Rejection shape is
+`incompleteEntries: {studentId, componentId}[]` — named `incompleteEntries`
+deliberately, not reusing v0.4's `lockedStudentIds` (a different meaning:
+locked = already published, blocking further writes; incomplete = not yet
+publishable). Checked with one batched `student_scores` query over every
+candidate at once (no per-student query), shared via a new private
+`findIncompleteEntries` helper.
+
+**`getReview()`'s `canPublish` kept honest**: its own doc comment already
+promised it "mirrors publish()'s own nothing-to-do 409 condition exactly."
+Once `publish()` gained the completeness gate, that promise would have
+gone stale — `canPublish: true` while the real endpoint 409s is worse than
+no flag at all, since step 5's web UI trusts it to gate the Publish button.
+`canPublish` now reuses the exact same `findIncompleteEntries` helper (one
+definition of "complete," shared, not two that can drift), batched across
+EVERY subject in the class-arm/term at once (no per-subject query) —
+proven both directions against the REAL `publish()` outcome, not asserted
+in isolation.
+
+**Gap-1 fix (Q7)**: `AssessmentComponentsService.replaceAll`'s existing
+`validate()` now also requires at least one `requiresApproval` component.
+Confirmed by grep that `replaceAll` is the SOLE mutation path for
+`assessment_components` (every create/update/soft-delete/hard-delete in
+this codebase happens inside that one transaction) — no other endpoint or
+service touches the table, so this one check covers every school, every
+edit, with nothing left to find later. Forward-only: no backfill/migration
+for an already-broken structure, since neither seeded school is affected
+(both already have Exam `requiresApproval: true`) and there's no real
+production data yet to protect.
+
+**Existing-test ripple from the completeness gate — the sizable, non-
+obvious part of this step**: the gate is genuinely behavior-changing for
+any fixture that publishes a student scored on only 2 of the school's 3
+active components (a very common shorthand across the existing suite: CA1
++ Exam, CA2 always left blank). ~10 previously-passing `publish()` calls
+across `grades-publish.e2e-spec.ts`, `grades-review.e2e-spec.ts`, and
+`class-arm-results.e2e-spec.ts` needed a CA2 score added before their
+publish call to keep passing — chose `rawScore: 0` throughout (a real,
+decided score, weight 20/max 20 → contributes exactly 0), which satisfies
+the gate while leaving every one of those tests' hand-verified totals
+completely unperturbed. One test (`assessment-components.e2e-spec.ts`'s
+"accepts a valid 100-total set") had zero `requiresApproval` components in
+its fixture and would have failed the NEW gap-1 check on an unrelated
+assertion — added `requiresApproval: true` to its Exam-equivalent item.
+
+**Proof**: full v0.4+v0.5-step-1 e2e suite plus this step's new/updated
+tests all green on a freshly rebuilt, freshly seeded stack; typecheck +
+lint clean; web Vitest and the new unit suite unaffected (no schema, no
+web changes this step — API only, per the explicit scope). No migration —
+`is_absent` and the CHECK already existed from step 1.

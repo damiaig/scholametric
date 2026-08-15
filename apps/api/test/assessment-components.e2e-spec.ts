@@ -122,7 +122,7 @@ describe("Assessment components (e2e)", () => {
           components: [
             { name: "First CA", weight: 30, sortOrder: 1 },
             { name: "Second CA", weight: 30, sortOrder: 2 },
-            { name: "Final Exam", weight: 40, sortOrder: 3 },
+            { name: "Final Exam", weight: 40, sortOrder: 3, requiresApproval: true },
           ],
         });
       expect(response.status).toBe(200);
@@ -132,6 +132,46 @@ describe("Assessment components (e2e)", () => {
         .get("/api/v1/assessment-components")
         .set(auth(sunriseAdminToken));
       expect(persisted.body.map((c: { name: string }) => c.name)).toEqual(["First CA", "Second CA", "Final Exam"]);
+    });
+
+    // Gap-1 fix (SPEC_V0.5.md §3/Q7): a structure with zero approval
+    // components can never leave DRAFT (docs/DECISIONS.md).
+    it("rejects a zero-approval-component set atomically, and leaves the prior set intact", async () => {
+      const before = await request(app.getHttpServer())
+        .get("/api/v1/assessment-components")
+        .set(auth(sunriseAdminToken));
+
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/assessment-components")
+        .set(auth(sunriseAdminToken))
+        .send({
+          components: [
+            { name: "Gap1 CA", weight: 40, sortOrder: 1, requiresApproval: false },
+            { name: "Gap1 Exam", weight: 60, sortOrder: 2 },
+          ],
+        });
+      expect(response.status).toBe(400);
+      expect(response.body.message).toMatch(/at least one component must require approval/i);
+
+      const stillThere = await request(app.getHttpServer())
+        .get("/api/v1/assessment-components")
+        .set(auth(sunriseAdminToken));
+      expect(stillThere.body).toEqual(before.body);
+    });
+
+    it("accepts a set with exactly one requiresApproval component", async () => {
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/assessment-components")
+        .set(auth(sunriseAdminToken))
+        .send({
+          components: [
+            { name: "Gap1 CA Only", weight: 40, sortOrder: 1, requiresApproval: false },
+            { name: "Gap1 Exam Only", weight: 60, sortOrder: 2, requiresApproval: true },
+          ],
+        });
+      expect(response.status).toBe(200);
+      const exam = response.body.find((c: { name: string }) => c.name === "Gap1 Exam Only");
+      expect(exam.requiresApproval).toBe(true);
     });
 
     it("TEACHER cannot PUT", async () => {

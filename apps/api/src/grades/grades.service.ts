@@ -32,6 +32,7 @@ export interface GradesGridRow {
   lastName: string;
   admissionNumber: string;
   rawScore: number | null;
+  isAbsent: boolean;
   // The student's SUBJECT-level status (term_subject_result), not
   // component-level — independent of which component this grid is
   // currently viewing. A student with no term_subject_result row yet
@@ -57,6 +58,7 @@ export interface GradesGridResponse {
 export interface SavedGridRow {
   studentId: string;
   rawScore: number | null;
+  isAbsent: boolean;
   totalScore: number;
   autoGrade: string | null;
   finalGrade: string | null;
@@ -260,6 +262,7 @@ export class GradesService {
       }),
     ]);
     const rawByStudent = new Map(scores.map((s) => [s.studentId, s.rawScore === null ? null : Number(s.rawScore)]));
+    const absentByStudent = new Map(scores.map((s) => [s.studentId, s.isAbsent]));
     const statusByStudent = new Map(subjectResults.map((r) => [r.studentId, r.status]));
 
     return {
@@ -275,6 +278,7 @@ export class GradesService {
         lastName: s.lastName,
         admissionNumber: s.admissionNumber,
         rawScore: rawByStudent.get(s.id) ?? null,
+        isAbsent: absentByStudent.get(s.id) ?? false,
         status: statusByStudent.get(s.id) ?? ResultStatus.DRAFT,
       })),
     };
@@ -358,6 +362,15 @@ export class GradesService {
         await Promise.all(
           dto.scores.map((item) => {
             const rawScore = item.rawScore ?? null;
+            // Always explicit, never a partial update — same discipline as
+            // rawScore itself. A student marked absent last save who gets a
+            // real score entered this save must have isAbsent flipped back
+            // to false in the SAME write, or a stale isAbsent: true would
+            // survive alongside the new rawScore and violate
+            // student_scores_raw_score_or_absent_check on this very row
+            // (SPEC_V0.5.md §2.1 / step 1's DB CHECK). Symmetric the other
+            // way too: marking absent must null out any prior rawScore.
+            const isAbsent = item.isAbsent ?? false;
             return tx.studentScore.upsert({
               where: {
                 studentId_subjectId_componentId_termId_sessionId: {
@@ -368,7 +381,7 @@ export class GradesService {
                   sessionId: term.sessionId,
                 },
               },
-              update: { rawScore, enteredBy: user.userId, enteredAt: new Date() },
+              update: { rawScore, isAbsent, enteredBy: user.userId, enteredAt: new Date() },
               create: {
                 schoolId,
                 studentId: item.studentId,
@@ -378,6 +391,7 @@ export class GradesService {
                 termId: dto.termId,
                 classArmId: dto.classArmId,
                 rawScore,
+                isAbsent,
                 enteredBy: user.userId,
                 enteredAt: new Date(),
               },
@@ -428,6 +442,7 @@ export class GradesService {
         });
 
         const rawByStudent = new Map(dto.scores.map((s) => [s.studentId, s.rawScore ?? null]));
+        const absentByStudent = new Map(dto.scores.map((s) => [s.studentId, s.isAbsent ?? false]));
         return {
           classArmId: dto.classArmId,
           subjectId: dto.subjectId,
@@ -437,6 +452,7 @@ export class GradesService {
           rows: recomputed.map((r) => ({
             studentId: r.studentId,
             rawScore: rawByStudent.get(r.studentId) ?? null,
+            isAbsent: absentByStudent.get(r.studentId) ?? false,
             totalScore: r.totalScore,
             autoGrade: r.autoGrade,
             finalGrade: r.finalGrade,
@@ -538,6 +554,35 @@ export class GradesService {
                 : "no scores have been entered yet"
             }.`,
           );
+        }
+
+        // Completeness gate (SPEC_V0.5.md §2.2): no silent blanks that
+        // quietly count as 0. Scoped to `toPublish` CANDIDATES only — the
+        // students actually transitioning PENDING_APPROVAL -> PUBLISHED in
+        // THIS call — not the whole roster and not `alreadyPublished` (they
+        // passed this same gate when first published and can't have
+        // regressed, since score writes are blocked once PUBLISHED). This
+        // reading preserves v0.4's staggered/repeatable publish (stragglers
+        // can still publish later in a separate call) while guaranteeing no
+        // student is EVER individually finalized with a blank component —
+        // see docs/DECISIONS.md for why the spec's literal "every student in
+        // the roster" isn't read as "the whole subject must be 100% complete
+        // before anyone can publish." Same definition of "complete" that
+        // getReview()'s canPublish uses (findIncompleteEntries), so the two
+        // can never drift apart.
+        if (toPublish.length > 0) {
+          const incompleteEntries = await this.findIncompleteEntries(
+            tx,
+            { schoolId, termId: dto.termId, sessionId: term.sessionId },
+            toPublish.map((row) => ({ subjectId: dto.subjectId, studentId: row.studentId })),
+          );
+          if (incompleteEntries.length > 0) {
+            const incompleteStudentCount = new Set(incompleteEntries.map((e) => e.studentId)).size;
+            throw new ConflictException({
+              message: `Cannot publish: ${incompleteStudentCount} student(s) have at least one component that's neither scored nor marked absent.`,
+              incompleteEntries: incompleteEntries.map(({ studentId, componentId }) => ({ studentId, componentId })),
+            });
+          }
         }
 
         const now = new Date();
@@ -888,7 +933,22 @@ export class GradesService {
       bySubject.set(row.subjectId, bucket);
     }
 
-    let subjects: GradesReviewSubject[] = [...bySubject.entries()].map(([subjectId, { name, rows }]) => {
+    const bySubjectEntries = [...bySubject.entries()];
+    // One batched completeness check across EVERY subject's PENDING_APPROVAL
+    // candidates at once (SPEC_V0.4.md §5 — no per-subject query), using the
+    // exact same definition publish() enforces (findIncompleteEntries) so
+    // canPublish can never promise a publish that would then 409.
+    const pendingCandidates = bySubjectEntries.flatMap(([subjectId, { rows }]) =>
+      rows.filter((r) => r.status === ResultStatus.PENDING_APPROVAL).map((r) => ({ subjectId, studentId: r.studentId })),
+    );
+    const incompleteEntries = await this.findIncompleteEntries(
+      this.prisma,
+      { schoolId, termId: query.termId, sessionId: term.sessionId },
+      pendingCandidates,
+    );
+    const incompleteSubjectIds = new Set(incompleteEntries.map((e) => e.subjectId));
+
+    let subjects: GradesReviewSubject[] = bySubjectEntries.map(([subjectId, { name, rows }]) => {
       const draftCount = rows.filter((r) => r.status === ResultStatus.DRAFT).length;
       const pendingApprovalCount = rows.filter((r) => r.status === ResultStatus.PENDING_APPROVAL).length;
       const publishedCount = rows.filter((r) => r.status === ResultStatus.PUBLISHED).length;
@@ -902,7 +962,13 @@ export class GradesService {
         publishedCount,
         averageScore,
         averageGrade: resolveGradeBand(averageScore, boundaryInputs),
-        canPublish: pendingApprovalCount > 0 || publishedCount > 0,
+        // Mirrors publish()'s ACTUAL condition exactly, including the
+        // completeness gate: pendingApprovalCount > 0 alone is no longer
+        // sufficient — those candidates must also be complete, or publish()
+        // would 409. When pendingApprovalCount is 0, completeness is moot
+        // (nothing new is transitioning) — matches publish()'s own
+        // `if (toPublish.length > 0)` guard around the gate.
+        canPublish: (pendingApprovalCount > 0 && !incompleteSubjectIds.has(subjectId)) || publishedCount > 0,
       };
     });
 
@@ -1223,6 +1289,58 @@ export class GradesService {
     );
 
     return { publishedCount, revertedCount };
+  }
+
+  // Batched completeness check (SPEC_V0.5.md §2.2), shared by publish()'s
+  // enforcement and getReview()'s canPublish preview — one definition of
+  // "complete," not two that can silently drift apart (which is exactly how
+  // canPublish would go stale the moment publish() alone gained this gate).
+  // For each given (subjectId, studentId) publish-candidate, checks every
+  // active assessment component: "blank" = no student_scores row, or a row
+  // with rawScore IS NULL AND isAbsent = false (both indistinguishable —
+  // both silently contribute 0 today). Absent is NOT blank. One batched
+  // studentScore query across every candidate (and, for getReview(), every
+  // subject at once) — no per-student or per-subject query.
+  private async findIncompleteEntries(
+    tx: Prisma.TransactionClient | PrismaService,
+    ctx: { schoolId: string; termId: string; sessionId: string },
+    candidates: Array<{ subjectId: string; studentId: string }>,
+  ): Promise<Array<{ subjectId: string; studentId: string; componentId: string }>> {
+    if (candidates.length === 0) return [];
+
+    const activeComponents = await tx.assessmentComponent.findMany({
+      where: { schoolId: ctx.schoolId, deletedAt: null },
+      select: { id: true },
+    });
+    const activeComponentIds = activeComponents.map((c) => c.id);
+    const subjectIds = [...new Set(candidates.map((c) => c.subjectId))];
+    const studentIds = [...new Set(candidates.map((c) => c.studentId))];
+
+    const scores = await tx.studentScore.findMany({
+      where: {
+        schoolId: ctx.schoolId,
+        termId: ctx.termId,
+        sessionId: ctx.sessionId,
+        subjectId: { in: subjectIds },
+        studentId: { in: studentIds },
+        componentId: { in: activeComponentIds },
+      },
+    });
+    const decided = new Set(
+      scores
+        .filter((s) => (s.rawScore !== null && s.rawScore !== undefined) || s.isAbsent)
+        .map((s) => `${s.subjectId}:${s.studentId}:${s.componentId}`),
+    );
+
+    const incomplete: Array<{ subjectId: string; studentId: string; componentId: string }> = [];
+    for (const { subjectId, studentId } of candidates) {
+      for (const componentId of activeComponentIds) {
+        if (!decided.has(`${subjectId}:${studentId}:${componentId}`)) {
+          incomplete.push({ subjectId, studentId, componentId });
+        }
+      }
+    }
+    return incomplete;
   }
 
   private subjectLockKey(schoolId: string, subjectId: string, classArmId: string, termId: string): string {

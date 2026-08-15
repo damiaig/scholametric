@@ -31,6 +31,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
   let resultsArmId: string;
   let partialArmId: string;
   let ca1Id: string;
+  let ca2Id: string;
   let examId: string;
   const [s0, s1] = [0, 1];
   let resultsStudentIds: string[];
@@ -118,6 +119,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
 
     const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
     ca1Id = components[0].id;
+    ca2Id = components[1].id;
     examId = components[2].id;
 
     resultsArmId = await createArm("Results");
@@ -252,6 +254,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
       { studentId: p1, rawScore: 10 },
     ], partialArmId);
     await score(sunriseAdminToken, subjectId, examId, [{ studentId: p0, rawScore: 100 }], partialArmId);
+    await score(sunriseAdminToken, subjectId, ca2Id, [{ studentId: p0, rawScore: 0 }], partialArmId); // completeness gate
     // p0: PENDING_APPROVAL (exam scored). p1: DRAFT (no exam yet).
 
     const beforePublish = await request(app.getHttpServer())

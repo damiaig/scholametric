@@ -24,6 +24,7 @@ describe("GET /grades/review (e2e)", () => {
   let reviewArmId: string;
   let studentIds: string[];
   let ca1Id: string;
+  let ca2Id: string;
   let examId: string;
 
   let hillcrestId: string;
@@ -67,6 +68,7 @@ describe("GET /grades/review (e2e)", () => {
 
     const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
     ca1Id = components[0].id;
+    ca2Id = components[1].id;
     examId = components[2].id;
 
     const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
@@ -121,6 +123,9 @@ describe("GET /grades/review (e2e)", () => {
     // s0: CA1+Exam -> PENDING_APPROVAL, total 20+36=56.
     await score(subjectId, ca1Id, [{ studentId: studentIds[0], rawScore: 20 }]);
     await score(subjectId, examId, [{ studentId: studentIds[0], rawScore: 60 }]);
+    // CA2 = 0 (a real, decided score, not blank) — completeness gate
+    // (SPEC_V0.5.md §2.2); contributes nothing, so 56 is unaffected.
+    await score(subjectId, ca2Id, [{ studentId: studentIds[0], rawScore: 0 }]);
     // s1: CA1 only -> DRAFT, total 10.
     await score(subjectId, ca1Id, [{ studentId: studentIds[1], rawScore: 10 }]);
     // s2, s3: untouched entirely.
@@ -138,7 +143,7 @@ describe("GET /grades/review (e2e)", () => {
     expect(subject.publishedCount).toBe(0);
     expect(subject.averageScore).toBe(33);
     expect(subject.averageGrade).toBe("F9");
-    expect(subject.canPublish).toBe(true); // pendingApprovalCount > 0
+    expect(subject.canPublish).toBe(true); // pendingApprovalCount > 0 AND s0 is complete (CA2 = 0, decided)
   });
 
   it("canPublish: false is verified against the REAL publish() 409, not just asserted in isolation", async () => {
@@ -160,10 +165,53 @@ describe("GET /grades/review (e2e)", () => {
     expect(publishRes.status).toBe(409);
   });
 
+  it("canPublish: false when a PENDING_APPROVAL candidate has a blank component, true once resolved — both verified against the REAL publish() outcome", async () => {
+    const subjectId = await createSubject("E2E Review CanPublishBlank");
+    // CA1 + Exam scored -> PENDING_APPROVAL, but CA2 is genuinely blank
+    // (never entered, never marked absent) — exactly the gap SPEC_V0.5.md
+    // §2.2 closes: a subject can reach PENDING_APPROVAL without every
+    // component being decided.
+    await score(subjectId, ca1Id, [{ studentId: studentIds[0], rawScore: 20 }]);
+    await score(subjectId, examId, [{ studentId: studentIds[0], rawScore: 60 }]);
+
+    const blankReview = await request(app.getHttpServer())
+      .get("/api/v1/grades/review")
+      .query({ classArmId: reviewArmId, termId: sunriseTermId })
+      .set(auth(sunriseAdminToken));
+    const blankSubject = blankReview.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
+    expect(blankSubject.canPublish).toBe(false);
+
+    const blockedPublish = await request(app.getHttpServer())
+      .post("/api/v1/grades/publish")
+      .set(auth(sunriseAdminToken))
+      .send({ classArmId: reviewArmId, subjectId, termId: sunriseTermId });
+    expect(blockedPublish.status).toBe(409);
+    expect(blockedPublish.body.incompleteEntries).toEqual([{ studentId: studentIds[0], componentId: ca2Id }]);
+
+    // Resolve the blank with a real score — canPublish flips, and the
+    // SAME publish() call that just 409'd now genuinely succeeds.
+    await score(subjectId, ca2Id, [{ studentId: studentIds[0], rawScore: 5 }]);
+
+    const resolvedReview = await request(app.getHttpServer())
+      .get("/api/v1/grades/review")
+      .query({ classArmId: reviewArmId, termId: sunriseTermId })
+      .set(auth(sunriseAdminToken));
+    const resolvedSubject = resolvedReview.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
+    expect(resolvedSubject.canPublish).toBe(true);
+
+    const allowedPublish = await request(app.getHttpServer())
+      .post("/api/v1/grades/publish")
+      .set(auth(sunriseAdminToken))
+      .send({ classArmId: reviewArmId, subjectId, termId: sunriseTermId });
+    expect(allowedPublish.status).toBe(200);
+    expect(allowedPublish.body.publishedCount).toBe(1);
+  });
+
   it("status= filter: 'at least one student in this status'", async () => {
     const subjectId = await createSubject("E2E Review StatusFilter");
     await score(subjectId, ca1Id, [{ studentId: studentIds[0], rawScore: 20 }]);
     await score(subjectId, examId, [{ studentId: studentIds[0], rawScore: 60 }]);
+    await score(subjectId, ca2Id, [{ studentId: studentIds[0], rawScore: 0 }]); // completeness gate
     const publishRes = await request(app.getHttpServer())
       .post("/api/v1/grades/publish")
       .set(auth(sunriseAdminToken))

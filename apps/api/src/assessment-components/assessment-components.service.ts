@@ -93,5 +93,18 @@ export class AssessmentComponentsService {
     if (new Set(names).size !== names.length) {
       throw new BadRequestException("Component names must be unique.");
     }
+    // Gap-1 fix (SPEC_V0.5.md §3/Q7): a structure with zero approval
+    // components can never leave DRAFT (computeSubjectStatus has nothing
+    // that triggers PENDING_APPROVAL) — results would be permanently
+    // unpublishable. This is the ONLY write path for a school's assessment
+    // structure (replaceAll — confirmed no other endpoint/service mutates
+    // assessment_components), so this one check covers every create, edit,
+    // and removal. Forward-only: doesn't retroactively touch any structure
+    // already persisted (no backfill — neither seeded school is affected,
+    // and there's no mechanism yet to notify an already-broken school; see
+    // docs/DECISIONS.md).
+    if (!items.some((item) => item.requiresApproval === true)) {
+      throw new BadRequestException("At least one component must require approval, or results can never be published.");
+    }
   }
 }
