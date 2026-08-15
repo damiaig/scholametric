@@ -15,6 +15,12 @@ export interface ComponentInput {
 export interface ComponentScoreInput {
   componentId: string;
   rawScore: number | null;
+  // SPEC_V0.5.md §2.1 — a third state, distinct from both "not entered"
+  // (rawScore null, isAbsent false) and a real 0 (rawScore set). A row
+  // with rawScore set AND isAbsent true is uninterpretable and never
+  // reaches here — enforced by student_scores' CHECK constraint and (from
+  // v0.5 step 2) the score-entry DTO.
+  isAbsent: boolean;
 }
 
 export interface GradeBoundaryInput {
@@ -28,36 +34,41 @@ export interface GradeBoundaryInput {
  * component.weight), 0–100. A component with no score yet contributes 0 —
  * NOT a rescale to the entered weight's own 100% (SPEC_V0.4.md §1
  * resolution: avoids a class average that visibly drops once Exam scores
- * land, which would look like a bug).
+ * land, which would look like a bug). A component the student was marked
+ * ABSENT for is excluded the same way — SPEC_V0.5.md §2.1: honestly lower
+ * over the components actually sat, not a 0 and not rescaled.
  */
 export function computeSubjectTotal(components: ComponentInput[], scores: ComponentScoreInput[]): number {
-  const rawByComponent = new Map(scores.map((s) => [s.componentId, s.rawScore]));
+  const scoreByComponent = new Map(scores.map((s) => [s.componentId, s]));
   let total = 0;
   for (const component of components) {
-    const raw = rawByComponent.get(component.id);
-    if (raw === null || raw === undefined) continue;
-    total += (raw / component.maxScore) * component.weight;
+    const score = scoreByComponent.get(component.id);
+    if (!score || score.isAbsent || score.rawScore === null || score.rawScore === undefined) continue;
+    total += (score.rawScore / component.maxScore) * component.weight;
   }
   return Math.round(total * 100) / 100;
 }
 
 /**
- * DRAFT until an approval-required (exam-type) component has a score for
- * this student, then PENDING_APPROVAL. Never returns PUBLISHED — that only
+ * DRAFT until an approval-required (exam-type) component has been decided
+ * for this student — scored OR marked absent, both are a decided outcome,
+ * unlike not-yet-entered (SPEC_V0.5.md §2.1: absent is not "stuck in
+ * DRAFT"). Then PENDING_APPROVAL. Never returns PUBLISHED — that only
  * happens via an explicit publish action, not score-triggered recompute.
  */
 export function computeSubjectStatus(
   components: ComponentInput[],
   scores: ComponentScoreInput[],
 ): "DRAFT" | "PENDING_APPROVAL" {
-  const rawByComponent = new Map(scores.map((s) => [s.componentId, s.rawScore]));
-  const anyApprovalRequiredScored = components
+  const scoreByComponent = new Map(scores.map((s) => [s.componentId, s]));
+  const anyApprovalRequiredDecided = components
     .filter((c) => c.requiresApproval)
     .some((c) => {
-      const raw = rawByComponent.get(c.id);
-      return raw !== null && raw !== undefined;
+      const score = scoreByComponent.get(c.id);
+      if (!score) return false;
+      return score.isAbsent || (score.rawScore !== null && score.rawScore !== undefined);
     });
-  return anyApprovalRequiredScored ? "PENDING_APPROVAL" : "DRAFT";
+  return anyApprovalRequiredDecided ? "PENDING_APPROVAL" : "DRAFT";
 }
 
 /**

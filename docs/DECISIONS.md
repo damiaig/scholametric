@@ -2451,3 +2451,82 @@ Full ci green: typecheck + lint, full e2e suite (244 tests, 24 suites — 3
 new tests) on a from-scratch database, existing `grades-grid`/
 `grades-publish` suites otherwise unchanged and still green. No schema/
 migration changes.
+
+## 2026-08-15 — v0.5 step 1: absent state, term lifecycle, remarks — schema + computation + seed
+
+Schema-only-first version. `student_scores.is_absent boolean @default(false)`
+plus the existing nullable `raw_score` gives three states (not-entered,
+scored, absent), guarded by a hand-added CHECK
+(`student_scores_raw_score_or_absent_check`) so a row can never be both —
+Prisma's DSL can't express a CHECK, same discipline as every partial-unique
+index in this schema. `terms.closed_at`/`closed_by` follow the existing
+nullable-timestamp-as-status convention (`deleted_at`, `published_at`).
+New `term_unlocks` (one row per unlock/relock episode, not a flag —
+"currently unlocked" = `relocked_at IS NULL`, enforced to at most one active
+row per term+class-arm+subject by a hand-added partial unique index) and
+`term_remarks` (two remarks + who/when each, triple-unique per
+student+term+session) tables, five new named `User` relations for the
+disambiguated FKs.
+
+**`prisma migrate dev --create-only` caught a real regression before it
+shipped**: the diff engine wanted to `DROP` both hand-added trigram indexes
+(`students_first_name_trgm_idx`/`students_last_name_trgm_idx`) as an
+unrelated side effect — they use `gin_trgm_ops`, untracked by
+schema.prisma, so any unrelated schema change makes Prisma see them as
+"extra". Removed the two `DROP INDEX` statements by hand; verified via
+`psql \di` on both the pre-existing dev DB and a from-scratch one that both
+indexes survive.
+
+**Computation** (`grade-computation.ts`): `ComponentScoreInput` gained
+`isAbsent: boolean`. `computeSubjectTotal` now skips a component when
+`isAbsent` is true, same zero-contribution path as a null `rawScore` —
+excluded, not a 0, not rescaled (hand-verified: CA1 18/20 w20 + CA2 ABSENT +
+Exam 55/100 w60 = 51, not a 63.75 rescale). `computeSubjectStatus` now
+treats "scored OR marked absent" as a decided outcome for the
+approval-required check — an absent-for-exam student reaches
+`PENDING_APPROVAL`, not stuck in `DRAFT` (extended now per the approved
+plan, not deferred to step 2). Not-entered and absent give the identical
+total but a different status — the regression case a future edit could
+silently break. `grades.service.ts`'s `recomputeStudents` and `seed.ts`'s
+own total/status calls both got the mechanical `isAbsent` field threaded
+through to keep compiling — zero behavior change, `is_absent` defaults
+`false` everywhere pre-existing.
+
+**No backend unit-test harness existed before this step** — only
+`test/jest-e2e.json`. Added `test/jest-unit.json` (colocated `src/**/*.spec.ts`,
+already-installed `jest`/`ts-jest`, no new dependency) + a `test:unit`
+script at both the api and root level, wired into the root `ci` script
+(`pnpm run ci` → typecheck && lint && test && test:unit) so CI runs it —
+a proof that doesn't run in CI rots. 7 new tests in
+`grade-computation.spec.ts`: the hand-verified example, absent-for-every-
+component (total 0), a mixed case, the not-entered-vs-absent regression,
+and three `computeSubjectStatus` cases.
+
+**Seed**: a fresh Second Term slice for Sunrise's ~102-student JSS 2 A
+Mathematics — deliberately not First Term, so the already-reviewed v0.4
+baseline stays untouched. `seedSubjectGrades` gained an optional
+`absentStudentComponents` param (indices into that call's own
+studentId-ordered enrollment list) to mark specific students absent on
+specific components instead of giving them a deterministic score: 3
+students, 3 different components, one of them the approval-required Exam.
+Term closed by the principal (fixed timestamp, not `new Date()` — stable
+across reseeds like `deterministicScore`). One fully-resolved
+unlock → edit → relock round trip: a principal unlock reason, a direct
+correction to one student's CA 1 score (no HTTP surface yet, same
+seed-writes-state-directly pattern as the rest of this file), its
+`term_subject_result` total recomputed to match, then relocked — the
+`term_unlocks` row has both `unlocked_at` and `relocked_at` set, so it
+never touches the active-unlock partial-unique index (which only guards
+`relocked_at IS NULL` rows); reseed idempotency for that row instead uses
+an explicit existence check, since there's no natural upsert key for a
+resolved unlock.
+
+**Proof**: migration applied clean via `--create-only` review, both against
+the already-non-empty dev DB and a genuine `docker compose down -v` →
+rebuild → `migrate deploy` from-scratch DB; seed re-run confirmed
+idempotent on both (same unlock count, same absent count, no errors). Full
+v0.4 e2e suite (244 tests, 24 suites) still green on the freshly seeded DB
+— the new Second Term data didn't disturb any existing fixture. New unit
+suite (7 tests) green. `pnpm run ci` green end-to-end (typecheck, lint,
+244 e2e, 126 web Vitest, 7 unit) at both the api and root level. No API or
+UI changes — schema/computation/seed only, per this step's explicit scope.

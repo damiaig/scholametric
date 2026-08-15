@@ -1080,6 +1080,7 @@ export class GradesService {
       const scoreInputs: ComponentScoreInput[] = scores.map((s) => ({
         componentId: s.componentId,
         rawScore: s.rawScore === null ? null : Number(s.rawScore),
+        isAbsent: s.isAbsent,
       }));
       const totalScore = computeSubjectTotal(componentInputs, scoreInputs);
       const status = computeSubjectStatus(componentInputs, scoreInputs);

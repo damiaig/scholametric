@@ -113,6 +113,8 @@ model School {
   studentScores             StudentScore[]
   termSubjectResults        TermSubjectResult[]
   termOverallResults        TermOverallResult[]
+  termUnlocks               TermUnlock[]
+  termRemarks               TermRemark[]
 
   @@map("schools")
 }
@@ -141,6 +143,11 @@ model User {
   classTeacherAssignments   ClassTeacherAssignment[]
   subjectTeacherAssignments SubjectTeacherAssignment[]
   scoresEntered             StudentScore[]             @relation("StudentScoreEnteredBy")
+  termsClosed               Term[]                     @relation("TermClosedBy")
+  termUnlocksUnlocked       TermUnlock[]               @relation("TermUnlockUnlockedBy")
+  termUnlocksRelocked       TermUnlock[]               @relation("TermUnlockRelockedBy")
+  termRemarksAsTeacher      TermRemark[]               @relation("TermRemarkTeacherBy")
+  termRemarksAsPrincipal    TermRemark[]               @relation("TermRemarkPrincipalBy")
 
   @@unique([schoolId, email])
   @@index([schoolId])
@@ -185,6 +192,7 @@ model AcademicSession {
   studentScores             StudentScore[]
   termSubjectResults        TermSubjectResult[]
   termOverallResults        TermOverallResult[]
+  termRemarks               TermRemark[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -194,21 +202,31 @@ model AcademicSession {
 // Exactly one is_current = true per session is enforced by a partial
 // unique index added by hand in the initial migration, same as above.
 model Term {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  schoolId  String   @map("school_id") @db.Uuid
-  sessionId String   @map("session_id") @db.Uuid
+  id        String    @id @default(uuid(7)) @db.Uuid
+  schoolId  String    @map("school_id") @db.Uuid
+  sessionId String    @map("session_id") @db.Uuid
   name      TermName
-  startsOn  DateTime @map("starts_on") @db.Date
-  endsOn    DateTime @map("ends_on") @db.Date
-  isCurrent Boolean  @default(false) @map("is_current")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  startsOn  DateTime  @map("starts_on") @db.Date
+  endsOn    DateTime  @map("ends_on") @db.Date
+  isCurrent Boolean   @default(false) @map("is_current")
+  // SPEC_V0.5.md §2.3 — null = open (v0.4's implicit state, unchanged for
+  // every existing term). Set by a deliberate principal/proprietor close
+  // action (v0.5 step 3); there is no "reopen the whole term" concept —
+  // editing a closed term happens per class-arm+subject via term_unlocks
+  // below, not by flipping this back to null.
+  closedAt  DateTime? @map("closed_at")
+  closedBy  String?   @map("closed_by") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
 
   school             School              @relation(fields: [schoolId], references: [id])
   session            AcademicSession     @relation(fields: [sessionId], references: [id])
+  closedByUser       User?               @relation("TermClosedBy", fields: [closedBy], references: [id])
   studentScores      StudentScore[]
   termSubjectResults TermSubjectResult[]
   termOverallResults TermOverallResult[]
+  termUnlocks        TermUnlock[]
+  termRemarks        TermRemark[]
 
   @@unique([sessionId, name])
   @@index([schoolId])
@@ -248,6 +266,8 @@ model ClassArm {
   studentScores             StudentScore[]
   termSubjectResults        TermSubjectResult[]
   termOverallResults        TermOverallResult[]
+  termUnlocks               TermUnlock[]
+  termRemarks               TermRemark[]
 
   @@unique([classLevelId, name])
   @@index([schoolId])
@@ -286,6 +306,7 @@ model Student {
   studentScores      StudentScore[]
   termSubjectResults TermSubjectResult[]
   termOverallResults TermOverallResult[]
+  termRemarks        TermRemark[]
 
   @@unique([schoolId, admissionNumber])
   @@index([schoolId])
@@ -367,6 +388,7 @@ model Subject {
   teacherAssignments SubjectTeacherAssignment[]
   studentScores      StudentScore[]
   termSubjectResults TermSubjectResult[]
+  termUnlocks        TermUnlock[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -557,6 +579,16 @@ model StudentScore {
   // student_enrollments on every read.
   classArmId  String    @map("class_arm_id") @db.Uuid
   rawScore    Decimal?  @map("raw_score") @db.Decimal(5, 2)
+  // SPEC_V0.5.md §2.1 — a third, explicit state distinct from both
+  // not-entered (no row / raw_score null, isAbsent false) and a real 0
+  // (raw_score set). Excluded from the weighted subject total (contributes
+  // nothing, not a 0, not rescaled — grade-computation.ts), but counts as a
+  // DECIDED outcome for computeSubjectStatus, unlike not-entered. A row
+  // with both raw_score set AND is_absent true is uninterpretable — see
+  // this table's CHECK constraint (hand-added in the migration SQL,
+  // Prisma's DSL can't express it) and the DTO validation step 2 adds on
+  // top of it.
+  isAbsent    Boolean   @default(false) @map("is_absent")
   enteredBy   String?   @map("entered_by") @db.Uuid
   enteredAt   DateTime? @map("entered_at")
   createdAt   DateTime  @default(now()) @map("created_at")
@@ -649,4 +681,74 @@ model TermOverallResult {
   @@unique([studentId, termId, sessionId])
   @@index([schoolId, classArmId, termId])
   @@map("term_overall_results")
+}
+
+// SPEC_V0.5.md §2.3/Q3 — a principal-granted clearance to edit a CLOSED
+// term's scores, scoped to one class arm + subject (not the whole term —
+// minimizes blast radius). One row per unlock EPISODE, not a flag: created
+// on unlock (relocked_at null = currently active), closed out on re-lock
+// (relocked_at set). "Currently unlocked" is `WHERE relocked_at IS NULL`;
+// at most one such row per (term, class arm, subject) is enforced by a
+// hand-added partial unique index in the migration SQL (Prisma's DSL can't
+// express partial indexes — same pattern as the is_current partial
+// uniques elsewhere in this file). `reason` is required, not optional — a
+// clearance action needs a stated reason for accountability.
+model TermUnlock {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  schoolId   String    @map("school_id") @db.Uuid
+  termId     String    @map("term_id") @db.Uuid
+  classArmId String    @map("class_arm_id") @db.Uuid
+  subjectId  String    @map("subject_id") @db.Uuid
+  reason     String
+  unlockedBy String    @map("unlocked_by") @db.Uuid
+  unlockedAt DateTime  @default(now()) @map("unlocked_at")
+  relockedBy String?   @map("relocked_by") @db.Uuid
+  relockedAt DateTime? @map("relocked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  school         School   @relation(fields: [schoolId], references: [id])
+  term           Term     @relation(fields: [termId], references: [id])
+  classArm       ClassArm @relation(fields: [classArmId], references: [id])
+  subject        Subject  @relation(fields: [subjectId], references: [id])
+  unlockedByUser User     @relation("TermUnlockUnlockedBy", fields: [unlockedBy], references: [id])
+  relockedByUser User?    @relation("TermUnlockRelockedBy", fields: [relockedBy], references: [id])
+
+  @@index([schoolId, termId, classArmId, subjectId])
+  @@map("term_unlocks")
+}
+
+// SPEC_V0.5.md §2.4/Q6 — two free-text remarks per student+term: the class
+// teacher's remark and the principal's remark, each independently
+// attributed (who wrote it, when). classArmId is denormalized, same
+// reasoning as term_overall_results — a report-card run or a remarks-entry
+// screen needs "every remark for this whole class arm's roster," not a
+// per-student lookup re-deriving the arm from enrollment each time.
+model TermRemark {
+  id                String    @id @default(uuid(7)) @db.Uuid
+  schoolId          String    @map("school_id") @db.Uuid
+  studentId         String    @map("student_id") @db.Uuid
+  sessionId         String    @map("session_id") @db.Uuid
+  termId            String    @map("term_id") @db.Uuid
+  classArmId        String    @map("class_arm_id") @db.Uuid
+  teacherRemark     String?   @map("teacher_remark")
+  teacherRemarkBy   String?   @map("teacher_remark_by") @db.Uuid
+  teacherRemarkAt   DateTime? @map("teacher_remark_at")
+  principalRemark   String?   @map("principal_remark")
+  principalRemarkBy String?   @map("principal_remark_by") @db.Uuid
+  principalRemarkAt DateTime? @map("principal_remark_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  school                School          @relation(fields: [schoolId], references: [id])
+  student               Student         @relation(fields: [studentId], references: [id])
+  session               AcademicSession @relation(fields: [sessionId], references: [id])
+  term                  Term            @relation(fields: [termId], references: [id])
+  classArm              ClassArm        @relation(fields: [classArmId], references: [id])
+  teacherRemarkByUser   User?           @relation("TermRemarkTeacherBy", fields: [teacherRemarkBy], references: [id])
+  principalRemarkByUser User?           @relation("TermRemarkPrincipalBy", fields: [principalRemarkBy], references: [id])
+
+  @@unique([studentId, termId, sessionId])
+  @@index([schoolId, classArmId, termId])
+  @@map("term_remarks")
 }

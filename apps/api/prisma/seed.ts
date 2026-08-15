@@ -588,20 +588,39 @@ async function seedSubjectGrades(params: {
   boundaries: GradeBoundaryInput[];
   enteredByUserId: string;
   publish: boolean;
+  // SPEC_V0.5.md §2.1 — indices are positions in this call's own
+  // studentId-ordered enrollment list (below), not SUNRISE_STUDENTS array
+  // positions. Marks that student ABSENT for that component instead of
+  // giving them a deterministic score.
+  absentStudentComponents?: Array<{ studentIndex: number; componentId: string }>;
 }): Promise<string[]> {
-  const { schoolId, sessionId, termId, classArmId, subjectId, subjectIndex, components, boundaries, enteredByUserId, publish } = params;
+  const {
+    schoolId,
+    sessionId,
+    termId,
+    classArmId,
+    subjectId,
+    subjectIndex,
+    components,
+    boundaries,
+    enteredByUserId,
+    publish,
+    absentStudentComponents = [],
+  } = params;
 
   const enrollments = await prisma.studentEnrollment.findMany({
     where: { schoolId, classArmId, sessionId },
     orderBy: { studentId: "asc" },
   });
   const studentIds = enrollments.map((e) => e.studentId);
+  const absentSet = new Set(absentStudentComponents.map((a) => `${a.studentIndex}:${a.componentId}`));
 
   for (let i = 0; i < studentIds.length; i++) {
     const studentId = studentIds[i];
     for (let c = 0; c < components.length; c++) {
       const component = components[c];
-      const rawScore = deterministicScore(i, c, subjectIndex, component.maxScore);
+      const isAbsent = absentSet.has(`${i}:${component.id}`);
+      const rawScore = isAbsent ? null : deterministicScore(i, c, subjectIndex, component.maxScore);
       await prisma.studentScore.upsert({
         where: {
           studentId_subjectId_componentId_termId_sessionId: {
@@ -612,7 +631,7 @@ async function seedSubjectGrades(params: {
             sessionId,
           },
         },
-        update: { rawScore, enteredBy: enteredByUserId, enteredAt: new Date() },
+        update: { rawScore, isAbsent, enteredBy: enteredByUserId, enteredAt: new Date() },
         create: {
           schoolId,
           studentId,
@@ -622,6 +641,7 @@ async function seedSubjectGrades(params: {
           termId,
           classArmId,
           rawScore,
+          isAbsent,
           enteredBy: enteredByUserId,
           enteredAt: new Date(),
         },
@@ -636,6 +656,7 @@ async function seedSubjectGrades(params: {
     const scoreInputs = scores.map((s) => ({
       componentId: s.componentId,
       rawScore: s.rawScore === null ? null : Number(s.rawScore),
+      isAbsent: s.isAbsent,
     }));
     totals.set(studentId, computeSubjectTotal(components, scoreInputs));
     draftOrPending.set(studentId, computeSubjectStatus(components, scoreInputs));
@@ -906,6 +927,125 @@ async function main() {
       boundaries: sunriseBoundaries,
     });
   }
+
+  // SPEC_V0.5.md §2.1/§2.3 — a fresh Second Term slice, deliberately not
+  // touching First Term's already-reviewed v0.4 baseline (docs/DECISIONS.md).
+  // JSS 2 A Mathematics (the ~100-student bulk arm, term-scoped so First
+  // Term's data is untouched): 3 students marked absent across 3 different
+  // components incl. one absent-exam, then the term closed by the
+  // principal, then one fully-resolved unlock -> edit -> relock round trip.
+  const sunriseSecondTermId = sunriseAcademics.termIds[TermName.SECOND];
+  const jss2AArmId = sunriseAcademics.arms["JSS 2-A"];
+  const [ca1Component, ca2Component, examComponent] = sunriseComponents;
+
+  const secondTermMathStudentIds = await seedSubjectGrades({
+    schoolId: sunrise.id,
+    sessionId: sunriseAcademics.sessionId,
+    termId: sunriseSecondTermId,
+    classArmId: jss2AArmId,
+    subjectId: sunriseSubjectIds["Mathematics"],
+    subjectIndex: 0,
+    components: sunriseComponents,
+    boundaries: sunriseBoundaries,
+    enteredByUserId: sunriseTeacherUserIds[0],
+    publish: true,
+    absentStudentComponents: [
+      { studentIndex: 3, componentId: ca1Component.id },
+      { studentIndex: 47, componentId: ca2Component.id },
+      { studentIndex: 91, componentId: examComponent.id },
+    ],
+  });
+
+  // Principal closes Second Term (SPEC_V0.5.md §2.3) — read-only from here;
+  // editing requires the unlock flow below. Fixed timestamp, not `new
+  // Date()` — stable across reseeds, same reproducibility principle as
+  // deterministicScore above.
+  await prisma.term.update({
+    where: { id: sunriseSecondTermId },
+    data: { closedAt: new Date("2027-01-18T08:00:00Z"), closedBy: sunriseAdmin.id },
+  });
+
+  // A fully-resolved unlock -> edit -> relock round trip for JSS 2 A
+  // Mathematics, demoable from seed for step 3's term-lifecycle UI. The
+  // "edit" corrects one student's CA 1 score directly (no HTTP surface yet
+  // — same seed-writes-state-directly pattern as seedSubjectGrades /
+  // seedOverallResults) and its term_subject_result total is recomputed to
+  // match, mirroring "an edit recomputes total/grade/position and
+  // re-publishes the corrected number" (SPEC_V0.5.md §2.3).
+  const unlockedAt = new Date("2027-01-20T09:00:00Z");
+  const relockedAt = new Date("2027-01-20T09:20:00Z");
+  const correctedStudentId = secondTermMathStudentIds[10];
+  const correctedScoreWhere = {
+    studentId_subjectId_componentId_termId_sessionId: {
+      studentId: correctedStudentId,
+      subjectId: sunriseSubjectIds["Mathematics"],
+      componentId: ca1Component.id,
+      termId: sunriseSecondTermId,
+      sessionId: sunriseAcademics.sessionId,
+    },
+  };
+  await prisma.studentScore.update({
+    where: correctedScoreWhere,
+    data: { rawScore: 19, isAbsent: false, enteredBy: sunriseTeacherUserIds[0], enteredAt: unlockedAt },
+  });
+  const correctedScores = await prisma.studentScore.findMany({
+    where: {
+      studentId: correctedStudentId,
+      subjectId: sunriseSubjectIds["Mathematics"],
+      termId: sunriseSecondTermId,
+      sessionId: sunriseAcademics.sessionId,
+    },
+  });
+  const correctedScoreInputs = correctedScores.map((s) => ({
+    componentId: s.componentId,
+    rawScore: s.rawScore === null ? null : Number(s.rawScore),
+    isAbsent: s.isAbsent,
+  }));
+  const correctedTotal = computeSubjectTotal(sunriseComponents, correctedScoreInputs);
+  const correctedGrade = resolveGradeBand(correctedTotal, sunriseBoundaries);
+  await prisma.termSubjectResult.update({
+    where: {
+      studentId_subjectId_termId_sessionId: {
+        studentId: correctedStudentId,
+        subjectId: sunriseSubjectIds["Mathematics"],
+        termId: sunriseSecondTermId,
+        sessionId: sunriseAcademics.sessionId,
+      },
+    },
+    data: { totalScore: correctedTotal, autoGrade: correctedGrade, finalGrade: correctedGrade },
+  });
+
+  // The active-unlock partial-unique index (term_unlocks_active_unique)
+  // only guards ACTIVE (relocked_at IS NULL) rows — this one is already
+  // resolved, so a plain upsert-by-uniqueness isn't available; check first
+  // so reseeding doesn't pile up duplicate resolved rows.
+  const existingUnlock = await prisma.termUnlock.findFirst({
+    where: { termId: sunriseSecondTermId, classArmId: jss2AArmId, subjectId: sunriseSubjectIds["Mathematics"] },
+  });
+  if (!existingUnlock) {
+    await prisma.termUnlock.create({
+      data: {
+        schoolId: sunrise.id,
+        termId: sunriseSecondTermId,
+        classArmId: jss2AArmId,
+        subjectId: sunriseSubjectIds["Mathematics"],
+        reason: "Parent flagged a CA 1 transcription error at the term review meeting",
+        unlockedBy: sunriseAdmin.id,
+        unlockedAt,
+        relockedBy: sunriseAdmin.id,
+        relockedAt,
+      },
+    });
+  }
+
+  await seedOverallResults({
+    schoolId: sunrise.id,
+    sessionId: sunriseAcademics.sessionId,
+    termId: sunriseSecondTermId,
+    classArmId: jss2AArmId,
+    studentIds: secondTermMathStudentIds,
+    boundaries: sunriseBoundaries,
+  });
 
   // SPEC_V0.3.md §3: a teacher forced through change-password on first
   // login — seeded separately from SUNRISE_TEACHERS (not added to that

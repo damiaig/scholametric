@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\"",
     "test": "jest --config ./test/jest-e2e.json --runInBand",
+    "test:unit": "jest --config ./test/jest-unit.json",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "prisma db seed"
   },

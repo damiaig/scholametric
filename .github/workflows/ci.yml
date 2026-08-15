@@ -73,5 +73,5 @@ jobs:
       - name: Seed database
         run: pnpm seed
 
-      - name: Typecheck, lint, test
+      - name: Typecheck, lint, test, unit test
         run: pnpm run ci
