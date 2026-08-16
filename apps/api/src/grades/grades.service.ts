@@ -26,6 +26,7 @@ import { OverrideGradeDto } from "./dto/override-grade.dto";
 import { GetGradesReviewQueryDto } from "./dto/get-grades-review-query.dto";
 import { GetClassArmResultsQueryDto } from "./dto/get-class-arm-results-query.dto";
 import { GetStudentResultsQueryDto } from "./dto/get-student-results-query.dto";
+import { WriteRemarkDto } from "./dto/write-remark.dto";
 
 export interface GradesGridRow {
   studentId: string;
@@ -233,6 +234,86 @@ export interface StudentResultsResponse {
 interface TeacherAccess {
   isClassTeacher: boolean;
   subjectIds: string[];
+}
+
+// SPEC_V0.5.md §2.4, v0.5 step 4. A component with NO student_scores row at
+// all is `rawScore: null, isAbsent: false` — blank/not-entered, distinct
+// from an explicit `isAbsent: true` ("Abs" on the printed card). Only the
+// CURRENTLY ACTIVE assessment structure is represented (deletedAt: null) —
+// matches exactly what produced `totalScore` below; a soft-deleted
+// component's historical score is already excluded from every recompute.
+export interface ReportCardComponent {
+  componentId: string;
+  componentName: string;
+  weight: number;
+  maxScore: number;
+  requiresApproval: boolean;
+  rawScore: number | null;
+  isAbsent: boolean;
+}
+
+export interface ReportCardSubject {
+  subjectId: string;
+  subjectName: string;
+  components: ReportCardComponent[];
+  totalScore: number;
+  autoGrade: string | null;
+  overrideGrade: string | null;
+  finalGrade: string | null;
+  subjectPosition: number | null;
+  status: ResultStatus;
+}
+
+export interface ReportCardOverall {
+  averageScore: number;
+  averageGrade: string | null;
+  overallPosition: number | null;
+  status: ResultStatus;
+  subjectsCount: number;
+}
+
+interface RemarkAuthor {
+  firstName: string;
+  lastName: string;
+}
+
+export interface ReportCardRemarks {
+  teacherRemark: string | null;
+  teacherRemarkBy: RemarkAuthor | null;
+  teacherRemarkAt: Date | null;
+  principalRemark: string | null;
+  principalRemarkBy: RemarkAuthor | null;
+  principalRemarkAt: Date | null;
+}
+
+// A self-contained printable document (SPEC_V0.5.md §2.4) — student
+// identity and remark-author names are embedded directly, unlike
+// StudentResultsResponse above, whose caller already has student context.
+export interface ReportCardResponse {
+  studentId: string;
+  firstName: string;
+  lastName: string;
+  admissionNumber: string;
+  classArmId: string;
+  termId: string;
+  sessionId: string;
+  subjects: ReportCardSubject[];
+  overall: ReportCardOverall | null;
+  remarks: ReportCardRemarks;
+}
+
+export interface RemarkResponse {
+  id: string;
+  studentId: string;
+  termId: string;
+  sessionId: string;
+  classArmId: string;
+  teacherRemark: string | null;
+  teacherRemarkBy: string | null;
+  teacherRemarkAt: Date | null;
+  principalRemark: string | null;
+  principalRemarkBy: string | null;
+  principalRemarkAt: Date | null;
 }
 
 @Injectable()
@@ -1141,6 +1222,201 @@ export class GradesService {
           }
         : null,
     };
+  }
+
+  // Printable per-student term report card (SPEC_V0.5.md §2.4, v0.5 step 4)
+  // — a NEW, dedicated response shape, not an extension of
+  // StudentResultsResponse above: the two documents need genuinely
+  // different fields (this one needs the full per-component breakdown and
+  // has no use for class average; the Results tab is the reverse), and a
+  // printable document's needs should be free to evolve without leaking
+  // into the admin quick-view's contract. Reuses the exact same tenant/
+  // enrollment/TEACHER-access resolution as getStudentResults() above —
+  // same read rule (any relationship to the class arm), not the stricter
+  // class-teacher-only rule the remark WRITE endpoints below use.
+  //
+  // Six batched queries total, independent of subject/component count — no
+  // query inside a subject-iteration loop (SPEC_V0.4.md §5 discipline):
+  // student, term, enrollment, term_subject_results (+subject name),
+  // assessment_components (school-wide, shared across every subject),
+  // student_scores (one query for every component-score this term, grouped
+  // by subjectId in memory) — plus term_overall_result and term_remark.
+  async getReportCard(studentId: string, query: GetStudentResultsQueryDto, user: AuthenticatedUser): Promise<ReportCardResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const [student, term] = await Promise.all([
+      this.prisma.student.findFirst({ where: forSchool(schoolId, { id: studentId, deletedAt: null }) }),
+      this.prisma.term.findFirst({ where: forSchool(schoolId, { id: query.termId }) }),
+    ]);
+    if (!student) throw new NotFoundException("Student not found.");
+    if (!term) throw new NotFoundException("Term not found.");
+
+    const enrollment = await this.prisma.studentEnrollment.findFirst({
+      where: forSchool(schoolId, { studentId, sessionId: query.sessionId }),
+    });
+    if (!enrollment) throw new NotFoundException("Student has no enrollment for this session.");
+
+    if (user.role === UserRole.TEACHER) {
+      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, query.sessionId);
+      if (!access.isClassTeacher && access.subjectIds.length === 0) {
+        throw new ForbiddenException("You do not teach this student.");
+      }
+    }
+
+    const [subjectResults, components, scores, overall, remark] = await Promise.all([
+      this.prisma.termSubjectResult.findMany({
+        where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
+        include: { subject: { select: { id: true, name: true } } },
+      }),
+      this.prisma.assessmentComponent.findMany({ where: { schoolId, deletedAt: null }, orderBy: { sortOrder: "asc" } }),
+      this.prisma.studentScore.findMany({ where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId } }),
+      this.prisma.termOverallResult.findFirst({ where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId } }),
+      this.prisma.termRemark.findFirst({
+        where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
+        include: {
+          teacherRemarkByUser: { select: { firstName: true, lastName: true } },
+          principalRemarkByUser: { select: { firstName: true, lastName: true } },
+        },
+      }),
+    ]);
+
+    const scoresBySubject = new Map<string, typeof scores>();
+    for (const score of scores) {
+      const bucket = scoresBySubject.get(score.subjectId) ?? [];
+      bucket.push(score);
+      scoresBySubject.set(score.subjectId, bucket);
+    }
+
+    const subjects: ReportCardSubject[] = subjectResults
+      .map((r) => {
+        const scoreByComponent = new Map(scoresBySubject.get(r.subjectId)?.map((s) => [s.componentId, s]) ?? []);
+        return {
+          subjectId: r.subjectId,
+          subjectName: r.subject.name,
+          components: components.map((c) => {
+            const score = scoreByComponent.get(c.id);
+            return {
+              componentId: c.id,
+              componentName: c.name,
+              weight: c.weight,
+              maxScore: c.maxScore,
+              requiresApproval: c.requiresApproval,
+              rawScore: score?.rawScore === null || score?.rawScore === undefined ? null : Number(score.rawScore),
+              isAbsent: score?.isAbsent ?? false,
+            };
+          }),
+          totalScore: Number(r.totalScore),
+          autoGrade: r.autoGrade,
+          overrideGrade: r.overrideGrade,
+          finalGrade: r.finalGrade,
+          subjectPosition: r.subjectPosition,
+          status: r.status,
+        };
+      })
+      .sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+
+    return {
+      studentId,
+      firstName: student.firstName,
+      lastName: student.lastName,
+      admissionNumber: student.admissionNumber,
+      classArmId: enrollment.classArmId,
+      termId: query.termId,
+      sessionId: query.sessionId,
+      subjects,
+      overall: overall
+        ? {
+            averageScore: Number(overall.averageScore),
+            averageGrade: overall.averageGrade,
+            overallPosition: overall.overallPosition,
+            status: overall.status,
+            subjectsCount: overall.subjectsCount,
+          }
+        : null,
+      remarks: {
+        teacherRemark: remark?.teacherRemark ?? null,
+        teacherRemarkBy: remark?.teacherRemarkByUser
+          ? { firstName: remark.teacherRemarkByUser.firstName, lastName: remark.teacherRemarkByUser.lastName }
+          : null,
+        teacherRemarkAt: remark?.teacherRemarkAt ?? null,
+        principalRemark: remark?.principalRemark ?? null,
+        principalRemarkBy: remark?.principalRemarkByUser
+          ? { firstName: remark.principalRemarkByUser.firstName, lastName: remark.principalRemarkByUser.lastName }
+          : null,
+        principalRemarkAt: remark?.principalRemarkAt ?? null,
+      },
+    };
+  }
+
+  // Both remark endpoints (SPEC_V0.5.md §2.4/Q6) share this resolution —
+  // student/term/enrollment 404s always before the class-teacher check
+  // (same ordering as getStudentResults/getReportCard above). Returns the
+  // enrollment so callers can read classArmId for the term_remarks row
+  // without a second query.
+  private async resolveRemarkTarget(studentId: string, dto: WriteRemarkDto) {
+    const schoolId = this.tenantContext.schoolId;
+    const [student, term] = await Promise.all([
+      this.prisma.student.findFirst({ where: forSchool(schoolId, { id: studentId, deletedAt: null }) }),
+      this.prisma.term.findFirst({ where: forSchool(schoolId, { id: dto.termId }) }),
+    ]);
+    if (!student) throw new NotFoundException("Student not found.");
+    if (!term) throw new NotFoundException("Term not found.");
+
+    const enrollment = await this.prisma.studentEnrollment.findFirst({
+      where: forSchool(schoolId, { studentId, sessionId: dto.sessionId }),
+    });
+    if (!enrollment) throw new NotFoundException("Student has no enrollment for this session.");
+
+    return { schoolId, enrollment };
+  }
+
+  // Class-teacher-only (SPEC_V0.5.md §2.4/Q6: "the class teacher writes the
+  // teacher remark") — deliberately STRICTER than getReportCard()'s read
+  // rule above, which allows any subject-teacher relationship. A
+  // subject-only teacher can view the card but not write this remark.
+  // SCHOOL_ADMIN/PROPRIETOR: no check, same "any tenant-scoped combo"
+  // pattern used throughout this service. Not gated by the step-3 closed-
+  // term/unlock mechanism — that gate is score-data-scoped; writing an
+  // end-of-term remark is part of closing out the term, not a score edit
+  // (docs/DECISIONS.md).
+  async writeTeacherRemark(studentId: string, dto: WriteRemarkDto, user: AuthenticatedUser): Promise<RemarkResponse> {
+    const { schoolId, enrollment } = await this.resolveRemarkTarget(studentId, dto);
+
+    if (user.role === UserRole.TEACHER) {
+      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, dto.sessionId);
+      if (!access.isClassTeacher) {
+        throw new ForbiddenException("Only this class's class teacher may write the teacher remark.");
+      }
+    }
+
+    const stamps =
+      dto.remark === null
+        ? { teacherRemark: null, teacherRemarkBy: null, teacherRemarkAt: null }
+        : { teacherRemark: dto.remark, teacherRemarkBy: user.userId, teacherRemarkAt: new Date() };
+
+    return this.prisma.termRemark.upsert({
+      where: { studentId_termId_sessionId: { studentId, termId: dto.termId, sessionId: dto.sessionId } },
+      update: stamps,
+      create: { schoolId, studentId, termId: dto.termId, sessionId: dto.sessionId, classArmId: enrollment.classArmId, ...stamps },
+    });
+  }
+
+  // SCHOOL_ADMIN/PROPRIETOR only — enforced categorically at the
+  // controller's @Roles(), TEACHER never reaches this method at all (same
+  // "no TEACHER path" pattern as getReview()). Not gated by closed-term/
+  // unlock, same reasoning as writeTeacherRemark() above.
+  async writePrincipalRemark(studentId: string, dto: WriteRemarkDto, user: AuthenticatedUser): Promise<RemarkResponse> {
+    const { schoolId, enrollment } = await this.resolveRemarkTarget(studentId, dto);
+
+    const stamps =
+      dto.remark === null
+        ? { principalRemark: null, principalRemarkBy: null, principalRemarkAt: null }
+        : { principalRemark: dto.remark, principalRemarkBy: user.userId, principalRemarkAt: new Date() };
+
+    return this.prisma.termRemark.upsert({
+      where: { studentId_termId_sessionId: { studentId, termId: dto.termId, sessionId: dto.sessionId } },
+      update: stamps,
+      create: { schoolId, studentId, termId: dto.termId, sessionId: dto.sessionId, classArmId: enrollment.classArmId, ...stamps },
+    });
   }
 
   // Re-derives term_subject_results for each given student from ALL of

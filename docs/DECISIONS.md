@@ -2705,3 +2705,76 @@ its own session+term+class-arm+subject+roster bundle (`createScratchBundle`)
 Term (which every other e2e file depends on staying open) was never an
 option. Full suite green on a freshly rebuilt, freshly seeded stack;
 typecheck + lint clean. No migration — schema untouched, as scoped.
+
+## 2026-08-16 — v0.5 step 4: report-card read endpoint + remarks API
+
+**New endpoint, not an extension of the Results tab**: `GET
+/students/:id/report-card` is a genuinely separate response shape from
+`StudentResultsResponse`, not an additive field bolted onto it. The two
+documents need different fields — the report card needs the full
+per-component (`ReportCardComponent[]`) breakdown for every subject and
+has no use for class average; the Results tab is the reverse (class
+average, no components). Coupling them would force every future
+report-card-only field (print/header metadata, step 6) to leak into the
+admin quick-view's contract, or vice versa. Reuses the exact same
+tenant/enrollment/TEACHER-access resolution as `getStudentResults()`
+(same loose read rule: any relationship to the class arm) and the same
+six-batched-query discipline — new shape, not new computation.
+
+**Blank vs Abs, made legible in the payload**: a component with no
+`student_scores` row at all is `rawScore: null, isAbsent: false`; an
+explicit absence is `rawScore: null, isAbsent: true`. Only the currently
+active assessment structure (`deletedAt: null`) is represented — matches
+exactly what produced the `totalScore` shown alongside it.
+
+**Remarks — the write split is enforced two different ways, deliberately**:
+- Teacher remark (`PUT .../remarks/teacher`): TEACHER role reaches the
+  handler, but the service additionally requires
+  `resolveTeacherAccess(...).isClassTeacher === true` — a runtime check,
+  because "is this teacher the class teacher" is data-dependent, not a
+  fixed role. This is STRICTER than the report card's own read rule (any
+  subject-teacher relationship suffices to read; only the class teacher
+  may write this remark) — a subject-only teacher can view a student's
+  card but gets 403 writing the class remark. SCHOOL_ADMIN/PROPRIETOR:
+  no check, same "any tenant-scoped combo" pattern used throughout
+  GradesService.
+- Principal remark (`PUT .../remarks/principal`): SCHOOL_ADMIN/PROPRIETOR
+  only, enforced at the ROUTE via `@Roles()` — TEACHER never reaches the
+  handler at all, categorically, regardless of whether they happen to be
+  the real class teacher (same "no TEACHER path" shape as `GET
+  /grades/review`). A route-level gate was chosen over a runtime branch
+  here because the rule is a fixed role split, not data-dependent — no
+  reason to pay a service-layer check for something `RolesGuard` already
+  settles.
+
+**Remarks are NOT gated by the step-3 closed-term/unlock mechanism.**
+That gate is scored-data-scoped (`saveGrid`'s write path specifically);
+writing an end-of-term remark is part of the act of closing out a term,
+not a score edit, and gating it the same way would make it impossible to
+write a remark on a term that's already been closed — exactly when a
+teacher/principal is most likely to be writing one. Deliberate, not an
+oversight.
+
+**Upsert semantics**: one shared `WriteRemarkDto` (`termId`, `sessionId`,
+`remark: string | null`) for both routes, same required-but-nullable
+shape as `OverrideGradeDto` — omitting the key is a 400 (client must be
+explicit), `null` clears the remark AND nulls its who/when stamps (not
+just the text), a non-empty string sets both. Plain `termRemark.upsert`
+on the `(studentId, termId, sessionId)` unique — no advisory lock, unlike
+`saveGrid`: a single-row upsert has no multi-row invariant to protect,
+matching `TermsService`'s plain-Prisma-call style rather than
+`GradesService`'s heavier lock-guarded transactions. Each route touches
+ONLY its own side's three columns (teacher fields or principal fields),
+proven not to disturb the other side by a dedicated bidirectional e2e
+test — set both, clear teacher only (principal untouched), re-set
+teacher, clear principal only (teacher untouched).
+
+**Proof**: new `report-card.e2e-spec.ts` (16 tests) — per-component
+assembly with a real score / blank / absent all distinct in the same
+response, partial-term null overall position, the full RBAC matrix on
+all three routes (including the two "stricter than you'd expect" 403s:
+subject-only teacher writing the teacher remark, and the real class
+teacher writing the principal remark), cross-tenant 404 on all three,
+upsert round-trip + clear + one-sided-isolation. Full suite green (294
+tests) on the existing stack; typecheck + lint clean. No migration —
+schema untouched, as scoped. No web changes — API only, step 6's job.

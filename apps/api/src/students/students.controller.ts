@@ -21,6 +21,7 @@ import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { GradesService } from "../grades/grades.service";
 import { GetStudentResultsQueryDto } from "../grades/dto/get-student-results-query.dto";
+import { WriteRemarkDto } from "../grades/dto/write-remark.dto";
 import { StudentsService } from "./students.service";
 import { StudentGuardiansService } from "./student-guardians.service";
 import { CreateStudentDto } from "./dto/create-student.dto";
@@ -66,6 +67,40 @@ export class StudentsController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.gradesService.getStudentResults(id, query, user);
+  }
+
+  // Printable per-student term report card (SPEC_V0.5.md §2.4, v0.5 step
+  // 4) — a NEW, dedicated endpoint, not an extension of getResults() above
+  // (see GradesService.getReportCard()'s doc comment for why). Same TEACHER
+  // read rule as the Results tab (any relationship to the class arm) —
+  // stricter access is enforced on the remark WRITE routes below, not here.
+  @Get(":id/report-card")
+  getReportCard(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Query() query: GetStudentResultsQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.gradesService.getReportCard(id, query, user);
+  }
+
+  // Class-teacher-only for TEACHER (enforced inside GradesService, since it
+  // depends on class-teacher-vs-subject-teacher data, not a fixed role) —
+  // SCHOOL_ADMIN/PROPRIETOR reach this route too, per the class-level
+  // @Roles() above, with no extra check.
+  @Audit("termRemark", "writeTeacherRemark")
+  @Put(":id/remarks/teacher")
+  writeTeacherRemark(@Param("id", ParseUUIDPipe) id: string, @Body() dto: WriteRemarkDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.writeTeacherRemark(id, dto, user);
+  }
+
+  // SCHOOL_ADMIN/PROPRIETOR only — overrides the class-level @Roles() above
+  // so TEACHER never reaches the handler at all (categorical 403, same "no
+  // TEACHER path" pattern as GET /grades/review).
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  @Audit("termRemark", "writePrincipalRemark")
+  @Put(":id/remarks/principal")
+  writePrincipalRemark(@Param("id", ParseUUIDPipe) id: string, @Body() dto: WriteRemarkDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.writePrincipalRemark(id, dto, user);
   }
 
   @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN)
