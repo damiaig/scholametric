@@ -7,3 +7,18 @@
 body {
   @apply bg-background text-text font-sans;
 }
+
+/* SPEC_V0.5.md §2.4, v0.5 step 6 — client-side print (Q5): the browser's
+   own Print/Save-as-PDF turns the report card's print: classes (and
+   AppShell's chrome-hiding print:hidden) into a clean document. No PDF
+   library, no server round-trip. */
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm 12mm;
+  }
+
+  body {
+    background: white;
+  }
+}

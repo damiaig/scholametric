@@ -1,3 +1,5 @@
+import { useNavigate } from "react-router-dom";
+import { Printer } from "lucide-react";
 import { Spinner } from "../../components/ui/spinner";
 import { Button } from "../../components/ui/button";
 import { StatusBadge } from "../../components/StatusBadge";
@@ -27,6 +29,7 @@ function positionLabel(position: number | null): string {
 // findOne is intentionally unchanged, out of scope for this step), so the
 // tab can be reached and must fail softly, not blank or crash.
 export function StudentResultsTab({ studentId }: StudentResultsTabProps) {
+  const navigate = useNavigate();
   const { data: currentUser } = useCurrentUser();
   const isTeacher = currentUser?.role === "TEACHER";
   const isConfirmedAdmin = currentUser?.role === "SCHOOL_ADMIN" || currentUser?.role === "PROPRIETOR";
@@ -81,6 +84,17 @@ export function StudentResultsTab({ studentId }: StudentResultsTabProps) {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => navigate(`/students/${studentId}/report-card?termId=${termId}&sessionId=${sessionId}`)}
+        >
+          <Printer className="mr-2 h-4 w-4" aria-hidden="true" /> Print report card
+        </Button>
+      </div>
+
       <div className="overflow-x-auto rounded-lg border border-muted/20 bg-card">
         <table className="w-full text-left text-sm">
           <thead>

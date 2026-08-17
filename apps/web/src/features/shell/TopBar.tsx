@@ -7,7 +7,7 @@ interface TopBarProps {
 
 export function TopBar({ onOpenMobileNav }: TopBarProps) {
   return (
-    <header className="flex items-center gap-3 border-b border-muted/20 bg-card px-4 py-3 sm:px-6">
+    <header className="flex items-center gap-3 border-b border-muted/20 bg-card px-4 py-3 print:hidden sm:px-6">
       <button
         type="button"
         aria-label="Open menu"

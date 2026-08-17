@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { screen, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { Route, Routes } from "react-router-dom";
 import type { Paginated, Term, AcademicSession, StudentResultsResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
@@ -106,6 +108,29 @@ describe("StudentResultsTab", () => {
     expect(await screen.findByText("You don't have access to this student's results.")).toBeInTheDocument();
     // No generic "Try again" retry button for a permission error — retrying won't help.
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+  });
+
+  it("'Print report card' navigates to the dedicated route, pre-filling the term/session already showing here", async () => {
+    mockedApiRequest.mockImplementation(async (path) => {
+      if (path === "/api/v1/auth/me") return ADMIN_USER;
+      if (path === "/api/v1/sessions") return SESSIONS;
+      if (path === "/api/v1/terms") return TERMS;
+      if (path === "/api/v1/students/st1/results") return RESULTS;
+      throw new Error(`unexpected call: ${path}`);
+    });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <Routes>
+        <Route path="/students/:id" element={<StudentResultsTab studentId="st1" />} />
+        <Route path="/students/:id/report-card" element={<p>report-card-route-marker</p>} />
+      </Routes>,
+      { route: "/students/st1" },
+    );
+
+    await screen.findByText("Mathematics");
+    await user.click(screen.getByRole("button", { name: "Print report card" }));
+
+    expect(await screen.findByText("report-card-route-marker")).toBeInTheDocument();
   });
 
   it("empty state: zero subjects entered this term", async () => {

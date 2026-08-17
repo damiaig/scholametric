@@ -240,3 +240,90 @@ export function validateGridScore(rawScore: number, maxScore: number): { isValid
   }
   return { isValid: true };
 }
+
+// Mirrors GradesService.getReportCard()/write*Remark() (SPEC_V0.5.md §2.4,
+// v0.5 step 4 backend / step 6 web). A component with no student_scores row
+// at all is rawScore: null, isAbsent: false — blank/not-entered, distinct
+// from isAbsent: true ("Abs" on the printed card).
+export interface ReportCardComponent {
+  componentId: string;
+  componentName: string;
+  weight: number;
+  maxScore: number;
+  requiresApproval: boolean;
+  rawScore: number | null;
+  isAbsent: boolean;
+}
+
+export interface ReportCardSubject {
+  subjectId: string;
+  subjectName: string;
+  components: ReportCardComponent[];
+  totalScore: number;
+  autoGrade: string | null;
+  overrideGrade: string | null;
+  finalGrade: string | null;
+  subjectPosition: number | null;
+  status: ResultStatus;
+}
+
+export interface ReportCardOverall {
+  averageScore: number;
+  averageGrade: string | null;
+  overallPosition: number | null;
+  status: ResultStatus;
+  subjectsCount: number;
+}
+
+export interface RemarkAuthor {
+  firstName: string;
+  lastName: string;
+}
+
+export interface ReportCardRemarks {
+  teacherRemark: string | null;
+  teacherRemarkBy: RemarkAuthor | null;
+  teacherRemarkAt: string | null;
+  principalRemark: string | null;
+  principalRemarkBy: RemarkAuthor | null;
+  principalRemarkAt: string | null;
+}
+
+// A self-contained printable document — student identity and remark-author
+// names are embedded directly, unlike StudentResultsResponse above, whose
+// caller already has student context.
+export interface ReportCardResponse {
+  studentId: string;
+  firstName: string;
+  lastName: string;
+  admissionNumber: string;
+  classArmId: string;
+  termId: string;
+  sessionId: string;
+  subjects: ReportCardSubject[];
+  overall: ReportCardOverall | null;
+  remarks: ReportCardRemarks;
+}
+
+// PUT /students/:id/remarks/teacher and .../principal share this input
+// shape (v0.5 step 6) — remark is required-but-nullable: omitting the key
+// is a client error, explicit null clears the remark (and its stamps).
+export interface WriteRemarkInput {
+  termId: string;
+  sessionId: string;
+  remark: string | null;
+}
+
+export interface RemarkResponse {
+  id: string;
+  studentId: string;
+  termId: string;
+  sessionId: string;
+  classArmId: string;
+  teacherRemark: string | null;
+  teacherRemarkBy: string | null;
+  teacherRemarkAt: string | null;
+  principalRemark: string | null;
+  principalRemarkBy: string | null;
+  principalRemarkAt: string | null;
+}

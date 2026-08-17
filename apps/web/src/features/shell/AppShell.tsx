@@ -8,13 +8,16 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-screen bg-background">
-      <div className="hidden md:block md:w-64 md:shrink-0 md:border-r md:border-muted/20 md:bg-card">
+      {/* print:hidden — SPEC_V0.5.md §2.4, v0.5 step 6. Global, not scoped
+          to the report card: nothing in this app's chrome (nav, topbar)
+          belongs in ANY printed output. */}
+      <div className="hidden md:block md:w-64 md:shrink-0 md:border-r md:border-muted/20 md:bg-card print:hidden">
         <Sidebar />
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar onOpenMobileNav={() => setMobileNavOpen(true)} />
-        <main className="flex-1 p-4 sm:p-6">{children}</main>
+        <main className="flex-1 p-4 sm:p-6 print:p-0">{children}</main>
       </div>
 
       {mobileNavOpen && (

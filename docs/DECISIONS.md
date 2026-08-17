@@ -2874,3 +2874,75 @@ green on a freshly rebuilt, freshly seeded stack; typecheck + lint clean
 across the monorepo; a chromium-cli live-stack walk covering the full
 mark-absent → completeness-gate → close-as-principal →
 teacher-sees-locked → unlock → edit → relock → blocked-again sequence.
+
+## 2026-08-17 — v0.5 step 6: web — printable report card + remarks entry
+
+**Route + entry point**: a dedicated `/students/:id/report-card` route, not
+a fourth `StudentDetailPage` tab — printing wants a focused, chrome-free
+document, and this page needs its own term/session picker (a card is most
+often printed for whichever term just closed, not "current term" the way
+the Results tab is scoped). Reached from a new "Print report card" button
+on `StudentResultsTab` (pre-fills `?termId=&sessionId=` from what's already
+showing there) and directly linkable/bookmarkable on its own.
+
+**Print approach (Q5, client-side, no new dependency)**: Tailwind's
+built-in `print:` variant (core, no plugin) plus `@page`/`@media print` in
+`index.css`. `print:hidden` was added directly to `AppShell`'s sidebar
+wrapper and `TopBar` — a **shared, global change**, not scoped to this one
+feature: nothing in the app's nav chrome belongs in *any* printed output,
+not just this page's. `window.print()` on a plain button; `break-inside-
+avoid` on each subject/overall/remarks block as a page-break safety net for
+schools with many subjects (the route is naturally one-student-per-page —
+no list to worry about).
+
+**Teacher term picker deferred (current-term-only)**: matches
+`StudentResultsTab`'s existing precedent. The backend already permits a
+TEACHER to read any term's card — this is a frontend scope call, not a
+backend limitation, and it's noted here deliberately so a future step
+doesn't mistake the gap for an oversight.
+
+**Admin/proprietor sees BOTH remark forms**: the backend allows it (no
+extra check beyond the class-level `@Roles()` on the teacher-remark route)
+and the real workflow is a principal completing a card when the class
+teacher hasn't gotten to it yet. Whoever saves a remark is stamped with
+THEIR OWN name — an admin writing the "teacher remark" shows up under
+their own name, never a fabricated "as the class teacher" attribution — so
+the form copy says "Teacher remark," never "write as the class teacher."
+Visibility: class teacher of this arm → teacher form only; subject-only
+teacher → neither form (read-only remark text still shown, same "hidden
+not disabled" pattern used throughout); admin/proprietor → both forms.
+
+**Abs/blank/0 and partial-term rendering** reuse the grid's and
+`StudentResultsTab`'s existing conventions verbatim (`componentDisplay`
+mirrors `ScoreEntryRow`'s isAbsent → "Abs" / null → "—" / real value logic;
+`positionLabel`, `resultStatusLabel/Tone`, `formatScore` are the same
+helpers, not reimplementations) — a null `overall` renders an explicit
+"Overall results not yet available." message, never a blank or zeroed row.
+
+**Remark save UX**: `useWriteTeacherRemark`/`useWritePrincipalRemark`
+patch the report-card query cache directly via `setQueryData` using the
+saving user's own name (the response only carries the author's id, not
+their name — but the saving user is always who gets stamped, so this is
+never a guess) for instant feedback, then `invalidateQueries` triggers a
+background refetch that lands the server's authoritative copy right after
+— same person, just confirmed, never a raw UUID shown in the interim.
+
+**New `Textarea` UI primitive** (`components/ui/textarea.tsx`) — no
+multi-line input component existed yet; styled to match `Input` exactly,
+same `forwardRef` shape.
+
+**Proof**: 11 new Vitest tests (`ReportCardPage.test.tsx`: full-card
+rendering, Abs/blank/0 distinct, partial-term states, all three
+remark-form-visibility combinations, the optimistic-save-then-refetch
+UX, print-hidden classes present; one new `StudentResultsTab.test.tsx`
+case for the print-report-card navigation) — 148 total, up from 137. No
+new backend e2e — `report-card.e2e-spec.ts` (v0.5 step 4) already covers
+Abs/blank assembly, partial-term positions, every RBAC combination on all
+three endpoints, cross-tenant 404s, and remark upsert/null-clearing
+semantics; this step is web-only and added no new backend surface. Full
+`pnpm run ci` green on a freshly rebuilt, freshly seeded stack; typecheck +
+lint clean; a chromium-cli live-stack walk rendering a real student's card
+(Abs cell, unpublished subject, existing remark), writing a teacher remark
+as the class teacher, confirming a subject-only teacher sees no form,
+writing a principal remark as admin, and a print-preview screenshot
+showing the chrome-free card.
