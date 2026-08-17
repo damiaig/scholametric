@@ -8,21 +8,34 @@ export type CellStatus = "idle" | "pending" | "saving" | "saved" | "error" | "lo
 
 export interface CellState {
   value: number | null;
+  // SPEC_V0.5.md §2.1 — orthogonal to the save-lifecycle status above, not
+  // a seventh status: mirrors the backend's own rawScore/isAbsent mutual
+  // exclusion (a cell can be "pending" AND isAbsent). null value + false =
+  // blank/not-entered; null value + true = "Abs".
+  isAbsent: boolean;
   serverValue: number | null;
+  serverIsAbsent: boolean;
   status: CellStatus;
   error?: string;
 }
 
+interface SentValue {
+  value: number | null;
+  isAbsent: boolean;
+}
+
 type Action =
-  | { type: "HYDRATE"; rows: { studentId: string; rawScore: number | null; locked: boolean }[] }
-  | { type: "EDIT"; studentId: string; value: number | null }
+  | { type: "HYDRATE"; rows: { studentId: string; rawScore: number | null; isAbsent: boolean; locked: boolean }[] }
+  | { type: "EDIT"; studentId: string; value: number | null; isAbsent: boolean }
   | { type: "FLUSH_START"; studentIds: string[] }
-  | { type: "FLUSH_SUCCESS"; sent: Map<string, number | null>; results: Map<string, number | null> }
-  | { type: "FLUSH_ERROR"; sent: Map<string, number | null>; message: string }
+  | { type: "FLUSH_SUCCESS"; sent: Map<string, SentValue>; results: Map<string, SentValue> }
+  | { type: "FLUSH_ERROR"; sent: Map<string, SentValue>; message: string }
   | { type: "REQUEUE"; studentIds: string[] }
-  | { type: "LOCK"; studentIds: string[] };
+  | { type: "LOCK"; studentIds: string[]; message?: string };
 
 type State = Map<string, CellState>;
+
+const PUBLISHED_LOCK_MESSAGE = "Published — ask an admin to unpublish before editing.";
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -31,7 +44,9 @@ function reducer(state: State, action: Action): State {
       for (const row of action.rows) {
         next.set(row.studentId, {
           value: row.rawScore,
+          isAbsent: row.isAbsent,
           serverValue: row.rawScore,
+          serverIsAbsent: row.isAbsent,
           status: row.locked ? "locked" : "idle",
         });
       }
@@ -41,10 +56,11 @@ function reducer(state: State, action: Action): State {
       const current = state.get(action.studentId);
       if (!current || current.status === "locked") return state;
       const next = new Map(state);
-      const isDirty = action.value !== current.serverValue;
+      const isDirty = action.value !== current.serverValue || action.isAbsent !== current.serverIsAbsent;
       next.set(action.studentId, {
         ...current,
         value: action.value,
+        isAbsent: action.isAbsent,
         status: isDirty ? "pending" : "idle",
         error: undefined,
       });
@@ -62,9 +78,10 @@ function reducer(state: State, action: Action): State {
       const next = new Map(state);
       for (const [id, sentValue] of action.sent) {
         const current = next.get(id);
-        if (!current || current.value !== sentValue) continue; // clobber guard: re-edited mid-flight, ignore
-        const confirmed = action.results.has(id) ? action.results.get(id)! : sentValue;
-        next.set(id, { ...current, status: "saved", serverValue: confirmed });
+        // clobber guard: re-edited mid-flight, ignore this stale response
+        if (!current || current.value !== sentValue.value || current.isAbsent !== sentValue.isAbsent) continue;
+        const confirmed = action.results.get(id) ?? sentValue;
+        next.set(id, { ...current, status: "saved", serverValue: confirmed.value, serverIsAbsent: confirmed.isAbsent });
       }
       return next;
     }
@@ -72,7 +89,7 @@ function reducer(state: State, action: Action): State {
       const next = new Map(state);
       for (const [id, sentValue] of action.sent) {
         const current = next.get(id);
-        if (!current || current.value !== sentValue) continue; // already re-edited; next flush sends the new value
+        if (!current || current.value !== sentValue.value || current.isAbsent !== sentValue.isAbsent) continue; // already re-edited; next flush sends the new value
         next.set(id, { ...current, status: "error", error: action.message });
       }
       return next;
@@ -93,7 +110,7 @@ function reducer(state: State, action: Action): State {
           next.set(id, {
             ...current,
             status: "locked",
-            error: "Published — ask an admin to unpublish before editing.",
+            error: action.message ?? PUBLISHED_LOCK_MESSAGE,
           });
         }
       }
@@ -142,7 +159,22 @@ export function useScoreEntrySaveQueue(
     hydratedKeyRef.current = key;
     dispatch({
       type: "HYDRATE",
-      rows: grid.rows.map((row) => ({ studentId: row.studentId, rawScore: row.rawScore, locked: row.status === "PUBLISHED" })),
+      // Deliberately NOT folding grid.locked (term-wide) in here —
+      // HYDRATE only runs ONCE per params key (see the guard above, by
+      // design, to protect in-progress edits from a later cache update),
+      // so anything baked in at hydrate time would go stale the moment
+      // an unlock/relock changes grid.locked without a full remount.
+      // Term-wide lock is instead read LIVE from gridQuery.data on every
+      // render (see ScoreEntryGrid) — PUBLISHED-lock is legitimately
+      // "sticky" per student (updated reactively only via the save
+      // queue's own 409 handling), term-lock is grid-wide and must track
+      // the current query data exactly.
+      rows: grid.rows.map((row) => ({
+        studentId: row.studentId,
+        rawScore: row.rawScore,
+        isAbsent: row.isAbsent,
+        locked: row.status === "PUBLISHED",
+      })),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [grid, params.classArmId, params.subjectId, params.componentId, params.termId]);
@@ -163,7 +195,12 @@ export function useScoreEntrySaveQueue(
   const sendBatch = useCallback(
     async (studentIds: string[]): Promise<void> => {
       if (studentIds.length === 0) return;
-      const sent = new Map(studentIds.map((id) => [id, stateRef.current.get(id)?.value ?? null]));
+      const sent = new Map<string, SentValue>(
+        studentIds.map((id) => {
+          const cell = stateRef.current.get(id);
+          return [id, { value: cell?.value ?? null, isAbsent: cell?.isAbsent ?? false }];
+        }),
+      );
       dispatch({ type: "FLUSH_START", studentIds });
 
       try {
@@ -174,21 +211,42 @@ export function useScoreEntrySaveQueue(
             subjectId: paramsRef.current.subjectId,
             componentId: paramsRef.current.componentId,
             termId: paramsRef.current.termId,
-            scores: studentIds.map((id) => ({ studentId: id, rawScore: sent.get(id) ?? null })),
+            scores: studentIds.map((id) => {
+              const value = sent.get(id)!;
+              return { studentId: id, rawScore: value.value, isAbsent: value.isAbsent };
+            }),
           },
         });
-        const results = new Map(response.rows.map((row) => [row.studentId, row.rawScore]));
+        const results = new Map<string, SentValue>(
+          response.rows.map((row) => [row.studentId, { value: row.rawScore, isAbsent: row.isAbsent }]),
+        );
         dispatch({ type: "FLUSH_SUCCESS", sent, results });
         queryClient.setQueryData<GradesGridResponse>(gradesGridQueryKey(paramsRef.current), (old) => {
           if (!old) return old;
           return {
             ...old,
-            rows: old.rows.map((row) =>
-              results.has(row.studentId) ? { ...row, rawScore: results.get(row.studentId) ?? null } : row,
-            ),
+            rows: old.rows.map((row) => {
+              const result = results.get(row.studentId);
+              return result ? { ...row, rawScore: result.value, isAbsent: result.isAbsent } : row;
+            }),
           };
         });
       } catch (error) {
+        if (error instanceof ApiError && error.status === 409 && error.body?.termLocked) {
+          // Whole-slice lock (SPEC_V0.5.md §2.3) — every requested student
+          // in this batch is affected, not just specific ones (unlike the
+          // published-lock case below, term_unlocks isn't per-student). In
+          // practice this is a race: GET /grades/grid already renders
+          // locked-from-load, so reaching this means the term closed or
+          // was relocked while this save was already in flight.
+          dispatch({
+            type: "LOCK",
+            studentIds,
+            message: "This term was just closed. Ask your principal/proprietor to unlock this class and subject before editing.",
+          });
+          return;
+        }
+
         if (error instanceof ApiError && error.status === 409 && error.body?.lockedStudentIds) {
           const locked = error.body.lockedStudentIds.filter((id) => studentIds.includes(id));
           const remaining = studentIds.filter((id) => !locked.includes(id));
@@ -277,7 +335,21 @@ export function useScoreEntrySaveQueue(
 
   const onCellEdit = useCallback(
     (studentId: string, value: number | null) => {
-      dispatch({ type: "EDIT", studentId, value });
+      dispatch({ type: "EDIT", studentId, value, isAbsent: false });
+      scheduleFlush();
+    },
+    [scheduleFlush],
+  );
+
+  // Keyboard-first absent toggle (SPEC_V0.5.md §2.1) — pressing "A" in a
+  // focused cell, or clicking the row's Abs chip. Turning absent ON clears
+  // any typed value (mutual exclusion, same as the backend's CHECK);
+  // turning it OFF returns to a blank, editable cell, not to 0.
+  const onToggleAbsent = useCallback(
+    (studentId: string) => {
+      const current = stateRef.current.get(studentId);
+      if (!current || current.status === "locked") return;
+      dispatch({ type: "EDIT", studentId, value: null, isAbsent: !current.isAbsent });
       scheduleFlush();
     },
     [scheduleFlush],
@@ -314,6 +386,7 @@ export function useScoreEntrySaveQueue(
   return {
     cells: state,
     onCellEdit,
+    onToggleAbsent,
     flushNow: attemptFlush,
     isDirty,
   };

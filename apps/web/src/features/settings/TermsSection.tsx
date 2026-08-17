@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PlayCircle } from "lucide-react";
+import { PlayCircle, Lock } from "lucide-react";
 import type { AcademicSession, Term } from "@scholametric/shared";
 import { DataTable, type DataTableColumn } from "../../components/DataTable";
 import { Button } from "../../components/ui/button";
@@ -9,6 +9,7 @@ import { formatDate } from "../../lib/format-date";
 import { getErrorMessage } from "../../lib/api-client";
 import { useTerms, useActivateTerm } from "./use-terms";
 import { CreateTermDialog } from "./CreateTermDialog";
+import { CloseTermDialog } from "./CloseTermDialog";
 
 const TERM_LABELS: Record<string, string> = { FIRST: "First term", SECOND: "Second term", THIRD: "Third term" };
 
@@ -22,10 +23,16 @@ export function TermsSection({ session }: TermsSectionProps) {
   const activateTerm = useActivateTerm();
   const [createOpen, setCreateOpen] = useState(false);
   const [activating, setActivating] = useState<Term | null>(null);
+  const [closing, setClosing] = useState<Term | null>(null);
 
   function openActivate(event: React.MouseEvent, term: Term) {
     event.stopPropagation();
     setActivating(term);
+  }
+
+  function openClose(event: React.MouseEvent, term: Term) {
+    event.stopPropagation();
+    setClosing(term);
   }
 
   const columns: DataTableColumn<Term>[] = [
@@ -35,17 +42,30 @@ export function TermsSection({ session }: TermsSectionProps) {
     {
       key: "status",
       header: "Status",
-      cell: (row) => (row.isCurrent ? <StatusBadge label="Current" tone="success" /> : null),
+      cell: (row) => (
+        <div className="flex items-center gap-1.5">
+          {row.isCurrent && <StatusBadge label="Current" tone="success" />}
+          {row.closedAt && <StatusBadge label="Closed" tone="neutral" />}
+        </div>
+      ),
     },
     {
       key: "actions",
       header: "",
-      cell: (row) =>
-        !row.isCurrent ? (
-          <Button type="button" variant="outline" size="sm" onClick={(event) => openActivate(event, row)}>
-            <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" /> Activate
-          </Button>
-        ) : null,
+      cell: (row) => (
+        <div className="flex items-center gap-2">
+          {!row.isCurrent && (
+            <Button type="button" variant="outline" size="sm" onClick={(event) => openActivate(event, row)}>
+              <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" /> Activate
+            </Button>
+          )}
+          {!row.closedAt && (
+            <Button type="button" variant="outline" size="sm" onClick={(event) => openClose(event, row)}>
+              <Lock className="mr-2 h-4 w-4" aria-hidden="true" /> Close
+            </Button>
+          )}
+        </div>
+      ),
     },
   ];
 
@@ -82,27 +102,32 @@ export function TermsSection({ session }: TermsSectionProps) {
           <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between">
               <p className="font-medium text-text">{TERM_LABELS[row.name] ?? row.name}</p>
-              {row.isCurrent && <StatusBadge label="Current" tone="success" />}
+              <div className="flex items-center gap-1.5">
+                {row.isCurrent && <StatusBadge label="Current" tone="success" />}
+                {row.closedAt && <StatusBadge label="Closed" tone="neutral" />}
+              </div>
             </div>
             <p className="text-sm text-muted">
               {formatDate(row.startsOn)} – {formatDate(row.endsOn)}
             </p>
-            {!row.isCurrent && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-1 self-start"
-                onClick={(event) => openActivate(event, row)}
-              >
-                Activate
-              </Button>
-            )}
+            <div className="mt-1 flex gap-2">
+              {!row.isCurrent && (
+                <Button type="button" variant="outline" size="sm" onClick={(event) => openActivate(event, row)}>
+                  Activate
+                </Button>
+              )}
+              {!row.closedAt && (
+                <Button type="button" variant="outline" size="sm" onClick={(event) => openClose(event, row)}>
+                  Close
+                </Button>
+              )}
+            </div>
           </div>
         )}
       />
 
       <CreateTermDialog sessionId={session.id} open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CloseTermDialog term={closing} onClose={() => setClosing(null)} />
 
       <ConfirmDialog
         open={activating !== null}

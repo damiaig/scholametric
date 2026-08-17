@@ -2778,3 +2778,99 @@ teacher writing the principal remark), cross-tenant 404 on all three,
 upsert round-trip + clear + one-sided-isolation. Full suite green (294
 tests) on the existing stack; typecheck + lint clean. No migration —
 schema untouched, as scoped. No web changes — API only, step 6's job.
+
+## 2026-08-17 — v0.5 step 5: web — absent in the grid + completeness-gate UI + term close/unlock UI
+
+**Closed-term grid indicator — render-from-load, a real (small) API
+change.** `GET /grades/grid` gains `termClosed`/`locked`/`unlockReason`,
+computed by a new `resolveSliceLockState` helper shared with `saveGrid`'s
+existing check (refactored to call it too) so the two can never drift on
+what "locked" means — same principle as step 3's `termLockKey` extraction.
+Proven at the source with a 4-case API e2e (open / closed-no-unlock /
+closed-with-unlock / per-slice isolation), same discipline as v0.4's
+status field. `saveGrid`'s closed-term 409 also gained a structured
+`termLocked: true` body field, mirroring `lockedStudentIds` — the save
+queue only ever reaches this in a genuine race (grid loaded open, then
+closed/relocked mid-edit), since the grid already renders locked-from-load.
+
+**Absent is a flag orthogonal to the six cell-lifecycle states, not a
+seventh.** `CellState` gained `isAbsent`/`serverIsAbsent`, mirroring the
+backend's own `rawScore`/`isAbsent` mutual exclusion. Keyboard-first: `A`
+while focused toggles it (a letter key was already inert in the
+`inputMode="decimal"` field, so no collision), clearing any typed value;
+a compact chip (`tabIndex={-1}`, click/discovery only, not a new Tab stop)
+mirrors the same toggle for mouse users. Renders as a disabled input
+showing fixed "Abs" text, `bg-muted/10`/`UserX` icon — deliberately a
+different icon from the `Lock` used for published/term-locked cells, so
+"not currently typeable" never looks like one single state.
+
+**Term-wide lock is read LIVE from the grid query on every render, NOT
+baked into cellState at hydrate time — this was a real bug caught by a
+test, not a design guess.** `HYDRATE` only fires once per params key (by
+design, to protect in-progress edits from an unrelated cache update); an
+initial implementation folded `grid.locked` into each row's hydrate-time
+`locked` flag, which meant a successful unlock (a cache invalidation +
+refetch with the SAME params key) never re-hydrated and the grid stayed
+visually locked forever. Fixed by keeping `HYDRATE`'s per-row `locked`
+exactly as before (PUBLISHED only — legitimately sticky, updated
+reactively only via the save queue's own 409 handling) and passing
+`termLocked` as a separate LIVE prop from `ScoreEntryGrid` straight off
+`gridQuery.data.locked` into every `ScoreEntryRow`.
+
+**A real, pre-existing focus-stealing bug in `Dialog`, found and fixed
+while building the Unlock reason input.** `Dialog`'s internal effect
+depends on `[open, onClose]` and its cleanup calls
+`previouslyFocused?.focus()`. Every existing `ConfirmDialog` caller passes
+an inline `onClose` arrow function — harmless everywhere else, since none
+of them have a text field a user types into while the parent re-renders.
+`TermLockBanner`'s reason `<Input>` is the first one that does: each
+keystroke re-renders the parent (controlled input), an inline `onClose`
+is a new reference every time, the effect re-fires, and its cleanup
+yanks focus back to whatever was focused before the dialog opened — after
+exactly one character. Fixed narrowly in `TermLockBanner` (`useCallback`
+for `onClose`, not touching the shared `Dialog`/`ConfirmDialog`
+primitives) rather than reworking the shared components' effect
+dependencies, per "extend, never rewrite" — but this same fragility is
+latent in every other `ConfirmDialog` usage in this app; noted here for
+whoever next adds a text field inside one.
+
+**Completeness-gate UI is a defensive fallback, not the primary
+mechanism — `canPublish` already disables the button correctly (step 2).**
+The only realistic way to hit `incompleteEntries` in the UI is the same
+kind of race as the term-lock 409: review data was fetched showing
+`canPublish: true`, then something changed before the click landed.
+`PublishConfirmDialog`'s error area branches on `error.body?.incompleteEntries`
+and groups by `componentId` (via the already-available assessment
+components list) into counts — "CA 1: 1 student, Exam: 2 students" — not
+per-student names, deliberately: a roster-with-names join would add a new
+fetch dependency to `ReviewPublishPage` for what's a rare-path fallback;
+component-level grouping is enough to say WHERE to go look. The Publish
+button's disabled tooltip was widened to a single honest combined
+message instead of adding a new `canPublish`-reason field to
+`GradesReviewSubject` — deliberately the smaller API surface for a
+cosmetic distinction.
+
+**Term close/unlock/relock UI, placement**: Close lives on the existing
+`TermsSection` (Settings → Academic), next to Activate — a two-phase
+`ConfirmDialog` → result `Dialog` (not a single dialog swapping its own
+footer), since the unpublished breakdown only exists as the close
+endpoint's own response, not a separate preview call; the result view
+shows counts only (no class/subject names — `TermsSection` doesn't have
+that data loaded, and joining it in would be scope creep for a summary
+whose job is "go check Review & Publish for detail"). Unlock/Relock live
+directly on the score-entry grid (`TermLockBanner`), not a separate
+screen — classArmId/subjectId/termId are already in context there, and
+that's where the need to unlock actually arises. Both hidden (not
+disabled) for TEACHER, per the standing pattern (`canManage` prop, same
+shape as `ReviewPublishPage`'s `canUnpublish`).
+
+**Proof**: 11 new Vitest tests (absent toggle/render/mutual-exclusion/
+locked-ignores-A in `ScoreEntryGrid.test.tsx`, the term-lock banner's
+three visibility states, the completeness-gate fallback in
+`ReviewPublishPage.test.tsx`, the two-phase close dialog in a new
+`TermsSection.test.tsx`) — 137 total, up from 126. 4 new API e2e for the
+grid indicator — 298 backend e2e unaffected otherwise. Full `pnpm run ci`
+green on a freshly rebuilt, freshly seeded stack; typecheck + lint clean
+across the monorepo; a chromium-cli live-stack walk covering the full
+mark-absent → completeness-gate → close-as-principal →
+teacher-sees-locked → unlock → edit → relock → blocked-again sequence.

@@ -33,7 +33,7 @@ const SESSIONS: Paginated<AcademicSession> = {
   pageSize: 50,
 };
 const TERMS: Paginated<Term> = {
-  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, createdAt: "t", updatedAt: "t" }],
+  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, closedAt: null, closedBy: null, createdAt: "t", updatedAt: "t" }],
   total: 1,
   page: 1,
   pageSize: 20,

@@ -189,6 +189,7 @@ export function ScoreEntryGridPage() {
       {ready ? (
         <ScoreEntryGrid
           params={{ classArmId, subjectId, componentId, termId: effectiveTermId }}
+          canManageTermLock={isConfirmedAdmin}
         />
       ) : (
         <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">

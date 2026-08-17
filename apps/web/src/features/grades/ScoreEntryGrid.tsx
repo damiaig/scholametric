@@ -6,11 +6,14 @@ import { getErrorMessage } from "../../lib/api-client";
 import { useGradesGrid, type GradesGridParams } from "./use-grades-grid";
 import { useScoreEntrySaveQueue, type CellState, type ScoreEntrySaveQueueTiming } from "./use-score-entry-save-queue";
 import { ScoreEntryRow } from "./ScoreEntryRow";
+import { TermLockBanner } from "./TermLockBanner";
 
-const DEFAULT_CELL: CellState = { value: null, serverValue: null, status: "idle" };
+const DEFAULT_CELL: CellState = { value: null, isAbsent: false, serverValue: null, serverIsAbsent: false, status: "idle" };
 
 interface ScoreEntryGridProps {
   params: GradesGridParams;
+  /** SCHOOL_ADMIN/PROPRIETOR — shows Unlock/Relock on a closed term (SPEC_V0.5.md §2.3); hidden, not disabled, for anyone else. */
+  canManageTermLock: boolean;
   /** Test-only: overrides the save queue's debounce/max-wait/retry timing. */
   saveQueueTiming?: ScoreEntrySaveQueueTiming;
 }
@@ -20,7 +23,7 @@ interface ScoreEntryGridProps {
 // (see docs/DECISIONS.md): a flat list of ~100 single-input rows is well
 // within what React handles natively, and virtualizing would break native
 // Tab traversal across rows that aren't mounted.
-export function ScoreEntryGrid({ params, saveQueueTiming }: ScoreEntryGridProps) {
+export function ScoreEntryGrid({ params, canManageTermLock, saveQueueTiming }: ScoreEntryGridProps) {
   const gridQuery = useGradesGrid(params);
   const queue = useScoreEntrySaveQueue(params, gridQuery.data, saveQueueTiming);
   const inputRefs = useRef(new Map<string, HTMLInputElement>());
@@ -69,10 +72,23 @@ export function ScoreEntryGrid({ params, saveQueueTiming }: ScoreEntryGridProps)
     );
   }
 
-  const enteredCount = roster.filter((row) => (queue.cells.get(row.studentId) ?? DEFAULT_CELL).value !== null).length;
+  const enteredCount = roster.filter((row) => {
+    const cell = queue.cells.get(row.studentId) ?? DEFAULT_CELL;
+    return cell.value !== null || cell.isAbsent;
+  }).length;
 
   return (
     <div className="flex flex-col gap-3">
+      <TermLockBanner
+        termId={params.termId}
+        classArmId={params.classArmId}
+        subjectId={params.subjectId}
+        termClosed={gridQuery.data.termClosed}
+        locked={gridQuery.data.locked}
+        unlockReason={gridQuery.data.unlockReason}
+        canManage={canManageTermLock}
+      />
+
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted">
           {enteredCount} of {roster.length} entered · out of {gridQuery.data.maxScore}
@@ -91,8 +107,10 @@ export function ScoreEntryGrid({ params, saveQueueTiming }: ScoreEntryGridProps)
             cellState={queue.cells.get(row.studentId) ?? DEFAULT_CELL}
             maxScore={gridQuery.data.maxScore}
             onEdit={queue.onCellEdit}
+            onToggleAbsent={queue.onToggleAbsent}
             onNavigate={handleNavigate}
             registerInput={registerInput}
+            termLocked={gridQuery.data.locked}
           />
         ))}
       </div>

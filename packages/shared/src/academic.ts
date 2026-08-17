@@ -22,8 +22,57 @@ export interface Term {
   startsOn: string;
   endsOn: string;
   isCurrent: boolean;
+  // SPEC_V0.5.md §2.3 (v0.5 step 1/3) — null = open. Set by a deliberate
+  // principal/proprietor close action; there is no "reopen the whole
+  // term" concept — editing a closed term happens per class-arm+subject
+  // via TermUnlock below.
+  closedAt: string | null;
+  closedBy: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+// SPEC_V0.5.md §2.3/Q3 (v0.5 step 3) — one row per unlock/relock episode,
+// not a flag. "Currently active" = relockedAt === null.
+export interface TermUnlock {
+  id: string;
+  schoolId: string;
+  termId: string;
+  classArmId: string;
+  subjectId: string;
+  reason: string;
+  unlockedBy: string;
+  unlockedAt: string;
+  relockedBy: string | null;
+  relockedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UnpublishedBreakdownRow {
+  classArmId: string;
+  subjectId: string;
+  draftCount: number;
+  pendingApprovalCount: number;
+}
+
+// POST /terms/:id/close's response (Q4 — warn-but-allow): the term row
+// plus what's still unpublished, grouped. Ids only, no name joins — the
+// caller already has its own classes/subjects lists to resolve names.
+export interface CloseTermResponse extends Term {
+  unpublishedCount: number;
+  unpublished: UnpublishedBreakdownRow[];
+}
+
+export interface UnlockTermInput {
+  classArmId: string;
+  subjectId: string;
+  reason: string;
+}
+
+export interface RelockTermInput {
+  classArmId: string;
+  subjectId: string;
 }
 
 // ClassLevel/ClassArm are already exported from ./students (the trimmed

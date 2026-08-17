@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
-import { AlertTriangle, Check, Circle, Lock } from "lucide-react";
+import { AlertTriangle, Check, Circle, Lock, UserX } from "lucide-react";
 import { validateGridScore } from "@scholametric/shared";
 import { Input } from "../../components/ui/input";
 import { Spinner } from "../../components/ui/spinner";
@@ -19,8 +19,14 @@ interface ScoreEntryRowProps {
   cellState: CellState;
   maxScore: number;
   onEdit: (studentId: string, value: number | null) => void;
+  onToggleAbsent: (studentId: string) => void;
   onNavigate: (studentId: string, direction: "next" | "prev") => void;
   registerInput: (studentId: string, el: HTMLInputElement | null) => void;
+  // Grid-wide (SPEC_V0.5.md §2.3), read LIVE from the grid query on every
+  // render — unlike cellState.status === "locked" (PUBLISHED, sticky from
+  // hydrate), this must track an unlock/relock immediately without a
+  // remount. See use-score-entry-save-queue.ts's HYDRATE comment.
+  termLocked: boolean;
 }
 
 function formatValue(value: number | null): string {
@@ -37,8 +43,10 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
   cellState,
   maxScore,
   onEdit,
+  onToggleAbsent,
   onNavigate,
   registerInput,
+  termLocked,
 }: ScoreEntryRowProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [text, setText] = useState(() => formatValue(cellState.value));
@@ -55,8 +63,10 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
     }
   }, [cellState.value]);
 
-  const isLocked = cellState.status === "locked";
-  const validation = text.trim() === "" ? { isValid: true } : validateGridScore(Number(text), maxScore);
+  const isLocked = cellState.status === "locked" || termLocked;
+  const isAbsent = cellState.isAbsent;
+  const isDisabled = isLocked || isAbsent;
+  const validation = isAbsent || text.trim() === "" ? { isValid: true } : validateGridScore(Number(text), maxScore);
 
   function handleChange(event: ChangeEvent<HTMLInputElement>) {
     const raw = event.target.value;
@@ -83,6 +93,16 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       onNavigate(student.studentId, "prev");
+    } else if (event.key === "a" || event.key === "A") {
+      // Keyboard-first absent toggle (SPEC_V0.5.md §2.1) — a letter key is
+      // otherwise inert here (inputMode="decimal", COMPLETE_NUMBER is
+      // digits-only), so this can't collide with numeric entry.
+      event.preventDefault();
+      if (!isLocked) {
+        setText("");
+        lastPropagated.current = null;
+        onToggleAbsent(student.studentId);
+      }
     }
   }
 
@@ -91,6 +111,7 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
       className={cn(
         "flex flex-col gap-2 border-b border-muted/10 p-3 last:border-0 sm:flex-row sm:items-center sm:gap-4",
         isLocked && "bg-muted/5",
+        isAbsent && !isLocked && "bg-muted/10",
       )}
     >
       <div className="flex min-w-0 items-center gap-3 sm:w-64 sm:shrink-0">
@@ -103,7 +124,7 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
         </div>
       </div>
 
-      <div className="flex items-center gap-2 sm:w-36">
+      <div className="flex items-center gap-2 sm:w-40">
         <Input
           ref={(el) => {
             inputRef.current = el;
@@ -112,12 +133,36 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
           type="text"
           inputMode="decimal"
           aria-label={`Score for ${student.firstName} ${student.lastName}`}
-          value={text}
-          disabled={isLocked}
+          value={isAbsent ? "Abs" : text}
+          disabled={isDisabled}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          className={cn("w-24", !validation.isValid && "border-danger focus-visible:ring-danger")}
+          className={cn(
+            "w-24",
+            isAbsent && "text-center font-medium text-muted",
+            !validation.isValid && "border-danger focus-visible:ring-danger",
+          )}
         />
+        <button
+          type="button"
+          tabIndex={-1}
+          disabled={isLocked}
+          onClick={() => {
+            setText("");
+            lastPropagated.current = null;
+            onToggleAbsent(student.studentId);
+          }}
+          aria-label={`Mark ${student.firstName} ${student.lastName} absent (or press A)`}
+          aria-pressed={isAbsent}
+          title="Mark absent (or press A while focused)"
+          className={cn(
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-muted transition-colors",
+            isAbsent ? "border-muted bg-muted/20 text-text" : "border-muted/30 hover:bg-background",
+            isLocked && "cursor-not-allowed opacity-50",
+          )}
+        >
+          <UserX className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
         <StatusGlyph status={cellState.status} />
       </div>
 
@@ -145,7 +190,7 @@ function StatusGlyph({ status }: { status: CellState["status"] }) {
     case "error":
       return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-danger" aria-label="Couldn't save, retrying" />;
     case "locked":
-      return <Lock className="h-3.5 w-3.5 shrink-0 text-muted" aria-label="Published, locked" />;
+      return <Lock className="h-3.5 w-3.5 shrink-0 text-muted" aria-label="Locked" />;
     default:
       return <span className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />;
   }

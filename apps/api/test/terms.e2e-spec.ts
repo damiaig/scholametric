@@ -232,6 +232,10 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
       expect(response.status).toBe(409);
       expect(response.body.message).toMatch(/closed/i);
       expect(response.body.message).toMatch(/unlock/i);
+      // Structured, same precedent as lockedStudentIds — lets the save
+      // queue's 409 handler route this to the same locked-cell treatment
+      // GET /grades/grid already renders from load (below).
+      expect(response.body.termLocked).toBe(true);
 
       const persisted = await prisma.studentScore.findUnique({
         where: {
@@ -287,6 +291,79 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
 
       const editB = await saveScore(bundle.termId, bundle.classArmId, subjectB, ca1Id, bundle.studentIds[0], 10);
       expect(editB.status).toBe(409);
+    });
+  });
+
+  // SPEC_V0.5.md §2.3, v0.5 step 5 — the web renders locked/read-only FROM
+  // LOAD, not reactively on a saveGrid 409, so GET /grades/grid itself must
+  // carry the slice's lock state. Same three-way proof style as v0.4's
+  // status field (open/closed/unlocked), same resolveSliceLockState logic
+  // saveGrid enforces above.
+  describe("GET /grades/grid — locked indicator", () => {
+    it("open term: termClosed=false, locked=false, unlockReason=null", async () => {
+      const bundle = await createScratchBundle("GridIndicatorOpen");
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(200);
+      expect(response.body.termClosed).toBe(false);
+      expect(response.body.locked).toBe(false);
+      expect(response.body.unlockReason).toBeNull();
+    });
+
+    it("closed term, no active unlock: termClosed=true, locked=true", async () => {
+      const bundle = await createScratchBundle("GridIndicatorClosed");
+      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
+
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(200);
+      expect(response.body.termClosed).toBe(true);
+      expect(response.body.locked).toBe(true);
+      expect(response.body.unlockReason).toBeNull();
+    });
+
+    it("closed term WITH an active unlock for this exact slice: termClosed=true, locked=false, unlockReason present", async () => {
+      const bundle = await createScratchBundle("GridIndicatorUnlocked");
+      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
+      await request(app.getHttpServer())
+        .post(`/api/v1/terms/${bundle.termId}/unlock`)
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Parent requested a correction" });
+
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(200);
+      expect(response.body.termClosed).toBe(true);
+      expect(response.body.locked).toBe(false);
+      expect(response.body.unlockReason).toBe("Parent requested a correction");
+    });
+
+    it("unlock is per-slice here too: a second subject on the same closed term still reads locked=true", async () => {
+      const bundle = await createScratchBundle("GridIndicatorPerSlice", 1, 2);
+      const [subjectA, subjectB] = bundle.subjectIds;
+      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
+      await request(app.getHttpServer())
+        .post(`/api/v1/terms/${bundle.termId}/unlock`)
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: bundle.classArmId, subjectId: subjectA, reason: "Correcting subject A only" });
+
+      const gridA = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: bundle.classArmId, subjectId: subjectA, componentId: ca1Id, termId: bundle.termId })
+        .set(auth(sunriseAdminToken));
+      expect(gridA.body.locked).toBe(false);
+
+      const gridB = await request(app.getHttpServer())
+        .get("/api/v1/grades/grid")
+        .query({ classArmId: bundle.classArmId, subjectId: subjectB, componentId: ca1Id, termId: bundle.termId })
+        .set(auth(sunriseAdminToken));
+      expect(gridB.body.locked).toBe(true);
     });
   });
 

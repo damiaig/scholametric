@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { screen, waitFor, cleanup, act, fireEvent } from "@testing-library/react";
+import { screen, waitFor, cleanup, act, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { GradesGridResponse, SaveGradesGridResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
@@ -23,14 +23,17 @@ const GRID: GradesGridResponse = {
   termId: "term1",
   maxScore: 20,
   requiresApproval: false,
+  termClosed: false,
+  locked: false,
+  unlockReason: null,
   rows: [
-    { studentId: "s1", firstName: "Ada", lastName: "Bello", admissionNumber: "SUN/0001", rawScore: null, status: "DRAFT" },
-    { studentId: "s2", firstName: "Bola", lastName: "Coker", admissionNumber: "SUN/0002", rawScore: null, status: "DRAFT" },
-    { studentId: "s3", firstName: "Chidi", lastName: "Danjuma", admissionNumber: "SUN/0003", rawScore: null, status: "PUBLISHED" },
+    { studentId: "s1", firstName: "Ada", lastName: "Bello", admissionNumber: "SUN/0001", rawScore: null, isAbsent: false, status: "DRAFT" },
+    { studentId: "s2", firstName: "Bola", lastName: "Coker", admissionNumber: "SUN/0002", rawScore: null, isAbsent: false, status: "DRAFT" },
+    { studentId: "s3", firstName: "Chidi", lastName: "Danjuma", admissionNumber: "SUN/0003", rawScore: null, isAbsent: false, status: "PUBLISHED" },
   ],
 };
 
-function savedResponse(scores: { studentId: string; rawScore: number | null }[]): SaveGradesGridResponse {
+function savedResponse(scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[]): SaveGradesGridResponse {
   return {
     classArmId: "arm1",
     subjectId: "sub1",
@@ -40,6 +43,7 @@ function savedResponse(scores: { studentId: string; rawScore: number | null }[])
     rows: scores.map((s) => ({
       studentId: s.studentId,
       rawScore: s.rawScore,
+      isAbsent: s.isAbsent ?? false,
       totalScore: s.rawScore ?? 0,
       autoGrade: null,
       finalGrade: null,
@@ -68,7 +72,7 @@ describe("ScoreEntryGrid", () => {
       if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return GRID;
       throw new Error("unexpected call");
     });
-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
 
     expect(await screen.findByLabelText("Score for Ada Bello")).toBeInTheDocument();
     expect(screen.getByLabelText("Score for Chidi Danjuma")).toBeDisabled();
@@ -85,7 +89,7 @@ describe("ScoreEntryGrid", () => {
       throw new Error("unexpected call");
     });
     const user = userEvent.setup();
-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000 }} />);
+    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000 }} />);
 
     await user.type(await screen.findByLabelText("Score for Ada Bello"), "12");
     await user.type(screen.getByLabelText("Score for Bola Coker"), "18");
@@ -95,8 +99,8 @@ describe("ScoreEntryGrid", () => {
     const body = (options as { body: { scores: { studentId: string; rawScore: number | null }[] } }).body;
     expect(body.scores).toEqual(
       expect.arrayContaining([
-        { studentId: "s1", rawScore: 12 },
-        { studentId: "s2", rawScore: 18 },
+        { studentId: "s1", rawScore: 12, isAbsent: false },
+        { studentId: "s2", rawScore: 18, isAbsent: false },
       ]),
     );
     expect(body.scores).toHaveLength(2);
@@ -114,7 +118,7 @@ describe("ScoreEntryGrid", () => {
     });
     const user = userEvent.setup();
     // debounce longer than the whole test, so only the max-wait ceiling can trigger a flush.
-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 100000, maxWaitMs: 100 }} />);
+    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 100000, maxWaitMs: 100 }} />);
 
     await user.type(await screen.findByLabelText("Score for Ada Bello"), "5");
     await waitFor(() => expect(putCalls().length).toBeGreaterThanOrEqual(1), { timeout: 2000 });
@@ -133,7 +137,7 @@ describe("ScoreEntryGrid", () => {
       throw new Error("unexpected call");
     });
     const user = userEvent.setup();
-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
 
     await user.type(await screen.findByLabelText("Score for Ada Bello"), "9");
     await waitFor(() => expect(screen.getByLabelText("Saving")).toBeInTheDocument());
@@ -161,7 +165,7 @@ describe("ScoreEntryGrid", () => {
       throw new Error("unexpected call");
     });
     const user = userEvent.setup();
-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
 
     const input = await screen.findByLabelText("Score for Ada Bello");
     await user.type(input, "10");
@@ -203,7 +207,7 @@ describe("ScoreEntryGrid", () => {
         throw new Error("unexpected call");
       });
 
-      renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 100, maxWaitMs: 300 }} />);
+      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 100, maxWaitMs: 300 }} />);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
@@ -241,7 +245,7 @@ describe("ScoreEntryGrid", () => {
       });
 
       expect(seenBatches.length).toBe(2);
-      expect(seenBatches[1]).toEqual([{ studentId: "s2", rawScore: 14 }]);
+      expect(seenBatches[1]).toEqual([{ studentId: "s2", rawScore: 14, isAbsent: false }]);
       expect(screen.getAllByLabelText("Saved")).toHaveLength(2);
     } finally {
       vi.useRealTimers();
@@ -269,7 +273,7 @@ describe("ScoreEntryGrid", () => {
       throw new Error("unexpected call");
     });
     const user = userEvent.setup();
-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000, errorRetryMs: 50 }} />);
+    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000, errorRetryMs: 50 }} />);
 
     // s2 gets an out-of-range value the client-side check won't catch here
     // because we're asserting the SERVER-rejection recovery path directly.
@@ -302,7 +306,7 @@ describe("ScoreEntryGrid", () => {
       throw new Error("unexpected call");
     });
     const user = userEvent.setup();
-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000 }} />);
+    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000 }} />);
 
     await user.type(await screen.findByLabelText("Score for Ada Bello"), "10");
     await user.type(screen.getByLabelText("Score for Bola Coker"), "14");
@@ -321,7 +325,7 @@ describe("ScoreEntryGrid", () => {
       return savedResponse([]);
     });
     const user = userEvent.setup();
-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 5000, maxWaitMs: 5000 }} />);
+    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 5000, maxWaitMs: 5000 }} />);
 
     const first = await screen.findByLabelText("Score for Ada Bello");
     const second = screen.getByLabelText("Score for Bola Coker");
@@ -343,11 +347,183 @@ describe("ScoreEntryGrid", () => {
       return savedResponse([]);
     });
     const user = userEvent.setup();
-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 5000, maxWaitMs: 5000 }} />);
+    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 5000, maxWaitMs: 5000 }} />);
 
     const first = await screen.findByLabelText("Score for Ada Bello");
     first.focus();
     await user.tab();
     expect(screen.getByLabelText("Score for Bola Coker")).toHaveFocus();
+  });
+
+  describe("absent (SPEC_V0.5.md §2.1)", () => {
+    it("pressing A in a focused cell marks it absent — distinct from blank and from 0, and saves isAbsent", async () => {
+      mockedApiRequest.mockImplementation(async (path, options) => {
+        const method = (options as { method?: string })?.method;
+        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/grid" && method === "PUT") {
+          const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[] } };
+          return savedResponse(body.body.scores);
+        }
+        throw new Error("unexpected call");
+      });
+      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+
+      const input = await screen.findByLabelText("Score for Ada Bello");
+      input.focus();
+      fireEvent.keyDown(input, { key: "a" });
+
+      expect(input).toHaveValue("Abs");
+      expect(input).toBeDisabled();
+      await waitFor(() =>
+        expect(putCalls().some(([, options]) => {
+          const scores = (options as unknown as { body: { scores: { studentId: string; isAbsent?: boolean }[] } }).body.scores;
+          return scores.some((s) => s.studentId === "s1" && s.isAbsent === true);
+        })).toBe(true),
+      );
+    });
+
+    it("clicking the Abs chip toggles absent the same way as the keyboard shortcut, and pressing A again clears it back to blank (not 0)", async () => {
+      mockedApiRequest.mockImplementation(async (path, options) => {
+        const method = (options as { method?: string })?.method;
+        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/grid" && method === "PUT") {
+          const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[] } };
+          return savedResponse(body.body.scores);
+        }
+        throw new Error("unexpected call");
+      });
+      const user = userEvent.setup();
+      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+
+      const input = await screen.findByLabelText("Score for Bola Coker");
+      const chip = screen.getByLabelText("Mark Bola Coker absent (or press A)");
+      await user.click(chip);
+      expect(input).toHaveValue("Abs");
+      expect(chip).toHaveAttribute("aria-pressed", "true");
+      // Let the toggle-on save settle before toggling off — otherwise this
+      // test ends with a pending debounce timer still armed, which fires
+      // during a LATER test against a since-reconfigured mock.
+      await waitFor(() => expect(putCalls().some(([, o]) => (o as unknown as { body: { scores: { studentId: string }[] } }).body.scores.some((s) => s.studentId === "s2"))).toBe(true));
+
+      await user.click(chip);
+      expect(input).not.toHaveValue("Abs");
+      expect(input).toHaveValue("");
+      expect(chip).toHaveAttribute("aria-pressed", "false");
+      expect(input).not.toBeDisabled();
+      await waitFor(() => expect(putCalls().length).toBeGreaterThanOrEqual(2));
+    });
+
+    it("typing a real score after a prior absent mark clears absent (mutual exclusion)", async () => {
+      mockedApiRequest.mockImplementation(async (path, options) => {
+        const method = (options as { method?: string })?.method;
+        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/grid" && method === "PUT") {
+          const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[] } };
+          return savedResponse(body.body.scores);
+        }
+        throw new Error("unexpected call");
+      });
+      const user = userEvent.setup();
+      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+
+      const input = await screen.findByLabelText("Score for Ada Bello");
+      input.focus();
+      fireEvent.keyDown(input, { key: "a" });
+      expect(input).toHaveValue("Abs");
+
+      // Toggle absent back off first (matches the component's own
+      // mutual-exclusion design — typing is disabled while Abs is shown).
+      fireEvent.keyDown(input, { key: "a" });
+      await user.type(input, "14");
+      expect(input).toHaveValue("14");
+      expect(input).not.toBeDisabled();
+      await waitFor(() => expect(putCalls().length).toBeGreaterThanOrEqual(1));
+    });
+
+    it("a locked (PUBLISHED) cell ignores the A shortcut entirely", async () => {
+      mockedApiRequest.mockImplementation(async (path, options) => {
+        if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return GRID;
+        throw new Error("unexpected call");
+      });
+      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+
+      const input = await screen.findByLabelText("Score for Chidi Danjuma");
+      expect(input).toBeDisabled();
+      // A disabled input can't receive keyboard events via userEvent at
+      // all — the guard under test is really the chip, which stays
+      // disabled and non-interactive for a locked row.
+      const chip = screen.getByLabelText("Mark Chidi Danjuma absent (or press A)");
+      expect(chip).toBeDisabled();
+    });
+  });
+
+  describe("term-closed lock (SPEC_V0.5.md §2.3)", () => {
+    const CLOSED_LOCKED_GRID: GradesGridResponse = { ...GRID, termClosed: true, locked: true, unlockReason: null };
+    const CLOSED_UNLOCKED_GRID: GradesGridResponse = {
+      ...GRID,
+      termClosed: true,
+      locked: false,
+      unlockReason: "Parent requested a correction",
+    };
+
+    it("renders locked from load (every row disabled) with the ask-to-unlock message — TEACHER sees no Unlock control", async () => {
+      mockedApiRequest.mockImplementation(async (path, options) => {
+        if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return CLOSED_LOCKED_GRID;
+        throw new Error("unexpected call");
+      });
+      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} />);
+
+      expect(await screen.findByText(/This term is closed for this class and subject/)).toBeInTheDocument();
+      expect(screen.getByLabelText("Score for Ada Bello")).toBeDisabled();
+      expect(screen.getByLabelText("Score for Bola Coker")).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument();
+    });
+
+    it("SCHOOL_ADMIN/PROPRIETOR sees the Unlock control on a locked term, requires a reason, and unlocking makes the grid editable again", async () => {
+      let unlocked = false;
+      mockedApiRequest.mockImplementation(async (path, options) => {
+        const method = (options as { method?: string })?.method;
+        if (path === "/api/v1/grades/grid" && method !== "PUT") return unlocked ? CLOSED_UNLOCKED_GRID : CLOSED_LOCKED_GRID;
+        if (path === "/api/v1/terms/term1/unlock" && method === "POST") {
+          unlocked = true;
+          return { id: "unlock1", schoolId: "s1", termId: "term1", classArmId: "arm1", subjectId: "sub1", reason: "Parent requested a correction", unlockedBy: "u1", unlockedAt: "t", relockedBy: null, relockedAt: null, createdAt: "t", updatedAt: "t" };
+        }
+        throw new Error("unexpected call");
+      });
+      const user = userEvent.setup();
+      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={true} />);
+
+      await screen.findByText(/This term is closed for this class and subject/);
+      await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+      const dialog = await screen.findByRole("dialog");
+      // Reason required (min 3 chars, matching backend validation) — confirm disabled until then.
+      expect(within(dialog).getByRole("button", { name: "Unlock" })).toBeDisabled();
+      const reasonInput = within(dialog).getByLabelText("Reason");
+      await user.type(reasonInput, "Parent requested a correction");
+      expect(reasonInput).toHaveValue("Parent requested a correction");
+      await waitFor(() => expect(within(dialog).getByRole("button", { name: "Unlock" })).not.toBeDisabled());
+      await user.click(within(dialog).getByRole("button", { name: "Unlock" }));
+
+      await waitFor(() => expect(screen.getByText(/Unlocked for editing/)).toBeInTheDocument());
+      expect(screen.getByText(/Parent requested a correction/)).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByLabelText("Score for Ada Bello")).not.toBeDisabled());
+    });
+
+    it("SCHOOL_ADMIN/PROPRIETOR sees Relock on an unlocked slice; TEACHER sees the reason but no Relock control", async () => {
+      mockedApiRequest.mockImplementation(async (path, options) => {
+        if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return CLOSED_UNLOCKED_GRID;
+        throw new Error("unexpected call");
+      });
+      const { unmount } = renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} />);
+      expect(await screen.findByText(/Unlocked for editing/)).toBeInTheDocument();
+      expect(screen.getByText(/Parent requested a correction/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Relock" })).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Score for Ada Bello")).not.toBeDisabled();
+      unmount();
+
+      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={true} />);
+      expect(await screen.findByRole("button", { name: "Relock" })).toBeInTheDocument();
+    });
   });
 });

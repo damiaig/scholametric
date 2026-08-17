@@ -149,7 +149,11 @@ export function ReviewPublishPage() {
                   type="button"
                   size="sm"
                   disabled={!subject.canPublish}
-                  title={subject.canPublish ? undefined : "Nothing eligible to publish yet — no scores are pending approval."}
+                  title={
+                    subject.canPublish
+                      ? undefined
+                      : "Nothing eligible to publish yet — either no scores are pending approval, or some students still have a blank component."
+                  }
                   onClick={() => setPublishTarget(subject)}
                 >
                   Publish

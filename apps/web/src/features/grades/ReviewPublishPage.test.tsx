@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { screen, cleanup, within } from "@testing-library/react";
+import { screen, cleanup, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { GradesReviewResponse, Paginated, Term, AcademicSession } from "@scholametric/shared";
+import type { AssessmentComponent, GradesReviewResponse, Paginated, Term, AcademicSession } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
-import { apiRequest } from "../../lib/api-client";
+import { apiRequest, ApiError } from "../../lib/api-client";
 import { ReviewPublishPage } from "./ReviewPublishPage";
 
 vi.mock("../../lib/api-client", async (importOriginal) => {
@@ -34,7 +34,7 @@ const SESSIONS: Paginated<AcademicSession> = {
   pageSize: 50,
 };
 const TERMS: Paginated<Term> = {
-  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, createdAt: "t", updatedAt: "t" }],
+  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, closedAt: null, closedBy: null, createdAt: "t", updatedAt: "t" }],
   total: 1,
   page: 1,
   pageSize: 20,
@@ -62,6 +62,10 @@ function mockCommon(role: "SCHOOL_ADMIN" | "PROPRIETOR", review: GradesReviewRes
     if (path === "/api/v1/classes") return CLASSES;
     if (path === "/api/v1/sessions") return SESSIONS;
     if (path === "/api/v1/terms") return TERMS;
+    // PublishConfirmDialog is always mounted (gated internally, not by
+    // conditional render) and fetches this to label a completeness-gate
+    // 409 — fires regardless of whether the dialog is open.
+    if (path === "/api/v1/assessment-components") return [];
     if (path === "/api/v1/grades/review") {
       const query = (options as { query?: Record<string, string> })?.query;
       expect(query?.classArmId).toBe("arm1");
@@ -139,5 +143,47 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText(/recomputes overall positions for the whole class/)).toBeInTheDocument();
+  });
+
+  it("publish 409s with incompleteEntries (the completeness-gate race): shows blocking components grouped, not a generic toast", async () => {
+    const components: AssessmentComponent[] = [
+      { id: "ca1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, deletedAt: null, createdAt: "t", updatedAt: "t" },
+      { id: "examId", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 3, deletedAt: null, createdAt: "t", updatedAt: "t" },
+    ];
+    mockedApiRequest.mockImplementation(async (path, options) => {
+      const method = (options as { method?: string })?.method;
+      if (path === "/api/v1/auth/me") return currentUser("SCHOOL_ADMIN");
+      if (path === "/api/v1/classes") return CLASSES;
+      if (path === "/api/v1/sessions") return SESSIONS;
+      if (path === "/api/v1/terms") return TERMS;
+      if (path === "/api/v1/assessment-components") return components;
+      if (path === "/api/v1/grades/review") return REVIEW_CAN_PUBLISH;
+      if (path === "/api/v1/grades/publish" && method === "POST") {
+        throw new ApiError(409, {
+          statusCode: 409,
+          message: "Cannot publish: 2 student(s) have at least one component that's neither scored nor marked absent.",
+          error: "Conflict",
+          path: "",
+          timestamp: "",
+          incompleteEntries: [
+            { studentId: "st1", componentId: "ca1" },
+            { studentId: "st2", componentId: "examId" },
+            { studentId: "st3", componentId: "examId" },
+          ],
+        });
+      }
+      throw new Error(`unexpected call: ${path}`);
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });
+
+    await screen.findByText("Mathematics");
+    await user.click(screen.getByRole("button", { name: "Publish" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Publish" }));
+
+    await waitFor(() => expect(within(dialog).getByText(/Some students still have a blank component/)).toBeInTheDocument());
+    expect(within(dialog).getByText(/CA 1: 1 student/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Exam: 2 students/)).toBeInTheDocument();
   });
 });

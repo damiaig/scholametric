@@ -11,6 +11,9 @@ export interface GradesGridRow {
   lastName: string;
   admissionNumber: string;
   rawScore: number | null;
+  // SPEC_V0.5.md §2.1 — mutually exclusive with rawScore (never both set).
+  // null+false = blank/not-entered; null+true = "Abs".
+  isAbsent: boolean;
   // Subject-level status (not component-level) — a PUBLISHED row is
   // read-only regardless of which component this grid is viewing. Can be
   // genuinely mixed within one grid (staggered scoring/publishing).
@@ -24,12 +27,21 @@ export interface GradesGridResponse {
   termId: string;
   maxScore: number;
   requiresApproval: boolean;
+  // SPEC_V0.5.md §2.3, v0.5 step 5 — lets the grid render locked/read-only
+  // FROM LOAD, not reactively on a saveGrid 409. termClosed=false always
+  // implies locked=false. unlockReason is populated only when
+  // termClosed && !locked (an active unlock exists for this exact
+  // class-arm+subject).
+  termClosed: boolean;
+  locked: boolean;
+  unlockReason: string | null;
   rows: GradesGridRow[];
 }
 
 export interface SavedGridRow {
   studentId: string;
   rawScore: number | null;
+  isAbsent: boolean;
   totalScore: number;
   autoGrade: string | null;
   finalGrade: string | null;
@@ -48,6 +60,16 @@ export interface SaveGradesGridResponse {
 export interface GridScoreItem {
   studentId: string;
   rawScore: number | null;
+  isAbsent?: boolean;
+}
+
+// The publish() 409's own structured field (SPEC_V0.5.md §2.2, v0.5 step
+// 2) — parallel to ApiErrorBody.lockedStudentIds but a different meaning:
+// locked = already published, blocking further writes; incomplete = not
+// yet publishable (a candidate has a blank component).
+export interface IncompleteEntry {
+  studentId: string;
+  componentId: string;
 }
 
 // Mirrors GradesService.publish()/unpublish()/override() (v0.4 step 3 —

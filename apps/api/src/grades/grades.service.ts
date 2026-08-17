@@ -54,6 +54,16 @@ export interface GradesGridResponse {
   termId: string;
   maxScore: number;
   requiresApproval: boolean;
+  // SPEC_V0.5.md §2.3, v0.5 step 5 — lets the grid render locked/read-only
+  // FROM LOAD, not reactively on a saveGrid 409. termClosed=false always
+  // implies locked=false. unlockReason is populated only when
+  // termClosed && !locked (an active unlock exists for this exact
+  // class-arm+subject) — same lock-state resolution saveGrid enforces
+  // (resolveSliceLockState), so the two can never drift on what "locked"
+  // means.
+  termClosed: boolean;
+  locked: boolean;
+  unlockReason: string | null;
   rows: GradesGridRow[];
 }
 
@@ -328,8 +338,8 @@ export class GradesService {
     const { term, component } = await this.resolveTenantScopeWithComponent(schoolId, query);
     await this.assertTeacherAssignment(schoolId, user, query.subjectId, query.classArmId, term.sessionId);
 
-    const students = await this.getRoster(schoolId, query.classArmId, term.sessionId);
-    const [scores, subjectResults] = await Promise.all([
+    const [students, scores, subjectResults, lockState] = await Promise.all([
+      this.getRoster(schoolId, query.classArmId, term.sessionId),
       this.prisma.studentScore.findMany({
         where: {
           schoolId,
@@ -341,6 +351,12 @@ export class GradesService {
       }),
       this.prisma.termSubjectResult.findMany({
         where: { schoolId, subjectId: query.subjectId, termId: query.termId, sessionId: term.sessionId },
+      }),
+      this.resolveSliceLockState(this.prisma, {
+        termId: query.termId,
+        classArmId: query.classArmId,
+        subjectId: query.subjectId,
+        closedAt: term.closedAt,
       }),
     ]);
     const rawByStudent = new Map(scores.map((s) => [s.studentId, s.rawScore === null ? null : Number(s.rawScore)]));
@@ -354,6 +370,9 @@ export class GradesService {
       termId: query.termId,
       maxScore: component.maxScore,
       requiresApproval: component.requiresApproval,
+      termClosed: term.closedAt !== null,
+      locked: lockState.locked,
+      unlockReason: lockState.unlockReason,
       rows: students.map((s) => ({
         studentId: s.id,
         firstName: s.firstName,
@@ -415,15 +434,23 @@ export class GradesService {
         // doesn't relax it — an unlock grants "may edit this slice," not
         // "may also bypass the separate publish safeguard" (docs/DECISIONS.md).
         const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
-        if (freshTerm.closedAt !== null) {
-          const activeUnlock = await tx.termUnlock.findFirst({
-            where: { termId: dto.termId, classArmId: dto.classArmId, subjectId: dto.subjectId, relockedAt: null },
+        const { locked } = await this.resolveSliceLockState(tx, {
+          termId: dto.termId,
+          classArmId: dto.classArmId,
+          subjectId: dto.subjectId,
+          closedAt: freshTerm.closedAt,
+        });
+        if (locked) {
+          // Structured, same precedent as publishedLockException below — the
+          // grid renders this state from load (GradesGridResponse.locked),
+          // so reaching this 409 in practice means a race (the term closed
+          // or was relocked while this save was already in flight); the
+          // frontend's save queue uses termLocked to transition affected
+          // cells the same way it already does for lockedStudentIds.
+          throw new ConflictException({
+            message: "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
+            termLocked: true,
           });
-          if (!activeUnlock) {
-            throw new ConflictException(
-              "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
-            );
-          }
         }
 
         // Serializes concurrent grid saves for the same subject+class+term
@@ -1670,6 +1697,27 @@ export class GradesService {
       }
     }
     return incomplete;
+  }
+
+  // Shared by getGrid() (so the web can render locked-from-load) and
+  // saveGrid() (the actual enforcement) — SPEC_V0.5.md §2.3, v0.5 step 5.
+  // The two can never drift on what "locked" means, since they call the
+  // exact same term_unlocks lookup. Accepts the caller's already-fetched
+  // `closedAt` rather than re-fetching Term itself — getGrid() has it from
+  // resolveTenantScopeWithComponent, saveGrid() has it from its own fresh
+  // in-lock read (which must stay fresh — see saveGrid()'s own comment on
+  // why that read can't be replaced by the pre-transaction `term` object).
+  private async resolveSliceLockState(
+    tx: Prisma.TransactionClient | PrismaService,
+    params: { termId: string; classArmId: string; subjectId: string; closedAt: Date | null },
+  ): Promise<{ locked: boolean; unlockReason: string | null }> {
+    if (params.closedAt === null) {
+      return { locked: false, unlockReason: null };
+    }
+    const activeUnlock = await tx.termUnlock.findFirst({
+      where: { termId: params.termId, classArmId: params.classArmId, subjectId: params.subjectId, relockedAt: null },
+    });
+    return { locked: !activeUnlock, unlockReason: activeUnlock?.reason ?? null };
   }
 
   // Structured, not just a count: the caller (a director/owner UI) needs
