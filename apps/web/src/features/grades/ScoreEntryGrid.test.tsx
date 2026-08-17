@@ -372,7 +372,14 @@ describe("ScoreEntryGrid", () => {
       input.focus();
       fireEvent.keyDown(input, { key: "a" });
 
-      expect(input).toHaveValue("Abs");
+      // fireEvent.keyDown itself is synchronous, but the resulting reducer
+      // dispatch (onToggleAbsent) reaching this row's cellState prop is
+      // not guaranteed to have flushed by the very next line — a bare
+      // synchronous assert here was observed flaky in CI (passed locally
+      // every time, failed intermittently on the GitHub Actions runner).
+      // waitFor makes the assertion robust to that timing variance instead
+      // of assuming same-tick propagation.
+      await waitFor(() => expect(input).toHaveValue("Abs"));
       expect(input).toBeDisabled();
       await waitFor(() =>
         expect(putCalls().some(([, options]) => {
@@ -429,11 +436,14 @@ describe("ScoreEntryGrid", () => {
       const input = await screen.findByLabelText("Score for Ada Bello");
       input.focus();
       fireEvent.keyDown(input, { key: "a" });
-      expect(input).toHaveValue("Abs");
+      // Same same-tick-propagation caution as the test above — wait rather
+      // than assume the reducer dispatch has already flushed.
+      await waitFor(() => expect(input).toHaveValue("Abs"));
 
       // Toggle absent back off first (matches the component's own
       // mutual-exclusion design — typing is disabled while Abs is shown).
       fireEvent.keyDown(input, { key: "a" });
+      await waitFor(() => expect(input).not.toBeDisabled());
       await user.type(input, "14");
       expect(input).toHaveValue("14");
       expect(input).not.toBeDisabled();

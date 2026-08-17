@@ -2946,3 +2946,25 @@ lint clean; a chromium-cli live-stack walk rendering a real student's card
 as the class teacher, confirming a subject-only teacher sees no form,
 writing a principal remark as admin, and a print-preview screenshot
 showing the chrome-free card.
+
+**Flaky pre-existing test found and fixed while confirming CI green**: the
+pushed commit's GitHub Actions run failed — not from anything in this
+step, but a step-5 test (`ScoreEntryGrid.test.tsx`, "pressing A... marks
+it absent") that asserted `expect(input).toHaveValue("Abs")` on the line
+immediately after a bare `fireEvent.keyDown`, with no `await`/`waitFor` in
+between. That assumes the resulting reducer dispatch has already flushed
+to this row's `cellState` prop by the very next synchronous line — true
+often enough to pass consistently on a local machine, not guaranteed by
+React's own contract, and it did occasionally lose the race on GitHub's
+runner. Confirmed by reproducing the CI environment exactly (fresh
+worktree at the pushed commit, throwaway Postgres/Redis matching the
+workflow's ports, `pnpm install --frozen-lockfile`, same env vars) — that
+reproduction passed clean, which combined with the actual CI log (fetched
+via the local git credential helper's stored token, since the Actions
+logs API otherwise needs write access) pinpointed the exact assertion.
+Fixed by wrapping the two same-shaped assertions (this test and the
+mutual-exclusion test right after it) in `waitFor`, not by switching to
+`userEvent` — preserving the file's deliberate `fireEvent` choice for
+precise keyboard-shortcut control (see the step-5 entry above) while
+removing the same-tick assumption. Re-confirmed green in the same
+reproduced CI environment before repushing.
