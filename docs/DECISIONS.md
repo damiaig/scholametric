@@ -2948,23 +2948,44 @@ writing a principal remark as admin, and a print-preview screenshot
 showing the chrome-free card.
 
 **Flaky pre-existing test found and fixed while confirming CI green**: the
-pushed commit's GitHub Actions run failed — not from anything in this
-step, but a step-5 test (`ScoreEntryGrid.test.tsx`, "pressing A... marks
-it absent") that asserted `expect(input).toHaveValue("Abs")` on the line
-immediately after a bare `fireEvent.keyDown`, with no `await`/`waitFor` in
-between. That assumes the resulting reducer dispatch has already flushed
-to this row's `cellState` prop by the very next synchronous line — true
-often enough to pass consistently on a local machine, not guaranteed by
-React's own contract, and it did occasionally lose the race on GitHub's
-runner. Confirmed by reproducing the CI environment exactly (fresh
-worktree at the pushed commit, throwaway Postgres/Redis matching the
-workflow's ports, `pnpm install --frozen-lockfile`, same env vars) — that
-reproduction passed clean, which combined with the actual CI log (fetched
-via the local git credential helper's stored token, since the Actions
-logs API otherwise needs write access) pinpointed the exact assertion.
-Fixed by wrapping the two same-shaped assertions (this test and the
-mutual-exclusion test right after it) in `waitFor`, not by switching to
-`userEvent` — preserving the file's deliberate `fireEvent` choice for
-precise keyboard-shortcut control (see the step-5 entry above) while
-removing the same-tick assumption. Re-confirmed green in the same
-reproduced CI environment before repushing.
+pushed commit's GitHub Actions run failed on two step-5 tests in
+`ScoreEntryGrid.test.tsx` ("pressing A... marks it absent" and the
+mutual-exclusion test) — not anything in this step. Diagnosed over two
+rounds:
+
+Round 1 (wrong): assumed a same-tick propagation race (bare
+`expect(input).toHaveValue("Abs")` immediately after `fireEvent.keyDown`,
+no `await` in between) and wrapped the assertions in `waitFor`. This did
+NOT fix it — the same two tests failed again on the next push, with the
+value coming back completely empty (not just late), which a 1000ms
+`waitFor` should have absorbed if it were only slow flushing.
+
+Round 2 (the real bug): the mutual-exclusion test's SECOND `fireEvent
+.keyDown(input, { key: "a" })` — toggling absent back off — targets an
+input that is, by that point, `disabled` (isAbsent sets `isDisabled` in
+`ScoreEntryRow`). `fireEvent` dispatches DOM events directly, bypassing
+the disabled check a real browser enforces; a real user (and `userEvent`,
+which respects it) cannot send keyboard input to a disabled element at
+all — the only actually-reachable control at that point is the Abs chip.
+The test was exercising a state transition that isn't reachable through
+real interaction, and evidently something about how a disabled-element
+keydown gets processed differs between the local (macOS) and CI (Ubuntu)
+jsdom/Node environment enough to make it silently no-op only sometimes.
+Fixed by switching both tests to `userEvent` throughout — `user.click
+(input)` + `user.keyboard("a")` for the initial toggle-on (matching how
+the file's OTHER absent-toggle test, which never flaked, already worked),
+and clicking the chip (not a second keypress) to toggle back off, which
+is what a real user would actually have to do once the input is disabled.
+
+Confirmed via: reproducing the CI environment exactly (fresh worktree at
+each pushed commit, throwaway Postgres/Redis matching the workflow's
+ports, `pnpm install --frozen-lockfile`, identical env vars) — which
+passed even on the broken Round 1 commit, correctly signaling that "fresh
+install on the same machine" wasn't the actual differentiator; the real
+CI logs (fetched via the local git credential helper's stored token,
+since the Actions logs API needs write access otherwise) were what
+actually pinpointed both the failing assertion and, on the second round,
+its "received: empty" detail that ruled out pure timing. Re-confirmed
+green locally (typecheck, lint, full Vitest suite) before the final
+repush; GitHub Actions itself is the authoritative confirmation once that
+push lands.

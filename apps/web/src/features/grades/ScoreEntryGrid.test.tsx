@@ -366,19 +366,21 @@ describe("ScoreEntryGrid", () => {
         }
         throw new Error("unexpected call");
       });
+      const user = userEvent.setup();
       renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
 
       const input = await screen.findByLabelText("Score for Ada Bello");
-      input.focus();
-      fireEvent.keyDown(input, { key: "a" });
+      // userEvent, not a bare input.focus() + fireEvent.keyDown — the raw
+      // fireEvent path was observed flaky specifically on the GitHub
+      // Actions runner (passed locally every time, intermittently failed
+      // in CI with the value never updating at all, not just late) while
+      // this file's OTHER absent-toggle test, which already used
+      // userEvent throughout, never flaked. userEvent's own dispatch +
+      // flush pipeline is more thoroughly exercised than a raw
+      // fireEvent+manual-focus combo, so prefer it for this interaction.
+      await user.click(input);
+      await user.keyboard("a");
 
-      // fireEvent.keyDown itself is synchronous, but the resulting reducer
-      // dispatch (onToggleAbsent) reaching this row's cellState prop is
-      // not guaranteed to have flushed by the very next line — a bare
-      // synchronous assert here was observed flaky in CI (passed locally
-      // every time, failed intermittently on the GitHub Actions runner).
-      // waitFor makes the assertion robust to that timing variance instead
-      // of assuming same-tick propagation.
       await waitFor(() => expect(input).toHaveValue("Abs"));
       expect(input).toBeDisabled();
       await waitFor(() =>
@@ -434,15 +436,20 @@ describe("ScoreEntryGrid", () => {
       renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
 
       const input = await screen.findByLabelText("Score for Ada Bello");
-      input.focus();
-      fireEvent.keyDown(input, { key: "a" });
-      // Same same-tick-propagation caution as the test above — wait rather
-      // than assume the reducer dispatch has already flushed.
+      // userEvent throughout — see the sibling test above for why a bare
+      // fireEvent.keyDown was dropped here (flaked on the GitHub Actions
+      // runner specifically).
+      await user.click(input);
+      await user.keyboard("a");
       await waitFor(() => expect(input).toHaveValue("Abs"));
 
-      // Toggle absent back off first (matches the component's own
-      // mutual-exclusion design — typing is disabled while Abs is shown).
-      fireEvent.keyDown(input, { key: "a" });
+      // Toggle absent back off via the chip, not a second "a" keypress on
+      // the input — once isAbsent, the input is `disabled`, and a disabled
+      // element genuinely cannot receive keyboard input from userEvent (or
+      // a real browser); the chip is the only actually-reachable control
+      // at that point, same reasoning as "a locked cell ignores the A
+      // shortcut" below.
+      await user.click(screen.getByLabelText("Mark Ada Bello absent (or press A)"));
       await waitFor(() => expect(input).not.toBeDisabled());
       await user.type(input, "14");
       expect(input).toHaveValue("14");
