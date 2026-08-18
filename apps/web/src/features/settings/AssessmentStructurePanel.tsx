@@ -13,6 +13,7 @@ import {
 import { Card, CardContent } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
+import { Checkbox } from "../../components/ui/checkbox";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { FieldError } from "../../components/FieldError";
@@ -28,8 +29,19 @@ const formSchema = z.object({
 });
 type FormValues = z.infer<typeof formSchema>;
 
+// v0.5 acceptance-walk fix: this used to drop requiresApproval entirely,
+// so every save round-tripped it as omitted -> defaulted false server-side
+// for EVERY component, tripping the zero-approval-component rejection on
+// every single save (not just a deliberate bad one). See docs/DECISIONS.md.
 function toFormValues(items: AssessmentComponent[]): FormValues {
-  return { components: items.map((item) => ({ name: item.name, weight: item.weight, sortOrder: item.sortOrder })) };
+  return {
+    components: items.map((item) => ({
+      name: item.name,
+      weight: item.weight,
+      sortOrder: item.sortOrder,
+      requiresApproval: item.requiresApproval,
+    })),
+  };
 }
 
 export function AssessmentStructurePanel() {
@@ -82,7 +94,9 @@ export function AssessmentStructurePanel() {
   const crossItem = validateAssessmentComponentsSet(watchedComponents ?? []);
 
   function addComponent() {
-    append({ name: "", weight: 1, sortOrder: fields.length });
+    // requiresApproval defaults false for a newly-added component — a new
+    // row isn't automatically the exam; the admin opts it in explicitly.
+    append({ name: "", weight: 1, sortOrder: fields.length, requiresApproval: false });
   }
 
   const onSubmit = handleSubmit((values) => {
@@ -131,6 +145,13 @@ export function AssessmentStructurePanel() {
                     {...register(`components.${index}.sortOrder`, { valueAsNumber: true })}
                   />
                   <FieldError message={errors.components?.[index]?.sortOrder?.message} />
+                </div>
+                <div className="flex w-full flex-col gap-1.5 sm:w-44">
+                  <Label htmlFor={`component-${index}-requires-approval`}>Requires approval</Label>
+                  <div className="flex h-10 items-center gap-2">
+                    <Checkbox id={`component-${index}-requires-approval`} {...register(`components.${index}.requiresApproval`)} />
+                    <span className="text-xs text-muted">Gates publish (e.g. the exam)</span>
+                  </div>
                 </div>
                 <Button
                   type="button"

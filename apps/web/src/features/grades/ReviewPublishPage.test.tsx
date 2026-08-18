@@ -147,8 +147,8 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
 
   it("publish 409s with incompleteEntries (the completeness-gate race): shows blocking components grouped, not a generic toast", async () => {
     const components: AssessmentComponent[] = [
-      { id: "ca1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, deletedAt: null, createdAt: "t", updatedAt: "t" },
-      { id: "examId", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 3, deletedAt: null, createdAt: "t", updatedAt: "t" },
+      { id: "ca1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
+      { id: "examId", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 3, requiresApproval: true, deletedAt: null, createdAt: "t", updatedAt: "t" },
     ];
     mockedApiRequest.mockImplementation(async (path, options) => {
       const method = (options as { method?: string })?.method;

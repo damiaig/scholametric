@@ -25,15 +25,25 @@ export interface AssessmentComponent {
   name: string;
   weight: number;
   sortOrder: number;
+  // v0.5 acceptance-walk fix: this was missing from the mirror entirely,
+  // which is how AssessmentStructurePanel shipped never round-tripping it
+  // in the first place (see assessmentComponentItemSchema below).
+  requiresApproval: boolean;
   deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
+// requiresApproval is REQUIRED here (unlike the backend DTO's @IsOptional,
+// which exists for other API consumers) — the form always has a definite
+// boolean per row via the checkbox below, and making it required is what
+// stops a future edit from silently omitting it again the way this
+// shipped originally (v0.5 acceptance-walk finding #1, docs/DECISIONS.md).
 export const assessmentComponentItemSchema = z.object({
   name: z.string().min(1, "Name is required"),
   weight: z.coerce.number().int("Weight must be a whole number").min(1, "Weight must be at least 1"),
   sortOrder: z.coerce.number().int().min(0),
+  requiresApproval: z.boolean(),
 });
 export type AssessmentComponentItemInput = z.infer<typeof assessmentComponentItemSchema>;
 
@@ -62,6 +72,17 @@ export function validateAssessmentComponentsSet(
   const names = items.map((item) => item.name.trim().toLowerCase());
   if (new Set(names).size !== names.length) {
     return { isValid: false, totalWeight, error: "Component names must be unique." };
+  }
+  // Mirrors AssessmentComponentsService.validate()'s gap-1/Q7 rule exactly
+  // (same message) — catching this client-side before the round trip is
+  // the whole point of the fix: a save that would 400 anyway is blocked
+  // with a clear reason instead of every edit failing opaquely.
+  if (!items.some((item) => item.requiresApproval === true)) {
+    return {
+      isValid: false,
+      totalWeight,
+      error: "At least one component must require approval, or results can never be published.",
+    };
   }
   return { isValid: true, totalWeight };
 }

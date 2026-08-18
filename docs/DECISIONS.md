@@ -2989,3 +2989,89 @@ its "received: empty" detail that ruled out pure timing. Re-confirmed
 green locally (typecheck, lint, full Vitest suite) before the final
 repush; GitHub Actions itself is the authoritative confirmation once that
 push lands.
+
+## 2026-08-17 — pre-tag v0.5 fix: Assessment Structure save was broken for any edit; assessment-components e2e now uses a scratch school
+
+**The bug** (acceptance-walk finding #1): `AssessmentStructurePanel`'s form
+never had a `requiresApproval` field at all — `toFormValues`/`addComponent`
+only carried name/weight/sortOrder. Every save round-tripped
+`requiresApproval` as omitted; the backend defaults an omitted value to
+`false` per item (`item.requiresApproval ?? false` in
+`AssessmentComponentsService.replaceAll`), so a save ALWAYS submitted zero
+approval components — tripping the Q7 zero-approval-lockout check
+(`docs/DECISIONS.md`, gap-1 fix) on every single save, not just a
+deliberate bad one. A harmless weight nudge (CA1 −1, CA2 +1, still summing
+to 100) 400'd with "At least one component must require approval." No
+admin could rename, reweight, or add/remove a component via the UI at
+all — the acceptance walk only caught this because it drove the real form
+through a real save, not a mocked one.
+
+**The fix**: `requiresApproval` is now a real, required field throughout
+the mirror — `AssessmentComponent` (shared type), `assessmentComponentItemSchema`
+(now `z.boolean()`, not omitted — deliberately required on the frontend
+schema even though the backend DTO's own `@IsOptional()` stays as-is for
+other API consumers), `toFormValues` (loads and preserves it per existing
+component), `addComponent` (defaults `false` for a new row — a new
+component isn't automatically the exam). A `Checkbox` UI primitive
+(`components/ui/checkbox.tsx`, styled to match `Input`) gives each row a
+real "Requires approval" control — the only place in the UI that can
+designate which component gates publish, previously not achievable
+through the interface at all.
+
+**Client-side validation**: `validateAssessmentComponentsSet` (the
+shared, hand-mirrored copy of the backend's rules — same file/pattern as
+the weight-sum and unique-name checks it already had) now also mirrors
+the Q7 rule verbatim, so a zero-approval state is caught and explained
+before the round trip, not discovered as a raw 400. The Save button's
+existing `disabled={!crossItem.isValid}` wiring picked this up for free —
+no new UI needed for the block itself, only for the toggle control that
+lets an admin *avoid* the zero-approval state in the first place.
+
+**Also fixed (finding #2): `assessment-components.e2e-spec.ts` was
+mutating the real seeded Sunrise tenant.** Unlike every other grades e2e
+spec (`terms.e2e-spec.ts`'s `createScratchBundle`, etc.), assessment
+components have no session/term/class-arm to scope a scratch bundle
+into — they're school-wide, one set per school, full stop. The original
+file's tests PUT directly against `admin@sunrise.test`'s real school, with
+an `afterAll` that tried to restore the original set via another real PUT
+— which doesn't restore original component ids (every PUT without an
+existing `id` creates fresh rows), so a full-suite run against the
+persistent local dev DB left Sunrise with soft-deleted originals and a
+new component set, exactly the "duplicate-looking" mess the acceptance
+walk tripped over. Fixed by giving the suite its own scratch SCHOOL
+(via the real `POST /schools`, same as `schools-crud.e2e-spec.ts`'s own
+scratch-school pattern) with its own admin, seeded with a baseline
+structure in `beforeAll` — every PUT test now runs there, never Sunrise.
+`afterAll` deletes the scratch school's assessment_components,
+refresh_tokens (from `loginAs`), audit_logs (from the `@Audit()`-decorated
+PUT calls), users, then the school itself, in FK order — full teardown,
+nothing left behind. The four purely-read-only GET tests (verifying the
+real seeded structure loads correctly) and the "TEACHER cannot PUT" test
+(a `RolesGuard` rejection before any tenant logic runs) still use the real
+seeded tokens — they're genuinely harmless and worth keeping as a live
+check that seed.ts's own baseline is intact.
+
+**Not fixed, flagged for a follow-up**: `grade-boundaries.e2e-spec.ts` has
+the identical structural issue (also school-wide, also PUTs the real
+Sunrise tenant directly, also tries to restore via a real PUT in
+`afterAll`) — out of scope for this fix (only asked for the assessment-
+components file), but the exact same scratch-school pattern applies
+directly if/when it's worth doing.
+
+**Also noticed, not fixed** (out of scope — only `requiresApproval` was
+reported broken): `maxScore` has the identical latent defaulting bug
+(`item.maxScore ?? 100` in the same `replaceAll`, also absent from the
+frontend form entirely) — currently harmless only because every seeded
+component already happens to use its default maxScore, so no edit has yet
+observably reset one. Worth the same treatment if a school ever
+configures a non-default maxScore.
+
+**Proof**: 4 new Vitest tests in `AssessmentStructurePanel.test.tsx`
+(weight-only edit preserves each component's flag — the exact failing
+walk case, reproduced; requiresApproval included in the save payload;
+toggling the checkbox round-trips; unchecking every box blocks save
+client-side with the Q7 message, no PUT ever fires) — 151 total, up from
+148. `assessment-components.e2e-spec.ts` unchanged in count (13 tests)
+but now scratch-school-isolated; full backend e2e suite (298) unaffected.
+Live re-verification of the exact walk failure: the CA1 −1 / CA2 +1
+weight nudge now saves successfully end to end on a fresh stack.

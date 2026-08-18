@@ -36,7 +36,7 @@ const TEACHING: MyTeaching = {
 };
 
 const COMPONENTS: AssessmentComponent[] = [
-  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, deletedAt: null, createdAt: "t", updatedAt: "t" },
+  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
 ];
 
 beforeEach(() => {
