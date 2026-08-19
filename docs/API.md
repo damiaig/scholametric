@@ -370,6 +370,12 @@ so the arm page's remove action can target
 `DELETE /subject-assignments/:id` directly — mirrors the same fix already
 made to `GET /teachers/:userId`'s `subjectsTaught` in step 5.
 
+**Response `403`** (SPEC_V0.5.1.md §2.4, v0.5.1 step 2): a `TEACHER` who is
+neither the class-teacher of this arm nor holds any subject assignment in
+it this session — `"You are not assigned to this class."`, same rule and
+same wording `GET /class-arms/:id/results` already used for this exact
+situation. `SCHOOL_ADMIN`/`PROPRIETOR` unaffected, any arm in their school.
+
 ### `GET /class-arms/:id/results?termId=` (v0.4 step 5, SPEC_V0.4.md §2)
 
 Grades overview — same role list as the plain `:id` GET above
@@ -880,9 +886,14 @@ scale with the number of levels/arms/students (SPEC_V0.2.md §5).
 ]
 ```
 
----
-
-## Audit logs (v0.2 step 3, SPEC_V0.2.md §2)
+**`TEACHER` scoping** (SPEC_V0.5.1.md §2.4, v0.5.1 step 2): the SQL above
+is unchanged and still runs for every role — `SCHOOL_ADMIN`/`PROPRIETOR`
+get its result as-is. For `TEACHER`, the arm list is then filtered in
+application code to arms they're the class-teacher of or hold a subject
+assignment in this session (same relationship `GET /class-arms/:id`'s
+`403` and grade-read access use — one shared helper, can't drift). Levels
+left with zero visible arms after filtering are dropped, not returned
+empty. A teacher with no assignments at all this session gets `[]`.
 
 `PROPRIETOR`/`SCHOOL_ADMIN` only. Pays the v0.1 debt (the student History
 tab's placeholder note).

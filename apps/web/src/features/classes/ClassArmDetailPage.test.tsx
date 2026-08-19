@@ -87,4 +87,35 @@ describe("ClassArmDetailPage", () => {
     expect(screen.queryByRole("button", { name: /Change|Assign/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Add subject teacher/ })).not.toBeInTheDocument();
   });
+
+  // SPEC_V0.5.1.md §2.4/v0.5.1 step 2: a teacher opening a class they don't
+  // teach now gets a 403 from the backend — the page's existing generic
+  // error branch (used for every other failed load in this app) already
+  // surfaces it as a readable sentence, not a crash or blank page.
+  it("TEACHER: a class they don't teach shows the backend's 403 message, not a crash", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...SCHOOL_ADMIN_USER, role: "TEACHER" };
+      if (path.includes("/class-arms/arm-1")) {
+        const { ApiError } = await import("../../lib/api-client");
+        throw new ApiError(403, {
+          statusCode: 403,
+          message: "You are not assigned to this class.",
+          error: "Forbidden",
+          path: "/api/v1/class-arms/arm-1",
+          timestamp: new Date().toISOString(),
+        });
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
+      </Routes>,
+      { route: "/classes/arms/arm-1" },
+    );
+
+    expect(await screen.findByText("You are not assigned to this class.")).toBeInTheDocument();
+  });
 });

@@ -3173,3 +3173,79 @@ updated Vitest cases (`ScoreEntryGridPage` admin picker scoping — 3 new;
 green on a fresh `docker compose down -v` → migrate → seed database;
 `docker compose up -d --build` boots the full stack from scratch
 (api + web images rebuilt, `/health` returns `{"status":"ok","db":true,"redis":true}`).
+
+## 2026-08-19 — v0.5.1 step 2: teacher visibility scoping (SPEC_V0.5.1.md §2.4)
+
+**Rule**: a `TEACHER`'s Classes list (`GET /classes`) and class-arm detail
+(`GET /class-arms/:id`) are scoped to arms they're the class-teacher of or
+hold a subject assignment in this session — Q3's approved definition.
+`SCHOOL_ADMIN`/`PROPRIETOR` unchanged, both endpoints. This is visibility
+only: grade access (`getClassArmResults`/`getStudentResults`/
+`getReportCard`/grid entry) already enforced the identical relationship
+before this step and none of it changed.
+
+**Single-sourced, not a second definition**: `resolveTeacherAccess`
+(previously private to `GradesService`) is extracted to
+`apps/api/src/grades/teacher-access.util.ts` verbatim — same signature
+shape (now a params object instead of positional args), same behavior,
+same four call sites inside `GradesService` unaffected. Alongside it,
+`resolveTeacherArmIds` — the "list every arm this teacher touches" form
+`GET /classes` needs — is built on the exact same two queries
+(`classTeacherAssignment`/`subjectTeacherAssignment`, just not narrowed to
+one arm), so "a teacher's classes" for visibility and "a teacher's access"
+for grades can't drift into two different rules over time.
+
+**Branch, not a scope parameter**: both `ClassesService.findAll()` and
+`ClassArmsService.findOne()` take the exact same query path for
+`SCHOOL_ADMIN`/`PROPRIETOR` as before this step — the `TEACHER` case is an
+early branch, not a filter threaded through the shared query. Confirmed
+via the existing `GET /classes` "constant query count, not N+1" e2e test,
+which asserts on the admin token and is unaffected (no extra queries run
+on that path at all).
+
+**Class-arm detail 403, not 404** (Flag 1): a `TEACHER` requesting an arm
+they don't teach gets `403 "You are not assigned to this class."` —
+verbatim reuse of `getClassArmResults()`'s existing message for the
+identical situation, not a new one. Matches the standing convention in
+this codebase: `403` for a same-tenant relationship gap, `404` reserved
+for cross-tenant/nonexistent. A missing current session also naturally
+`403`s a teacher (no session means no assignment can exist) rather than
+needing a special case. The Classes list has no equivalent "which
+resource" question — a teacher with zero assignments gets `200 []`, same
+pattern as `ScoreEntryGridPage`'s existing empty-assignments state.
+
+**`GET /students`/Global Search deliberately left untouched** (Flag 3):
+2.4's own wording ("Classes list and student visibility... within those
+classes they teach") reads as the class-arm roster, not the general
+student directory — and `GET /students/:id`'s non-scoping is already
+documented (`docs/API.md`) as a deliberate v0.1 decision, not a gap.
+**Flagged for Dami, not decided here**: `GET /students` is what Global
+Search hits directly (`use-global-student-search.ts`) — a teacher can
+currently find and open any student in the school from the sidebar search
+box, same as before this step. Whether that should narrow to a teacher's
+own students too is a product call his re-pass (which was specifically
+about opening a class and seeing its roster) didn't ask for — surfacing it
+here rather than silently scoping or silently leaving it.
+
+**Test hygiene**: every seeded Sunrise teacher already gets round-robined
+into a class-teacher assignment across ALL real arms by
+`seedClassTeacherAssignments` — none of them are safe "sees nothing"
+fixtures against live seed data. The new spec creates one dedicated
+teacher user with zero assignments anywhere (mirrors the scratch-
+proprietor pattern from `grades-publish.e2e-spec.ts`), then builds three
+scratch arms (class-teacher/subject-teacher/unrelated) to get an exact,
+uncontaminated assertion.
+
+**Proof**: new `teacher-visibility.e2e-spec.ts` (6 tests: empty list for a
+zero-assignment teacher; `GET /classes` returns exactly the class-teacher
++ subject-teacher arms, never the unrelated one, and never an empty-arms
+level; `GET /class-arms/:id` 200s with full roster for both; 403s for the
+unrelated arm with the exact message; admin/proprietor see all three arms
+unfiltered; cross-tenant 404 both directions). Plus 2 new web Vitest cases
+(`ClassesPage` renders only a teacher-scoped mock response's arms;
+`ClassArmDetailPage` surfaces the 403 as a readable sentence, not a
+crash). Full `pnpm run ci` (typecheck + lint + 28 e2e suites/308 tests +
+29 web Vitest files/160 tests + unit) green on a fresh
+`docker compose down -v` → migrate → seed database (no new migration —
+this step is queries/logic only); `docker compose up -d --build` boots
+the full stack from scratch, `/health` reports `db: true, redis: true`.

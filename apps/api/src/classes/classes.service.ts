@@ -1,6 +1,10 @@
 import { Injectable } from "@nestjs/common";
+import { UserRole } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
+import { forSchool } from "../common/tenant/for-school";
+import type { AuthenticatedUser } from "../common/types/authenticated-user";
+import { resolveTeacherArmIds } from "../grades/teacher-access.util";
 
 interface ClassesRow {
   levelId: string;
@@ -42,7 +46,17 @@ export class ClassesService {
   // enrollmentCount 0 and classTeacher null (the CTE returns no rows, so
   // every session-scoped join condition compares against NULL and never
   // matches — not a special case in the SQL).
-  async findAll(): Promise<ClassesLevelSummary[]> {
+  //
+  // SPEC_V0.5.1.md §2.4/v0.5.1 step 2: SCHOOL_ADMIN/PROPRIETOR fall
+  // through unchanged (same query, same response, as before this step —
+  // an early return, not a scope parameter threaded through the query
+  // above). TEACHER gets the tree filtered to arms they're the class-
+  // teacher of or hold a subject assignment in this session — the exact
+  // same relationship resolveTeacherAccess uses for grade-read access
+  // (resolveTeacherArmIds is its "list every arm" counterpart), so this
+  // can't drift from the grade-access rule. Levels left with zero visible
+  // arms after filtering are dropped, not shown empty.
+  async findAll(user: AuthenticatedUser): Promise<ClassesLevelSummary[]> {
     const schoolId = this.tenantContext.schoolId;
 
     const rows = await this.prisma.$queryRaw<ClassesRow[]>`
@@ -87,6 +101,19 @@ export class ClassesService {
       });
     }
 
-    return [...levelsById.values()].sort((a, b) => a.rank - b.rank);
+    const levels = [...levelsById.values()].sort((a, b) => a.rank - b.rank);
+
+    if (user.role !== UserRole.TEACHER) {
+      return levels;
+    }
+
+    const currentSession = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
+    const armIds = currentSession
+      ? await resolveTeacherArmIds(this.prisma, { schoolId, teacherUserId: user.userId, sessionId: currentSession.id })
+      : new Set<string>();
+
+    return levels
+      .map((level) => ({ ...level, arms: level.arms.filter((arm) => armIds.has(arm.id)) }))
+      .filter((level) => level.arms.length > 0);
   }
 }

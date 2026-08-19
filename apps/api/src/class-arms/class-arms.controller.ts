@@ -30,8 +30,8 @@ export class ClassArmsController {
   // above (SPEC_V0.2.md §2 — this is the Classes tab's arm-detail page).
   @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN, UserRole.TEACHER)
   @Get(":id")
-  findOne(@Param("id", ParseUUIDPipe) id: string, @Query() query: PaginationQueryDto) {
-    return this.classArmsService.findOne(id, query.page, query.pageSize);
+  findOne(@Param("id", ParseUUIDPipe) id: string, @Query() query: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.classArmsService.findOne(id, query.page, query.pageSize, user);
   }
 
   // Grades overview (SPEC_V0.4.md §2/§4 step 5) — TEACHER readable too,

@@ -18,6 +18,7 @@ import {
 } from "../grades/grade-computation";
 import { termLockKey, subjectLockKey as buildSubjectLockKey, classArmLockKey as buildClassArmLockKey } from "./lock-keys";
 import { getAssignedSubjectMap } from "./subject-assignment.util";
+import { resolveTeacherAccess } from "./teacher-access.util";
 import { GetGradesGridQueryDto } from "./dto/get-grades-grid-query.dto";
 import { SaveGradesGridDto } from "./dto/save-grades-grid.dto";
 import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
@@ -247,11 +248,6 @@ export interface StudentResultsResponse {
   // null when the student has zero term_subject_results this term (nothing
   // entered at all yet) — distinct from a real overall stuck at DRAFT.
   overall: StudentResultOverall | null;
-}
-
-interface TeacherAccess {
-  isClassTeacher: boolean;
-  subjectIds: string[];
 }
 
 // SPEC_V0.5.md §2.4, v0.5 step 4. A component with NO student_scores row at
@@ -994,7 +990,7 @@ export class GradesService {
     let visibleSubjectIds: Set<string> | null = null; // null = no filter (admin/owner/class-teacher)
     let includeOverall = true;
     if (user.role === UserRole.TEACHER) {
-      const access = await this.resolveTeacherAccess(schoolId, user.userId, classArmId, term.sessionId);
+      const access = await resolveTeacherAccess(this.prisma, { schoolId, teacherUserId: user.userId, classArmId, sessionId: term.sessionId });
       if (!access.isClassTeacher && access.subjectIds.length === 0) {
         throw new ForbiddenException("You are not assigned to this class.");
       }
@@ -1201,7 +1197,7 @@ export class GradesService {
     if (!enrollment) throw new NotFoundException("Student has no enrollment for this session.");
 
     if (user.role === UserRole.TEACHER) {
-      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, query.sessionId);
+      const access = await resolveTeacherAccess(this.prisma, { schoolId, teacherUserId: user.userId, classArmId: enrollment.classArmId, sessionId: query.sessionId });
       if (!access.isClassTeacher && access.subjectIds.length === 0) {
         throw new ForbiddenException("You do not teach this student.");
       }
@@ -1302,7 +1298,7 @@ export class GradesService {
     if (!enrollment) throw new NotFoundException("Student has no enrollment for this session.");
 
     if (user.role === UserRole.TEACHER) {
-      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, query.sessionId);
+      const access = await resolveTeacherAccess(this.prisma, { schoolId, teacherUserId: user.userId, classArmId: enrollment.classArmId, sessionId: query.sessionId });
       if (!access.isClassTeacher && access.subjectIds.length === 0) {
         throw new ForbiddenException("You do not teach this student.");
       }
@@ -1430,7 +1426,7 @@ export class GradesService {
     const { schoolId, enrollment } = await this.resolveRemarkTarget(studentId, dto);
 
     if (user.role === UserRole.TEACHER) {
-      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, dto.sessionId);
+      const access = await resolveTeacherAccess(this.prisma, { schoolId, teacherUserId: user.userId, classArmId: enrollment.classArmId, sessionId: dto.sessionId });
       if (!access.isClassTeacher) {
         throw new ForbiddenException("Only this class's class teacher may write the teacher remark.");
       }
@@ -1843,24 +1839,4 @@ export class GradesService {
     return { term };
   }
 
-  // The one unifying "what can this teacher see in this class arm" rule,
-  // shared by getClassArmResults() and getStudentResults() — each consumes
-  // it differently (row-filter vs. plain allow/deny), but there is exactly
-  // one definition of "class-teacher sees everything, subject-teacher sees
-  // their lane" in this codebase, not two slightly different ones.
-  private async resolveTeacherAccess(
-    schoolId: string,
-    teacherUserId: string,
-    classArmId: string,
-    sessionId: string,
-  ): Promise<TeacherAccess> {
-    const [classTeacher, subjectAssignments] = await Promise.all([
-      this.prisma.classTeacherAssignment.findFirst({ where: forSchool(schoolId, { classArmId, sessionId, teacherUserId }) }),
-      this.prisma.subjectTeacherAssignment.findMany({
-        where: forSchool(schoolId, { classArmId, sessionId, teacherUserId }),
-        select: { subjectId: true },
-      }),
-    ]);
-    return { isClassTeacher: Boolean(classTeacher), subjectIds: subjectAssignments.map((a) => a.subjectId) };
-  }
 }

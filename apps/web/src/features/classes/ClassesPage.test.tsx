@@ -106,6 +106,29 @@ describe("ClassesPage — Classes tab", () => {
     expect(screen.queryByRole("button", { name: /Add level/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Add arm/ })).not.toBeInTheDocument();
   });
+
+  // SPEC_V0.5.1.md §2.4/v0.5.1 step 2: GET /classes itself is what scopes a
+  // TEACHER's response server-side (ClassesService.findAll) — this proves
+  // the page renders exactly whatever it's given, with no client-side
+  // re-expansion of a scoped payload back toward "show everything."
+  it("TEACHER: renders only the classes the (already server-scoped) response includes", async () => {
+    const TEACHER_SCOPED_CLASSES: ClassLevelOverview[] = [
+      { id: "lvl-1", name: "JSS 1", rank: 1, arms: [{ id: "arm-1", name: "A", enrollmentCount: 25, classTeacher: { userId: "t-1", firstName: "Bola", lastName: "Ogundare" } }] },
+    ];
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...SCHOOL_ADMIN_USER, role: "TEACHER" };
+      if (path === "/api/v1/classes") return TEACHER_SCOPED_CLASSES;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<ClassesPage />);
+
+    expect(await screen.findByText("JSS 1 A")).toBeInTheDocument();
+    // JSS 1 B and JSS 2 (present in the full admin fixture CLASSES above)
+    // never appear — the response this teacher got simply doesn't include them.
+    expect(screen.queryByText("JSS 1 B")).not.toBeInTheDocument();
+    expect(screen.queryByText("JSS 2")).not.toBeInTheDocument();
+  });
 });
 
 describe("ClassesPage — Subjects tab", () => {

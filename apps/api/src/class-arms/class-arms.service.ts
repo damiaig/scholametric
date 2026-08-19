@@ -1,11 +1,13 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { ClassArm, ClassTeacherAssignment, UserRole } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { paginate, Paginated } from "../common/pagination/paginate";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
+import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { getAssignedSubjectMap, type AssignedSubjectEntry } from "../grades/subject-assignment.util";
+import { resolveTeacherAccess } from "../grades/teacher-access.util";
 import { CreateClassArmDto } from "./dto/create-class-arm.dto";
 import { UpdateClassArmDto } from "./dto/update-class-arm.dto";
 
@@ -105,7 +107,16 @@ export class ClassArmsService {
   // error here — it just means nothing to show yet (empty students page,
   // null class teacher), same "no session = empty, not broken" convention
   // as ClassesService/DashboardService.
-  async findOne(id: string, page: number, pageSize: number): Promise<ClassArmDetail> {
+  //
+  // SPEC_V0.5.1.md §2.4/v0.5.1 step 2: SCHOOL_ADMIN/PROPRIETOR unchanged.
+  // TEACHER must be the class-teacher or hold a subject assignment in this
+  // arm this session — same resolveTeacherAccess rule GET /classes and
+  // grade reads use — or this 403s with the exact wording
+  // getClassArmResults() already uses for the same situation, before any
+  // roster/subject data is fetched. A missing current session means no
+  // assignment can possibly exist, so this naturally 403s a TEACHER too
+  // (no special-casing needed).
+  async findOne(id: string, page: number, pageSize: number, user: AuthenticatedUser): Promise<ClassArmDetail> {
     const schoolId = this.tenantContext.schoolId;
     const arm = await this.prisma.classArm.findFirst({
       where: forSchool(schoolId, { id }),
@@ -116,6 +127,18 @@ export class ClassArmsService {
     }
 
     const session = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
+
+    if (user.role === UserRole.TEACHER) {
+      const access = await resolveTeacherAccess(this.prisma, {
+        schoolId,
+        teacherUserId: user.userId,
+        classArmId: id,
+        sessionId: session?.id ?? "",
+      });
+      if (!access.isClassTeacher && access.subjectIds.length === 0) {
+        throw new ForbiddenException("You are not assigned to this class.");
+      }
+    }
 
     const [classTeacherAssignment, assignedSubjects, enrollments, enrollmentTotal] = await Promise.all([
       session
