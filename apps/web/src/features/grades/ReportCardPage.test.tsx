@@ -56,6 +56,7 @@ const CARD: ReportCardResponse = {
     {
       subjectId: "sub1",
       subjectName: "Mathematics",
+      needsTeacherAssignment: false,
       components: [
         { componentId: "ca1", componentName: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 0, isAbsent: false },
         { componentId: "ca2", componentName: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, rawScore: null, isAbsent: true },
@@ -71,6 +72,7 @@ const CARD: ReportCardResponse = {
     {
       subjectId: "sub2",
       subjectName: "English Language",
+      needsTeacherAssignment: false,
       components: [
         { componentId: "ca1", componentName: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 18, isAbsent: false },
         { componentId: "ca2", componentName: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 17, isAbsent: false },
@@ -147,6 +149,19 @@ describe("ReportCardPage — rendering", () => {
     expect(screen.getByText("F9")).toBeInTheDocument();
     expect(screen.getByText("A1")).toBeInTheDocument();
     expect(screen.getByText("#5")).toBeInTheDocument();
+  });
+
+  // SPEC_V0.5.1.md §2.1/Q1(b): an already-graded orphan subject stays on
+  // the report card, just flagged, never silently hidden.
+  it("shows a 'Needs a teacher assigned' badge when needsTeacherAssignment is true", async () => {
+    mockCommon("SCHOOL_ADMIN", {
+      ...CARD,
+      subjects: [{ ...CARD.subjects[0], needsTeacherAssignment: true }, CARD.subjects[1]],
+    });
+    renderPage();
+
+    await screen.findByText("Mathematics");
+    expect(screen.getByText("Needs a teacher assigned")).toBeInTheDocument();
   });
 
   it("distinguishes Abs, blank/not-entered, and a real 0 — never confusing one for another", async () => {

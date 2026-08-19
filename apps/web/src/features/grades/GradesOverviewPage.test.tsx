@@ -40,6 +40,7 @@ const RESULTS: ClassArmResultsResponse = {
     {
       subjectId: "sub1",
       subjectName: "Mathematics",
+      needsTeacherAssignment: false,
       averageScore: 56,
       averageGrade: "C5",
       results: [{ id: "tsr1", studentId: "s1", totalScore: 56, autoGrade: "C5", overrideGrade: null, finalGrade: "C5", subjectPosition: null, status: "PENDING_APPROVAL" }],

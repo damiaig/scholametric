@@ -32,6 +32,7 @@ describe("Grades grid (e2e)", () => {
   let hillcrestComponentId: string;
 
   let scratchSubjectId: string;
+  let mathTeacherId: string;
   let jss2ARoster: { id: string }[];
   let jss1ARoster: { id: string }[];
 
@@ -90,6 +91,7 @@ describe("Grades grid (e2e)", () => {
     });
     scratchSubjectId = scratchSubject.id;
     const mathTeacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
+    mathTeacherId = mathTeacher.id;
     await prisma.subjectTeacherAssignment.create({
       data: { schoolId: sunriseId, subjectId: scratchSubjectId, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacher.id },
     });
@@ -166,6 +168,11 @@ describe("Grades grid (e2e)", () => {
       const statusSubject = await prisma.subject.create({
         data: { schoolId: sunriseId, name: "E2E Grid Status", code: "E2ESTA" },
       });
+      // SPEC_V0.5.1.md §2.1/§2.2: entry (this test's whole point) now
+      // requires an assignment for admin too, not just TEACHER.
+      await prisma.subjectTeacherAssignment.create({
+        data: { schoolId: sunriseId, subjectId: statusSubject.id, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacherId },
+      });
       try {
         const [published, draftScored, neverScored] = jss2ARoster.slice(0, 3);
 
@@ -210,6 +217,7 @@ describe("Grades grid (e2e)", () => {
       } finally {
         await prisma.studentScore.deleteMany({ where: { subjectId: statusSubject.id } });
         await prisma.termSubjectResult.deleteMany({ where: { subjectId: statusSubject.id } });
+        await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: statusSubject.id } });
         await prisma.subject.delete({ where: { id: statusSubject.id } });
       }
     });

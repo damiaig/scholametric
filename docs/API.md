@@ -386,13 +386,21 @@ arm at all gets `403`.
   "classArmId": "...", "termId": "...",
   "students": [{ "studentId": "...", "firstName": "...", "lastName": "...", "admissionNumber": "..." }],
   "subjects": [{
-    "subjectId": "...", "subjectName": "Mathematics",
+    "subjectId": "...", "subjectName": "Mathematics", "needsTeacherAssignment": false,
     "averageScore": 68.8, "averageGrade": "B3",
     "results": [{ "id": "...", "studentId": "...", "totalScore": 56, "autoGrade": "C5", "overrideGrade": null, "finalGrade": "C5", "subjectPosition": null, "status": "PENDING_APPROVAL" }]
   }],
   "overall": [{ "studentId": "...", "averageScore": 80, "averageGrade": "A1", "overallPosition": 1, "status": "PUBLISHED", "subjectsCount": 3 }]
 }
 ```
+
+`needsTeacherAssignment` (SPEC_V0.5.1.md §2.1, v0.5.1 step 1): `true` when
+no `subject_teacher_assignment` currently exists for this (subject, class
+arm, session) — a subject only ever appears here because it already has
+real results, so it's never hidden for lacking one, only flagged. Same
+field, same meaning, on `GET /grades/review` below and on
+`GET /students/:id/results`/`GET /students/:id/report-card` (the report
+card route predates this doc's Students section — see docs/DECISIONS.md).
 
 `results[].id` is the `term_subject_result` id — lets an admin/owner
 viewer target this exact row for `PUT /grades/override` without a second
@@ -476,7 +484,7 @@ results, every subject, same as flipping through a paper report card.
 {
   "studentId": "...", "termId": "...", "sessionId": "...",
   "subjects": [{
-    "subjectId": "...", "subjectName": "Mathematics",
+    "subjectId": "...", "subjectName": "Mathematics", "needsTeacherAssignment": false,
     "totalScore": 56, "autoGrade": "C5", "overrideGrade": null, "finalGrade": "C5",
     "classAverageScore": 33, "classAverageGrade": "F9",
     "subjectPosition": null, "status": "PENDING_APPROVAL"
@@ -1060,10 +1068,16 @@ from initial load rather than reactively on the first `409`.
 ```
 
 **Response `403`**: `TEACHER` requesting a class/subject they aren't
-assigned to (same tenant).
+personally assigned to (same tenant).
 
 **Response `404`**: any of the four ids don't resolve within the caller's
-own tenant.
+own tenant, **or** (SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 step 1) no
+`subject_teacher_assignment` exists at all for this (subject, class arm,
+session) — `SCHOOL_ADMIN`/`PROPRIETOR` included. A subject only exists
+for a class once *some* teacher is assigned to teach it there; until
+then it's "not gradeable," not "you lack permission," so this is `404`,
+deliberately different from the `TEACHER` `403` above. Assign a teacher
+via `POST /subject-assignments` to unlock entry.
 
 ### `PUT /grades/grid`
 
@@ -1301,7 +1315,7 @@ draft/pending/published can genuinely coexist for one subject.
   "classArmId": "...", "termId": "...",
   "subjects": [
     {
-      "subjectId": "...", "subjectName": "Mathematics",
+      "subjectId": "...", "subjectName": "Mathematics", "needsTeacherAssignment": false,
       "rosterSize": 20, "draftCount": 2, "pendingApprovalCount": 5, "publishedCount": 13,
       "averageScore": 68.8, "averageGrade": "B3",
       "canPublish": true

@@ -38,6 +38,7 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
   const createdSubjectIds: string[] = [];
   const createdStudentIds: string[] = [];
   let studentArmCreated = false;
+  let teacherSubjectId: string;
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
@@ -47,7 +48,16 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
     return subject.id;
   }
 
+  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
+  // subject_teacher_assignment for admin too — upsert one for whatever
+  // subject this call is scoring, same pattern as grades-publish's
+  // ensureAssignment.
   async function score(subjectIdArg: string, componentId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
+    await prisma.subjectTeacherAssignment.upsert({
+      where: { subjectId_classArmId_sessionId: { subjectId: subjectIdArg, classArmId: studentArmId, sessionId: sunriseSessionId } },
+      update: {},
+      create: { schoolId: sunriseId, subjectId: subjectIdArg, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherSubjectId },
+    });
     const response = await request(app.getHttpServer())
       .put("/api/v1/grades/grid")
       .set(auth(sunriseAdminToken))
@@ -114,6 +124,7 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
     subjectB = await createSubject("E2E RC SubjectB");
     subjectC = await createSubject("E2E RC SubjectC");
     const teacherSubject = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
+    teacherSubjectId = teacherSubject.id;
     // Subject-only assignment on subjectA — NOT class-teacher. Proves the
     // read/write split: this teacher can READ the report card (any
     // relationship) but cannot write the teacher remark (class-teacher only).

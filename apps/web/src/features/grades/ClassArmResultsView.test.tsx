@@ -19,6 +19,7 @@ const BASE_DATA: ClassArmResultsResponse = {
     {
       subjectId: "sub1",
       subjectName: "Mathematics",
+      needsTeacherAssignment: false,
       averageScore: 45,
       averageGrade: "E8",
       results: [
@@ -62,6 +63,21 @@ describe("ClassArmResultsView", () => {
   it("empty state: no subjects entered yet", () => {
     render(<ClassArmResultsView data={{ ...BASE_DATA, subjects: [], overall: [] }} />);
     expect(screen.getByText(/No subjects have been entered/)).toBeInTheDocument();
+  });
+
+  // SPEC_V0.5.1.md §2.1/Q1(b): a subject that already has real grades but
+  // no current teacher assignment is never hidden here — it's flagged.
+  it("shows a 'Needs a teacher assigned' badge when needsTeacherAssignment is true, and hides it otherwise", () => {
+    const orphanData: ClassArmResultsResponse = {
+      ...BASE_DATA,
+      subjects: [{ ...BASE_DATA.subjects[0], needsTeacherAssignment: true }],
+    };
+    render(<ClassArmResultsView data={orphanData} />);
+    expect(screen.getAllByText(/Needs a teacher/).length).toBeGreaterThan(0);
+
+    cleanup();
+    render(<ClassArmResultsView data={BASE_DATA} />);
+    expect(screen.queryByText(/Needs a teacher/)).not.toBeInTheDocument();
   });
 
   describe("override control visibility (owner-vs-admin, DOM presence not just disabled)", () => {

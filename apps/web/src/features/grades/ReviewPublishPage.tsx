@@ -6,6 +6,7 @@ import { Spinner } from "../../components/ui/spinner";
 import { Button } from "../../components/ui/button";
 import { getErrorMessage } from "../../lib/api-client";
 import { isProprietor } from "../../lib/roles";
+import { StatusBadge } from "../../components/StatusBadge";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useClasses } from "../classes/use-classes";
 import { useAdminCurrentTerm } from "./use-admin-current-term";
@@ -133,7 +134,10 @@ export function ReviewPublishPage() {
               className="flex flex-col gap-3 rounded-lg border border-muted/20 bg-card p-4 sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="min-w-0">
-                <p className="font-medium text-text">{subject.subjectName}</p>
+                <p className="flex items-center gap-1.5 font-medium text-text">
+                  {subject.subjectName}
+                  {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher assigned" tone="warning" />}
+                </p>
                 <p className="text-sm text-muted">
                   {subject.publishedCount} published · {subject.pendingApprovalCount} pending · {subject.draftCount} not yet
                   scored (of {subject.rosterSize})

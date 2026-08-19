@@ -31,6 +31,7 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
   let hillcrestArmId: string;
   let hillcrestSubjectId: string;
   let hillcrestTermId: string;
+  let teacherUserId: string;
 
   const createdSessionIds: string[] = [];
   const createdTermIds: string[] = [];
@@ -73,6 +74,11 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
       });
       createdSubjectIds.push(subject.id);
       subjectIds.push(subject.id);
+      // SPEC_V0.5.1.md §2.1/§2.2: grid entry (this whole file's saveScore
+      // helper) now requires a subject_teacher_assignment for admin too.
+      await prisma.subjectTeacherAssignment.create({
+        data: { schoolId: sunriseId, subjectId: subject.id, classArmId: classArm.id, sessionId: session.id, teacherUserId },
+      });
     }
 
     const studentIds: string[] = [];
@@ -135,6 +141,8 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
     hillcrestArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: hillcrestId, classLevelId: hillcrestJss1.id, name: "A" } })).id;
     hillcrestSubjectId = (await prisma.subject.findFirstOrThrow({ where: { schoolId: hillcrestId, name: "Mathematics" } })).id;
     hillcrestTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: hillcrestSession.id, name: "FIRST" } })).id;
+
+    teacherUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
   });
 
   afterAll(async () => {

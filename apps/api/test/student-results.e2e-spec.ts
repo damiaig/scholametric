@@ -112,6 +112,15 @@ describe("GET /students/:id/results (e2e)", () => {
     await prisma.subjectTeacherAssignment.create({
       data: { schoolId: sunriseId, subjectId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherSubject.id },
     });
+    // otherSubjectId is taught by teacherClass instead (SPEC_V0.5.1.md
+    // §2.1/§2.2: grid entry now requires SOME assignment, even for admin)
+    // — teacherClass already has full access via class-teacher status, so
+    // this doesn't change what any relationship-based assertion below
+    // expects; teacherSubject still doesn't teach it, which is the actual
+    // "full access, not filtered" proof.
+    await prisma.subjectTeacherAssignment.create({
+      data: { schoolId: sunriseId, subjectId: otherSubjectId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherClass.id },
+    });
 
     // Target: CA1 20/20*20=20, Exam 60/100*60=36 -> total 56 (C5, 55-59).
     await score(subjectId, ca1Id, [{ studentId: targetStudentId, rawScore: 20 }]);

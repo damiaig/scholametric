@@ -33,6 +33,7 @@ describe("GET /grades/review (e2e)", () => {
 
   const createdSubjectIds: string[] = [];
   const createdStudentIds: string[] = [];
+  let teacherUserId: string;
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
@@ -42,7 +43,17 @@ describe("GET /grades/review (e2e)", () => {
     return subject.id;
   }
 
+  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
+  // subject_teacher_assignment for admin too — upsert one for whatever
+  // subject this call is scoring (GET /grades/review has no TEACHER path
+  // at all, so which teacher holds it doesn't affect any RBAC assertion
+  // in this file).
   async function score(subjectId: string, componentId: string, scores: { studentId: string; rawScore: number }[]) {
+    await prisma.subjectTeacherAssignment.upsert({
+      where: { subjectId_classArmId_sessionId: { subjectId, classArmId: reviewArmId, sessionId: sunriseSessionId } },
+      update: {},
+      create: { schoolId: sunriseId, subjectId, classArmId: reviewArmId, sessionId: sunriseSessionId, teacherUserId },
+    });
     const response = await request(app.getHttpServer())
       .put("/api/v1/grades/grid")
       .set(auth(sunriseAdminToken))
@@ -99,12 +110,15 @@ describe("GET /grades/review (e2e)", () => {
     const hillcrestJss1 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: hillcrestId, name: "JSS 1" } });
     hillcrestArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: hillcrestId, classLevelId: hillcrestJss1.id, name: "A" } })).id;
     hillcrestTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: hillcrestSession.id, name: "FIRST" } })).id;
+
+    teacherUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
   });
 
   afterAll(async () => {
     if (createdSubjectIds.length > 0) {
       await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+      await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
     }
     if (createdStudentIds.length > 0) {

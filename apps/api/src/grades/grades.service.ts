@@ -17,6 +17,7 @@ import {
   type GradeBoundaryInput,
 } from "../grades/grade-computation";
 import { termLockKey, subjectLockKey as buildSubjectLockKey, classArmLockKey as buildClassArmLockKey } from "./lock-keys";
+import { getAssignedSubjectMap } from "./subject-assignment.util";
 import { GetGradesGridQueryDto } from "./dto/get-grades-grid-query.dto";
 import { SaveGradesGridDto } from "./dto/save-grades-grid.dto";
 import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
@@ -165,6 +166,11 @@ export interface ClassArmResultsSubjectRow {
 export interface ClassArmResultsSubject {
   subjectId: string;
   subjectName: string;
+  // SPEC_V0.5.1.md §2.1/§4: true when no subject_teacher_assignment exists
+  // for (subjectId, classArmId, session) right now. This subject already
+  // has real results (Q1(b) — never hidden once graded), it just needs a
+  // teacher assigned to be gradeable/complete going forward.
+  needsTeacherAssignment: boolean;
   averageScore: number;
   averageGrade: string | null;
   results: ClassArmResultsSubjectRow[];
@@ -192,6 +198,7 @@ export interface ClassArmResultsResponse {
 export interface GradesReviewSubject {
   subjectId: string;
   subjectName: string;
+  needsTeacherAssignment: boolean;
   rosterSize: number;
   draftCount: number;
   pendingApprovalCount: number;
@@ -213,6 +220,7 @@ export interface GradesReviewResponse {
 export interface StudentResultSubject {
   subjectId: string;
   subjectName: string;
+  needsTeacherAssignment: boolean;
   totalScore: number;
   autoGrade: string | null;
   overrideGrade: string | null;
@@ -265,6 +273,7 @@ export interface ReportCardComponent {
 export interface ReportCardSubject {
   subjectId: string;
   subjectName: string;
+  needsTeacherAssignment: boolean;
   components: ReportCardComponent[];
   totalScore: number;
   autoGrade: string | null;
@@ -993,7 +1002,7 @@ export class GradesService {
       visibleSubjectIds = access.isClassTeacher ? null : new Set(access.subjectIds);
     }
 
-    const [students, subjectResults, overallResults, boundaries] = await Promise.all([
+    const [students, subjectResults, overallResults, boundaries, assignedSubjects] = await Promise.all([
       this.getRoster(schoolId, classArmId, term.sessionId),
       this.prisma.termSubjectResult.findMany({
         where: { schoolId, classArmId, termId: query.termId, sessionId: term.sessionId },
@@ -1005,6 +1014,7 @@ export class GradesService {
           })
         : Promise.resolve(null),
       this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
+      getAssignedSubjectMap(this.prisma, { schoolId, classArmId, sessionId: term.sessionId }),
     ]);
     const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
     const studentOrder = new Map(students.map((s, index) => [s.id, index]));
@@ -1023,6 +1033,11 @@ export class GradesService {
         return {
           subjectId,
           subjectName: name,
+          // SPEC_V0.5.1.md §2.1/Q1(b): a subject that already has real
+          // grades never gets hidden, but if there's no current
+          // subject_teacher_assignment for it, it's surfaced as needing
+          // one rather than shown as if everything is normal.
+          needsTeacherAssignment: !assignedSubjects.has(subjectId),
           averageScore,
           averageGrade: resolveGradeBand(averageScore, boundaryInputs),
           results: rows
@@ -1076,13 +1091,14 @@ export class GradesService {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await this.resolveTenantScopeArmTermOnly(schoolId, query.classArmId, query.termId);
 
-    const [students, subjectResults, boundaries] = await Promise.all([
+    const [students, subjectResults, boundaries, assignedSubjects] = await Promise.all([
       this.getRoster(schoolId, query.classArmId, term.sessionId),
       this.prisma.termSubjectResult.findMany({
         where: { schoolId, classArmId: query.classArmId, termId: query.termId, sessionId: term.sessionId },
         include: { subject: { select: { id: true, name: true } } },
       }),
       this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
+      getAssignedSubjectMap(this.prisma, { schoolId, classArmId: query.classArmId, sessionId: term.sessionId }),
     ]);
     const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
     const rosterSize = students.length;
@@ -1117,6 +1133,7 @@ export class GradesService {
       return {
         subjectId,
         subjectName: name,
+        needsTeacherAssignment: !assignedSubjects.has(subjectId),
         rosterSize,
         draftCount,
         pendingApprovalCount,
@@ -1190,13 +1207,14 @@ export class GradesService {
       }
     }
 
-    const [subjectResults, overall, boundaries] = await Promise.all([
+    const [subjectResults, overall, boundaries, assignedSubjects] = await Promise.all([
       this.prisma.termSubjectResult.findMany({
         where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
         include: { subject: { select: { id: true, name: true } } },
       }),
       this.prisma.termOverallResult.findFirst({ where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId } }),
       this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
+      getAssignedSubjectMap(this.prisma, { schoolId, classArmId: enrollment.classArmId, sessionId: query.sessionId }),
     ]);
     const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
 
@@ -1222,6 +1240,7 @@ export class GradesService {
         return {
           subjectId: r.subjectId,
           subjectName: r.subject.name,
+          needsTeacherAssignment: !assignedSubjects.has(r.subjectId),
           totalScore: Number(r.totalScore),
           autoGrade: r.autoGrade,
           overrideGrade: r.overrideGrade,
@@ -1289,7 +1308,7 @@ export class GradesService {
       }
     }
 
-    const [subjectResults, components, scores, overall, remark] = await Promise.all([
+    const [subjectResults, components, scores, overall, remark, assignedSubjects] = await Promise.all([
       this.prisma.termSubjectResult.findMany({
         where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
         include: { subject: { select: { id: true, name: true } } },
@@ -1304,6 +1323,7 @@ export class GradesService {
           principalRemarkByUser: { select: { firstName: true, lastName: true } },
         },
       }),
+      getAssignedSubjectMap(this.prisma, { schoolId, classArmId: enrollment.classArmId, sessionId: query.sessionId }),
     ]);
 
     const scoresBySubject = new Map<string, typeof scores>();
@@ -1319,6 +1339,7 @@ export class GradesService {
         return {
           subjectId: r.subjectId,
           subjectName: r.subject.name,
+          needsTeacherAssignment: !assignedSubjects.has(r.subjectId),
           components: components.map((c) => {
             const score = scoreByComponent.get(c.id);
             return {
@@ -1749,9 +1770,15 @@ export class GradesService {
   // (subject, class arm, session) — assignments are session-scoped, not
   // term-scoped (SPEC_V0.4.md §2 note), so term is just which term's
   // scores are being entered within that assignment. SCHOOL_ADMIN/
-  // PROPRIETOR: no check, any tenant-scoped combo is allowed. Must run
-  // AFTER tenant-scope resolution (404s first), so a cross-tenant probe
-  // always gets a uniform 404 regardless of role.
+  // PROPRIETOR: SPEC_V0.5.1.md §2.1/§2.2 — a subject only exists for a
+  // class once SOME teacher is assigned to teach it there, so admin/owner
+  // are now checked too (existence-only, not "is it me" — any assignment
+  // qualifies). Different failure mode than the TEACHER branch: this isn't
+  // "you're not allowed", it's "this pairing isn't gradeable" — 404, not
+  // 403, matching the "hidden, not forbidden" framing used everywhere else
+  // this rule applies (overview/review/report-card). Must run AFTER
+  // tenant-scope resolution (404s first), so a cross-tenant probe always
+  // gets a uniform 404 regardless of role.
   private async assertTeacherAssignment(
     schoolId: string,
     user: AuthenticatedUser,
@@ -1759,14 +1786,18 @@ export class GradesService {
     classArmId: string,
     sessionId: string,
   ): Promise<void> {
-    if (user.role !== UserRole.TEACHER) {
+    const assignedSubjects = await getAssignedSubjectMap(this.prisma, { schoolId, classArmId, sessionId });
+    const assignment = assignedSubjects.get(subjectId);
+
+    if (user.role === UserRole.TEACHER) {
+      if (!assignment || assignment.teacherUserId !== user.userId) {
+        throw new ForbiddenException("You are not assigned to teach this subject for this class.");
+      }
       return;
     }
-    const assignment = await this.prisma.subjectTeacherAssignment.findFirst({
-      where: forSchool(schoolId, { subjectId, classArmId, sessionId, teacherUserId: user.userId }),
-    });
+
     if (!assignment) {
-      throw new ForbiddenException("You are not assigned to teach this subject for this class.");
+      throw new NotFoundException("No teacher is assigned to teach this subject for this class.");
     }
   }
 

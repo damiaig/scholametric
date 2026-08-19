@@ -145,6 +145,10 @@ export interface ClassArmResultsSubjectRow {
 export interface ClassArmResultsSubject {
   subjectId: string;
   subjectName: string;
+  // SPEC_V0.5.1.md §2.1: true when no subject_teacher_assignment currently
+  // exists for this (subject, class arm, session) — the subject already has
+  // real results (never hidden once graded) but needs a teacher assigned.
+  needsTeacherAssignment: boolean;
   averageScore: number;
   averageGrade: string | null;
   results: ClassArmResultsSubjectRow[];
@@ -172,6 +176,7 @@ export interface ClassArmResultsResponse {
 export interface GradesReviewSubject {
   subjectId: string;
   subjectName: string;
+  needsTeacherAssignment: boolean;
   rosterSize: number;
   draftCount: number;
   pendingApprovalCount: number;
@@ -192,6 +197,7 @@ export interface GradesReviewResponse {
 export interface StudentResultSubject {
   subjectId: string;
   subjectName: string;
+  needsTeacherAssignment: boolean;
   totalScore: number;
   autoGrade: string | null;
   overrideGrade: string | null;
@@ -258,6 +264,7 @@ export interface ReportCardComponent {
 export interface ReportCardSubject {
   subjectId: string;
   subjectName: string;
+  needsTeacherAssignment: boolean;
   components: ReportCardComponent[];
   totalScore: number;
   autoGrade: string | null;

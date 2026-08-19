@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
 import { Label } from "../../components/ui/label";
@@ -6,7 +6,7 @@ import { Spinner } from "../../components/ui/spinner";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useMyTeaching } from "../dashboard/use-my-teaching";
 import { useClasses } from "../classes/use-classes";
-import { useAllSubjects } from "../classes/use-subjects";
+import { useClassArmDetail } from "../classes/use-class-arm-detail";
 import { useAssessmentComponents } from "../settings/use-assessment-components";
 import { useAdminCurrentTerm } from "./use-admin-current-term";
 import { ScoreEntryGrid } from "./ScoreEntryGrid";
@@ -40,10 +40,34 @@ export function ScoreEntryGridPage() {
 
   const myTeaching = useMyTeaching();
   const classes = useClasses();
-  const subjects = useAllSubjects();
+  // SPEC_V0.5.1.md §2.1/§2.2: a subject is only pickable for a class once a
+  // teacher is assigned to teach it there — reuse the same class-arm-detail
+  // data that already backs the correctly-scoped "Enter grades" links on
+  // the Classes tab (its subjectTeachers is sourced from
+  // subject_teacher_assignment), instead of the unfiltered full subject
+  // list. Only fetched once a class is picked; page/pageSize are irrelevant
+  // here, we only read subjectTeachers.
+  const armDetail = useClassArmDetail(isConfirmedAdmin && classArmId ? classArmId : undefined, 1, 1);
   const components = useAssessmentComponents();
   const adminTerm = useAdminCurrentTerm(isConfirmedAdmin);
   const [termId, setTermId] = useState("");
+
+  const subjectOptions = useMemo(() => armDetail.data?.subjectTeachers ?? [], [armDetail.data]);
+
+  // Picking a different class can invalidate the previously-picked subject
+  // (it may have no teacher assigned in the new class) — clear it so the
+  // admin re-picks from the new class's actual options, rather than
+  // leaving a stale cross-product combo selected. Only fires on a real
+  // class change after mount, not on the initial load of a URL-seeded
+  // classArmId+subjectId pair (a stale bookmarked pair is instead caught
+  // by getGrid's own 404, surfaced as a readable error by ScoreEntryGrid).
+  const previousClassArmId = useRef(classArmId);
+  useEffect(() => {
+    if (previousClassArmId.current !== classArmId) {
+      setSubjectId("");
+      previousClassArmId.current = classArmId;
+    }
+  }, [classArmId]);
 
   const effectiveTermId = isTeacher ? (myTeaching.data?.currentTermId ?? "") : termId || adminTerm.currentTermId || "";
 
@@ -118,22 +142,26 @@ export function ScoreEntryGridPage() {
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="grid-subject">Subject</Label>
-              <select
-                id="grid-subject"
-                className={SELECT_CLASS}
-                value={subjectId}
-                onChange={(event) => setSubjectId(event.target.value)}
-                disabled={subjects.isLoading}
-              >
-                <option value="" disabled>
-                  Select…
-                </option>
-                {(subjects.data ?? []).map((subject) => (
-                  <option key={subject.id} value={subject.id}>
-                    {subject.name}
+              {classArmId && !armDetail.isLoading && subjectOptions.length === 0 ? (
+                <p className="flex h-10 items-center text-sm text-muted sm:w-56">No subjects have a teacher assigned for this class yet.</p>
+              ) : (
+                <select
+                  id="grid-subject"
+                  className={SELECT_CLASS}
+                  value={subjectId}
+                  onChange={(event) => setSubjectId(event.target.value)}
+                  disabled={!classArmId || armDetail.isLoading}
+                >
+                  <option value="" disabled>
+                    Select…
                   </option>
-                ))}
-              </select>
+                  {subjectOptions.map((entry) => (
+                    <option key={entry.subjectId} value={entry.subjectId}>
+                      {entry.subjectName}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           </>
         )}

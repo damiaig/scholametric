@@ -3075,3 +3075,101 @@ client-side with the Q7 message, no PUT ever fires) — 151 total, up from
 but now scratch-school-isolated; full backend e2e suite (298) unaffected.
 Live re-verification of the exact walk failure: the CA1 −1 / CA2 +1
 weight nudge now saves successfully end to end on a fresh stack.
+
+## 2026-08-19 — v0.5.1 step 1: subject-for-a-class rule + forced teacher assignment (SPEC_V0.5.1.md §2.1/§2.2)
+
+**Rule**: a subject exists for a class only once a `subject_teacher_assignment`
+exists for that exact (subject, class arm, session). One shared helper,
+`getAssignedSubjectMap` (`apps/api/src/grades/subject-assignment.util.ts`),
+is the single source of truth for "which subjects are assigned to this
+class arm this session" — used by `assertTeacherAssignment` (grid entry
+gate), `getClassArmResults`/`getReview`/`getStudentResults`/`getReportCard`
+(the `needsTeacherAssignment` flag), and `ClassArmsService.findOne` (the
+Classes tab's `subjectTeachers`, refactored to it with no behavior change).
+One query shape, so the four surfaces can't drift against each other.
+
+**2.2 turned out to already be structurally satisfied**: `POST
+/subject-assignments` (the only real "add a subject to a class" action —
+`SubjectClassLevel`/`PUT /subjects/:id/levels` is a separate, teacher-free,
+level-wide curriculum-eligibility concept, left untouched) already requires
+a `teacherUserId` — schema `NOT NULL`, DTO required. The actual gap was
+`assertTeacherAssignment`'s admin/proprietor bypass: `SCHOOL_ADMIN`/
+`PROPRIETOR` could grade ANY (subject, class arm) pair via `ScoreEntryGridPage`'s
+free dropdowns regardless of assignment — the real mechanism by which new
+orphans got created. Closed by extending the check to admin/proprietor too
+(existence-only — any teacher, not "is it me" like the `TEACHER` branch),
+throwing `404` ("No teacher is assigned to teach this subject for this
+class"), not `403` — this isn't a permission distinction, it's "this
+pairing isn't gradeable," matching the "hidden, not forbidden" framing used
+everywhere else this rule applies. The `TEACHER` branch's existing `403`
+is unchanged.
+
+**Q1(b) (existing graded-but-unassigned data)**: never hidden, only
+flagged. Falls out for free: overview/review/student-results/report-card
+already only ever list subjects with a real `term_subject_result` row, so
+there's nothing to "hide" there regardless — `needsTeacherAssignment:
+boolean` just gets added to each row. The only place with genuine
+hide-as-an-option behavior is the entry picker (`ScoreEntryGridPage`'s
+Subject dropdown), which now sources its options from
+`GET /class-arms/:id`'s `subjectTeachers` (already correctly assignment-
+filtered — same data that backs the Classes tab's "Enter grades" links)
+instead of the previously-unfiltered `GET /subjects`. No migration/backfill
+needed — the seeded Sunrise data has zero graded-orphan rows (only
+Mathematics/English are ever scored in seed.ts, both backed by real
+`seedSubjectTeacherAssignments` rows).
+
+**Frontend**: `ScoreEntryGridPage`'s admin/proprietor Subject select is
+now populated from `useClassArmDetail(classArmId, 1, 1)` once a class is
+picked (reusing the existing endpoint rather than adding a new one —
+flagged as a Step 3 revisit candidate if the entry-grid picker gets
+reworked anyway, since fetching a full `ClassArmDetail` just for its
+`subjectTeachers` is more than this picker strictly needs). Picking a
+different class clears a previously-picked subject (a ref-tracked "did
+classArmId actually change since mount" guard, not naive `useEffect` on
+every render, to avoid clobbering a URL-seeded `?subjectId=` pair from an
+"Enter grades" link on first load). A `"Needs a teacher assigned"` badge
+(`StatusBadge`, `warning` tone) renders next to the subject name on
+Overview, Review, the Results tab, and the report card wherever
+`needsTeacherAssignment` is true.
+
+**Not touched (flagged, not this step)**: `AddSubjectTeacherDialog`'s own
+Subject dropdown (`useAllSubjects()`) is unfiltered by class level — you
+can pick a JSS-only subject when assigning a teacher to an SSS arm. Not
+what 2.1 or 2.2 asked for; a candidate for a later step. Also,
+`GET /students/:id/report-card` (and its `remarks/*` write endpoints) were
+never documented in `docs/API.md` at all — a pre-existing gap from v0.5
+step 4/6 that predates this step; only patched enough here to not leave a
+dangling "see below" reference for the new field, not written up in full.
+
+**Test hygiene fallout**: closing the admin bypass broke seven *existing*
+e2e specs that scored an admin-created scratch subject without ever
+creating an assignment for it (`grades-grid`, `grades-publish`, `terms`,
+`report-card`, `student-results`, `class-arm-results`, `grades-review`) —
+expected, since they were implicitly relying on the bypass this step
+deliberately removes. Fixed by having each file's own `score()`/
+`scoreComponent()` helper upsert a `subjectTeacherAssignment` for whatever
+(subject, class arm, session) it's about to write to (idempotent, keyed on
+the real `@@unique([subjectId, classArmId, sessionId])`) — one line per
+file, no per-call-site tracking needed. Two files (`student-results`,
+`class-arm-results`) have a specific "this subject is taught by nobody
+assigned to the CALLING teacher" test fixture; those got an explicit
+assignment to a different, already-full-access teacher (the class-teacher)
+instead of the generic upsert, to keep that fixture's actual point intact
+rather than accidentally assigning the exact teacher the test is proving
+doesn't teach it.
+
+**Proof**: new `subject-for-a-class-rule.e2e-spec.ts` (4 tests, scratch
+bundle per SPEC_V0.5.1.md's own Q1(b) scenario, `createScratchBundle`
+pattern) — unassigned pair rejected (404 admin/proprietor, 403 teacher);
+assigning makes it appear in class-arm detail and gradeable for all three
+roles; an already-graded orphan (assignment created → scored → removed via
+the real `DELETE /subject-assignments/:id`) stays visible with
+`needsTeacherAssignment: true` across overview/review/student-results/
+report-card and re-clears once reassigned; cross-tenant 404. Plus 7 new/
+updated Vitest cases (`ScoreEntryGridPage` admin picker scoping — 3 new;
+`ClassArmResultsView`/`ReviewPublishPage`/`ReportCardPage`/
+`StudentResultsTab` badge rendering — 4 new). Full `pnpm run ci` (typecheck
++ lint + all 27 e2e suites/302 tests + 29 web Vitest files/158 tests + unit)
+green on a fresh `docker compose down -v` → migrate → seed database;
+`docker compose up -d --build` boots the full stack from scratch
+(api + web images rebuilt, `/health` returns `{"status":"ok","db":true,"redis":true}`).

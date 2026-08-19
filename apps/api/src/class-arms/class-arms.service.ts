@@ -5,6 +5,7 @@ import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { paginate, Paginated } from "../common/pagination/paginate";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
+import { getAssignedSubjectMap, type AssignedSubjectEntry } from "../grades/subject-assignment.util";
 import { CreateClassArmDto } from "./dto/create-class-arm.dto";
 import { UpdateClassArmDto } from "./dto/update-class-arm.dto";
 
@@ -116,7 +117,7 @@ export class ClassArmsService {
 
     const session = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
 
-    const [classTeacherAssignment, subjectTeacherAssignments, enrollments, enrollmentTotal] = await Promise.all([
+    const [classTeacherAssignment, assignedSubjects, enrollments, enrollmentTotal] = await Promise.all([
       session
         ? this.prisma.classTeacherAssignment.findFirst({
             where: { classArmId: id, sessionId: session.id },
@@ -124,12 +125,8 @@ export class ClassArmsService {
           })
         : null,
       session
-        ? this.prisma.subjectTeacherAssignment.findMany({
-            where: { classArmId: id, sessionId: session.id },
-            include: { subject: true, teacherUser: true },
-            orderBy: { subject: { name: "asc" } },
-          })
-        : [],
+        ? getAssignedSubjectMap(this.prisma, { schoolId, classArmId: id, sessionId: session.id })
+        : new Map<string, AssignedSubjectEntry>(),
       session
         ? this.prisma.studentEnrollment.findMany({
             where: { classArmId: id, sessionId: session.id },
@@ -153,13 +150,13 @@ export class ClassArmsService {
             lastName: classTeacherAssignment.teacherUser.lastName,
           }
         : null,
-      subjectTeachers: subjectTeacherAssignments.map((assignment) => ({
-        id: assignment.id,
-        subjectId: assignment.subjectId,
-        subjectName: assignment.subject.name,
-        teacherUserId: assignment.teacherUserId,
-        teacherFirstName: assignment.teacherUser.firstName,
-        teacherLastName: assignment.teacherUser.lastName,
+      subjectTeachers: [...assignedSubjects.values()].map((entry) => ({
+        id: entry.assignmentId,
+        subjectId: entry.subjectId,
+        subjectName: entry.subjectName,
+        teacherUserId: entry.teacherUserId,
+        teacherFirstName: entry.teacherFirstName,
+        teacherLastName: entry.teacherLastName,
       })),
       students: paginate(
         enrollments.map((enrollment) => ({

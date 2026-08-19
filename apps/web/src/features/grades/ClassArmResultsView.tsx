@@ -86,6 +86,9 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
         {data.subjects.map((subject) => (
           <div key={subject.subjectId} className="rounded-lg border border-muted/20 bg-card p-3">
             <p className="truncate text-sm font-medium text-text">{subject.subjectName}</p>
+            {subject.needsTeacherAssignment && (
+              <StatusBadge label="Needs a teacher assigned" tone="warning" className="mt-1" />
+            )}
             <p className="text-xs text-muted">Class average</p>
             <p className="font-mono text-lg text-text">
               {subject.averageGrade ?? "—"} <span className="text-xs text-muted">({formatScore(subject.averageScore)})</span>
@@ -107,7 +110,10 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
                   const row = subject.results.find((r) => r.studentId === student.studentId);
                   return (
                     <div key={subject.subjectId} className="flex items-center justify-between gap-2 text-sm">
-                      <dt className="truncate text-muted">{subject.subjectName}</dt>
+                      <dt className="flex items-center gap-1.5 truncate text-muted">
+                        {subject.subjectName}
+                        {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher" tone="warning" />}
+                      </dt>
                       <dd className="flex shrink-0 items-center gap-1.5 text-right text-text">
                         {row ? (
                           <>
@@ -148,7 +154,10 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
               <th className="whitespace-nowrap px-4 py-3 font-medium text-muted">Student</th>
               {data.subjects.map((subject) => (
                 <th key={subject.subjectId} className="whitespace-nowrap px-4 py-3 font-medium text-muted">
-                  {subject.subjectName}
+                  <span className="flex items-center gap-1.5">
+                    {subject.subjectName}
+                    {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher" tone="warning" />}
+                  </span>
                 </th>
               ))}
               {data.overall && <th className="whitespace-nowrap px-4 py-3 font-medium text-muted">Overall</th>}

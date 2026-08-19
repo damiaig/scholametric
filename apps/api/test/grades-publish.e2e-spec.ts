@@ -63,6 +63,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
   let ca1Id: string; // weight 20, max_score 20, requiresApproval false
   let examId: string; // weight 60, max_score 100, requiresApproval true
   let ca2Id: string; // weight 20, max_score 20, requiresApproval false
+  let teacherUserId: string;
 
   // Real, cross-tenant fixtures for the "attempt and reject" 404 tests —
   // non-mutating by design, so no isolation needed; reuses step 1's
@@ -110,6 +111,20 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     return subject.id;
   }
 
+  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
+  // subject_teacher_assignment for (subjectId, classArmId, session) —
+  // upserting one here, keyed off whatever pair this particular call
+  // actually targets, means every existing call site in this file keeps
+  // working without having to hand-track which of the several scratch
+  // arms each scratch subject was scored against.
+  async function ensureAssignment(subjectId: string, classArmId: string) {
+    await prisma.subjectTeacherAssignment.upsert({
+      where: { subjectId_classArmId_sessionId: { subjectId, classArmId, sessionId: sunriseSessionId } },
+      update: {},
+      create: { schoolId: sunriseId, subjectId, classArmId, sessionId: sunriseSessionId, teacherUserId },
+    });
+  }
+
   async function scoreComponent(
     token: string,
     subjectId: string,
@@ -117,6 +132,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     scores: { studentId: string; rawScore: number }[],
     classArmId: string = scratchArmId,
   ) {
+    await ensureAssignment(subjectId, classArmId);
     const response = await request(app.getHttpServer())
       .put("/api/v1/grades/grid")
       .set(auth(token))
@@ -171,6 +187,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     ca2Id = components[1].id;
     examId = components[2].id;
 
+    teacherUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
+
     // Cross-tenant fixtures: real, hand-verified seed data (non-mutating
     // usage only in this suite).
     const hillcrest = await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } });
@@ -219,6 +237,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     if (createdSubjectIds.length > 0) {
       await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+      await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
     }
     if (createdStudentIds.length > 0) {
@@ -962,6 +981,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       // publishing subject C2 for sB. Different subjects -> no subject-lock
       // contention; both want the class-arm lock -> must serialize, never
       // deadlock.
+      await ensureAssignment(subjectB2, gapTwoConcurrencyArmId); // subjectB2's first-ever write, via a raw PUT below (not scoreComponent)
       const [saveRes, publishRes] = await Promise.all([
         request(app.getHttpServer())
           .put("/api/v1/grades/grid")

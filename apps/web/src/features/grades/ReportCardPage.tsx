@@ -180,7 +180,10 @@ export function ReportCardPage() {
                 <div key={subject.subjectId} className="break-inside-avoid rounded-lg border border-muted/20 p-3">
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <p className="font-medium text-text">{subject.subjectName}</p>
-                    <StatusBadge label={resultStatusLabel(subject.status)} tone={resultStatusTone(subject.status)} />
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher assigned" tone="warning" />}
+                      <StatusBadge label={resultStatusLabel(subject.status)} tone={resultStatusTone(subject.status)} />
+                    </div>
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-sm">

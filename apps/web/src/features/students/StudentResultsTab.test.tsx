@@ -49,6 +49,7 @@ const RESULTS: StudentResultsResponse = {
     {
       subjectId: "sub1",
       subjectName: "Mathematics",
+      needsTeacherAssignment: false,
       totalScore: 56,
       autoGrade: "C5",
       overrideGrade: null,
@@ -89,6 +90,25 @@ describe("StudentResultsTab", () => {
     expect(screen.getByText(/F9/)).toBeInTheDocument(); // class average, distinct from the student's own C5
     expect(screen.getByText("Not yet ranked")).toBeInTheDocument();
     expect(screen.getByText("No results yet.")).toBeInTheDocument();
+  });
+
+  // SPEC_V0.5.1.md §2.1/Q1(b): an already-graded orphan subject stays
+  // visible, just flagged.
+  it("shows a 'Needs a teacher' badge when needsTeacherAssignment is true", async () => {
+    mockedApiRequest.mockImplementation(async (path) => {
+      if (path === "/api/v1/auth/me") return ADMIN_USER;
+      if (path === "/api/v1/sessions") return SESSIONS;
+      if (path === "/api/v1/terms") return TERMS;
+      if (path === "/api/v1/students/st1/results") {
+        return { ...RESULTS, subjects: [{ ...RESULTS.subjects[0], needsTeacherAssignment: true }] };
+      }
+      throw new Error(`unexpected call: ${path}`);
+    });
+
+    renderWithProviders(<StudentResultsTab studentId="st1" />);
+
+    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+    expect(screen.getByText("Needs a teacher")).toBeInTheDocument();
   });
 
   it("TEACHER with no relationship to the student: renders a graceful 'no access' message, not a crash or blank", async () => {

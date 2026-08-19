@@ -45,14 +45,14 @@ const REVIEW_CAN_PUBLISH: GradesReviewResponse = {
   classArmId: "arm1",
   termId: "term1",
   subjects: [
-    { subjectId: "sub1", subjectName: "Mathematics", rosterSize: 20, draftCount: 2, pendingApprovalCount: 5, publishedCount: 13, averageScore: 56, averageGrade: "C5", canPublish: true },
+    { subjectId: "sub1", subjectName: "Mathematics", needsTeacherAssignment: false, rosterSize: 20, draftCount: 2, pendingApprovalCount: 5, publishedCount: 13, averageScore: 56, averageGrade: "C5", canPublish: true },
   ],
 };
 const REVIEW_CANNOT_PUBLISH: GradesReviewResponse = {
   classArmId: "arm1",
   termId: "term1",
   subjects: [
-    { subjectId: "sub2", subjectName: "English Language", rosterSize: 20, draftCount: 20, pendingApprovalCount: 0, publishedCount: 0, averageScore: 0, averageGrade: null, canPublish: false },
+    { subjectId: "sub2", subjectName: "English Language", needsTeacherAssignment: false, rosterSize: 20, draftCount: 20, pendingApprovalCount: 0, publishedCount: 0, averageScore: 0, averageGrade: null, canPublish: false },
   ],
 };
 
@@ -110,6 +110,19 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
 
     expect(await screen.findByText("English Language")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Publish" })).toBeDisabled();
+  });
+
+  // SPEC_V0.5.1.md §2.1/Q1(b): an already-graded orphan subject stays
+  // visible in review, just flagged.
+  it("shows a 'Needs a teacher assigned' badge when the subject has needsTeacherAssignment: true", async () => {
+    mockCommon("SCHOOL_ADMIN", {
+      ...REVIEW_CAN_PUBLISH,
+      subjects: [{ ...REVIEW_CAN_PUBLISH.subjects[0], needsTeacherAssignment: true }],
+    });
+    renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });
+
+    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+    expect(screen.getByText("Needs a teacher assigned")).toBeInTheDocument();
   });
 
   it("shows the per-status breakdown, not a single collapsed status", async () => {

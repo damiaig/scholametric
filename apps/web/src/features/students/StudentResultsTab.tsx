@@ -109,7 +109,12 @@ export function StudentResultsTab({ studentId }: StudentResultsTabProps) {
           <tbody>
             {data.subjects.map((subject) => (
               <tr key={subject.subjectId} className="border-b border-muted/10 last:border-0">
-                <td className="whitespace-nowrap px-4 py-3 text-text">{subject.subjectName}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-text">
+                  <span className="flex items-center gap-1.5">
+                    {subject.subjectName}
+                    {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher" tone="warning" />}
+                  </span>
+                </td>
                 <td className="whitespace-nowrap px-4 py-3 text-text">
                   {subject.finalGrade ?? "—"} <span className="text-xs text-muted">({formatScore(subject.totalScore)})</span>
                 </td>

@@ -43,6 +43,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
   const createdSubjectIds: string[] = [];
   const createdStudentIds: string[] = [];
   const createdArmIds: string[] = [];
+  let teacherClassId: string;
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
@@ -85,6 +86,13 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     return subject.id;
   }
 
+  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
+  // subject_teacher_assignment for admin too — upsert one (using
+  // teacherClass, who already has full class-teacher access, so this
+  // never changes what any relationship-based test below expects) for
+  // whatever (subject, arm) pair this particular call targets. Tests that
+  // specifically assign teacherSubjectToken to a subject still do so
+  // explicitly above/below — this only ensures the WRITE itself is legal.
   async function score(
     token: string,
     subjectId: string,
@@ -92,6 +100,11 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     scores: { studentId: string; rawScore: number }[],
     classArmId: string,
   ) {
+    await prisma.subjectTeacherAssignment.upsert({
+      where: { subjectId_classArmId_sessionId: { subjectId, classArmId, sessionId: sunriseSessionId } },
+      update: {},
+      create: { schoolId: sunriseId, subjectId, classArmId, sessionId: sunriseSessionId, teacherUserId: teacherClassId },
+    });
     const response = await request(app.getHttpServer())
       .put("/api/v1/grades/grid")
       .set(auth(token))
@@ -127,6 +140,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
 
     const teacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
     const teacherClass = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher2@sunrise.test" } });
+    teacherClassId = teacherClass.id;
     const teacherSubjectSubjectId = await createSubject("E2E CAR TeacherLane");
     await prisma.subjectTeacherAssignment.create({
       data: { schoolId: sunriseId, subjectId: teacherSubjectSubjectId, classArmId: resultsArmId, sessionId: sunriseSessionId, teacherUserId: teacher.id },
