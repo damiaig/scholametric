@@ -3353,6 +3353,20 @@ Every other caller (`saveGrid`'s normal path, `recompute()`, `unpublish()`)
 passes nothing and is byte-for-byte unaffected — confirmed by the full
 existing e2e suite passing unchanged.
 
+**Why unconditional preserve, not conditional-on-completeness** (a
+divergence from the approved plan worth stating explicitly): the plan
+considered a completeness-break-→-revert path — if the correction left the
+subject incomplete, fall back to the normal recompute instead of forcing
+PUBLISHED. That path is provably unreachable, so it was dropped rather than
+implemented dead. An absent-correction can never reduce subject
+completeness: "absent" is a decided component state (v0.5 step 1), so
+marking absent or correcting back only ever keeps a component decided — it
+can never make one undecided (only clearing a cell does that, which this
+operation never does). A subject complete enough to have been published
+therefore stays complete after any absent-correction, so the row is always
+safe to keep PUBLISHED — hence `preservePublishedStudentIds` forces
+PUBLISHED unconditionally rather than checking completeness first.
+
 **The subject-wide re-rank is new code, but not a new algorithm**: a
 bypassed student's total moving can shift every OTHER published student's
 relative rank in that subject too, not just theirs, so `saveGrid` now runs
