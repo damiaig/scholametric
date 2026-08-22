@@ -3249,3 +3249,77 @@ crash). Full `pnpm run ci` (typecheck + lint + 28 e2e suites/308 tests +
 `docker compose down -v` → migrate → seed database (no new migration —
 this step is queries/logic only); `docker compose up -d --build` boots
 the full stack from scratch, `/health` reports `db: true, redis: true`.
+
+## 2026-08-22 — v0.5.1 step 3: Enter-grades locked to class+subject (SPEC_V0.5.1.md §2.3)
+
+**Rule**: class + subject are locked to whichever "Enter grades" link the
+caller arrived through — rendered as a read-only label ("JSS 1 A ·
+Mathematics"), never a picker. Component and term stay real, interactive
+selects (they vary per grading job; class/subject roaming was the actual
+disorganization finding 2.3 fixes). Pure frontend — no migration, no DTO
+change, no new e2e; `GetGradesGridQueryDto`/`SaveGradesGridDto` already
+required both as UUIDs, and `assertTeacherAssignment` (step 1) already
+gates every combination regardless of how the page got there.
+
+**Every real entry point already carried both params**: `ClassArmDetailPage`
+(admin/proprietor, `canManage`-gated) and — found during research, not
+previously called out in any spec — `MyClassesView`'s "Subjects I teach"
+table (the teacher's actual entry point, already link-based). There is no
+sidebar nav item pointing at `/grades/grid` bare for either role. This is
+what let the fix be a straight removal, not a redesign: `useClasses()`,
+the admin free Class+Subject dropdowns, and the teacher's own scoped-but-
+still-a-dropdown "Class & subject" select (fed by `useMyTeaching`, and
+itself a Step 1 addition once Step 1 correctly scoped its options) are all
+deleted outright — `MyClassesView` was already the correct, already-scoped
+teacher flow, so removing its parallel dropdown loses nothing.
+
+**Label resolution reuses `useClassArmDetail`**, now for BOTH roles (Step 1
+had it admin-gated, feeding dropdown options; step 3 uses the exact same
+fetch purely to read two display strings — `classLevel.name`+`name` and a
+`subjectTeachers` lookup by `subjectId`). Heavier than a two-string label
+strictly needs (it also pulls a page of students, unused here) — the same
+"revisit if the picker gets reworked" note from Step 1's DECISIONS.md entry
+anticipated this exact moment; not addressed now, since a dedicated
+lightweight endpoint wasn't asked for and the existing one is already
+proven correct and multi-tenant-safe.
+
+**Bare-route redirect is role-aware** (Flag 1): `/grades/grid` with no
+`classArmId`/`subjectId` `navigate()`s with `{ replace: true }` — to
+`/dashboard` for `TEACHER` (renders `MyClassesView`, their real Enter-
+grades source) and `/classes` for `SCHOOL_ADMIN`/`PROPRIETOR` (whose
+Enter-grades action lives on `ClassArmDetailPage`, one click away).
+Deliberately NOT the same target for both: a teacher's own
+`ClassArmDetailPage` view has no Enter-grades action at all (`canManage`-
+gated), so sending a teacher to `/classes` would just relocate the dead
+end one page later instead of fixing it. Waits for `currentUser` to
+resolve before firing, so the redirect target is never guessed wrong
+during the brief window before `/auth/me` returns.
+
+**The lock is UX, not the security boundary** (explicit refinement): a
+hand-edited URL to an unassigned/unauthorized class+subject still 404s
+(admin/proprietor) or 403s (teacher) via `assertTeacherAssignment`,
+exactly as before this step — `ScoreEntryGrid`'s existing generic error
+branch (`getErrorMessage` + Try again, unchanged code) already rendered
+this cleanly; step 3 adds no new handling for it, just proves it still
+works once the picker in front of it is gone. A separate, genuinely new
+failure mode this step introduces: `useClassArmDetail` itself can now
+reject (a stale link to a class the teacher lost access to, via step 2's
+403) — that gets the same clean full-area error treatment as every other
+page in this app that guards on a single resource fetch.
+
+**Proof**: `ScoreEntryGridPage.test.tsx` rewritten (8 tests, replacing the
+now-deleted dropdown-scoping tests from step 1): bare-route redirect for
+both roles (via the real `<AppRoutes>` tree, `ChangePasswordFlow.test.tsx`'s
+pattern, since the target depends on real sibling routes) confirms neither
+lands on a picker; locked label renders as plain text for both roles with
+zero `<select>`/labelled-Class-or-Subject elements anywhere (asserted via
+`getAllByRole("combobox")` having length exactly 2 — Component + Term);
+Component/Term remain real, interactive selects and successfully load the
+grid; the 404 (admin) and 403 (teacher) params-rejected shapes both render
+the clean existing error state; a stale-link 403 from `useClassArmDetail`
+itself replaces the whole area with its own clean error. Full `pnpm run ci`
+(typecheck + lint + 28 e2e suites/308 tests, unchanged — no backend touched
+— + 29 web Vitest files/164 tests + unit) green on a fresh
+`docker compose down -v` → migrate → seed database; `docker compose up -d
+--build` boots the full stack from scratch, `/health` reports `db: true,
+redis: true`.
