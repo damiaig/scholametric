@@ -474,9 +474,19 @@ export class GradesService {
           },
         });
         const lockedStudentIds = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).map((r) => r.studentId);
-        if (lockedStudentIds.length > 0) {
+        // SPEC_V0.5.1.md §2.5, v0.5.1 step 4: SCHOOL_ADMIN/PROPRIETOR may
+        // pass this gate — the real case is correcting an is_absent flag
+        // (either direction) discovered after publishing. TEACHER still
+        // 409s here unconditionally, exactly as before this step. This is
+        // the ONLY change to this gate; the term-closed check above is
+        // untouched and still applies to everyone, admin included — the
+        // published-lock bypass must never leak into the closed-term gate
+        // (docs/DECISIONS.md).
+        const isPublishedBypassAllowed = user.role === UserRole.SCHOOL_ADMIN || user.role === UserRole.PROPRIETOR;
+        if (lockedStudentIds.length > 0 && !isPublishedBypassAllowed) {
           throw this.publishedLockException("save scores", lockedStudentIds);
         }
+        const bypassedPublishedStudentIds = new Set<string>(isPublishedBypassAllowed ? lockedStudentIds : []);
 
         // Gap #2 (docs/DECISIONS.md): a student's overall can only be
         // PUBLISHED if every subject they've been scored in so far is
@@ -498,6 +508,13 @@ export class GradesService {
             where: { studentId: { in: studentsWithNoExistingRow }, termId: dto.termId, sessionId: term.sessionId },
           });
           needsOverallRecompute = overallRows.some((r) => r.status === ResultStatus.PUBLISHED);
+        }
+        // A bypassed published row's total is about to change — that
+        // student's overall (and, once the subject re-ranks below,
+        // possibly every other published student's overall too) needs the
+        // same cross-subject cascade gap #2 already triggers this lock for.
+        if (bypassedPublishedStudentIds.size > 0) {
+          needsOverallRecompute = true;
         }
 
         await Promise.all(
@@ -544,7 +561,26 @@ export class GradesService {
           tx,
           { schoolId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, classArmId: dto.classArmId },
           affectedStudentIds,
+          bypassedPublishedStudentIds,
         );
+
+        // A bypassed student's total just moved, which can shift the
+        // relative rank of every OTHER already-published student in this
+        // subject too, not just theirs — same re-rank publish() itself
+        // does after transitioning students to PUBLISHED (identical
+        // computeStandardCompetitionRanking call), just triggered here by
+        // a correction instead of a fresh publish. Still under the subject
+        // lock already held above; no new lock needed for a single
+        // subject's own rows.
+        if (bypassedPublishedStudentIds.size > 0) {
+          const publishedRows = await tx.termSubjectResult.findMany({
+            where: { schoolId, classArmId: dto.classArmId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, status: ResultStatus.PUBLISHED },
+          });
+          const ranking = computeStandardCompetitionRanking(publishedRows, (row) => Number(row.totalScore));
+          await Promise.all(
+            ranking.map(({ item, position }) => tx.termSubjectResult.update({ where: { id: item.id }, data: { subjectPosition: position } })),
+          );
+        }
 
         // Class-arm lock ALWAYS after the subject lock, never before —
         // same fixed order publish()/unpublish() already use, so no
@@ -578,6 +614,12 @@ export class GradesService {
               componentId: dto.componentId,
               termId: dto.termId,
               scoreCount: dto.scores.length,
+              // Empty for every ordinary save — only non-empty when
+              // admin/proprietor corrected an already-PUBLISHED student's
+              // score/absence, so this specific sensitive path stays
+              // traceable in the same audit row rather than a silent
+              // side effect of a routine save.
+              publishedBypassStudentIds: [...bypassedPublishedStudentIds],
             },
           },
         });
@@ -1486,10 +1528,24 @@ export class GradesService {
   // silently keep applying to a total that's no longer final (step-3
   // resolution: override_grade is non-null only when status is
   // PENDING_APPROVAL or PUBLISHED).
+  // `preservePublishedStudentIds` (SPEC_V0.5.1.md §2.5, v0.5.1 step 4):
+  // normally this function's whole point is that a recomputed row can
+  // never be PUBLISHED (only publish() itself sets that) — a save always
+  // reverts to DRAFT/PENDING_APPROVAL and clears subjectPosition/
+  // publishedAt, because normally nothing can even reach a recompute while
+  // PUBLISHED (saveGrid's own lock blocks it). The one exception is an
+  // admin/proprietor correcting an already-published row's absence/score:
+  // that row stays PUBLISHED with its ORIGINAL publishedAt (this corrects
+  // the data, it isn't a new publish event) and a freshly-computed total —
+  // subjectPosition is still nulled here and re-ranked by the caller
+  // immediately after, same as every other student. Every other caller
+  // (saveGrid's normal path, recompute()) passes nothing here and gets
+  // the exact same behavior as before this step.
   private async recomputeStudents(
     tx: Prisma.TransactionClient,
     ctx: RecomputeContext,
     studentIds: string[],
+    preservePublishedStudentIds?: Set<string>,
   ): Promise<RecomputedRow[]> {
     const [components, boundaries, existingRows] = await Promise.all([
       tx.assessmentComponent.findMany({ where: { schoolId: ctx.schoolId, deletedAt: null } }),
@@ -1510,6 +1566,7 @@ export class GradesService {
       maxScore: b.maxScore,
     }));
     const existingOverrideByStudent = new Map(existingRows.map((r) => [r.studentId, r.overrideGrade]));
+    const existingPublishedAtByStudent = new Map(existingRows.map((r) => [r.studentId, r.publishedAt]));
 
     const results: RecomputedRow[] = [];
     for (const studentId of studentIds) {
@@ -1522,7 +1579,9 @@ export class GradesService {
         isAbsent: s.isAbsent,
       }));
       const totalScore = computeSubjectTotal(componentInputs, scoreInputs);
-      const status = computeSubjectStatus(componentInputs, scoreInputs);
+      const computedStatus = computeSubjectStatus(componentInputs, scoreInputs);
+      const preservePublished = preservePublishedStudentIds?.has(studentId) ?? false;
+      const status = preservePublished ? ResultStatus.PUBLISHED : computedStatus;
       const autoGrade = resolveGradeBand(totalScore, boundaryInputs);
       const overrideGrade = status === ResultStatus.DRAFT ? null : (existingOverrideByStudent.get(studentId) ?? null);
       const finalGrade = resolveFinalGrade(autoGrade, overrideGrade);
@@ -1544,7 +1603,7 @@ export class GradesService {
           classArmId: ctx.classArmId,
           overrideGrade,
           subjectPosition: null,
-          publishedAt: null,
+          publishedAt: preservePublished ? (existingPublishedAtByStudent.get(studentId) ?? null) : null,
         },
         create: {
           schoolId: ctx.schoolId,

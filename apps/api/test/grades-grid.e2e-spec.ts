@@ -616,7 +616,13 @@ describe("Grades grid (e2e)", () => {
       expect(response.status).toBe(404);
     });
 
-    it("409s a write against the real, seeded PUBLISHED JSS 1 A English result, leaving it unchanged", async () => {
+    // SPEC_V0.5.1.md §2.5, v0.5.1 step 4: SCHOOL_ADMIN/PROPRIETOR now pass
+    // this gate (see mark-absent-after-publish.e2e-spec.ts for that full
+    // flow, scratch-isolated) — TEACHER still 409s here unconditionally,
+    // exactly as before this step. Uses the English teacher specifically
+    // (not the admin token this test used pre-step-4), since that's the
+    // role this lock still actually blocks.
+    it("409s a TEACHER's write against the real, seeded PUBLISHED JSS 1 A English result, leaving it unchanged", async () => {
       const [student] = jss1ARoster;
       const before = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: englishId, termId: sunriseTermId, sessionId: sunriseSessionId } },
@@ -625,7 +631,7 @@ describe("Grades grid (e2e)", () => {
 
       const response = await request(app.getHttpServer())
         .put("/api/v1/grades/grid")
-        .set(auth(sunriseAdminToken))
+        .set(auth(sunriseEnglishTeacherToken))
         .send({
           classArmId: jss1AArmId, subjectId: englishId, componentId: ca1Id, termId: sunriseTermId,
           scores: [{ studentId: student.id, rawScore: 1 }],

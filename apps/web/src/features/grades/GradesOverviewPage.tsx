@@ -11,8 +11,9 @@ import { useMyTeaching } from "../dashboard/use-my-teaching";
 import { useClasses } from "../classes/use-classes";
 import { useAdminCurrentTerm } from "./use-admin-current-term";
 import { useClassArmResults } from "./use-class-arm-results";
-import { ClassArmResultsView, type OverridePermission, type OverrideTarget } from "./ClassArmResultsView";
+import { ClassArmResultsView, type OverridePermission, type OverrideTarget, type MarkAbsentTarget } from "./ClassArmResultsView";
 import { OverrideGradeDialog } from "./OverrideGradeDialog";
+import { MarkAbsentDialog } from "./MarkAbsentDialog";
 
 const SELECT_CLASS = "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
 
@@ -50,12 +51,16 @@ export function GradesOverviewPage() {
   const [classArmId, setClassArmId] = useState(searchParams.get("classArmId") ?? "");
   const [termId, setTermId] = useState("");
   const [overrideTarget, setOverrideTarget] = useState<OverrideTarget | null>(null);
+  const [markAbsentTarget, setMarkAbsentTarget] = useState<MarkAbsentTarget | null>(null);
 
   const overridePermission: OverridePermission = isProprietor(currentUser?.role)
     ? "any"
     : isSchoolAdmin(currentUser?.role)
       ? "pendingOnly"
       : "none";
+  // SPEC_V0.5.1.md §2.5: unlike override, no SCHOOL_ADMIN/PROPRIETOR split
+  // for correcting a published absence/score.
+  const canMarkAbsent = isSchoolAdmin(currentUser?.role);
 
   const myTeaching = useMyTeaching();
   const classes = useClasses();
@@ -186,10 +191,17 @@ export function GradesOverviewPage() {
       )}
 
       {ready && resultsQuery.data && (
-        <ClassArmResultsView data={resultsQuery.data} overridePermission={overridePermission} onOverride={setOverrideTarget} />
+        <ClassArmResultsView
+          data={resultsQuery.data}
+          overridePermission={overridePermission}
+          onOverride={setOverrideTarget}
+          canMarkAbsent={canMarkAbsent}
+          onMarkAbsent={setMarkAbsentTarget}
+        />
       )}
 
       <OverrideGradeDialog target={overrideTarget} onClose={() => setOverrideTarget(null)} />
+      <MarkAbsentDialog target={markAbsentTarget} onClose={() => setMarkAbsentTarget(null)} />
     </div>
   );
 }

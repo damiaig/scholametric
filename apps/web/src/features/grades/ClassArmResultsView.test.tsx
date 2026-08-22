@@ -132,4 +132,43 @@ describe("ClassArmResultsView", () => {
       });
     });
   });
+
+  // SPEC_V0.5.1.md §2.5, v0.5.1 step 4 — unlike override, no admin-vs-owner
+  // split: canMarkAbsent is a plain boolean, and the control only ever
+  // appears on an already-PUBLISHED row (a non-published row's absence is
+  // already editable through the normal Enter-grades grid).
+  describe("mark-absent-after-publish control visibility", () => {
+    it("canMarkAbsent=false (default): no mark-absent buttons at all, even on the published row", () => {
+      const onMarkAbsent = vi.fn();
+      render(<ClassArmResultsView data={BASE_DATA} onMarkAbsent={onMarkAbsent} />);
+      expect(screen.queryByLabelText(/Mark absent or correct score/)).not.toBeInTheDocument();
+    });
+
+    it("canMarkAbsent=true: the button appears on the PUBLISHED row only, never the PENDING_APPROVAL row", () => {
+      const onMarkAbsent = vi.fn();
+      render(<ClassArmResultsView data={BASE_DATA} canMarkAbsent onMarkAbsent={onMarkAbsent} />);
+      // Mobile card + desktop table both render in jsdom — two copies.
+      expect(screen.getAllByLabelText("Mark absent or correct score for Bola Coker — Mathematics").length).toBe(2);
+      expect(screen.queryByLabelText("Mark absent or correct score for Ada Bello — Mathematics")).not.toBeInTheDocument();
+    });
+
+    it("clicking it calls onMarkAbsent with the exact target, including classArmId/termId from the response", () => {
+      const onMarkAbsent = vi.fn();
+      render(<ClassArmResultsView data={BASE_DATA} canMarkAbsent onMarkAbsent={onMarkAbsent} />);
+      screen.getAllByLabelText("Mark absent or correct score for Bola Coker — Mathematics")[0].click();
+      expect(onMarkAbsent).toHaveBeenCalledWith({
+        studentId: "s2",
+        studentName: "Bola Coker",
+        subjectId: "sub1",
+        subjectName: "Mathematics",
+        classArmId: "arm1",
+        termId: "term1",
+      });
+    });
+
+    it("without onMarkAbsent provided, no button renders even with canMarkAbsent=true", () => {
+      render(<ClassArmResultsView data={BASE_DATA} canMarkAbsent />);
+      expect(screen.queryByLabelText(/Mark absent or correct score/)).not.toBeInTheDocument();
+    });
+  });
 });

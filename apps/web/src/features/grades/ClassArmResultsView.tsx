@@ -1,4 +1,4 @@
-import { Pencil } from "lucide-react";
+import { Pencil, UserX } from "lucide-react";
 import type { ClassArmResultsResponse, ClassArmResultsSubject, ClassArmResultsSubjectRow } from "@scholametric/shared";
 import { StatusBadge } from "../../components/StatusBadge";
 import { resultStatusTone, resultStatusLabel } from "./result-status";
@@ -14,6 +14,21 @@ export interface OverrideTarget {
   overrideGrade: string | null;
 }
 
+// SPEC_V0.5.1.md §2.5, v0.5.1 step 4 — a PUBLISHED result's absence/score
+// correction. Deliberately lighter than OverrideTarget: the component to
+// correct is picked inside MarkAbsentDialog itself (this view only shows
+// the subject TOTAL, not a per-component breakdown), so the target is just
+// enough to identify the (student, subject, class, term) the dialog needs
+// to fetch that breakdown from GET /grades/grid once a component is chosen.
+export interface MarkAbsentTarget {
+  studentId: string;
+  studentName: string;
+  subjectId: string;
+  subjectName: string;
+  classArmId: string;
+  termId: string;
+}
+
 // "none": TEACHER, never offered. "pendingOnly": SCHOOL_ADMIN — may
 // override while PENDING_APPROVAL, but not once PUBLISHED (owner-only
 // past that point, GradesService.override()'s rule). "any": PROPRIETOR.
@@ -23,6 +38,11 @@ interface ClassArmResultsViewProps {
   data: ClassArmResultsResponse;
   overridePermission?: OverridePermission;
   onOverride?: (target: OverrideTarget) => void;
+  // SPEC_V0.5.1.md §2.5: unlike override, no SCHOOL_ADMIN/PROPRIETOR
+  // asymmetry — either role may correct a published absence/score, so this
+  // is a plain boolean, not a three-way permission like OverridePermission.
+  canMarkAbsent?: boolean;
+  onMarkAbsent?: (target: MarkAbsentTarget) => void;
 }
 
 function positionLabel(position: number | null): string {
@@ -45,7 +65,13 @@ function canOverrideRow(row: ClassArmResultsSubjectRow, permission: OverridePerm
 // column count is subject-count-dependent (~6-10 for a real class, not a
 // fixed width). A subject the caller can't see (TEACHER row-filtering)
 // simply isn't in `data.subjects` — nothing special to render for that.
-export function ClassArmResultsView({ data, overridePermission = "none", onOverride }: ClassArmResultsViewProps) {
+export function ClassArmResultsView({
+  data,
+  overridePermission = "none",
+  onOverride,
+  canMarkAbsent = false,
+  onMarkAbsent,
+}: ClassArmResultsViewProps) {
   if (data.subjects.length === 0) {
     return (
       <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
@@ -76,6 +102,33 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
         }
       >
         <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+    );
+  }
+
+  // Only offered on an already-PUBLISHED row (SPEC_V0.5.1.md §2.5) — a
+  // non-published row's absence/score is already freely editable through
+  // the normal Enter-grades grid, so this control would just be a
+  // redundant second path there.
+  function markAbsentButton(subject: ClassArmResultsSubject, row: ClassArmResultsSubjectRow, studentName: string) {
+    if (!onMarkAbsent || !canMarkAbsent || row.status !== "PUBLISHED") return null;
+    return (
+      <button
+        type="button"
+        aria-label={`Mark absent or correct score for ${studentName} — ${subject.subjectName}`}
+        className="text-muted hover:text-primary"
+        onClick={() =>
+          onMarkAbsent({
+            studentId: row.studentId,
+            studentName,
+            subjectId: subject.subjectId,
+            subjectName: subject.subjectName,
+            classArmId: data.classArmId,
+            termId: data.termId,
+          })
+        }
+      >
+        <UserX className="h-3.5 w-3.5" aria-hidden="true" />
       </button>
     );
   }
@@ -119,6 +172,7 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
                           <>
                             {row.finalGrade ?? "—"} <span className="text-xs text-muted">({positionLabel(row.subjectPosition)})</span>
                             {overrideButton(subject, row, studentName)}
+                            {markAbsentButton(subject, row, studentName)}
                           </>
                         ) : (
                           <span className="text-muted">Not yet entered</span>
@@ -184,6 +238,7 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
                             <StatusBadge label={resultStatusLabel(row.status)} tone={resultStatusTone(row.status)} />
                             <span className="text-xs text-muted">{positionLabel(row.subjectPosition)}</span>
                             {overrideButton(subject, row, studentName)}
+                            {markAbsentButton(subject, row, studentName)}
                           </div>
                         ) : (
                           <span className="text-sm text-muted">Not yet entered</span>

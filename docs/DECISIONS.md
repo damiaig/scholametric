@@ -3323,3 +3323,92 @@ itself replaces the whole area with its own clean error. Full `pnpm run ci`
 `docker compose down -v` → migrate → seed database; `docker compose up -d
 --build` boots the full stack from scratch, `/health` reports `db: true,
 redis: true`.
+
+## 2026-08-22 — v0.5.1 step 4: mark absent after publish (SPEC_V0.5.1.md §2.5)
+
+**Reuses `saveGrid` directly — no new endpoint, no parallel recompute.**
+The fix is the PUBLISHED-student gate in `GradesService.saveGrid()`: it now
+lets `SCHOOL_ADMIN`/`PROPRIETOR` pass (existence-tracked in a new
+`bypassedPublishedStudentIds` set), where before it 409'd everyone
+unconditionally. `TEACHER` still hits the exact same 409 as before this
+step. The term-closed check earlier in the same transaction is completely
+untouched — the published-lock bypass does not (and must not) extend to
+the closed-term gate; a closed term still needs the unlock flow first,
+admin included. Same fixed lock order as always (term → subject →
+conditional class-arm, `lock-keys.ts` unchanged) — the class-arm lock's
+condition is simply broadened to also fire when a bypass happened,
+alongside the pre-existing gap-#2 condition.
+
+**The one real design fork**: `recomputeStudents()` has always reverted
+ANY recomputed row to DRAFT/PENDING_APPROVAL and nulled
+`subjectPosition`/`publishedAt` — correct for every existing caller,
+because nothing could previously reach a recompute while PUBLISHED at all
+(the very gate this step opens). Calling it unmodified on a bypassed row
+would silently un-publish the correction, contradicting the whole point.
+Fixed with one additive, optional parameter —
+`preservePublishedStudentIds` — that, only for students genuinely
+PUBLISHED before this write, forces `status: PUBLISHED` and keeps the
+ORIGINAL `publishedAt` (this corrects data, it isn't a new publish event).
+Every other caller (`saveGrid`'s normal path, `recompute()`, `unpublish()`)
+passes nothing and is byte-for-byte unaffected — confirmed by the full
+existing e2e suite passing unchanged.
+
+**The subject-wide re-rank is new code, but not a new algorithm**: a
+bypassed student's total moving can shift every OTHER published student's
+relative rank in that subject too, not just theirs, so `saveGrid` now runs
+the identical `computeStandardCompetitionRanking` pass `publish()` already
+does (same call, copied to a new call site) whenever a bypass occurred —
+still under the subject lock already held, no new lock. `recomputeOverallForClassArm`
+(unmodified) then cascades the same change across subjects via the
+existing class-arm lock.
+
+**UI location — an explicit design question, not assumed**: the spec's own
+implementation note says "a UI control on the review/overview screen," and
+the score-entry grid client-side hard-locks any `PUBLISHED` row regardless
+of role (`ScoreEntryRow.tsx`'s `isLocked`) — unlocking that cell for admin
+would have repurposed the grid Step 3 just locked to a specific class+
+subject into a correction workflow it wasn't designed for. Asked Dami
+directly rather than guessing; confirmed: a new "Correct a published
+result" control (`UserX` icon, next to the existing Override pencil icon)
+on `ClassArmResultsView`/Overview, opening `MarkAbsentDialog` — picks a
+component (Overview only shows the subject total, not a per-component
+breakdown), loads that cell's current value via the same `GET /grades/grid`
+the entry grid itself uses, and submits through `useCorrectPublishedScore`
+→ `PUT /grades/grid` with a single-item `scores[]`. No admin/proprietor
+asymmetry (`canMarkAbsent` is a plain boolean, unlike override's `pendingOnly`/`any`
+split) — the button only ever appears on an already-PUBLISHED row (a
+non-published row's absence is already freely editable through the normal
+grid).
+
+**Test hygiene**: one pre-existing `grades-grid.e2e-spec.ts` test asserted
+that even `admin@sunrise.test` got 409'd writing to the real, seeded
+PUBLISHED JSS 1 A English result — now factually the wrong expectation for
+admin. Fixed by switching that specific assertion to the English subject's
+actual TEACHER token (`teacher2@sunrise.test`), which is exactly who this
+lock still blocks; the sibling `POST /grades/recompute` published-lock test
+right below it was untouched (that endpoint has no bypass — this step is
+scoped to `saveGrid` only) and needed no change.
+
+**Proof**: new `mark-absent-after-publish.e2e-spec.ts` (7 tests, scratch-
+bundle isolated): admin marks a published student absent — total drops,
+subject AND overall position recompute for the WHOLE 3-student cohort (not
+just the touched student), stays PUBLISHED with the ORIGINAL `publishedAt`,
+audited with the bypass explicitly named in metadata; admin then corrects
+back to a real score — symmetric restore; TEACHER 409s on both directions,
+unchanged; a CLOSED term still blocks the correction pending unlock, then
+succeeds once unlocked (proves the bypass never leaks into the closed-term
+gate); a hand-crafted both-set `student_scores` row still violates the DB
+CHECK constraint; a concurrent admin correction (subject A) and a publish
+of a different subject (B) on the same class arm don't deadlock and both
+land consistently; cross-tenant 404. Plus new `ClassArmResultsView.test.tsx`
+cases (button visibility: published-only, no admin/owner split, calls
+back with the right target) and a new `MarkAbsentDialog.test.tsx` (7
+tests: prefill from the current cell, absent vs. score submission payloads,
+backend-rejection message surfaced, Save disabled until a component is
+picked). Full `pnpm run ci` (typecheck + lint + 29 e2e suites/315 tests +
+30 web Vitest files/175 tests + unit) green on a fresh `docker compose
+down -v` → migrate → seed database (no new migration); `docker compose up
+-d --build` boots the full stack from scratch, `/health` reports `db:
+true, redis: true`. No live browser check this step either — the
+scratchpad's Playwright install is still broken (missing `package.json`
+under its `node_modules/playwright`), noted rather than silently skipped.
