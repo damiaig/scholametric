@@ -117,4 +117,25 @@ describe("AppShell", () => {
     expect(await screen.findByRole("link", { name: /Personnel/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Settings/ })).toBeInTheDocument();
   });
+
+  // SPEC_V0.5.1.md §2.7, v0.5.1 step 6 — Help is in BASE_NAV_ITEMS, visible
+  // to every role (HelpPage itself branches content by role).
+  it("Help is visible in the sidebar for both SCHOOL_ADMIN and TEACHER", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return CURRENT_USER;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    renderShell();
+    expect(await screen.findByRole("link", { name: "Help" })).toHaveAttribute("href", "/help");
+
+    cleanup();
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    renderShell();
+    expect(await screen.findByRole("link", { name: "Help" })).toHaveAttribute("href", "/help");
+  });
 });

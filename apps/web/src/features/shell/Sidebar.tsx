@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Users, UserCog, Layers, IdCard, Settings, GraduationCap } from "lucide-react";
+import { LayoutDashboard, Users, UserCog, Layers, IdCard, Settings, GraduationCap, CircleHelp } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { isSchoolAdmin } from "../../lib/roles";
 import { useCurrentUser } from "./use-current-user";
@@ -10,11 +10,14 @@ import { UserMenu } from "./UserMenu";
 // (TEACHER gets read-only views server-side); Personnel and Settings are
 // PROPRIETOR/SCHOOL_ADMIN only — absent from nav for TEACHER, not disabled,
 // same convention as every other role-gated nav item in this app.
+// Help (SPEC_V0.5.1.md §2.7, v0.5.1 step 6) is visible to everyone too —
+// HelpPage itself branches its content by role, same pattern as /dashboard.
 const BASE_NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/students", label: "Students", icon: Users },
   { to: "/teachers", label: "Teachers", icon: UserCog },
   { to: "/classes", label: "Classes", icon: Layers },
+  { to: "/help", label: "Help", icon: CircleHelp },
 ];
 
 const PERSONNEL_ITEM = { to: "/personnel", label: "Personnel", icon: IdCard };

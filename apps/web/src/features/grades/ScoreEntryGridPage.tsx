@@ -97,7 +97,11 @@ export function ScoreEntryGridPage() {
           <div className="mb-6 flex flex-col gap-4 rounded-lg border border-muted/20 bg-card p-4 sm:flex-row sm:flex-wrap sm:items-end">
             <div className="flex flex-col gap-1.5">
               <Label>Class &amp; subject</Label>
-              <p className="flex h-10 items-center text-sm font-medium text-text">
+              {/* SPEC_V0.5.1.md §2.6 — a bordered pill matching the height/
+                  shape of the Component/Term controls beside it, so this
+                  reads as intentionally fixed context, not a blank/broken
+                  field. */}
+              <p className="flex h-10 w-full items-center rounded-md border border-muted/30 bg-muted/5 px-3 text-sm font-medium text-text sm:w-56">
                 {armLabel} · {subjectLabel}
               </p>
             </div>

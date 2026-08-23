@@ -89,9 +89,12 @@ export function ScoreEntryGrid({ params, canManageTermLock, saveQueueTiming }: S
         canManage={canManageTermLock}
       />
 
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted">
-          {enteredCount} of {roster.length} entered · out of {gridQuery.data.maxScore}
+      {/* SPEC_V0.5.1.md §2.6 — grouped into its own bordered bar (matching
+          the roster box directly below it) instead of floating text, so
+          the summary reads as a toolbar for the grid, not a stray line. */}
+      <div className="flex items-center justify-between rounded-lg border border-muted/20 bg-card px-4 py-2.5">
+        <p className="text-sm text-text">
+          <span className="font-medium">{enteredCount}</span> <span className="text-muted">of {roster.length} entered · out of {gridQuery.data.maxScore}</span>
         </p>
         <Button type="button" variant="outline" size="sm" onClick={() => gridQuery.refetch()}>
           <RefreshCw className="mr-2 h-3.5 w-3.5" aria-hidden="true" />

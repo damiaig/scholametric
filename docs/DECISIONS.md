@@ -3426,3 +3426,62 @@ down -v` → migrate → seed database (no new migration); `docker compose up
 true, redis: true`. No live browser check this step either — the
 scratchpad's Playwright install is still broken (missing `package.json`
 under its `node_modules/playwright`), noted rather than silently skipped.
+
+## 2026-08-23 — v0.5.1 steps 5+6: Enter-grades styling + per-role help guide (SPEC_V0.5.1.md §2.6/§2.7)
+
+**Step 5 — purely `className` edits, zero logic/prop/query changes**
+(confirmed by the full existing `ScoreEntryGrid.test.tsx`/
+`ScoreEntryGridPage.test.tsx` suites passing unchanged, no new tests
+needed). Two spots, matching the plan exactly: (1) the locked "Class &
+subject" label (`ScoreEntryGridPage.tsx`) gets a bordered pill matching
+the height/shape of its sibling Component/Term controls — previously
+unstyled plain text next to two real bordered `<select>`s read as a
+blank/broken field, not an intentionally-fixed one; (2) the grid's
+summary row (`ScoreEntryGrid.tsx`, "N of M entered · out of X" + Refresh)
+is now grouped into its own bordered bar matching the roster box directly
+below it, instead of floating text, so the two read as one cohesive
+panel. `TermLockBanner.tsx` and the empty/loading/error states were
+reviewed and left untouched — already consistent with the app-wide
+convention (icon + tinted banner; rounded-border/`p-10`/centered text
+respectively), so touching them would have been inconsistency, not
+polish.
+
+**Step 6 — new `/help` route, `HelpPage.tsx`, static content, no
+backend.** Same "one route, role branches the content" pattern
+`DashboardPage` already uses for `MyClassesView` vs. the admin dashboard.
+Reached via a new "Help" item in `Sidebar.tsx`'s `BASE_NAV_ITEMS` (visible
+to every role, same as Dashboard/Students/Teachers/Classes) rather than
+the account/`UserMenu` dropdown, which has no navigational precedent in
+this app (it's account-actions only, currently just Logout).
+
+**Content accuracy was the load-bearing constraint, not styling**: the
+TEACHER guide describes only what a teacher can actually do — their own
+classes, entering grades (incl. marking absent), and the class remark
+(full for the class teacher, read-only otherwise) — and deliberately
+avoids the words "publish," "override," "unlock," and "relock" entirely,
+not just the underlying admin actions; a teacher losing edit access to a
+finalized result is described from their own vantage point ("you won't be
+able to edit it yourself — ask your admin or proprietor") rather than by
+naming the admin-side mechanism. `HelpPage.test.tsx` asserts this
+negatively, not just positively — the teacher-role test fails if
+"publish"/"override"/"unlock"/"relock" appear anywhere in that render, in
+addition to asserting the admin-only sections are entirely absent. The
+admin/proprietor guide includes the two optional lines from the plan: the
+subject-needs-a-teacher-assigned rule (why a subject can seem to "go
+missing" for a class) and that grade entry is always reached via a
+class's subject link, not a free picker.
+
+**Proof**: `HelpPage.test.tsx` (3 tests: admin content + negative
+teacher-content assertions; PROPRIETOR gets the identical admin guide;
+teacher content + negative admin-content/keyword assertions). `/help`
+added to `route-smoke.test.tsx`'s route list (now 14 routes) — mounts
+cleanly off the same `/auth/me` mock every other route already shares, no
+new endpoint needed. `AppShell.test.tsx` gets one new case confirming the
+Help link renders for both SCHOOL_ADMIN and TEACHER. Full `pnpm run ci`
+(typecheck + lint + 29 e2e suites/315 tests, unchanged — no backend
+touched by either step — + 31 web Vitest files/180 tests + unit) green on
+a fresh `docker compose down -v` → migrate → seed database (no new
+migration); `docker compose up -d --build` boots the full stack from
+scratch, `/health` reports `db: true, redis: true`. No live browser check
+— Playwright's scratchpad install is still broken; leaned on Vitest for
+both steps as agreed.

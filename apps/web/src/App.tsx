@@ -16,6 +16,7 @@ import { GradesOverviewPage } from "./features/grades/GradesOverviewPage";
 import { ReviewPublishPage } from "./features/grades/ReviewPublishPage";
 import { ReportCardPage } from "./features/grades/ReportCardPage";
 import { PersonnelListPage } from "./features/personnel/PersonnelListPage";
+import { HelpPage } from "./features/help/HelpPage";
 import { SettingsLayout } from "./features/settings/SettingsLayout";
 import { SchoolProfilePage } from "./features/settings/SchoolProfilePage";
 import { AcademicSettingsPage } from "./features/settings/AcademicSettingsPage";
@@ -42,6 +43,7 @@ export function AppRoutes() {
         <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
         <Route path="/grades/grid" element={<ScoreEntryGridPage />} />
         <Route path="/grades/overview" element={<GradesOverviewPage />} />
+        <Route path="/help" element={<HelpPage />} />
 
         {/* v0.2 (SPEC_V0.2.md §4): /settings/users no longer exists as a
             tab — it's a bare redirect to /personnel, which replaced it. */}

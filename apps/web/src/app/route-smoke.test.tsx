@@ -159,6 +159,7 @@ const ROUTES = [
   "/personnel",
   "/settings/school",
   "/settings/academic",
+  "/help",
 ];
 
 beforeEach(() => {
