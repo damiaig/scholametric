@@ -53,7 +53,10 @@ export function toPersonnelSummary(profile: StaffProfileWithUser): PersonnelSumm
   return {
     id: profile.user.id,
     schoolId: profile.schoolId,
-    email: profile.user.email,
+    // Non-null by construction: a StaffProfile only ever exists on a staff
+    // User row, and only v0.6 portal (STUDENT/PARENT) accounts — which
+    // never get a StaffProfile — can have a null email.
+    email: profile.user.email!,
     firstName: profile.user.firstName,
     lastName: profile.user.lastName,
     role: profile.user.role,

@@ -378,6 +378,69 @@ async function seedSecondGuardian(schoolId: string, admissionNumber: string) {
   });
 }
 
+// v0.6 seed fixture (SPEC_V0.6.md §6 acceptance note): a guardian linked to
+// MULTIPLE children — needed for the family-coding / child-switcher
+// acceptance tests, and absent from the rest of this file (every other
+// seeded student gets their own solo guardian via seedPrimaryGuardian).
+// Self-contained (own admission-number range, own guardians/links) rather
+// than reusing seedStudents/seedPrimaryGuardian, deliberately: SUN/2026/9xxx
+// is well clear of both SUNRISE_STUDENTS' 1-25 and the JSS 2 A bulk
+// roster's 26-125 (BULK_CLASS_STARTING_SEQUENCE + BULK_CLASS_SIZE), so
+// nothing here can ever collide with either counter.
+//
+// Two families:
+// - Balogun: two full siblings sharing a guardian, all same surname (the
+//   plain shared-guardian case).
+// - Nwokolo: also two siblings sharing a guardian, but the second child's
+//   own surname (Adeyanju) differs from the guardian's (Nwokolo) —
+//   SPEC_V0.6.md §2.2b's blended-family case: the family stem must still
+//   be the GUARDIAN's surname, never a child's own.
+//
+// Idempotent: no-ops if the first fixture admission number already exists.
+async function seedFamilyCodingFixtures(schoolId: string, sessionId: string, classArmId: string) {
+  const existing = await prisma.student.findFirst({ where: { schoolId, admissionNumber: "SUN/2026/9001" } });
+  if (existing) return;
+
+  async function seedChild(
+    admissionSuffix: string,
+    child: { firstName: string; lastName: string; gender: Gender },
+    guardianId: string,
+    relationship: GuardianRelationship,
+    ageYears: number,
+  ) {
+    const admissionNumber = `SUN/2026/${admissionSuffix}`;
+    const student = await prisma.student.create({
+      data: {
+        schoolId,
+        admissionNumber,
+        firstName: child.firstName,
+        lastName: child.lastName,
+        gender: child.gender,
+        dateOfBirth: new Date(Date.UTC(2026 - ageYears, 3, 12)),
+        guardianName: `${child.lastName} Household`,
+        guardianPhone: "+2348099990000",
+        guardianEmail: null,
+      },
+    });
+    await prisma.studentEnrollment.create({ data: { schoolId, studentId: student.id, classArmId, sessionId } });
+    await prisma.studentGuardian.create({
+      data: { schoolId, studentId: student.id, guardianId, relationship, isPrimary: true },
+    });
+  }
+
+  const balogun = await prisma.guardian.create({
+    data: { schoolId, firstName: "Grace", lastName: "Balogun", phone: "+2348099999001", email: "grace.balogun@example.com" },
+  });
+  await seedChild("9001", { firstName: "Kemi", lastName: "Balogun", gender: Gender.FEMALE }, balogun.id, GuardianRelationship.MOTHER, 12);
+  await seedChild("9002", { firstName: "Tayo", lastName: "Balogun", gender: Gender.MALE }, balogun.id, GuardianRelationship.MOTHER, 11);
+
+  const nwokolo = await prisma.guardian.create({
+    data: { schoolId, firstName: "Peter", lastName: "Nwokolo", phone: "+2348099999002", email: "peter.nwokolo@example.com" },
+  });
+  await seedChild("9003", { firstName: "Ije", lastName: "Nwokolo", gender: Gender.FEMALE }, nwokolo.id, GuardianRelationship.FATHER, 13);
+  await seedChild("9004", { firstName: "Dapo", lastName: "Adeyanju", gender: Gender.MALE }, nwokolo.id, GuardianRelationship.FATHER, 10);
+}
+
 async function seedSchoolAcademics(schoolId: string) {
   const session = await prisma.academicSession.upsert({
     where: { schoolId_name: { schoolId, name: CURRENT_SESSION_NAME } },
@@ -810,6 +873,7 @@ async function main() {
     generateBulkClassStudents(BULK_CLASS_SIZE),
     BULK_CLASS_STARTING_SEQUENCE,
   );
+  await seedFamilyCodingFixtures(sunrise.id, sunriseAcademics.sessionId, sunriseAcademics.arms["JSS 1-B"]);
 
   // SPEC_V0.2.md §3 — proprietor, Adaobi's PRINCIPAL profile (she stays
   // SCHOOL_ADMIN — title is organizational, not a permission level), 8

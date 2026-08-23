@@ -3485,3 +3485,142 @@ migration); `docker compose up -d --build` boots the full stack from
 scratch, `/health` reports `db: true, redis: true`. No live browser check
 — Playwright's scratchpad install is still broken; leaned on Vitest for
 both steps as agreed.
+
+## 2026-08-23 — v0.6 step 1: portal account provisioning + family coding (SPEC_V0.6.md §5 step 1)
+
+**Schema** (migration `v0_6_portal_accounts`): `users.email` becomes
+nullable (`STUDENT`/`PARENT` portal accounts log in by username, added
+below, not email; a standard unique index already tolerates any number of
+NULLs, so `(school_id, email)` needed no rework). New nullable
+`users.username` (Citext) + `(school_id, username)` unique index — the
+hard school-wide uniqueness guarantee. New nullable, unique
+`users.student_id`/`users.guardian_id` FKs — one `STUDENT` account per
+student, one `PARENT` account per anchor guardian. A hand-added CHECK
+constraint (`users_role_link_consistency_check`, same pattern as v0.5's
+`student_scores_raw_score_or_absent_check`) enforces `STUDENT ⇒ student_id
+set/guardian_id null`, `PARENT ⇒ guardian_id set/student_id null`,
+everyone else ⇒ neither — a data-integrity invariant, not a business rule,
+so it belongs at the DB layer regardless of write path. No new "primary
+guardian" flag: `student_guardians.is_primary` already existed (v0.2,
+exactly one `true` per student) — it's per-student, not per-family, so the
+family's single anchor guardian is derived (below), not stored.
+
+**Family grouping is connected components over shared `student_guardians`
+links (any relationship, any `is_primary`), not surname text.** Two
+students are one family iff they share ≥1 guardian; a student with zero
+guardian links is a family of one. This is the only rule that
+simultaneously satisfies both acceptance requirements: unrelated students
+sharing a surname never merge (no shared guardian row), and linked
+siblings with different surnames (a blended family) are one family. The
+**anchor student** (whose guardian becomes the family's one PARENT
+account) is the family's lowest-`admissionNumber` member — deterministic,
+so the same family always resolves the same way across runs. The anchor
+guardian is that student's `is_primary` guardian, falling back to the
+first-linked guardian (with a `no_primary_guardian_marked` warning) if
+none is marked primary; this can only happen for a true family-of-one,
+since a multi-member family only exists because its members share a
+guardian — the anchor therefore always has ≥1 link.
+
+**Family code resolution is idempotency's actual mechanism — no `Family`
+table exists.** If the anchor guardian already has a `User`, its
+`username` IS the family code, reused verbatim, never recomputed (permanent
+once issued, SPEC_V0.6.md §2.2d — even if the guardian's surname is later
+edited). Else if any member student already has a `User`, the family code
+is that student's username with trailing digits stripped (covers a
+partially-provisioned prior run). Only a wholly new family computes a
+fresh stem (guardian's surname, or the student's own if there's no
+guardian) and escalates a trailing letter (`B`, `C`, ... `Z`, `AA`, ...)
+against every existing username in the school. Each new sibling gets
+`max(existing digits for THIS EXACT family code) + 1` — the digit query is
+regex-anchored (`^FAMILYCODE[0-9]+$`), not a prefix match, specifically so
+`OKAFOR`'s next digit can never be computed from `OKAFORB`'s own children
+(a prefix match would wrongly sweep `OKAFORB1`/`OKAFORB2` into `OKAFOR`'s
+count). e2e-covered directly: two unrelated same-surname families get
+distinct codes, and enrolling a new sibling into one family only ever
+advances that family's own digit while the letter-escalated neighbor
+family is untouched.
+
+**Blended-family read-scope (approved amendment to the original plan): a
+parent's future read-scope (v0.6 step 4) is the anchor guardian's own
+DIRECT links, not "family membership."** Provisioning flags (`warnings:
+child_not_covered`) any family member not directly linked to the anchor
+guardian — this both documents a genuine blended-family gap (a step-child
+the anchor doesn't legally guardian, say) and catches an accidental
+over-merge where one guardian record chains two otherwise-unrelated
+households together through an intermediate student. The child still gets
+their own `STUDENT` account either way (never silently dropped); they are
+simply never reachable through that family's `PARENT` login (never
+silently leaked either). This makes step 4's future read-scope query
+trivial and safe: filter by direct guardian link, full stop.
+
+**Numeric temp passwords, hashed at rest, genuinely unrecoverable.** A
+new `generateNumericTempPassword` (6 digits) — deliberately not
+`personnel.service.ts`'s alphanumeric `generateTemporaryPassword`; portal
+slips go to families reading digits off paper, sometimes a child typing on
+a bare phone keypad. Every account's plaintext temp password is returned
+**once**, in the `provision` response body, and is never persisted or
+logged anywhere — by design, this makes step 5 (slip printing) a
+**reset-and-reissue** action at print time, not a read of historical
+data; there is no mechanism, and there will never be one, to recover a
+temp password after this response is gone.
+
+**Per-family transactions, not one whole-school transaction**: each
+family (with a `pg_advisory_xact_lock` on `{schoolId}:portal-accounts`,
+same pattern as `personnel.service.ts`'s staff-number sequence) succeeds
+or fails independently, so one bad family can't roll back every family
+already provisioned in the same call — re-running just picks up where it
+left off. Families within one call are processed sequentially (not
+`Promise.all`): a later family in the same run must see usernames an
+earlier one just inserted (two brand-new unrelated `OKAFOR` families in
+one call — the second must see the first's freshly-created `OKAFOR`
+before it can correctly choose `OKAFORB`).
+
+**Response code**: `POST /portal-accounts/provision` returns `200`, not
+Nest's default `201` — an idempotent bulk action whose response is a
+summary, not a single created resource, same convention as
+`POST /grades/recompute`. No `@Audit()`: the interceptor's `response.id`
+lookup assumes one entity per mutation; this creates many.
+
+**Display names read live through the linked `Student`/`Guardian`, never
+`users.first_name`/`last_name`** (`GET /portal-accounts` and `/:id`) —
+matches the existing convention (`class-arms.service.ts`'s
+`teacherFirstName` reads live through `teacherUser`, never a copy), so a
+later name correction on the `Student`/`Guardian` record shows up without
+touching the `User` row. `users.first_name`/`last_name` are still
+populated at creation (NOT NULL columns) but are a required-schema
+formality for portal accounts, not their source of truth.
+
+**Seed additions** (`seedFamilyCodingFixtures`, `prisma/seed.ts`): the
+only genuinely missing acceptance fixture was a guardian linked to
+multiple children — every other seeded student already gets their own
+solo guardian. Added two families on a dedicated `SUN/2026/9xxx`
+admission-number range (clear of both `SUNRISE_STUDENTS`' 1–25 and the
+JSS 2 A bulk roster's 26–125 — appending to `SUNRISE_STUDENTS` itself
+would have collided with `BULK_CLASS_STARTING_SEQUENCE`, which assumes
+exactly 25 entries ahead of it): Balogun (two full siblings, same
+surname) and Nwokolo/Adeyanju (blended — the second child's own surname
+differs from the shared guardian's, exercising SPEC_V0.6.md §2.2b
+directly). The other two acceptance fixtures the spec's §6 note asked
+about — a student with nothing published, and two unrelated students
+sharing a surname — already existed: only JSS 1‑A/JSS 2‑A ever get seeded
+grades (everyone else has zero), and every bulk-roster student already
+gets their own individual guardian regardless of shared surnames.
+
+**Proof**: `portal-accounts.e2e-spec.ts`, 15 tests — provisions the real
+seeded roster (right account for right record, school-wide username
+uniqueness, the blended Nwokolo fixture); idempotent re-run (zero new
+rows); two unrelated same-surname families get distinct codes AND a new
+sibling enrolled afterward only advances its own family's digit
+(untouched sibling's `User` row asserted byte-for-byte identical,
+including `passwordHash`); only-child gets `CODE1` never bare `CODE`;
+3+ siblings still get exactly one parent; no-guardian student gets a
+`STUDENT`-only account plus a warning; the guardian-chaining scenario
+(three students, one shared-through-an-intermediate guardian) proves
+`child_not_covered` fires for exactly the right student and only that
+one; 403/401 role and auth boundaries; cross-tenant `404` on
+`GET /portal-accounts/:id`; two tests hit the CHECK constraint directly
+via raw Prisma, bypassing the service, to prove the DB layer holds
+regardless of application logic. Full `pnpm run ci` green on a fresh
+`docker compose down -v` → migrate → seed database; `docker compose up -d
+--build` boots the full stack from scratch. Nothing from steps 2–7
+(username login, read views, slips, polish, tag) was touched.

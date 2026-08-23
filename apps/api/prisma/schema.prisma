@@ -120,23 +120,41 @@ model School {
 }
 
 model User {
-  id                 String     @id @default(uuid(7)) @db.Uuid
-  schoolId           String     @map("school_id") @db.Uuid
-  email              String     @db.Citext
-  passwordHash       String     @map("password_hash")
-  firstName          String     @map("first_name")
-  lastName           String     @map("last_name")
+  id           String  @id @default(uuid(7)) @db.Uuid
+  schoolId     String  @map("school_id") @db.Uuid
+  // Nullable as of v0.6 (SPEC_V0.6.md §4): staff still log in by email
+  // (required in practice, enforced at the API layer for STAFF-ish roles);
+  // STUDENT/PARENT portal accounts log in by username instead (below) and
+  // carry no email. @@unique tolerates multiple NULLs per Postgres — every
+  // staff row keeps its own uniqueness untouched.
+  email        String? @db.Citext
+  // Portal-account login handle (v0.6). NULL for every staff role. Always
+  // CAPS by construction (portal-accounts.service.ts) but Citext for a
+  // case-insensitive uniqueness/login safety net regardless.
+  username     String? @db.Citext
+  passwordHash String  @map("password_hash")
+  firstName    String  @map("first_name")
+  lastName     String  @map("last_name")
   role               UserRole
   status             UserStatus @default(ACTIVE)
   lastLoginAt        DateTime?  @map("last_login_at")
   // Set true by personnel creation and password reset; cleared by a
-  // successful POST /auth/change-password (SPEC_V0.3.md §1/§2).
+  // successful POST /auth/change-password (SPEC_V0.3.md §1/§2). Also set
+  // true by portal-account provisioning (v0.6) — same flow, no fork.
   mustChangePassword Boolean    @default(false) @map("must_change_password")
+  // v0.6 (SPEC_V0.6.md §4): exactly one of these two is set for a
+  // STUDENT/PARENT account, and neither is set for staff — enforced again
+  // at the DB layer by a hand-added CHECK constraint (see migration), not
+  // just here.
+  studentId  String? @unique @map("student_id") @db.Uuid
+  guardianId String? @unique @map("guardian_id") @db.Uuid
   deletedAt          DateTime?  @map("deleted_at")
   createdAt          DateTime   @default(now()) @map("created_at")
   updatedAt          DateTime   @updatedAt @map("updated_at")
 
   school                    School                     @relation(fields: [schoolId], references: [id])
+  student                   Student?                   @relation(fields: [studentId], references: [id])
+  guardian                  Guardian?                  @relation(fields: [guardianId], references: [id])
   refreshTokens             RefreshToken[]
   auditLogs                 AuditLog[]
   staffProfile              StaffProfile?
@@ -150,6 +168,7 @@ model User {
   termRemarksAsPrincipal    TermRemark[]               @relation("TermRemarkPrincipalBy")
 
   @@unique([schoolId, email])
+  @@unique([schoolId, username])
   @@index([schoolId])
   @@map("users")
 }
@@ -307,6 +326,8 @@ model Student {
   termSubjectResults TermSubjectResult[]
   termOverallResults TermOverallResult[]
   termRemarks        TermRemark[]
+  // v0.6: the one portal STUDENT account for this student, if provisioned.
+  portalAccount      User?
 
   @@unique([schoolId, admissionNumber])
   @@index([schoolId])
@@ -466,6 +487,10 @@ model Guardian {
 
   school           School            @relation(fields: [schoolId], references: [id])
   studentGuardians StudentGuardian[]
+  // v0.6: the one portal PARENT account for this guardian, if they're an
+  // anchor guardian and provisioning has run. Non-anchor guardians (e.g. a
+  // second, non-primary parent) never get one in v0.6 (SPEC_V0.6.md §2.2c).
+  portalAccount    User?
 
   @@index([schoolId])
   @@map("guardians")

@@ -1353,6 +1353,71 @@ don't resolve within the caller's tenant.
 
 ---
 
+## Portal accounts (v0.6 step 1, SPEC_V0.6.md §5)
+
+`PROPRIETOR`/`SCHOOL_ADMIN` only — provisions `STUDENT`/`PARENT` portal
+login accounts from existing `Student`/`Guardian` records; creates nothing
+new about a student or guardian, only links a `User` row to one. No login
+path exists for these accounts yet (v0.6 step 2).
+
+### `POST /portal-accounts/provision`
+
+No body — school-scoped from the JWT. Idempotent and re-runnable: creates
+accounts only for students/families that don't already have one, and
+never renumbers an already-issued username. `200`, not `201` (an idempotent
+bulk action, same convention as `POST /grades/recompute`).
+
+Groups students into **families** by existing guardian links (any
+`student_guardians` row, not surname text) — connected components, so
+linked siblings with different surnames are one family, and unrelated
+students who happen to share a surname are never merged. Each family gets
+one school-unique **family code** (the anchor guardian's surname stem,
+escalating a trailing letter — `OKAFOR`, `OKAFORB`, ... — on collision);
+the guardian's account is the bare code, each child's is the code plus a
+per-family digit (`OKAFOR1`, `OKAFOR2`, ...), always in that digit
+allocation's own family (never swept in from a letter-escalated
+neighbor). Numeric temp passwords are returned **once**, in this
+response, hashed at rest immediately — there is no way to retrieve a
+temp password after this call returns; a lost/unprinted slip is a
+**reset-and-reissue** (v0.6 step 5), not a re-fetch.
+
+```json
+{
+  "studentsCreated": [{ "id": "...", "username": "OKAFOR1", "tempPassword": "483920", "studentId": "..." }],
+  "parentsCreated": [{ "id": "...", "username": "OKAFOR", "tempPassword": "719204", "guardianId": "..." }],
+  "alreadyProvisioned": { "students": 12, "parents": 5 },
+  "warnings": [
+    { "type": "no_guardian", "studentId": "...", "message": "..." },
+    { "type": "no_primary_guardian_marked", "studentId": "...", "guardianId": "...", "message": "..." },
+    { "type": "child_not_covered", "studentId": "...", "familyCode": "OKAFOR", "message": "..." }
+  ]
+}
+```
+
+`warnings` never blocks provisioning — a family missing a guardian, or a
+student not directly linked to its family's anchor guardian, still gets
+the account(s) it can; the gap is surfaced, not silently dropped or
+leaked. `child_not_covered` is the one a parent's future read-scope
+(v0.6 step 4) depends on: that scope is the anchor guardian's **own**
+direct links, never "family membership", so a flagged child is guaranteed
+invisible to that parent login — this warning is purely for admin
+visibility/cleanup.
+
+**Response `403`**: any role other than `PROPRIETOR`/`SCHOOL_ADMIN`.
+
+### `GET /portal-accounts?page=&pageSize=`
+
+Paginated list of provisioned accounts (`role`, `username`, `displayName`
+— read live through the linked `Student`/`Guardian`, same convention as
+`class-arms`' `teacherFirstName`, not a copy). `403` for `TEACHER`.
+
+### `GET /portal-accounts/:id`
+
+Single account. **Response `404`**: unknown id, or an id from another
+school (cross-tenant, never a `403` — CLAUDE.md §4).
+
+---
+
 ## Misc
 
 ### `GET /health`
