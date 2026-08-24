@@ -1,4 +1,5 @@
 import type { TermNameValue } from "./academic";
+import type { Gender, StudentStatus } from "./students";
 
 // GET /me/teaching response shape (v0.3, SPEC_V0.3.md §2) — the caller's
 // own current-session teaching load. Not the same shape as
@@ -30,4 +31,39 @@ export interface MyTeaching {
   currentSessionId: string | null;
   currentTermId: string | null;
   currentTermName: TermNameValue | null;
+}
+
+// v0.6 step 3 (SPEC_V0.6.md §2.3) — GET /me/profile: a STUDENT's own basic
+// profile. Deliberately NOT the admin StudentDetail shape (guardians, full
+// history) — least-privilege, self-view fields only.
+export interface MyProfile {
+  studentId: string;
+  firstName: string;
+  lastName: string;
+  admissionNumber: string;
+  gender: Gender;
+  dateOfBirth: string;
+  status: StudentStatus;
+  currentClassArmLabel: string | null;
+}
+
+// GET /me/terms — the sessions/terms THIS student was ever enrolled in
+// (their own student_enrollments only), so a term picker has something to
+// read without broadening GET /sessions or /terms's admin-only RBAC.
+export interface MyTermSummary {
+  id: string;
+  name: TermNameValue;
+  isCurrent: boolean;
+  closedAt: string | null;
+}
+
+export interface MySessionSummary {
+  id: string;
+  name: string;
+  isCurrent: boolean;
+  terms: MyTermSummary[];
+}
+
+export interface MyAcademicContext {
+  sessions: MySessionSummary[];
 }

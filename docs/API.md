@@ -814,6 +814,82 @@ are the school's current `isCurrent` session/term, `null` if none is set —
 and `GET /terms` are both admin-only), and the bulk score-entry grid's
 picker needs it.
 
+### `GET /me/profile` (v0.6 step 3, SPEC_V0.6.md §2.3)
+
+`STUDENT` only. The caller's own basic profile — **not** the richer admin
+`StudentDetail` shape (no guardians, no full history). `studentId` is
+resolved server-side from `users.student_id` (the caller's own JWT
+subject); there is no id param on this route at all.
+
+```json
+{
+  "studentId": "...", "firstName": "Chidi", "lastName": "Okafor",
+  "admissionNumber": "SUN/2026/0099", "gender": "MALE", "dateOfBirth": "2013-04-02",
+  "status": "ACTIVE", "currentClassArmLabel": "JSS 1 A"
+}
+```
+`currentClassArmLabel` is `null` if the student has no enrollment in the
+current session.
+
+### `GET /me/terms` (v0.6 step 3, SPEC_V0.6.md §2.3)
+
+`STUDENT` only. The sessions/terms the caller was ever enrolled in (their
+own `student_enrollments` rows only) — exists so a term picker has
+something to read without broadening `GET /sessions`/`GET /terms`'s
+admin-only `@Roles()` (the same reason `currentSessionId`/`currentTermId`
+above exist for `TEACHER` instead of widening those endpoints).
+
+```json
+{
+  "sessions": [
+    {
+      "id": "...", "name": "2026/2027", "isCurrent": true,
+      "terms": [
+        { "id": "...", "name": "FIRST", "isCurrent": true, "closedAt": null }
+      ]
+    }
+  ]
+}
+```
+
+### `GET /me/report-card?termId=&sessionId=` (v0.6 step 3, SPEC_V0.6.md §2.3)
+
+`STUDENT` only. The caller's **own** report card — no `studentId` param
+anywhere on this route; `MeService` resolves it from `users.student_id`
+before calling the exact same `GradesService.getReportCard()` staff/
+`TEACHER` callers use (`GET /students/:id/report-card` above), passing the
+caller's own `AuthenticatedUser` through unchanged. That's what makes the
+published-only filter below apply — not a fork, not a new "published"
+concept.
+
+Response shape is identical to `GET /students/:id/report-card`'s (same
+type), with these differences baked into the query itself:
+- `subjects` only ever includes `term_subject_results` with
+  `status = PUBLISHED` — a `DRAFT`/`PENDING_APPROVAL` subject (including
+  one with an absent-but-unpublished component) is **absent from the
+  array entirely**, not a hidden field on a row that's there.
+- `overall` is `null` unless `term_overall_results.status = PUBLISHED` —
+  which `computeOverallStatus()` (`grade-computation.ts`) only reaches
+  once **every** one of the student's subjects for the term is itself
+  `PUBLISHED`. There is no partial/live ranking path; positions are
+  always the ones `publish()`/`recompute()` already froze on the row.
+- `remarks` (teacher/principal) are `null` unless `overall` is non-null —
+  a remark shouldn't be visible ahead of the term's results actually
+  being out.
+
+Enrolled in the term with nothing published yet → **200**,
+`{ "subjects": [], "overall": null, ... }` — a clean empty state, never an
+error. Never enrolled in the term at all → the same `404` the staff
+endpoint already returns (`"Student has no enrollment for this
+session."`) — a different case ("not your term," not "nothing published
+in your term").
+
+**Response `400`**: any extra field in the query string (e.g. a smuggled
+`studentId`) — the global `ValidationPipe`'s `forbidNonWhitelisted: true`
+rejects it before the handler runs; `GetStudentResultsQueryDto` only ever
+declared `termId`/`sessionId`, on this route or the staff one. **Response
+`403`**: any role other than `STUDENT`.
+
 ---
 
 ## Subject assignments (v0.2, SPEC_V0.2.md §2)

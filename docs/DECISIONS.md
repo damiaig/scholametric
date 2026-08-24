@@ -3732,3 +3732,98 @@ each fails independently); the full must-change-block flow against a
 real route. `LoginPage.test.tsx` gets a username-login case. Full
 `pnpm run ci` green on a fresh `docker compose down -v` → migrate → seed
 stack. Nothing from steps 3–7 (read views, slips, polish, tag) touched.
+
+## 2026-08-24 — v0.6 step 3: student read views (SPEC_V0.6.md §2.3)
+
+**Verified before writing any code, not assumed from the spec**: does
+`publish()` let `term_overall_results.status` reach `PUBLISHED` while any
+of that student's `term_subject_results` for the term are still
+non-`PUBLISHED`? No — `computeOverallStatus()` (`grade-computation.ts`)
+returns `PUBLISHED` only when `subjectStatuses.every(s => s ===
+"PUBLISHED")`, and `publish()` (`grades.service.ts`) calls
+`recomputeOverallForClassArm()` — which uses that exact function — as its
+own last step, in the same transaction, every time. No other code path
+sets that column. This is what makes filtering `subjects` and `overall`
+to `PUBLISHED` independently (§ below) never disagree with each other.
+
+**Identity resolution: `users.student_id`, re-resolved every request, not
+a JWT claim.** v0.6 step 2 deliberately didn't add `studentId` to the
+access token; step 3 respects that rather than reversing it.
+`MeService.resolveOwnStudentId(userId)` does one indexed lookup
+(`users.id = <JWT subject>, role = STUDENT`) per request. The actual
+security boundary isn't "check the id matches self" (a check that could
+have a bug) — it's that **`GET /me/profile`/`/me/terms`/`/me/report-card`
+take no `studentId`/`id` param anywhere on the route**, so there is no
+field in the request to derive a foreign id from in the first place. The
+global `ValidationPipe`'s `forbidNonWhitelisted: true` backs this: a
+client that smuggles an extra `studentId` into the query string gets a
+flat `400` before any handler code runs (e2e-covered).
+
+**Published-only is a query filter added to the EXISTING
+`GradesService.getReportCard()`** (v0.5 step 4), not a new method and not
+a new "published" concept — `ResultStatus.PUBLISHED` is the exact column
+value `publish()` already sets. `MeService.getMyReportCard()` passes the
+caller's own `AuthenticatedUser` (`role: STUDENT`) straight into that
+method, which now branches on `user.role === STUDENT` exactly like it
+already branched on `TEACHER` for the access check — filtering both the
+`term_subject_results` and `term_overall_results` queries to `status:
+PUBLISHED`. A `DRAFT`/`PENDING_APPROVAL` row is absent from the response
+at the query level — the `subjects` array is built by mapping over the
+(now-filtered) query result, so an excluded subject was never fetched to
+begin with, not hidden after the fact. No redundant self-id check was
+added inside `getReportCard()` itself: the only caller that can ever pass
+`role: STUDENT` is `MeService`, and it only ever passes the caller's own
+resolved id — there is no "wrong" id this branch could be asked to defend
+against, and adding one would cost an extra query for no real protection.
+
+**Remarks gated behind `overall !== null`** (approved decision): a
+`STUDENT` never sees `teacherRemark`/`principalRemark` until the term's
+overall result is itself published — a remark shouldn't be visible ahead
+of the results it's commenting on actually being out. Computed as
+`remarksVisibleToCaller = !publishedOnlyForStudent || overall !== null`
+and applied field-by-field in the response, not by skipping the
+`term_remarks` query (staff still needs it read unconditionally).
+
+**`GET /me/report-card` reuses `GradesService.getReportCard()`, not
+`getStudentResults()`** (the "Results tab") — the spec calls out "the v0.5
+renderer" (the report card specifically), and the report card already
+has no use for class-average (a staff-only "Results tab" field,
+per that method's own doc comment) — one less field to reason about
+gating for a self-view.
+
+**Frontend: `ReportCardDocument.tsx` extracted from `ReportCardPage.tsx`**
+— the printable-document JSX (header, subjects table, overall block, both
+`RemarkPanel`s) moved into its own presentational component, unchanged
+behavior-wise (confirmed: existing `ReportCardPage.test.tsx`'s 11 tests
+stayed green with zero edits). `PortalHome.tsx` (v0.6 step 2's STUDENT/
+PARENT placeholder) now branches: `STUDENT` gets a real term picker (via
+the new `GET /me/terms`) + `ReportCardDocument` fed by `GET
+/me/report-card`, both remark forms forced off (`showTeacherForm={false}`,
+`showPrincipalForm={false}` — read-only self-view). `PARENT` keeps the
+v0.6 step 2 placeholder text unchanged — their own read view (with a
+child-switcher, a genuinely different resolution than "self") is v0.6
+step 4, not this one.
+
+**New shared types** (`packages/shared/src/me.ts`, alongside the existing
+`MyTeaching`): `MyProfile`, `MyTermSummary`, `MySessionSummary`,
+`MyAcademicContext` — mirrors the pre-existing pattern of that file (a
+`/me/*` response gets its own minimal shape here, not a repurposed admin
+one).
+
+**Proof** (`me-student.e2e-spec.ts`, 12 tests, new): a student's own
+published subject renders with its full real/absent/position breakdown
+intact; a `DRAFT` subject for the same student is absent from `subjects[]`
+(not a hidden field), and `overall`/`remarks` stay `null` while any
+subject lags; once every subject publishes, the overall position and
+remark both appear; two students with published results in the *same*
+class/term never see each other's row (direct comparison, plus the
+structural absence of an id param to even attempt it); a smuggled
+`studentId` in the query string 400s; a Sunrise student and a dedicated
+Hillcrest student each see only their own school via `/me/profile`; an
+enrolled-but-nothing-published student gets `200 { subjects: [], overall:
+null }`; 403 for `TEACHER`, 401 unauthenticated. `report-card.e2e-spec.ts`
+(staff-facing, 90 tests across that + the other grades suites) reruns
+green unchanged, confirming the `getReportCard()` extension didn't affect
+staff behavior. Full `pnpm run ci` green on a fresh `docker compose down
+-v` → migrate → seed stack. Nothing from steps 4–7 (parent views/child-
+switcher, slips, polish, tag) touched.

@@ -1,0 +1,105 @@
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { screen, cleanup } from "@testing-library/react";
+import { renderWithProviders } from "../../test/render-with-providers";
+import { authStore } from "../../lib/auth-store";
+import { apiRequest } from "../../lib/api-client";
+import { PortalHome } from "./PortalHome";
+
+vi.mock("../../lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/api-client")>();
+  return { ...actual, apiRequest: vi.fn() };
+});
+
+const mockedApiRequest = vi.mocked(apiRequest);
+
+const BASE_USER = {
+  id: "u1",
+  email: null,
+  firstName: "Chidi",
+  lastName: "Okafor",
+  status: "ACTIVE",
+  lastLoginAt: null,
+  mustChangePassword: false,
+  school: { id: "s1", name: "Sunrise College", slug: "sunrise", type: "SECONDARY", status: "ACTIVE", address: null, phone: null, email: null },
+};
+
+const TERM_ID = "term-1";
+const SESSION_ID = "session-1";
+
+const REPORT_CARD = {
+  studentId: "st1",
+  firstName: "Chidi",
+  lastName: "Okafor",
+  admissionNumber: "SUN/2026/0099",
+  classArmId: "arm1",
+  termId: TERM_ID,
+  sessionId: SESSION_ID,
+  subjects: [
+    {
+      subjectId: "sub1",
+      subjectName: "Mathematics",
+      needsTeacherAssignment: false,
+      components: [],
+      totalScore: 78,
+      autoGrade: "B2",
+      overrideGrade: null,
+      finalGrade: "B2",
+      subjectPosition: 3,
+      status: "PUBLISHED",
+    },
+  ],
+  overall: null,
+  remarks: {
+    teacherRemark: null,
+    teacherRemarkBy: null,
+    teacherRemarkAt: null,
+    principalRemark: null,
+    principalRemarkBy: null,
+    principalRemarkAt: null,
+  },
+};
+
+function mockStudentApi() {
+  mockedApiRequest.mockImplementation(async (path: string) => {
+    if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+    if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" };
+    if (path.includes("/me/terms")) {
+      return { sessions: [{ id: SESSION_ID, name: "2026/2027", isCurrent: true, terms: [{ id: TERM_ID, name: "FIRST", isCurrent: true, closedAt: null }] }] };
+    }
+    if (path.includes("/me/report-card")) return REPORT_CARD;
+    throw new Error(`unexpected apiRequest call: ${path}`);
+  });
+}
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  authStore.clear();
+});
+
+describe("PortalHome", () => {
+  it("STUDENT: shows their own published subject via the shared report-card renderer, with a term picker defaulting to current", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockStudentApi();
+
+    renderWithProviders(<PortalHome />);
+
+    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+    expect(screen.getByText("Chidi Okafor")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Term" })).toHaveValue(TERM_ID);
+    // Read-only for a STUDENT — no remark write forms.
+    expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();
+  });
+
+  it("PARENT: keeps the v0.6 step 2 placeholder (their read view is step 4)", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<PortalHome />);
+
+    expect(await screen.findByText(/Your children's results and report cards will appear here soon\./)).toBeInTheDocument();
+  });
+});

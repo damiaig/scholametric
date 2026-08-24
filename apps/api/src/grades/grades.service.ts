@@ -1346,14 +1346,47 @@ export class GradesService {
       }
     }
 
+    // v0.6 step 3 (SPEC_V0.6.md §2.3): a STUDENT reading their OWN report
+    // card (via MeService — studentId here is always their own, resolved
+    // from the token, never a request param) sees ONLY what publish() has
+    // already finalized. No new "published" concept: this is the exact
+    // ResultStatus.PUBLISHED the staff publish flow already sets on
+    // term_subject_results, and computeOverallStatus() already guarantees
+    // term_overall_results only ever reaches PUBLISHED once EVERY one of
+    // that student's subjects for the term is itself PUBLISHED (grade-
+    // computation.ts) — so filtering subjects to PUBLISHED and overall to
+    // PUBLISHED can never disagree with each other. A draft/pending/
+    // absent-but-unpublished subject is excluded here at the query level —
+    // it never reaches the `subjects` array below, not just a hidden
+    // field on it. No separate self-id check is added here: the only
+    // caller that can ever pass role STUDENT is MeService, which resolves
+    // studentId from the JWT subject's own user.studentId column, never
+    // from a request field — there is no "wrong" studentId this branch
+    // could be asked to defend against.
+    const publishedOnlyForStudent = user.role === UserRole.STUDENT;
+
     const [subjectResults, components, scores, overall, remark, assignedSubjects] = await Promise.all([
       this.prisma.termSubjectResult.findMany({
-        where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
+        where: {
+          schoolId,
+          studentId,
+          termId: query.termId,
+          sessionId: query.sessionId,
+          ...(publishedOnlyForStudent ? { status: ResultStatus.PUBLISHED } : {}),
+        },
         include: { subject: { select: { id: true, name: true } } },
       }),
       this.prisma.assessmentComponent.findMany({ where: { schoolId, deletedAt: null }, orderBy: { sortOrder: "asc" } }),
       this.prisma.studentScore.findMany({ where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId } }),
-      this.prisma.termOverallResult.findFirst({ where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId } }),
+      this.prisma.termOverallResult.findFirst({
+        where: {
+          schoolId,
+          studentId,
+          termId: query.termId,
+          sessionId: query.sessionId,
+          ...(publishedOnlyForStudent ? { status: ResultStatus.PUBLISHED } : {}),
+        },
+      }),
       this.prisma.termRemark.findFirst({
         where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
         include: {
@@ -1363,6 +1396,13 @@ export class GradesService {
       }),
       getAssignedSubjectMap(this.prisma, { schoolId, classArmId: enrollment.classArmId, sessionId: query.sessionId }),
     ]);
+
+    // Remarks travel with the finalized card, not ahead of it: a STUDENT
+    // only sees teacher/principal remarks once the term's OVERALL result
+    // is itself published (approved decision, v0.6 step 3) — showing a
+    // remark before the term's results are actually out would contradict
+    // "only what's been made final."
+    const remarksVisibleToCaller = !publishedOnlyForStudent || overall !== null;
 
     const scoresBySubject = new Map<string, typeof scores>();
     for (const score of scores) {
@@ -1419,16 +1459,18 @@ export class GradesService {
           }
         : null,
       remarks: {
-        teacherRemark: remark?.teacherRemark ?? null,
-        teacherRemarkBy: remark?.teacherRemarkByUser
-          ? { firstName: remark.teacherRemarkByUser.firstName, lastName: remark.teacherRemarkByUser.lastName }
-          : null,
-        teacherRemarkAt: remark?.teacherRemarkAt ?? null,
-        principalRemark: remark?.principalRemark ?? null,
-        principalRemarkBy: remark?.principalRemarkByUser
-          ? { firstName: remark.principalRemarkByUser.firstName, lastName: remark.principalRemarkByUser.lastName }
-          : null,
-        principalRemarkAt: remark?.principalRemarkAt ?? null,
+        teacherRemark: remarksVisibleToCaller ? (remark?.teacherRemark ?? null) : null,
+        teacherRemarkBy:
+          remarksVisibleToCaller && remark?.teacherRemarkByUser
+            ? { firstName: remark.teacherRemarkByUser.firstName, lastName: remark.teacherRemarkByUser.lastName }
+            : null,
+        teacherRemarkAt: remarksVisibleToCaller ? (remark?.teacherRemarkAt ?? null) : null,
+        principalRemark: remarksVisibleToCaller ? (remark?.principalRemark ?? null) : null,
+        principalRemarkBy:
+          remarksVisibleToCaller && remark?.principalRemarkByUser
+            ? { firstName: remark.principalRemarkByUser.firstName, lastName: remark.principalRemarkByUser.lastName }
+            : null,
+        principalRemarkAt: remarksVisibleToCaller ? (remark?.principalRemarkAt ?? null) : null,
       },
     };
   }
