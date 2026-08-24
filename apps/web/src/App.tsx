@@ -20,6 +20,8 @@ import { HelpPage } from "./features/help/HelpPage";
 import { SettingsLayout } from "./features/settings/SettingsLayout";
 import { SchoolProfilePage } from "./features/settings/SchoolProfilePage";
 import { AcademicSettingsPage } from "./features/settings/AcademicSettingsPage";
+import { PortalAccountsSettingsPage } from "./features/portal-accounts/PortalAccountsSettingsPage";
+import { ClassArmCredentialSlipsPage } from "./features/portal-accounts/ClassArmCredentialSlipsPage";
 
 // Extracted from <App> (which just wraps this in <BrowserRouter>) so the
 // route-smoke test can mount the exact same route tree inside a
@@ -52,12 +54,14 @@ export function AppRoutes() {
         <Route element={<RequireSchoolAdmin />}>
           <Route path="/personnel" element={<PersonnelListPage />} />
           <Route path="/grades/review" element={<ReviewPublishPage />} />
+          <Route path="/classes/arms/:id/credential-slips" element={<ClassArmCredentialSlipsPage />} />
         </Route>
 
         <Route path="/settings" element={<SettingsLayout />}>
           <Route index element={<Navigate to="/settings/school" replace />} />
           <Route path="school" element={<SchoolProfilePage />} />
           <Route path="academic" element={<AcademicSettingsPage />} />
+          <Route path="portal-accounts" element={<PortalAccountsSettingsPage />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

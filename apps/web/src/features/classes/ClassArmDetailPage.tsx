@@ -99,6 +99,11 @@ export function ClassArmDetailPage() {
                 Review &amp; publish
               </Button>
             )}
+            {canManage && (
+              <Button type="button" variant="outline" size="sm" onClick={() => navigate(`/classes/arms/${arm.id}/credential-slips`)}>
+                Print credential slips
+              </Button>
+            )}
           </>
         }
       />

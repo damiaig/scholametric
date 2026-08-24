@@ -1562,6 +1562,73 @@ Paginated list of provisioned accounts (`role`, `username`, `displayName`
 Single account. **Response `404`**: unknown id, or an id from another
 school (cross-tenant, never a `403` — CLAUDE.md §4).
 
+### `POST /portal-accounts/:id/reissue` (v0.6 step 5, SPEC_V0.6.md §5)
+
+No body. Generates a **fresh** numeric temp password for one already-
+provisioned account (same generator/bcrypt cost as `provision()` above —
+no parallel implementation), re-arms `mustChangePassword`, and revokes
+every active refresh token for the account (same shape as `POST
+/personnel/:userId/reset-password`) — the old password and any live
+session die immediately, not just on next login. The plaintext is
+returned **once**, in this response only.
+
+```json
+{
+  "id": "...",
+  "role": "STUDENT",
+  "username": "OKAFOR1",
+  "displayName": "...",
+  "studentId": "...",
+  "guardianId": null,
+  "mustChangePassword": true,
+  "createdAt": "...",
+  "tempPassword": "205917"
+}
+```
+
+Audited (`@Audit("portalAccount", "reissue")`) — the request carries no
+body, so `audit_logs.metadata` is empty; the response's `tempPassword`
+never reaches the audit trail (`AuditInterceptor` only ever reads
+`response.id` and logs `request.body`).
+
+**Response `403`**: any role other than `PROPRIETOR`/`SCHOOL_ADMIN`.
+**Response `404`**: unknown id, or cross-tenant.
+
+### `POST /portal-accounts/class-arms/:classArmId/reissue` (v0.6 step 5)
+
+Body: `{ "force"?: boolean }` (default `false`). Batch reissue for a class
+arm's **current-session roster**: every roster student's own `STUDENT`
+account, plus the deduplicated set of `PARENT` accounts directly linked
+(`student_guardians`) to any of those students — a guardian shared across
+two roster siblings is reissued once, not twice. Unaudited (bulk action,
+same convention as `provision()`).
+
+By default, an account that already changed its password
+(`mustChangePassword: false` — a family actively using their login) is
+**skipped, not reset**, and reported with a reason; `force: true` resets
+those too. A roster student with no portal account at all is always
+skipped as `not_provisioned`, regardless of `force`. Neither skip
+category is ever silently dropped.
+
+```json
+{
+  "classArmId": "...",
+  "reissued": [{ "id": "...", "role": "STUDENT", "username": "...", "tempPassword": "...", "...": "..." }],
+  "skipped": [
+    { "id": "...", "username": "OKAFOR", "displayName": "...", "reason": "already_changed_password" },
+    { "id": "...", "username": null, "displayName": "...", "reason": "not_provisioned" }
+  ]
+}
+```
+
+**Important**: reprinting a class's slips with `force: true` invalidates
+the current password for every already-logged-in family included — a
+real, deliberate reset, not a side effect to run casually (see
+docs/DECISIONS.md).
+
+**Response `403`**: any role other than `PROPRIETOR`/`SCHOOL_ADMIN`.
+**Response `404`**: unknown `classArmId`, or cross-tenant.
+
 ---
 
 ## Misc

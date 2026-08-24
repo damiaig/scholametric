@@ -9,6 +9,7 @@ import { isSchoolAdmin } from "../../lib/roles";
 const TABS = [
   { to: "/settings/school", label: "Profile" },
   { to: "/settings/academic", label: "Academic" },
+  { to: "/settings/portal-accounts", label: "Portal accounts" },
 ];
 
 export function SettingsLayout() {

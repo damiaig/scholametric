@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import bcrypt from "bcrypt";
 import { StudentStatus, User, UserRole } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
@@ -81,6 +81,25 @@ export interface PortalAccountSummary {
   guardianId: string | null;
   mustChangePassword: boolean;
   createdAt: Date;
+}
+
+export interface ReissuedAccount extends PortalAccountSummary {
+  tempPassword: string;
+}
+
+export type SkippedReissueReason = "already_changed_password" | "not_provisioned";
+
+export interface SkippedReissue {
+  id: string;
+  username: string | null;
+  displayName: string;
+  reason: SkippedReissueReason;
+}
+
+export interface BatchReissueResult {
+  classArmId: string;
+  reissued: ReissuedAccount[];
+  skipped: SkippedReissue[];
 }
 
 // SPEC_V0.6.md §5 step 1 — provisions STUDENT/PARENT portal login accounts
@@ -326,6 +345,118 @@ export class PortalAccountsService {
       throw new NotFoundException("Portal account not found.");
     }
     return toPortalAccountSummary(account);
+  }
+
+  // SPEC_V0.6.md §5 step 5 — temp passwords are bcrypt-hashed at rest
+  // (provisionFamily above) with no plaintext ever recoverable, so
+  // reprinting a slip later is only possible by generating a FRESH temp
+  // password. Reuses provisioning's own generator/cost (no parallel
+  // implementation) and lifts the update+revoke transaction shape from
+  // personnel.service.ts's resetPassword, so a reissued account is
+  // indistinguishable at login from a freshly-provisioned one.
+  async reissue(id: string): Promise<ReissuedAccount> {
+    const schoolId = this.tenantContext.schoolId;
+    const account = await this.prisma.user.findFirst({
+      where: forSchool(schoolId, { id, role: { in: [UserRole.STUDENT, UserRole.PARENT] }, deletedAt: null }),
+    });
+    if (!account) {
+      throw new NotFoundException("Portal account not found.");
+    }
+
+    const tempPassword = generateNumericTempPassword();
+    const passwordHash = await bcrypt.hash(tempPassword, BCRYPT_COST);
+
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id },
+        data: { passwordHash, mustChangePassword: true },
+        include: { student: true, guardian: true },
+      }),
+      this.prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } }),
+    ]);
+
+    return { ...toPortalAccountSummary(updated), tempPassword };
+  }
+
+  // Batch = a class arm's current-session roster's own STUDENT accounts +
+  // the deduplicated set of PARENT accounts directly linked (student_
+  // guardians) to any of those students — a guardian shared across two
+  // roster siblings is reissued/printed exactly once, not twice. Default
+  // (force=false) skips any account that already changed its password
+  // (mustChangePassword=false — a family actively using their login) and
+  // any roster student with no portal account at all yet; both are
+  // reported with a reason, never silently dropped, so an admin can't be
+  // misled into thinking a batch reissue was exhaustive when it wasn't.
+  async reissueForClassArm(classArmId: string, force: boolean): Promise<BatchReissueResult> {
+    const schoolId = this.tenantContext.schoolId;
+    const classArm = await this.prisma.classArm.findFirst({ where: forSchool(schoolId, { id: classArmId }) });
+    if (!classArm) {
+      throw new NotFoundException("Class arm not found.");
+    }
+
+    const session = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
+    if (!session) {
+      throw new BadRequestException("No current academic session configured for this school.");
+    }
+
+    const enrollments = await this.prisma.studentEnrollment.findMany({
+      where: forSchool(schoolId, {
+        classArmId,
+        sessionId: session.id,
+        student: { deletedAt: null, status: { not: StudentStatus.WITHDRAWN } },
+      }),
+      include: { student: true },
+    });
+    const rosterStudentIds = enrollments.map((e) => e.studentId);
+
+    const studentAccounts = rosterStudentIds.length
+      ? await this.prisma.user.findMany({
+          where: forSchool(schoolId, { studentId: { in: rosterStudentIds }, role: UserRole.STUDENT, deletedAt: null }),
+          include: { student: true, guardian: true },
+        })
+      : [];
+    const provisionedStudentIds = new Set(studentAccounts.map((a) => a.studentId!));
+
+    const guardianLinks = rosterStudentIds.length
+      ? await this.prisma.studentGuardian.findMany({ where: forSchool(schoolId, { studentId: { in: rosterStudentIds } }) })
+      : [];
+    const guardianIds = [...new Set(guardianLinks.map((l) => l.guardianId))];
+
+    const parentAccounts = guardianIds.length
+      ? await this.prisma.user.findMany({
+          where: forSchool(schoolId, { guardianId: { in: guardianIds }, role: UserRole.PARENT, deletedAt: null }),
+          include: { student: true, guardian: true },
+        })
+      : [];
+
+    const result: BatchReissueResult = { classArmId, reissued: [], skipped: [] };
+
+    for (const enrollment of enrollments) {
+      if (!provisionedStudentIds.has(enrollment.studentId)) {
+        result.skipped.push({
+          id: enrollment.studentId,
+          username: null,
+          displayName: `${enrollment.student.firstName} ${enrollment.student.lastName}`,
+          reason: "not_provisioned",
+        });
+      }
+    }
+
+    for (const account of [...studentAccounts, ...parentAccounts]) {
+      if (!force && !account.mustChangePassword) {
+        const summary = toPortalAccountSummary(account);
+        result.skipped.push({
+          id: summary.id,
+          username: summary.username,
+          displayName: summary.displayName,
+          reason: "already_changed_password",
+        });
+        continue;
+      }
+      result.reissued.push(await this.reissue(account.id));
+    }
+
+    return result;
   }
 }
 

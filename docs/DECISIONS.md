@@ -3902,3 +3902,98 @@ cleanly with no cross-contamination; `STUDENT` 403s on `/me/children*`,
 across both new suites + report-card + grades-*) rerun green unchanged.
 Full `pnpm run ci` green on a fresh `docker compose down -v` → migrate →
 seed stack. Nothing from steps 5–7 (slips, polish, tag) touched.
+
+## 2026-08-24 — v0.6 step 5: printable credential slips + reset-and-reissue (SPEC_V0.6.md §5 step 5)
+
+**No plaintext is ever recoverable, so "print a slip later" is always a
+reset.** Step 1's temp passwords are bcrypt-hashed before they ever touch
+the DB — there is no code path that could show an old one again. Both
+new endpoints (`reissue`/`reissueForClassArm`) generate a **fresh**
+numeric temp password via the SAME `generateNumericTempPassword()` /
+`BCRYPT_COST` already defined in `portal-accounts.service.ts` — no second
+generator, no parallel hashing path. `reissue(id)` is the one true
+mutation; `reissueForClassArm` calls it in a loop rather than
+reimplementing the update+revoke transaction, so there is exactly one
+place that ever writes a `passwordHash` for a portal account outside
+initial provisioning.
+
+**`reissue()`'s transaction is lifted from `personnel.service.ts`'s
+`resetPassword`, not reinvented**: `user.update({passwordHash,
+mustChangePassword: true})` + `refreshToken.updateMany({revokedAt: now})`
+in one `$transaction`, so a reissued account's old password AND any live
+session die in the same instant — proven directly (a captured
+`refreshToken` from before reissue 401s on `/auth/refresh` immediately
+after).
+
+**Batch semantics, locked in on approval**: `reissueForClassArm`
+resolves the class arm's **current-session** roster (mirrors
+`grades.service.ts`'s private `getRoster` — excludes withdrawn/soft-
+deleted students), reissues each roster student's own account plus the
+deduplicated set of directly-linked `PARENT` accounts (a guardian shared
+by two roster siblings appears once), and by default **skips, never
+resets**, any account with `mustChangePassword: false` (a family
+already using their login) — reported as `already_changed_password`,
+not silently dropped. A roster student with no portal account at all is
+always reported as `not_provisioned`, regardless of `force`. `force:
+true` is a real, deliberate product action — reprinting a class's slips
+with `force` invalidates the password for every already-logged-in family
+included, so the frontend gates it behind `ConfirmDialog`'s
+`requireTypedConfirmation` (typing the arm's own label), matching
+`SessionsSection`'s exact session-activation pattern — force is never
+reachable via a single undifferentiated click.
+
+**Audit safety is structural, not just reviewed by eye.** A single
+`reissue` carries `@Audit("portalAccount", "reissue")`; the request has
+no body, so `AuditInterceptor`'s `metadata: request.body` is always
+empty — `tempPassword` (response-only) can never reach `audit_logs` by
+construction, since the interceptor only ever reads `response.id`, never
+the response body. A dedicated e2e assertion (`JSON.stringify(entry.
+metadata)` contains no `"password"` substring) makes this a regression
+guard, not just an inspection-time guarantee. `reissueForClassArm`
+carries no `@Audit()` at all — same bulk-action precedent as
+`provision()`/`grades.recompute`.
+
+**Client-side print only, same as the v0.5 report card** — `window.
+print()` + Tailwind `print:hidden`/`break-inside-avoid`, no server file
+write. `CredentialSlipDocument` is one presentational component reused
+for a single reissue, a batch of reissues, AND (via the settings page's
+per-row "Reset & print") the school-wide list — never three renderers.
+
+**Provisioning gets its first-ever frontend in this step** — Step 1
+shipped the `provision()` endpoint with zero UI. `PortalAccountsSettingsPage`
+(new `Settings → Portal accounts` tab) adds a trigger + summary/warnings
++ the account list (`GET /portal-accounts`, already existed) + per-row
+reset & print. Deliberately NOT wired to print slips for a whole fresh
+`provision()` call — `ProvisionedAccount` carries no `displayName`, and
+adding one was out of this step's approved scope; an admin who wants
+slips right after provisioning uses the per-row reset (or the class-arm
+batch once students are enrolled).
+
+**Generating slips is a click, never a page-load side effect** — the
+class-arm batch page renders a "Generate slips" button on first load and
+never calls the reissue endpoint from a bare navigation; confirmed by a
+web test that mounts the page and asserts the endpoint was never called
+until an explicit click.
+
+**Proof** (`portal-accounts-reissue.e2e-spec.ts`, 16 tests, new): single
+reissue sets `mustChangePassword: true`, the old password 401s
+afterward and the new one 200s; a reissued account hits the identical
+`x-password-change-required` 403 hard block as fresh provisioning;
+revoking active refresh tokens is proven directly via `/auth/refresh`;
+the audit-metadata-has-no-password regression guard; batch default
+skips an already-changed account (asserted via unchanged `passwordHash`,
+not a login round-trip — POST /auth/login is throttled to 10/min per IP,
+so this suite budgets its real login calls deliberately rather than
+routing around the throttle); `force: true` includes it (hash changes,
+`mustChangePassword` re-arms); the shared-parent dedup; `not_provisioned`
+always skipped regardless of `force`; `@Roles` 403 for
+`TEACHER`/`STUDENT`/`PARENT` on both routes; cross-tenant `id`/
+`classArmId` both 404. 6 new Vitest tests (`ClassArmCredentialSlipsPage`,
+`PortalAccountsSettingsPage`) cover: no reissue call on bare navigation,
+printable slips + the never-hidden skipped-with-reasons list, the typed-
+confirmation force-reset flow, the provisioning summary/warnings, and
+reset-and-print. Full `pnpm run ci` green on a fresh `docker compose
+down -v` → migrate → seed stack (no new migration — step 5 needed no new
+`User` columns beyond what step 1 already added): 33 backend e2e suites/
+375 tests, 1 backend unit suite/7 tests, 34 frontend Vitest files/189
+tests, all passing.
