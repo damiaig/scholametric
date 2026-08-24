@@ -3656,3 +3656,79 @@ correct behavior is almost certainly to `CASCADE`-delete the dependent
 portal account (deleting the person's record should delete their login,
 not orphan it into a constraint violation) — deferred rather than
 speculatively built now, but flagged here so it isn't a surprise later.
+
+## 2026-08-24 — v0.6 step 2: username login path (SPEC_V0.6.md §5 step 2)
+
+**`LoginDto.email`/`loginSchema.email` renamed to `identifier`** — the one
+breaking-but-fully-contained change this step needed. Staff log in by
+email, `STUDENT`/`PARENT` portal accounts (v0.6 step 1) by username; one
+field resolved against `OR: [{email: identifier}, {username: identifier}]`
+inside `AuthService.login()`, scoped by the already-resolved `schoolId`
+(school-picker still resolves the tenant first, unchanged). No format
+validation on the field beyond non-empty — email and username are
+structurally disjoint (email always contains `@`, enforced at staff
+creation; a provisioned username never does), so an unrecognized shape
+just fails to resolve rather than needing to be rejected up front. Every
+existing raw login body across the e2e suite (`test/utils/login.ts`'s
+shared `loginAs()`, plus three spec-local login helpers) was updated in
+lockstep — a rename, not a fork, and mechanical by construction since
+`identifier` replaces `email` 1:1 in every request body.
+
+**Wrong-school stays on the same generic 401** — deliberately NOT made a
+distinguishable 404, per explicit instruction. Login is `@Public()`,
+pre-authentication; the existing anti-enumeration design (a precomputed
+dummy bcrypt hash so timing can't leak which part failed either) already
+covers wrong-password/unknown-identifier/wrong-school identically for
+staff, proven in `auth.e2e-spec.ts` since before this step. Extended, not
+changed: a REAL Sunrise username+password submitted against Hillcrest's
+slug now proves the same thing for usernames — the `schoolId`-scoped
+lookup simply never resolves outside its own school, so it falls through
+to the identical generic failure, not a special cross-tenant case.
+
+**Forced-password-change hard block required zero backend changes.**
+`PasswordChangeRequiredGuard` (v0.3) is a global `APP_GUARD` reading
+`mustChangePassword` off the JWT claim, role-agnostic already — a
+`STUDENT`/`PARENT` account (always `mustChangePassword: true` right after
+v0.6 step 1 provisioning) is hard-blocked from every route except
+`POST /auth/change-password`/`GET /auth/me`/`POST /auth/logout` the
+instant its token is issued, with no new code. Proven directly against a
+real protected route (`GET /students`), not a UI assertion: 403 with the
+guard's own message before changing, then — using the FRESH token
+`change-password` reissues (the stale token's own `mustChangePassword:
+true` claim never un-bakes itself) — 403 again after changing, but via
+`RolesGuard`'s "Forbidden" (STUDENT genuinely isn't `@Roles()`-authorized
+on `/students`), never the password-change message again. The message-level
+distinction is the actual proof the block's *reason* changed, not just
+that the route still 403s.
+
+**Token/session shape: full reuse, zero fork.** `AccessTokenPayload`
+(`sub`/`schoolId`/`role`/`mustChangePassword`) already covered every role;
+`issueTokenPair`/`refresh()`/`logout()` never touch `email`. No new JWT
+claim for "which student/which children" — Steps 3/4 will resolve that via
+the existing `users.student_id`/`guardian_id` columns (v0.6 step 1), not a
+token claim; deferred, not decided here.
+
+**Frontend placeholder, not a cut corner.** `AuthUserSummary.email`/
+`CurrentUser.email` widened to `string | null` (portal accounts have
+none). `DashboardPage.tsx` gets one more role branch — `STUDENT`/`PARENT`
+→ `PortalHome` (new, zero backend calls) — same "one route, role branches
+content" pattern as the existing `TEACHER` branch; without it, these roles
+would fall through to `AdminDashboard`, which calls an admin-only stats
+endpoint and 403s into an error state instead of a placeholder.
+`Sidebar.tsx` hides `Students`/`Teachers`/`Classes` for these two roles
+(same conditional-nav-item pattern already used for `Personnel`/
+`Settings`) — those routes hit staff/admin-only endpoints, so a visible
+link would be a dead-end 403 click. No backend RBAC changed anywhere:
+hiding a nav link doesn't grant or revoke authorization, which these roles
+never had on those endpoints and still don't. `/help` keeps showing the
+admin guide for `STUDENT`/`PARENT` for now — content mismatch, not
+breakage, and explicitly v0.6 step 6's job.
+
+**Proof**: `auth.e2e-spec.ts` — a `STUDENT` logs in by username; the
+4-way enumeration-parity test (unknown username / wrong password on a
+real username / unknown email / valid-creds-wrong-school, asserting
+identical `{statusCode, message, error}` across all four, not just that
+each fails independently); the full must-change-block flow against a
+real route. `LoginPage.test.tsx` gets a username-login case. Full
+`pnpm run ci` green on a fresh `docker compose down -v` → migrate → seed
+stack. Nothing from steps 3–7 (read views, slips, polish, tag) touched.

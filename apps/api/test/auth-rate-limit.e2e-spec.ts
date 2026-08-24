@@ -37,7 +37,7 @@ describe("Auth login rate limit (e2e)", () => {
       const attempt = () =>
         request(app.getHttpServer())
           .post("/api/v1/auth/login")
-          .send({ email: "nobody@sunrise.test", password: "wrong", schoolSlug: "sunrise" });
+          .send({ identifier: "nobody@sunrise.test", password: "wrong", schoolSlug: "sunrise" });
 
       const responses = [];
       for (let i = 0; i < 11; i++) {

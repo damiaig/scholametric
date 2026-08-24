@@ -27,10 +27,14 @@ Public. Rate limited: 10 req/min per IP.
 
 **Body**
 ```json
-{ "email": "admin@sunrise.test", "password": "...", "schoolSlug": "sunrise" }
+{ "identifier": "admin@sunrise.test", "password": "...", "schoolSlug": "sunrise" }
 ```
-`schoolSlug` scopes the email lookup (the same email may exist at two
-schools).
+`identifier` (v0.6 step 2, SPEC_V0.6.md §2.2) is staff email OR a
+`STUDENT`/`PARENT` portal username (`"OKAFOR1"`) — resolved against either
+within the school `schoolSlug` scopes to. Unambiguous by construction: a
+staff email always contains `@`; a provisioned username never does
+(`family-coding.util.ts`). `schoolSlug` scopes the lookup (the same email
+may exist at two schools; usernames are only unique per school too).
 
 **Response `200`**
 ```json
@@ -50,13 +54,18 @@ schools).
 }
 ```
 `mustChangePassword` added in v0.3 (SPEC_V0.3.md §2) — see "Forced password
-change" below.
+change" below. `email` is `null` for a `STUDENT`/`PARENT` portal account.
 
-**Response `401`** — wrong password, wrong `schoolSlug`, unknown email, and a
-disabled/soft-deleted user all return the exact same generic message (no
-distinguishing responses, no timing side-channel):
+**Response `401`** — wrong password, wrong `schoolSlug`, unknown
+identifier (email or username), a disabled/soft-deleted user, AND a
+valid username+password submitted against a *different* school's
+`schoolSlug` all return the exact same generic message (no distinguishing
+responses, no timing side-channel — this is deliberate: a distinguishable
+"wrong school" response would leak cross-tenant information, so a real
+Sunrise username+password against Hillcrest's slug fails identically to
+every other wrong combination, not with its own signal):
 ```json
-{ "statusCode": 401, "message": "Invalid email, password, or school.", "error": "Unauthorized", ... }
+{ "statusCode": 401, "message": "Invalid email/username, password, or school.", "error": "Unauthorized", ... }
 ```
 
 ### `POST /auth/refresh`
@@ -164,6 +173,12 @@ access token's remaining lifetime if some OTHER action flips it after the
 token was issued (e.g. an admin resets a *different* user's password while
 that user is mid-session) — accepted the same way `JwtAuthGuard` already
 accepts staleness for disabled/deleted users.
+
+v0.6 step 2: this guard is entirely role-agnostic and required zero
+changes to cover `STUDENT`/`PARENT` portal accounts — provisioning (v0.6
+step 1) always sets `mustChangePassword: true`, so the very first login
+is hard-blocked from every route except the three exempted above,
+exactly like a new staff account.
 
 ---
 

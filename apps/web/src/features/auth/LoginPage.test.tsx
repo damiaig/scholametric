@@ -55,7 +55,7 @@ describe("LoginPage", () => {
 
     expect(screen.getByText("Sign in to ScholaMetric")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Select your school" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Email or username")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
   });
 
@@ -64,7 +64,7 @@ describe("LoginPage", () => {
     const user = userEvent.setup();
     renderLoginPage();
 
-    await user.type(screen.getByLabelText("Email"), "admin@sunrise.test");
+    await user.type(screen.getByLabelText("Email or username"), "admin@sunrise.test");
     await user.type(screen.getByLabelText("Password"), "Passw0rd!");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -113,11 +113,46 @@ describe("LoginPage", () => {
     renderLoginPage();
 
     await selectSchool(user);
-    await user.type(screen.getByLabelText("Email"), "admin@sunrise.test");
+    await user.type(screen.getByLabelText("Email or username"), "admin@sunrise.test");
     await user.type(screen.getByLabelText("Password"), "Passw0rd!");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(await screen.findByText("Dashboard placeholder")).toBeInTheDocument();
+    expect(authStore.getState()).toEqual({ accessToken: "access-token", refreshToken: "refresh-token" });
+  });
+
+  // v0.6 step 2 (SPEC_V0.6.md §2.2): the SAME field/form works for a
+  // STUDENT/PARENT portal username — no separate username login screen.
+  it("logs in with a portal username (not email-shaped) in the same field, sent as `identifier`", async () => {
+    mockedPublicApiRequest.mockImplementation(async (path: string, options?: { body?: unknown }) => {
+      if (path.includes("/schools/search")) return SCHOOL_RESULTS;
+      if (path.includes("/auth/login")) {
+        expect(options?.body).toEqual({ schoolSlug: "sunrise", identifier: "OKAFOR1", password: "483920" });
+        return {
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          user: {
+            id: "u2",
+            email: null,
+            firstName: "Chidi",
+            lastName: "Okafor",
+            role: "STUDENT",
+            schoolId: "s1",
+            school: { id: "s1", name: "Sunrise College", slug: "sunrise" },
+            mustChangePassword: true,
+          },
+        };
+      }
+      throw new Error(`unexpected publicApiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+    renderLoginPage();
+
+    await selectSchool(user);
+    await user.type(screen.getByLabelText("Email or username"), "OKAFOR1");
+    await user.type(screen.getByLabelText("Password"), "483920");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
     expect(authStore.getState()).toEqual({ accessToken: "access-token", refreshToken: "refresh-token" });
   });
 
@@ -127,7 +162,7 @@ describe("LoginPage", () => {
       if (path.includes("/auth/login")) {
         throw new ApiError(401, {
           statusCode: 401,
-          message: "Invalid email, password, or school.",
+          message: "Invalid email/username, password, or school.",
           error: "Unauthorized",
           path: "/api/v1/auth/login",
           timestamp: new Date().toISOString(),
@@ -139,11 +174,11 @@ describe("LoginPage", () => {
     renderLoginPage();
 
     await selectSchool(user);
-    await user.type(screen.getByLabelText("Email"), "admin@sunrise.test");
+    await user.type(screen.getByLabelText("Email or username"), "admin@sunrise.test");
     await user.type(screen.getByLabelText("Password"), "wrong-password");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid email, password, or school.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid email/username, password, or school.");
     expect(authStore.getState()).toBeNull();
   });
 });

@@ -29,11 +29,19 @@ interface SidebarProps {
 
 export function Sidebar({ onNavigate }: SidebarProps) {
   const { data: user, isLoading, isError } = useCurrentUser();
+  // v0.6 step 2: STUDENT/PARENT portal accounts only have a placeholder
+  // home (PortalHome.tsx, via DashboardPage.tsx) and no access to
+  // Students/Teachers/Classes at all — those routes hit staff/admin-only
+  // endpoints, so leaving them visible would be a dead-end 403 click, not
+  // a placeholder. Help stays visible; its content mismatch for these
+  // roles is deferred to v0.6 step 6 (per-role guide additions).
+  const isPortalAccount = user?.role === "STUDENT" || user?.role === "PARENT";
   // TEACHER (SPEC_V0.3.md §4 item 2): same /dashboard route, different
   // label — that route renders "My Classes" instead of the admin dashboard
   // for this role (DashboardPage.tsx).
-  const baseItems =
-    user?.role === "TEACHER"
+  const baseItems = isPortalAccount
+    ? BASE_NAV_ITEMS.filter((item) => item.to === "/dashboard" || item.to === "/help")
+    : user?.role === "TEACHER"
       ? BASE_NAV_ITEMS.map((item) => (item.to === "/dashboard" ? { ...item, label: "My Classes" } : item))
       : BASE_NAV_ITEMS;
   const navItems = isSchoolAdmin(user?.role) ? [...baseItems, PERSONNEL_ITEM, SETTINGS_ITEM] : baseItems;

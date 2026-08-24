@@ -26,7 +26,7 @@ export function LoginPage() {
     formState: { errors },
   } = useForm<LoginInput>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { schoolSlug: "", email: "", password: "" },
+    defaultValues: { schoolSlug: "", identifier: "", password: "" },
   });
 
   function handleSelectSchool(school: SchoolSearchResult) {
@@ -65,15 +65,19 @@ export function LoginPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">Email</Label>
+              {/* v0.6 step 2: staff sign in with their email, STUDENT/
+                  PARENT portal accounts with the username issued at
+                  provisioning — one field, resolved against either
+                  server-side (see packages/shared's loginSchema). */}
+              <Label htmlFor="identifier">Email or username</Label>
               <Input
-                id="email"
-                type="email"
-                autoComplete="email"
-                placeholder="you@school.test"
-                {...register("email")}
+                id="identifier"
+                type="text"
+                autoComplete="username"
+                placeholder="you@school.test or OKAFOR1"
+                {...register("identifier")}
               />
-              {errors.email && <p className="text-xs text-danger">{errors.email.message}</p>}
+              {errors.identifier && <p className="text-xs text-danger">{errors.identifier.message}</p>}
             </div>
 
             <div className="flex flex-col gap-1.5">

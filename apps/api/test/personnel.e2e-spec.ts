@@ -123,7 +123,7 @@ describe("Personnel (e2e)", () => {
       // The password is exactly what the caller supplied — confirm by logging in with it.
       const login = await request(app.getHttpServer())
         .post("/api/v1/auth/login")
-        .send({ email: payload.email, password: payload.password, schoolSlug: "sunrise" });
+        .send({ identifier: payload.email, password: payload.password, schoolSlug: "sunrise" });
       expect(login.status).toBe(200);
       // SPEC_V0.3.md §1: new staff must change their temporary password.
       expect(login.body.user.mustChangePassword).toBe(true);

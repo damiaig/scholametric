@@ -35,7 +35,7 @@ describe("Forced password change (e2e)", () => {
   async function loginAsNewTeacher(password = SEED_PASSWORD) {
     return request(app.getHttpServer())
       .post("/api/v1/auth/login")
-      .send({ email: "newteacher@sunrise.test", password, schoolSlug: "sunrise" });
+      .send({ identifier: "newteacher@sunrise.test", password, schoolSlug: "sunrise" });
   }
 
   it("login response exposes mustChangePassword: true for a flagged user", async () => {

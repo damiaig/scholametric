@@ -16,7 +16,7 @@ import type { AccessTokenPayload } from "./types/jwt-payload.type";
 // indistinguishable). Never a real credential.
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync("scholametric-timing-safety-dummy", BCRYPT_COST);
 
-const GENERIC_LOGIN_ERROR = "Invalid email, password, or school.";
+const GENERIC_LOGIN_ERROR = "Invalid email/username, password, or school.";
 
 @Injectable()
 export class AuthService {
@@ -28,9 +28,26 @@ export class AuthService {
 
   async login(dto: LoginDto) {
     const school = await this.prisma.school.findUnique({ where: { slug: dto.schoolSlug } });
+    // v0.6 step 2: one identifier, resolved against either email (staff) or
+    // username (STUDENT/PARENT portal accounts, v0.6 step 1) within the
+    // resolved school. Unambiguous by construction — email always contains
+    // "@" (enforced at staff creation), a provisioned username never does
+    // (family-coding.util.ts) — so this OR can never match two different
+    // rows for one identifier. schoolId comes from the resolved school, not
+    // the identifier, so there is no cross-tenant lookup: a real
+    // username+password from another school simply never resolves here,
+    // falling through to the same generic failure below as any other wrong
+    // combination — not a distinguishable 404 (that would leak which part
+    // of the login was wrong, re-opening the enumeration side-channel this
+    // dummy-hash timing safety already closes).
     const user = school
       ? await this.prisma.user.findFirst({
-          where: { schoolId: school.id, email: dto.email, status: "ACTIVE", deletedAt: null },
+          where: {
+            schoolId: school.id,
+            OR: [{ email: dto.identifier }, { username: dto.identifier }],
+            status: "ACTIVE",
+            deletedAt: null,
+          },
         })
       : null;
 

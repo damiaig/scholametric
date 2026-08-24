@@ -1,8 +1,12 @@
 import { z } from "zod";
 
+// v0.6 step 2: one field, staff email OR STUDENT/PARENT portal username —
+// no format validation beyond non-empty (see login.dto.ts on the API side
+// for why: the two identifier shapes are structurally disjoint, so an
+// unrecognized shape just won't resolve to any account).
 export const loginSchema = z.object({
   schoolSlug: z.string().min(1, "Please select your school"),
-  email: z.string().min(1, "Email is required").email("Enter a valid email address"),
+  identifier: z.string().min(1, "Email or username is required"),
   password: z.string().min(1, "Password is required"),
 });
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -16,7 +20,9 @@ export type SchoolStatus = "ACTIVE" | "SUSPENDED";
 
 export interface AuthUserSummary {
   id: string;
-  email: string;
+  // v0.6: null for STUDENT/PARENT portal accounts (they log in by
+  // username, packages/shared's loginSchema `identifier` field above).
+  email: string | null;
   firstName: string;
   lastName: string;
   role: UserRole;
@@ -49,7 +55,8 @@ export interface CurrentUserSchool {
 
 export interface CurrentUser {
   id: string;
-  email: string;
+  // v0.6: null for STUDENT/PARENT portal accounts — see AuthUserSummary.
+  email: string | null;
   firstName: string;
   lastName: string;
   role: UserRole;
