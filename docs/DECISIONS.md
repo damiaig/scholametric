@@ -3827,3 +3827,78 @@ green unchanged, confirming the `getReportCard()` extension didn't affect
 staff behavior. Full `pnpm run ci` green on a fresh `docker compose down
 -v` → migrate → seed stack. Nothing from steps 4–7 (parent views/child-
 switcher, slips, polish, tag) touched.
+
+## 2026-08-24 — v0.6 step 4: parent views + child-switcher (SPEC_V0.6.md §2.4)
+
+**Which children a parent sees is the exact inverse of v0.6 step 1's
+`child_not_covered` check** — students with a **direct** `student_guardians`
+row to the caller's own `users.guardian_id`, nothing more. Not "the whole
+family" (a connected component from step 1's grouping algorithm) — a
+family member step 1 already flagged as not-directly-linked is
+structurally absent from `resolveOwnChildIds()`'s query, not filtered out
+afterward. This required zero new schema and zero re-running of step 1's
+grouping logic — it's one `student_guardians.findMany({ where: {
+guardianId } })`.
+
+**The one genuinely new attack surface Step 3 didn't have: `childId` is
+now a real request field**, because a parent can have more than one
+child. `MeService.assertChildBelongsToCaller(userId, childId)` resolves
+the caller's own child-id set from `users.guardian_id` (token-derived,
+never a request field) and 404s any `childId` outside it — called FIRST,
+before `buildProfile`/`buildAcademicContext`/`getReportCard` ever run, in
+all four of `getMyChildren`/`getChildProfile`/`getChildTerms`/
+`getChildReportCard`. A garbage id, a real id from a wholly different
+family, and a real `child_not_covered` family member all 404 identically
+— the allow-list is what rejects them, not an existence check, so none of
+the three leaks which case it was.
+
+**Published-only reuse: one boolean widened, not forked.**
+`grades.service.ts`'s `publishedOnlyForStudent` (step 3) is now
+`publishedOnlyForSelfView = user.role === STUDENT || user.role ===
+PARENT` — same `status: PUBLISHED` filter on both
+`term_subject_results`/`term_overall_results`, same remarks gate, same
+`getReportCard(childId, query, user)` call. No second copy of the filter
+exists anywhere; `MeService.getChildReportCard` validates `childId`
+against the allow-list, THEN passes the caller's own `AuthenticatedUser`
+(`role: PARENT`) straight through — exactly the shape `getReportCard`
+already expected from step 3's `STUDENT` path.
+
+**`@Roles()` is exactly one role per route, deliberately not
+`@Roles(STUDENT, PARENT)` anywhere.** `/me/report-card` (param-less,
+step 3) stays `STUDENT`-only — a `PARENT` token 403s there (a parent has
+no single "self" student to resolve). `/me/children*` (step 4) is
+`PARENT`-only — a `STUDENT` token 403s there (those routes take a
+`childId`, meaningless for an account that only ever reads its own single
+record). Two structurally different route shapes for two structurally
+different resolutions, not one shared surface with a role check inside.
+
+**`MyProfile` reused for the child-switcher, not a second "summary"
+type** — `GET /me/children` returns `{ children: MyProfile[] }`, the same
+shape `GET /me/profile`/`/me/children/:childId/profile` already return.
+`buildProfile(studentId)`/`buildAcademicContext(studentId)` were extracted
+as private helpers in `me.service.ts` so the `STUDENT` (`getMyProfile`/
+`getMyAcademicContext`) and `PARENT` (`getChildProfile`/`getChildTerms`/
+`getMyChildren`) paths share one implementation each, differing only in
+how `studentId` is resolved/validated beforehand.
+
+**A child linked to two guardians correctly appears under both parents'
+`GET /me/children`** — the blended-family case SPEC_V0.6.md §2.2b
+describes, not a leak. No test asserts child-lists are disjoint across
+unrelated parents, because that isn't a guarantee this design makes or
+should make.
+
+**Proof** (`me-parent.e2e-spec.ts`, 15 tests, new): a parent's
+`GET /me/children` lists exactly their 2 directly-linked children; a
+`child_not_covered`-style student (linked to a different guardian that
+merely shares another child) never appears and 404s if requested by id
+directly; a REAL student id from a wholly separate family 404s (proving
+the allow-list, not mere existence-checking, is what rejects it); a draft
+subject for a linked child is absent from that child's card via the
+parent route, reusing step 3's exact fixture/assertion shape; a Sunrise
+parent's attempt at a Hillcrest student id 404s; two children switch
+cleanly with no cross-contamination; `STUDENT` 403s on `/me/children*`,
+`PARENT` 403s on the param-less `/me/report-card`, no token 401s.
+`me-student.e2e-spec.ts` and the rest of the grades suite (117 tests
+across both new suites + report-card + grades-*) rerun green unchanged.
+Full `pnpm run ci` green on a fresh `docker compose down -v` → migrate →
+seed stack. Nothing from steps 5–7 (slips, polish, tag) touched.

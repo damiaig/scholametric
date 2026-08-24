@@ -888,7 +888,62 @@ in your term").
 `studentId`) — the global `ValidationPipe`'s `forbidNonWhitelisted: true`
 rejects it before the handler runs; `GetStudentResultsQueryDto` only ever
 declared `termId`/`sessionId`, on this route or the staff one. **Response
-`403`**: any role other than `STUDENT`.
+`403`**: any role other than `STUDENT` — including `PARENT`: a parent has
+no single "self" student, so this route isn't theirs; see `/me/children/*`
+below.
+
+### `GET /me/children` (v0.6 step 4, SPEC_V0.6.md §2.4)
+
+`PARENT` only. The child-switcher's data — one entry (the same `MyProfile`
+shape as `GET /me/profile`) per student **directly** linked to the
+caller's own guardian record (`users.guardian_id`, resolved from the
+token). This is the exact inverse of v0.6 step 1's `child_not_covered`
+check: a family member grouped into the same household but never
+directly linked to this guardian never appears here — not filtered out
+after the fact, never fetched. A guardian linked to zero students returns
+`{ "children": [] }`, not an error.
+
+```json
+{ "children": [ { "studentId": "...", "firstName": "Kemi", "lastName": "Okafor", "admissionNumber": "SUN/2026/0057", "gender": "FEMALE", "dateOfBirth": "2014-02-11", "status": "ACTIVE", "currentClassArmLabel": "JSS 1 A" } ] }
+```
+
+### `GET /me/children/:childId/profile` / `/terms` / `/report-card?termId=&sessionId=` (v0.6 step 4, SPEC_V0.6.md §2.4)
+
+`PARENT` only. Same three shapes as the `STUDENT` routes above
+(`MyProfile` / `MyAcademicContext` / `ReportCardResponse`), scoped to one
+of the caller's **own** children instead of the caller themselves.
+
+`childId` **is** a request field here — unlike the `STUDENT` routes, a
+parent has more than one child, so there has to be one. Every handler
+resolves the caller's allowed child-id set from `users.guardian_id` and
+checks `childId` against it **before running any grade/profile query** —
+not after, not as a defense-in-depth afterthought:
+
+```ts
+private async assertChildBelongsToCaller(userId: string, childId: string): Promise<void> {
+  const childIds = await this.resolveOwnChildIds(userId);
+  if (!childIds.includes(childId)) throw new NotFoundException("Student not found.");
+}
+```
+
+**Response `404`**: `childId` doesn't resolve to one of the caller's own
+directly-linked children — whether it's a garbage id, a real student in a
+wholly different family, a `child_not_covered` family member, or a real
+student in another school entirely, they all 404 **identically** through
+this one allow-list check (no existence leak either way). The report-card
+route then delegates to the exact same `GradesService.getReportCard()`
+Step 3 uses (`publishedOnlyForSelfView` there already covers `PARENT`
+alongside `STUDENT`) — same published-only filter, same remarks gate, not
+a second copy of either.
+
+A child directly linked to **two** guardians correctly appears under both
+parents' `GET /me/children` — that's the intended blended-family case
+(SPEC_V0.6.md §2.2b), not a leak.
+
+**Response `403`**: any role other than `PARENT` — including `STUDENT`:
+these routes take a `childId`, which means nothing for an account that
+only ever reads its own single record via `/me/profile`/`/me/report-card`
+above.
 
 ---
 

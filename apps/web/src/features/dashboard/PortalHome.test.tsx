@@ -91,15 +91,26 @@ describe("PortalHome", () => {
     expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();
   });
 
-  it("PARENT: keeps the v0.6 step 2 placeholder (their read view is step 4)", async () => {
+  it("PARENT: shows a linked child's own published subject via the same shared renderer, through the child-switcher", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
+      if (path.includes("/me/children/child-1/terms")) {
+        return { sessions: [{ id: SESSION_ID, name: "2026/2027", isCurrent: true, terms: [{ id: TERM_ID, name: "FIRST", isCurrent: true, closedAt: null }] }] };
+      }
+      if (path.includes("/me/children/child-1/report-card")) return { ...REPORT_CARD, studentId: "child-1" };
+      if (path.includes("/me/children")) {
+        return { children: [{ studentId: "child-1", firstName: "Kemi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" }] };
+      }
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
     renderWithProviders(<PortalHome />);
 
-    expect(await screen.findByText(/Your children's results and report cards will appear here soon\./)).toBeInTheDocument();
+    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Child" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Term" })).toHaveValue(TERM_ID);
+    // Read-only for a PARENT too — no remark write forms.
+    expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();
   });
 });

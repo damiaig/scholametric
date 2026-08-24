@@ -1346,24 +1346,27 @@ export class GradesService {
       }
     }
 
-    // v0.6 step 3 (SPEC_V0.6.md §2.3): a STUDENT reading their OWN report
-    // card (via MeService — studentId here is always their own, resolved
-    // from the token, never a request param) sees ONLY what publish() has
-    // already finalized. No new "published" concept: this is the exact
-    // ResultStatus.PUBLISHED the staff publish flow already sets on
-    // term_subject_results, and computeOverallStatus() already guarantees
-    // term_overall_results only ever reaches PUBLISHED once EVERY one of
-    // that student's subjects for the term is itself PUBLISHED (grade-
-    // computation.ts) — so filtering subjects to PUBLISHED and overall to
-    // PUBLISHED can never disagree with each other. A draft/pending/
-    // absent-but-unpublished subject is excluded here at the query level —
-    // it never reaches the `subjects` array below, not just a hidden
-    // field on it. No separate self-id check is added here: the only
-    // caller that can ever pass role STUDENT is MeService, which resolves
-    // studentId from the JWT subject's own user.studentId column, never
-    // from a request field — there is no "wrong" studentId this branch
-    // could be asked to defend against.
-    const publishedOnlyForStudent = user.role === UserRole.STUDENT;
+    // v0.6 steps 3+4 (SPEC_V0.6.md §2.3/§2.4): a STUDENT or PARENT reading
+    // a child's OWN report card (via MeService — studentId here is always
+    // a student the caller is entitled to, resolved/validated from the
+    // token before this method is ever called, never a raw request param)
+    // sees ONLY what publish() has already finalized. No new "published"
+    // concept: this is the exact ResultStatus.PUBLISHED the staff publish
+    // flow already sets on term_subject_results, and computeOverallStatus()
+    // already guarantees term_overall_results only ever reaches PUBLISHED
+    // once EVERY one of that student's subjects for the term is itself
+    // PUBLISHED (grade-computation.ts) — so filtering subjects to
+    // PUBLISHED and overall to PUBLISHED can never disagree with each
+    // other. A draft/pending/absent-but-unpublished subject is excluded
+    // here at the query level — it never reaches the `subjects` array
+    // below, not just a hidden field on it. No separate self-id check is
+    // added here: the only callers that can ever pass role STUDENT/PARENT
+    // are MeService's student and parent paths, which resolve/validate
+    // studentId from the JWT subject's own user.studentId (STUDENT) or
+    // against the caller's own linked-children set (PARENT) BEFORE calling
+    // this method — never from a field on `query` — so there is no
+    // "wrong" studentId this branch could be asked to defend against.
+    const publishedOnlyForSelfView = user.role === UserRole.STUDENT || user.role === UserRole.PARENT;
 
     const [subjectResults, components, scores, overall, remark, assignedSubjects] = await Promise.all([
       this.prisma.termSubjectResult.findMany({
@@ -1372,7 +1375,7 @@ export class GradesService {
           studentId,
           termId: query.termId,
           sessionId: query.sessionId,
-          ...(publishedOnlyForStudent ? { status: ResultStatus.PUBLISHED } : {}),
+          ...(publishedOnlyForSelfView ? { status: ResultStatus.PUBLISHED } : {}),
         },
         include: { subject: { select: { id: true, name: true } } },
       }),
@@ -1384,7 +1387,7 @@ export class GradesService {
           studentId,
           termId: query.termId,
           sessionId: query.sessionId,
-          ...(publishedOnlyForStudent ? { status: ResultStatus.PUBLISHED } : {}),
+          ...(publishedOnlyForSelfView ? { status: ResultStatus.PUBLISHED } : {}),
         },
       }),
       this.prisma.termRemark.findFirst({
@@ -1402,7 +1405,7 @@ export class GradesService {
     // is itself published (approved decision, v0.6 step 3) — showing a
     // remark before the term's results are actually out would contradict
     // "only what's been made final."
-    const remarksVisibleToCaller = !publishedOnlyForStudent || overall !== null;
+    const remarksVisibleToCaller = !publishedOnlyForSelfView || overall !== null;
 
     const scoresBySubject = new Map<string, typeof scores>();
     for (const score of scores) {

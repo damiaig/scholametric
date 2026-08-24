@@ -43,7 +43,9 @@ export interface TeachingLoad {
 // (guardians, full history), which is more than a self-view needs. Same
 // current-enrollment resolution as StudentsService's own
 // currentEnrollmentInclude, kept as a separate small query here rather
-// than importing that private const across modules for four lines.
+// than importing that private const across modules for four lines. Reused
+// as-is for v0.6 step 4's PARENT child views (buildProfile below) — one
+// shape, not a second "child summary" type invented for the switcher.
 export interface MyProfile {
   studentId: string;
   firstName: string;
@@ -78,6 +80,12 @@ export interface MyAcademicContext {
   sessions: MySessionSummary[];
 }
 
+// v0.6 step 4 (SPEC_V0.6.md §2.4): the child-switcher's data — every
+// MyProfile the caller's own linked children resolve to.
+export interface MyChildrenResponse {
+  children: MyProfile[];
+}
+
 @Injectable()
 export class MeService {
   constructor(
@@ -106,10 +114,53 @@ export class MeService {
     return user.studentId;
   }
 
-  async getMyProfile(userId: string): Promise<MyProfile> {
+  // v0.6 step 4: the PARENT analogue of resolveOwnStudentId above —
+  // userId is always the JWT subject, never a request field.
+  private async resolveOwnGuardianId(userId: string): Promise<string> {
     const schoolId = this.tenantContext.schoolId;
-    const studentId = await this.resolveOwnStudentId(userId);
+    const user = await this.prisma.user.findFirst({
+      where: forSchool(schoolId, { id: userId, role: UserRole.PARENT, deletedAt: null }),
+      select: { guardianId: true },
+    });
+    if (!user?.guardianId) {
+      throw new NotFoundException("Parent profile not found.");
+    }
+    return user.guardianId;
+  }
 
+  // The read-scope decision Step 1 already made: a PARENT's children are
+  // the students with a DIRECT student_guardians row to their anchor
+  // guardian — the exact inverse of Step 1's child_not_covered check
+  // (emitted for a family member with NO such row). Not "the whole
+  // connected-component family" — a child grouped into the family but not
+  // directly linked to this guardian is simply never in this list, never
+  // fetched, never filtered out after the fact.
+  private async resolveOwnChildIds(userId: string): Promise<string[]> {
+    const guardianId = await this.resolveOwnGuardianId(userId);
+    const schoolId = this.tenantContext.schoolId;
+    const links = await this.prisma.studentGuardian.findMany({
+      where: forSchool(schoolId, { guardianId, student: { deletedAt: null } }),
+      select: { studentId: true },
+    });
+    return links.map((link) => link.studentId);
+  }
+
+  // The one genuinely new attack surface v0.6 step 4 introduces (step 3
+  // had no id at all): childId is a real request field this time, because
+  // a parent has more than one child. Ordered FIRST in every companion
+  // handler below, before any grade/profile query runs. A childId that
+  // doesn't exist and a childId that belongs to a different family both
+  // 404 identically here — the allow-list check is what rejects it, not
+  // an existence check, so neither leaks which case it was.
+  private async assertChildBelongsToCaller(userId: string, childId: string): Promise<void> {
+    const childIds = await this.resolveOwnChildIds(userId);
+    if (!childIds.includes(childId)) {
+      throw new NotFoundException("Student not found.");
+    }
+  }
+
+  private async buildProfile(studentId: string): Promise<MyProfile> {
+    const schoolId = this.tenantContext.schoolId;
     const student = await this.prisma.student.findFirstOrThrow({
       where: forSchool(schoolId, { id: studentId, deletedAt: null }),
       include: {
@@ -136,10 +187,8 @@ export class MeService {
     };
   }
 
-  async getMyAcademicContext(userId: string): Promise<MyAcademicContext> {
+  private async buildAcademicContext(studentId: string): Promise<MyAcademicContext> {
     const schoolId = this.tenantContext.schoolId;
-    const studentId = await this.resolveOwnStudentId(userId);
-
     const enrollments = await this.prisma.studentEnrollment.findMany({
       where: forSchool(schoolId, { studentId }),
       select: { sessionId: true },
@@ -170,6 +219,16 @@ export class MeService {
     };
   }
 
+  async getMyProfile(userId: string): Promise<MyProfile> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    return this.buildProfile(studentId);
+  }
+
+  async getMyAcademicContext(userId: string): Promise<MyAcademicContext> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    return this.buildAcademicContext(studentId);
+  }
+
   // Delegates to the SAME GradesService.getReportCard() staff/TEACHER
   // callers use (v0.5 step 4) — not a fork. Passing role STUDENT through
   // the existing `user` object is what makes that method apply the
@@ -178,6 +237,37 @@ export class MeService {
   async getMyReportCard(user: AuthenticatedUser, query: GetStudentResultsQueryDto): Promise<ReportCardResponse> {
     const studentId = await this.resolveOwnStudentId(user.userId);
     return this.gradesService.getReportCard(studentId, query, user);
+  }
+
+  // v0.6 step 4 — the child-switcher's data: every MyProfile the caller's
+  // own linked children resolve to (§ resolveOwnChildIds above). A
+  // guardian linked to zero students (shouldn't happen post-v0.6-step-1,
+  // but not assumed away) returns { children: [] }, not an error.
+  async getMyChildren(userId: string): Promise<MyChildrenResponse> {
+    const childIds = await this.resolveOwnChildIds(userId);
+    const children = await Promise.all(childIds.map((childId) => this.buildProfile(childId)));
+    return { children };
+  }
+
+  async getChildProfile(userId: string, childId: string): Promise<MyProfile> {
+    await this.assertChildBelongsToCaller(userId, childId);
+    return this.buildProfile(childId);
+  }
+
+  async getChildTerms(userId: string, childId: string): Promise<MyAcademicContext> {
+    await this.assertChildBelongsToCaller(userId, childId);
+    return this.buildAcademicContext(childId);
+  }
+
+  // Same reuse as getMyReportCard above: assertChildBelongsToCaller runs
+  // FIRST (before any grade query), then the caller's own `user` (role
+  // PARENT) is passed straight through to the exact same
+  // GradesService.getReportCard() — the published-only filter there
+  // already covers PARENT alongside STUDENT (grades.service.ts, v0.6
+  // step 4 widening of publishedOnlyForSelfView).
+  async getChildReportCard(user: AuthenticatedUser, childId: string, query: GetStudentResultsQueryDto): Promise<ReportCardResponse> {
+    await this.assertChildBelongsToCaller(user.userId, childId);
+    return this.gradesService.getReportCard(childId, query, user);
   }
 
   // Reuses the same class-teacher/subject-teacher join shape as

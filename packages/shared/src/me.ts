@@ -67,3 +67,10 @@ export interface MySessionSummary {
 export interface MyAcademicContext {
   sessions: MySessionSummary[];
 }
+
+// v0.6 step 4 (SPEC_V0.6.md §2.4) — GET /me/children: the child-switcher's
+// data, one MyProfile per linked child (same shape as GET /me/profile —
+// not a second "child summary" type invented for the switcher).
+export interface MyChildrenResponse {
+  children: MyProfile[];
+}
