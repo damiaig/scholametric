@@ -180,11 +180,14 @@ describe("Portal Accounts (e2e) — SPEC_V0.6.md §5 step 1", () => {
 
       const parentA = await prisma.user.findFirstOrThrow({ where: { guardianId: gA.id } });
       const parentB = await prisma.user.findFirstOrThrow({ where: { guardianId: gB.id } });
-      expect(parentA.username).not.toBe(parentB.username);
-      expect(parentA.username).toMatch(/^COKER[A-Z]*$/);
-      expect(parentB.username).toMatch(/^COKER[A-Z]*$/);
-      // Exactly one of the two is the bare stem — the other escalated.
-      expect([parentA.username, parentB.username].includes("COKER")).toBe(true);
+      // Pinned exactly, not just "one bare, one escalated": family A's
+      // anchor (sA1, admission 9101) sorts before family B's (sB1, 9102),
+      // so A processes first and gets the bare stem; B's is the FIRST
+      // collision, which must be the letter right after the bare stem —
+      // "B", never "A" again (that off-by-one bug is exactly what this
+      // pins against regressing to).
+      expect(parentA.username).toBe("COKER");
+      expect(parentB.username).toBe("COKERB");
 
       const sA1Account = await prisma.user.findFirstOrThrow({ where: { studentId: sA1.id } });
       const sB1Account = await prisma.user.findFirstOrThrow({ where: { studentId: sB1.id } });

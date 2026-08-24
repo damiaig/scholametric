@@ -3624,3 +3624,35 @@ regardless of application logic. Full `pnpm run ci` green on a fresh
 `docker compose down -v` → migrate → seed database; `docker compose up -d
 --build` boots the full stack from scratch. Nothing from steps 2–7
 (username login, read views, slips, polish, tag) was touched.
+
+## 2026-08-23 — v0.6 step 1 fix-up: family-code letter escalation off-by-one
+
+`family-coding.util.ts`'s `nextFreeFamilyCode` called
+`collisionLetterSuffix(collisionIndex)` — `collisionLetterSuffix` is
+0-indexed (`0 -> "A"`, `1 -> "B"`, ...), so the first actual collision
+(`collisionIndex = 0`) produced `"A"` again, giving e.g. `OKAFORA` for a
+second unrelated Okafor family instead of the spec'd `OKAFORB` (the bare
+stem already occupies the "A" slot; escalation is meant to start at B).
+Fixed by calling `collisionLetterSuffix(collisionIndex + 1)` at the one
+call site — verified analytically (a 30-family simulation) that the
+sequence is now bare stem, `B`, `C`, ... `Z` (25th collision), `AA` (26th),
+`AB` (27th), ... `portal-accounts.e2e-spec.ts`'s two-unrelated-families
+test was tightened from a loose `/^COKER[A-Z]*$/` regex to pinning the
+exact usernames (`"COKER"`/`"COKERB"`) so this can't silently regress
+again — the loose regex had passed against the buggy `"COKERA"` output
+too, which is why it didn't catch this the first time.
+
+**Open decision, flagged not resolved**: `users.student_id`/`guardian_id`
+are `ON DELETE SET NULL` (see the v0.6 step 1 migration), which is in
+latent conflict with `users_role_link_consistency_check` — if a
+`Student`/`Guardian` row is ever **hard**-deleted, Postgres would try to
+`SET NULL` the referencing portal account's link column, which the CHECK
+constraint then rejects (a `STUDENT` row with `student_id IS NULL` is
+invalid), and the hard-delete itself would fail. This does not fire today:
+`students`/`guardians` are soft-deleted everywhere in this codebase
+(`deleted_at`), never hard-deleted, so `ON DELETE` never actually runs in
+practice. If a hard-delete path is ever added for either table, the
+correct behavior is almost certainly to `CASCADE`-delete the dependent
+portal account (deleting the person's record should delete their login,
+not orphan it into a constraint violation) — deferred rather than
+speculatively built now, but flagged here so it isn't a surprise later.

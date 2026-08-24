@@ -107,7 +107,12 @@ export function nextFreeFamilyCode(stem: string, existingUsernamesUpper: Set<str
   let candidate = stem;
   let collisionIndex = 0;
   while (existingUsernamesUpper.has(candidate.toUpperCase())) {
-    candidate = `${stem}${collisionLetterSuffix(collisionIndex)}`;
+    // +1: collisionLetterSuffix is 0-indexed (0->A, 1->B, ...); the bare
+    // stem already occupies that "A" slot, so the first actual collision
+    // must land on B, not A again — collisionIndex=0 (the 1st collision)
+    // needs collisionLetterSuffix(1), not collisionLetterSuffix(0), or
+    // this would produce OKAFORA instead of OKAFORB.
+    candidate = `${stem}${collisionLetterSuffix(collisionIndex + 1)}`;
     collisionIndex++;
   }
   return candidate;
