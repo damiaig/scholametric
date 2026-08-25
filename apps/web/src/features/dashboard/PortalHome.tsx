@@ -61,31 +61,33 @@ function StudentPortalHome() {
     <div>
       <PageHeader title={`Welcome, ${user?.firstName ?? ""}`} description={profile.data?.currentClassArmLabel ?? user?.school.name} />
 
-      <div className="mb-4 flex flex-col gap-1.5">
-        <Label htmlFor="portal-term">Term</Label>
-        <select
-          id="portal-term"
-          className={SELECT_CLASS}
-          value={termId}
-          onChange={(event) => {
-            const option = termOptions.find((o) => o.id === event.target.value);
-            if (option) {
-              setTermId(option.id);
-              setSessionId(option.sessionId);
-            }
-          }}
-          disabled={terms.isLoading}
-        >
-          <option value="" disabled>
-            Select…
-          </option>
-          {termOptions.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
+      {termOptions.length > 0 && (
+        <div className="mb-4 flex flex-col gap-1.5">
+          <Label htmlFor="portal-term">Term</Label>
+          <select
+            id="portal-term"
+            className={SELECT_CLASS}
+            value={termId}
+            onChange={(event) => {
+              const option = termOptions.find((o) => o.id === event.target.value);
+              if (option) {
+                setTermId(option.id);
+                setSessionId(option.sessionId);
+              }
+            }}
+            disabled={terms.isLoading}
+          >
+            <option value="" disabled>
+              Select…
             </option>
-          ))}
-        </select>
-      </div>
+            {termOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {!terms.isLoading && !ready && termOptions.length === 0 && (
         <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">

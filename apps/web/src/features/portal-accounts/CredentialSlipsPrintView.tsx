@@ -20,7 +20,7 @@ export function CredentialSlipsPrintView({ schoolName, accounts }: CredentialSli
           <Printer className="mr-2 h-4 w-4" aria-hidden="true" /> Print {accounts.length} slip{accounts.length === 1 ? "" : "s"}
         </Button>
       </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 print:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 print:grid-cols-2 print:gap-3">
         {accounts.map((account) => (
           <CredentialSlipDocument
             key={account.id}

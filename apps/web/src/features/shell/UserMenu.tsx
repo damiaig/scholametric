@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, LogOut } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { ChevronDown, KeyRound, LogOut } from "lucide-react";
 import type { CurrentUser } from "@scholametric/shared";
 import { useLogout } from "./use-logout";
 
@@ -11,6 +12,7 @@ interface UserMenuProps {
 export function UserMenu({ user, isLoading }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
   const logout = useLogout();
 
   useEffect(() => {
@@ -44,6 +46,18 @@ export function UserMenu({ user, isLoading }: UserMenuProps) {
           role="menu"
           className="absolute bottom-full left-0 mb-1 w-full rounded-md border border-muted/20 bg-card p-1 shadow-md"
         >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              navigate("/account/change-password");
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-text hover:bg-background"
+          >
+            <KeyRound className="h-4 w-4" aria-hidden="true" />
+            Change password
+          </button>
           <button
             type="button"
             role="menuitem"

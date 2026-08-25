@@ -70,7 +70,13 @@ export function ClassArmCredentialSlipsPage() {
 
       {result && (
         <div className="flex flex-col gap-6">
-          <CredentialSlipsPrintView schoolName={currentUser?.school.name} accounts={result.reissued} />
+          {result.reissued.length === 0 ? (
+            <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted print:hidden">
+              Nothing to print — every account was skipped. See the list below.
+            </p>
+          ) : (
+            <CredentialSlipsPrintView schoolName={currentUser?.school.name} accounts={result.reissued} />
+          )}
 
           {(alreadyChanged.length > 0 || notProvisioned.length > 0) && (
             <div className="rounded-lg border border-muted/20 bg-card p-4 print:hidden">

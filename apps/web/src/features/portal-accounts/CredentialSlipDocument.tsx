@@ -14,7 +14,7 @@ interface CredentialSlipDocumentProps {
 // server-side file — client print only, same approach as ReportCardDocument).
 export function CredentialSlipDocument({ schoolName, role, displayName, username, tempPassword }: CredentialSlipDocumentProps) {
   return (
-    <div className="break-inside-avoid rounded-lg border border-muted/20 bg-card p-4 text-text print:border-muted/40">
+    <div className="break-inside-avoid rounded-lg border border-muted/20 bg-card p-4 text-text print:border-muted/60 print:bg-white print:p-3">
       <p className="text-sm font-semibold">{schoolName}</p>
       <p className="text-xs text-muted">{role === "STUDENT" ? "Student portal login" : "Parent/guardian portal login"}</p>
       <p className="mt-2 text-base font-medium">{displayName}</p>

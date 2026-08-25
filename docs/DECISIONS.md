@@ -3997,3 +3997,79 @@ down -v` → migrate → seed stack (no new migration — step 5 needed no new
 `User` columns beyond what step 1 already added): 33 backend e2e suites/
 375 tests, 1 backend unit suite/7 tests, 34 frontend Vitest files/189
 tests, all passing.
+
+## 2026-08-25 — v0.6 step 6: polish + per-role guide + voluntary change-password (SPEC_V0.6.md §5 step 6)
+
+**Doc note**: the plan referenced "SPEC_V0.6.md §2.7," which doesn't exist
+in this doc — step 6's actual scope lives in §5's build order, item 6.
+Proceeded from there; flagged rather than silently guessed.
+
+**`HelpPage.tsx` had a real bug, not just a gap**: `if (role === TEACHER)
+… else AdminHelp` meant STUDENT/PARENT saw the full admin guide
+(publish/override/term-close, none of which they can do) — deferred on
+purpose back in step 4. Fixed with two new sibling functions,
+`StudentHelp`/`ParentHelp`, same static `Section` pattern as
+`AdminHelp`/`TeacherHelp` — no tour/contextual framework. Per the user's
+explicit addition: `ParentHelp` names the real-world `child_not_covered`
+confusion directly — "if a child is missing from the picker, contact the
+school office to check the guardian link" — the plain-language version of
+what step 1's `child_not_covered` warning and step 4's allow-list actually
+mean for a parent who can't see a child they expect to.
+
+**Leak boundary tested in BOTH directions, and the boundary is precise,
+not a blanket word-ban.** The obvious mistake here — asserting portal
+guides never contain `/publish/i` — actually breaks the guide itself: "only
+**published** results appear" is required content, not a leak. The real
+boundary is the admin ACTION ("Reviewing & publishing", "Override lets you
+set…", "Managing terms"), not the status word. Fixed before it shipped as
+a test bug, not a content bug — the component was already correct; the
+first draft of its test wasn't.
+
+**Voluntary "Change password" is a new reachable flow, correctly NOT
+folded into "polish."** Flagged in the plan, then explicitly included by
+the user as "the one non-polish item." `POST /auth/change-password`
+already exists and is unchanged — `useChangePassword()` (tokens +
+`auth/me` invalidation) is reused byte-for-byte. What's new is
+`AccountChangePasswordPage` (a second, ordinary in-app page) plus a
+"Change password" item in `UserMenu`, for every role, above "Log out."
+Deliberately NOT a reuse of the existing full-screen `ChangePasswordPage`
+— that component's copy ("you need to set a new password **before you can
+use ScholaMetric**") and its unconditional redirect to `/dashboard` on
+success are specific to the forced takeover; a voluntary settings-style
+page needs neither, same "two shapes for two structurally different
+entry points" reasoning as step 4's route split. `ProtectedLayout`'s
+existing `mustChangePassword` redirect already guards the new route for
+free — no new guard code needed.
+
+**Polish stayed to the four named items, no fifth.** One turned out to be
+a no-op on inspection: `PortalHome`'s empty states already matched
+`DataTable`'s own empty-state convention (border+card+centered muted
+text, no icon) byte-for-byte — adding icons would have been inventing a
+convention that doesn't exist elsewhere, not matching one. Left
+unchanged; noted here instead of forcing a cosmetic diff with no value.
+The real find was in "picker-row spacing": `StudentPortalHome` rendered
+its Term `<select>` unconditionally, even with zero options (an
+unusable "Select…"-only dropdown sitting above the "No terms yet"
+message) — `ParentPortalHome`'s own child/term row already guards on
+`children.length > 0`; `StudentPortalHome` now guards on
+`termOptions.length > 0` the same way. The other two: `ClassArm
+CredentialSlipsPage` now shows "Nothing to print" when every account in a
+batch is skipped (previously silent blank space above the skipped list);
+`CredentialSlipDocument`/`CredentialSlipsPrintView` got a print-contrast/
+spacing pass (`print:bg-white`, higher-contrast border, tighter grid gap).
+All four are markup/class-only — no new state, no changed query/mutation
+behavior.
+
+**No other backend or behavior change** — nothing in this step touches
+Steps 1–5's endpoints, DTOs, or Prisma schema.
+
+**Proof**: 15 new/changed Vitest tests across `HelpPage` (STUDENT/PARENT
+content plus the corrected both-direction leak boundary), `PortalHome`
+(the picker-guard regression), `ClassArmCredentialSlipsPage` (all-skipped
+state), and the new `AccountChangePasswordPage` (voluntary change
+succeeds + a mock-modeled old-password-401/new-password-200 state
+transition, mirroring step 5's live e2e proof at the mock layer since
+this page never itself calls `/auth/login`; plus a wrong-current-password
+error case). Full frontend Vitest suite green (35 files/196 tests) and
+full `pnpm run ci` green on a fresh `docker compose down -v` → migrate →
+seed stack — no new migration, no backend files touched at all this step.

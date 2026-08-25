@@ -113,4 +113,23 @@ describe("PortalHome", () => {
     // Read-only for a PARENT too — no remark write forms.
     expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();
   });
+
+  // v0.6 step 6 polish: an empty Term picker (nothing to pick) is hidden
+  // entirely rather than showing an unusable "Select…"-only dropdown above
+  // the empty-state message — matches how the PARENT child-picker row
+  // already only renders when there's at least one child.
+  it("STUDENT with no terms yet: shows the empty state and hides the (unusable) Term picker", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: null };
+      if (path.includes("/me/terms")) return { sessions: [] };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<PortalHome />);
+
+    expect(await screen.findByText(/No terms yet/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Term" })).not.toBeInTheDocument();
+  });
 });

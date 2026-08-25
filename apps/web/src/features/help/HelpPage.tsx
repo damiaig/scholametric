@@ -32,6 +32,24 @@ export function HelpPage() {
     );
   }
 
+  if (user?.role === "STUDENT") {
+    return (
+      <div>
+        <PageHeader title="Help" description="What your account can do, and how." />
+        <StudentHelp />
+      </div>
+    );
+  }
+
+  if (user?.role === "PARENT") {
+    return (
+      <div>
+        <PageHeader title="Help" description="What your account can do, and how." />
+        <ParentHelp />
+      </div>
+    );
+  }
+
   return (
     <div>
       <PageHeader title="Help" description="What your account can do, and how." />
@@ -126,6 +144,70 @@ function TeacherHelp() {
           If you're the class teacher of an arm, you can write the teacher's remark on a student's report card for
           that class. If you only teach a subject there (not the class teacher), you can still read the remark, but
           you can't edit it — that stays with the class teacher.
+        </p>
+      </Section>
+    </>
+  );
+}
+
+// v0.6 step 6 (SPEC_V0.6.md §5 step 6) — same rule as TeacherHelp above,
+// held to the opposite boundary: a portal account (STUDENT/PARENT) has no
+// staff powers, so this guide never mentions publishing, overriding a
+// grade, or closing/unlocking a term — those don't exist for this role.
+function StudentHelp() {
+  return (
+    <>
+      <Section title="Logging in">
+        <p>
+          Log in with the username and temporary password your school gave you. The first time you log in, you'll be
+          asked to choose your own password before you can do anything else.
+        </p>
+      </Section>
+
+      <Section title="Your results">
+        <p>
+          Your dashboard shows your report card for a term you pick. Only <span className="font-medium">published</span>{" "}
+          results appear — a subject your teacher hasn't finished grading yet simply won't be there until it is.
+        </p>
+        <p className="text-muted">
+          This is a read-only view — there's nothing here to edit or submit, just your own results and remarks.
+        </p>
+      </Section>
+    </>
+  );
+}
+
+function ParentHelp() {
+  return (
+    <>
+      <Section title="Logging in">
+        <p>
+          Log in with the username and temporary password your school gave you. The first time you log in, you'll be
+          asked to choose your own password before you can do anything else.
+        </p>
+      </Section>
+
+      <Section title="Switching between children">
+        <p>
+          If you have more than one child at the school, use the child picker on your dashboard to switch between
+          them. You'll only ever see children directly linked to your own account — not a whole household, and never
+          another family's.
+        </p>
+        <p className="text-muted">
+          If a child you expect to see is missing from the picker, contact the school office to check the guardian
+          link on that child's record.
+        </p>
+      </Section>
+
+      <Section title="Your children's results">
+        <p>
+          For each child, your dashboard shows their report card for a term you pick. Only{" "}
+          <span className="font-medium">published</span> results appear — a subject their teacher hasn't finished
+          grading yet simply won't be there until it is.
+        </p>
+        <p className="text-muted">
+          This is a read-only view — there's nothing here to edit or submit, just your children's own results and
+          remarks.
         </p>
       </Section>
     </>

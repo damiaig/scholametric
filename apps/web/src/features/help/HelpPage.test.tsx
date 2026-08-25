@@ -86,5 +86,62 @@ describe("HelpPage", () => {
     expect(screen.queryByText(/override/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/unlock/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/relock/i)).not.toBeInTheDocument();
+
+    // v0.6 step 6: the reverse leak boundary — staff guides never mention
+    // the portal-only login/child-switcher copy either.
+    expect(screen.queryByText(/username and temporary password/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/switching between children/i)).not.toBeInTheDocument();
+  });
+
+  it("SCHOOL_ADMIN guide never mentions the portal-only username login or child-switcher copy", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockUser("SCHOOL_ADMIN");
+    renderWithProviders(<HelpPage />);
+
+    await screen.findByText("Setting up classes & subjects");
+    expect(screen.queryByText(/username and temporary password/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/switching between children/i)).not.toBeInTheDocument();
+  });
+
+  // v0.6 step 6 (SPEC_V0.6.md §5 step 6) — STUDENT/PARENT previously fell
+  // through to the admin guide (the bug this step fixes). The critical
+  // property, same as TEACHER above: never an admin-only power, in either
+  // direction.
+  it("STUDENT: sees login/results/published-only/read-only guidance — never an admin power, never the parent child-switcher", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockUser("STUDENT");
+    renderWithProviders(<HelpPage />);
+
+    expect(await screen.findByText("Logging in")).toBeInTheDocument();
+    expect(screen.getByText(/username and temporary password/i)).toBeInTheDocument();
+    expect(screen.getByText(/first time you log in/i)).toBeInTheDocument();
+    expect(screen.getByText(/published/)).toBeInTheDocument();
+    expect(screen.getByText(/read-only view/i)).toBeInTheDocument();
+
+    expect(screen.queryByText("Switching between children")).not.toBeInTheDocument();
+    expect(screen.queryByText("Setting up classes & subjects")).not.toBeInTheDocument();
+    // "published" (a status word) is expected content here — the negative
+    // check is for the admin ACTION, "Reviewing & publishing".
+    expect(screen.queryByText("Reviewing & publishing")).not.toBeInTheDocument();
+    expect(screen.queryByText(/override/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/unlock/i)).not.toBeInTheDocument();
+  });
+
+  it("PARENT: sees login/child-switcher/published-only/read-only guidance, including what to do if a child is missing — never an admin power", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockUser("PARENT");
+    renderWithProviders(<HelpPage />);
+
+    expect(await screen.findByText("Logging in")).toBeInTheDocument();
+    expect(screen.getByText(/username and temporary password/i)).toBeInTheDocument();
+    expect(screen.getByText("Switching between children")).toBeInTheDocument();
+    expect(screen.getByText(/contact the school office to check the guardian link/i)).toBeInTheDocument();
+    expect(screen.getByText(/published/)).toBeInTheDocument();
+    expect(screen.getByText(/read-only view/i)).toBeInTheDocument();
+
+    expect(screen.queryByText("Setting up classes & subjects")).not.toBeInTheDocument();
+    expect(screen.queryByText("Reviewing & publishing")).not.toBeInTheDocument();
+    expect(screen.queryByText(/override/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/unlock/i)).not.toBeInTheDocument();
   });
 });

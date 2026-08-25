@@ -22,6 +22,7 @@ import { SchoolProfilePage } from "./features/settings/SchoolProfilePage";
 import { AcademicSettingsPage } from "./features/settings/AcademicSettingsPage";
 import { PortalAccountsSettingsPage } from "./features/portal-accounts/PortalAccountsSettingsPage";
 import { ClassArmCredentialSlipsPage } from "./features/portal-accounts/ClassArmCredentialSlipsPage";
+import { AccountChangePasswordPage } from "./features/auth/AccountChangePasswordPage";
 
 // Extracted from <App> (which just wraps this in <BrowserRouter>) so the
 // route-smoke test can mount the exact same route tree inside a
@@ -46,6 +47,7 @@ export function AppRoutes() {
         <Route path="/grades/grid" element={<ScoreEntryGridPage />} />
         <Route path="/grades/overview" element={<GradesOverviewPage />} />
         <Route path="/help" element={<HelpPage />} />
+        <Route path="/account/change-password" element={<AccountChangePasswordPage />} />
 
         {/* v0.2 (SPEC_V0.2.md §4): /settings/users no longer exists as a
             tab — it's a bare redirect to /personnel, which replaced it. */}

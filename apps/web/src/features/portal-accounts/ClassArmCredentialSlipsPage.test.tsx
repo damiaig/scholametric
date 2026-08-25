@@ -133,4 +133,25 @@ describe("ClassArmCredentialSlipsPage", () => {
       ),
     );
   });
+
+  // v0.6 step 6 polish: when every account is skipped, the printable area
+  // must say so rather than rendering silent blank space above the
+  // skipped-with-reasons list.
+  it("all-skipped batch: shows 'Nothing to print' instead of a blank printable area", async () => {
+    mockCommon({
+      batch: () => ({
+        classArmId: "arm1",
+        reissued: [],
+        skipped: [{ id: "acc3", username: "BELLO1", displayName: "Tunde Bello", reason: "already_changed_password" }],
+      }),
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByText("Generate slips"));
+
+    expect(await screen.findByText(/Nothing to print/)).toBeInTheDocument();
+    expect(screen.getByText("Tunde Bello")).toBeInTheDocument();
+    expect(screen.queryByText("483920")).not.toBeInTheDocument();
+  });
 });
