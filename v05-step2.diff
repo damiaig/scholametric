@@ -1,0 +1,1049 @@
+diff --git a/apps/api/src/assessment-components/assessment-components.service.ts b/apps/api/src/assessment-components/assessment-components.service.ts
+index 94e15ab..185874b 100644
+--- a/apps/api/src/assessment-components/assessment-components.service.ts
++++ b/apps/api/src/assessment-components/assessment-components.service.ts
+@@ -93,5 +93,18 @@ export class AssessmentComponentsService {
+     if (new Set(names).size !== names.length) {
+       throw new BadRequestException("Component names must be unique.");
+     }
++    // Gap-1 fix (SPEC_V0.5.md §3/Q7): a structure with zero approval
++    // components can never leave DRAFT (computeSubjectStatus has nothing
++    // that triggers PENDING_APPROVAL) — results would be permanently
++    // unpublishable. This is the ONLY write path for a school's assessment
++    // structure (replaceAll — confirmed no other endpoint/service mutates
++    // assessment_components), so this one check covers every create, edit,
++    // and removal. Forward-only: doesn't retroactively touch any structure
++    // already persisted (no backfill — neither seeded school is affected,
++    // and there's no mechanism yet to notify an already-broken school; see
++    // docs/DECISIONS.md).
++    if (!items.some((item) => item.requiresApproval === true)) {
++      throw new BadRequestException("At least one component must require approval, or results can never be published.");
++    }
+   }
+ }
+diff --git a/apps/api/src/grades/dto/grid-score-item.dto.ts b/apps/api/src/grades/dto/grid-score-item.dto.ts
+index b5eeb14..9a00432 100644
+--- a/apps/api/src/grades/dto/grid-score-item.dto.ts
++++ b/apps/api/src/grades/dto/grid-score-item.dto.ts
+@@ -1,4 +1,22 @@
+-import { IsNumber, IsOptional, IsUUID, Min } from "class-validator";
++import { IsBoolean, IsNumber, IsOptional, IsUUID, Min, ValidatorConstraint, ValidatorConstraintInterface, ValidationArguments, Validate } from "class-validator";
++
++// Belt-and-suspenders alongside student_scores' own DB CHECK
++// (student_scores_raw_score_or_absent_check, SPEC_V0.5.md §2.1 / step 1):
++// a score is either a number or an absence, never both. The DB CHECK is the
++// last-resort guarantee; this is the first-line 400 so a malformed payload
++// never reaches the database at all.
++@ValidatorConstraint({ name: "rawScoreConsistentWithAbsence", async: false })
++class RawScoreConsistentWithAbsenceConstraint implements ValidatorConstraintInterface {
++  validate(rawScore: unknown, args: ValidationArguments): boolean {
++    const obj = args.object as GridScoreItemDto;
++    const hasRawScore = rawScore !== null && rawScore !== undefined;
++    return !(hasRawScore && obj.isAbsent === true);
++  }
++
++  defaultMessage(): string {
++    return "rawScore and isAbsent cannot both be set for the same score.";
++  }
++}
+ 
+ // No upper bound here on purpose: the only valid ceiling is the specific
+ // component's max_score, which is dynamic per component and checked in
+@@ -12,5 +30,10 @@ export class GridScoreItemDto {
+   @IsOptional()
+   @IsNumber({ maxDecimalPlaces: 2 })
+   @Min(0)
++  @Validate(RawScoreConsistentWithAbsenceConstraint)
+   rawScore?: number | null;
++
++  @IsOptional()
++  @IsBoolean()
++  isAbsent?: boolean;
+ }
+diff --git a/apps/api/src/grades/grades.service.ts b/apps/api/src/grades/grades.service.ts
+index 56070d5..5c7d3b1 100644
+--- a/apps/api/src/grades/grades.service.ts
++++ b/apps/api/src/grades/grades.service.ts
+@@ -32,6 +32,7 @@ export interface GradesGridRow {
+   lastName: string;
+   admissionNumber: string;
+   rawScore: number | null;
++  isAbsent: boolean;
+   // The student's SUBJECT-level status (term_subject_result), not
+   // component-level — independent of which component this grid is
+   // currently viewing. A student with no term_subject_result row yet
+@@ -57,6 +58,7 @@ export interface GradesGridResponse {
+ export interface SavedGridRow {
+   studentId: string;
+   rawScore: number | null;
++  isAbsent: boolean;
+   totalScore: number;
+   autoGrade: string | null;
+   finalGrade: string | null;
+@@ -260,6 +262,7 @@ export class GradesService {
+       }),
+     ]);
+     const rawByStudent = new Map(scores.map((s) => [s.studentId, s.rawScore === null ? null : Number(s.rawScore)]));
++    const absentByStudent = new Map(scores.map((s) => [s.studentId, s.isAbsent]));
+     const statusByStudent = new Map(subjectResults.map((r) => [r.studentId, r.status]));
+ 
+     return {
+@@ -275,6 +278,7 @@ export class GradesService {
+         lastName: s.lastName,
+         admissionNumber: s.admissionNumber,
+         rawScore: rawByStudent.get(s.id) ?? null,
++        isAbsent: absentByStudent.get(s.id) ?? false,
+         status: statusByStudent.get(s.id) ?? ResultStatus.DRAFT,
+       })),
+     };
+@@ -358,6 +362,15 @@ export class GradesService {
+         await Promise.all(
+           dto.scores.map((item) => {
+             const rawScore = item.rawScore ?? null;
++            // Always explicit, never a partial update — same discipline as
++            // rawScore itself. A student marked absent last save who gets a
++            // real score entered this save must have isAbsent flipped back
++            // to false in the SAME write, or a stale isAbsent: true would
++            // survive alongside the new rawScore and violate
++            // student_scores_raw_score_or_absent_check on this very row
++            // (SPEC_V0.5.md §2.1 / step 1's DB CHECK). Symmetric the other
++            // way too: marking absent must null out any prior rawScore.
++            const isAbsent = item.isAbsent ?? false;
+             return tx.studentScore.upsert({
+               where: {
+                 studentId_subjectId_componentId_termId_sessionId: {
+@@ -368,7 +381,7 @@ export class GradesService {
+                   sessionId: term.sessionId,
+                 },
+               },
+-              update: { rawScore, enteredBy: user.userId, enteredAt: new Date() },
++              update: { rawScore, isAbsent, enteredBy: user.userId, enteredAt: new Date() },
+               create: {
+                 schoolId,
+                 studentId: item.studentId,
+@@ -378,6 +391,7 @@ export class GradesService {
+                 termId: dto.termId,
+                 classArmId: dto.classArmId,
+                 rawScore,
++                isAbsent,
+                 enteredBy: user.userId,
+                 enteredAt: new Date(),
+               },
+@@ -428,6 +442,7 @@ export class GradesService {
+         });
+ 
+         const rawByStudent = new Map(dto.scores.map((s) => [s.studentId, s.rawScore ?? null]));
++        const absentByStudent = new Map(dto.scores.map((s) => [s.studentId, s.isAbsent ?? false]));
+         return {
+           classArmId: dto.classArmId,
+           subjectId: dto.subjectId,
+@@ -437,6 +452,7 @@ export class GradesService {
+           rows: recomputed.map((r) => ({
+             studentId: r.studentId,
+             rawScore: rawByStudent.get(r.studentId) ?? null,
++            isAbsent: absentByStudent.get(r.studentId) ?? false,
+             totalScore: r.totalScore,
+             autoGrade: r.autoGrade,
+             finalGrade: r.finalGrade,
+@@ -540,6 +556,35 @@ export class GradesService {
+           );
+         }
+ 
++        // Completeness gate (SPEC_V0.5.md §2.2): no silent blanks that
++        // quietly count as 0. Scoped to `toPublish` CANDIDATES only — the
++        // students actually transitioning PENDING_APPROVAL -> PUBLISHED in
++        // THIS call — not the whole roster and not `alreadyPublished` (they
++        // passed this same gate when first published and can't have
++        // regressed, since score writes are blocked once PUBLISHED). This
++        // reading preserves v0.4's staggered/repeatable publish (stragglers
++        // can still publish later in a separate call) while guaranteeing no
++        // student is EVER individually finalized with a blank component —
++        // see docs/DECISIONS.md for why the spec's literal "every student in
++        // the roster" isn't read as "the whole subject must be 100% complete
++        // before anyone can publish." Same definition of "complete" that
++        // getReview()'s canPublish uses (findIncompleteEntries), so the two
++        // can never drift apart.
++        if (toPublish.length > 0) {
++          const incompleteEntries = await this.findIncompleteEntries(
++            tx,
++            { schoolId, termId: dto.termId, sessionId: term.sessionId },
++            toPublish.map((row) => ({ subjectId: dto.subjectId, studentId: row.studentId })),
++          );
++          if (incompleteEntries.length > 0) {
++            const incompleteStudentCount = new Set(incompleteEntries.map((e) => e.studentId)).size;
++            throw new ConflictException({
++              message: `Cannot publish: ${incompleteStudentCount} student(s) have at least one component that's neither scored nor marked absent.`,
++              incompleteEntries: incompleteEntries.map(({ studentId, componentId }) => ({ studentId, componentId })),
++            });
++          }
++        }
++
+         const now = new Date();
+         await Promise.all(
+           toPublish.map((row) =>
+@@ -888,7 +933,22 @@ export class GradesService {
+       bySubject.set(row.subjectId, bucket);
+     }
+ 
+-    let subjects: GradesReviewSubject[] = [...bySubject.entries()].map(([subjectId, { name, rows }]) => {
++    const bySubjectEntries = [...bySubject.entries()];
++    // One batched completeness check across EVERY subject's PENDING_APPROVAL
++    // candidates at once (SPEC_V0.4.md §5 — no per-subject query), using the
++    // exact same definition publish() enforces (findIncompleteEntries) so
++    // canPublish can never promise a publish that would then 409.
++    const pendingCandidates = bySubjectEntries.flatMap(([subjectId, { rows }]) =>
++      rows.filter((r) => r.status === ResultStatus.PENDING_APPROVAL).map((r) => ({ subjectId, studentId: r.studentId })),
++    );
++    const incompleteEntries = await this.findIncompleteEntries(
++      this.prisma,
++      { schoolId, termId: query.termId, sessionId: term.sessionId },
++      pendingCandidates,
++    );
++    const incompleteSubjectIds = new Set(incompleteEntries.map((e) => e.subjectId));
++
++    let subjects: GradesReviewSubject[] = bySubjectEntries.map(([subjectId, { name, rows }]) => {
+       const draftCount = rows.filter((r) => r.status === ResultStatus.DRAFT).length;
+       const pendingApprovalCount = rows.filter((r) => r.status === ResultStatus.PENDING_APPROVAL).length;
+       const publishedCount = rows.filter((r) => r.status === ResultStatus.PUBLISHED).length;
+@@ -902,7 +962,13 @@ export class GradesService {
+         publishedCount,
+         averageScore,
+         averageGrade: resolveGradeBand(averageScore, boundaryInputs),
+-        canPublish: pendingApprovalCount > 0 || publishedCount > 0,
++        // Mirrors publish()'s ACTUAL condition exactly, including the
++        // completeness gate: pendingApprovalCount > 0 alone is no longer
++        // sufficient — those candidates must also be complete, or publish()
++        // would 409. When pendingApprovalCount is 0, completeness is moot
++        // (nothing new is transitioning) — matches publish()'s own
++        // `if (toPublish.length > 0)` guard around the gate.
++        canPublish: (pendingApprovalCount > 0 && !incompleteSubjectIds.has(subjectId)) || publishedCount > 0,
+       };
+     });
+ 
+@@ -1225,6 +1291,58 @@ export class GradesService {
+     return { publishedCount, revertedCount };
+   }
+ 
++  // Batched completeness check (SPEC_V0.5.md §2.2), shared by publish()'s
++  // enforcement and getReview()'s canPublish preview — one definition of
++  // "complete," not two that can silently drift apart (which is exactly how
++  // canPublish would go stale the moment publish() alone gained this gate).
++  // For each given (subjectId, studentId) publish-candidate, checks every
++  // active assessment component: "blank" = no student_scores row, or a row
++  // with rawScore IS NULL AND isAbsent = false (both indistinguishable —
++  // both silently contribute 0 today). Absent is NOT blank. One batched
++  // studentScore query across every candidate (and, for getReview(), every
++  // subject at once) — no per-student or per-subject query.
++  private async findIncompleteEntries(
++    tx: Prisma.TransactionClient | PrismaService,
++    ctx: { schoolId: string; termId: string; sessionId: string },
++    candidates: Array<{ subjectId: string; studentId: string }>,
++  ): Promise<Array<{ subjectId: string; studentId: string; componentId: string }>> {
++    if (candidates.length === 0) return [];
++
++    const activeComponents = await tx.assessmentComponent.findMany({
++      where: { schoolId: ctx.schoolId, deletedAt: null },
++      select: { id: true },
++    });
++    const activeComponentIds = activeComponents.map((c) => c.id);
++    const subjectIds = [...new Set(candidates.map((c) => c.subjectId))];
++    const studentIds = [...new Set(candidates.map((c) => c.studentId))];
++
++    const scores = await tx.studentScore.findMany({
++      where: {
++        schoolId: ctx.schoolId,
++        termId: ctx.termId,
++        sessionId: ctx.sessionId,
++        subjectId: { in: subjectIds },
++        studentId: { in: studentIds },
++        componentId: { in: activeComponentIds },
++      },
++    });
++    const decided = new Set(
++      scores
++        .filter((s) => (s.rawScore !== null && s.rawScore !== undefined) || s.isAbsent)
++        .map((s) => `${s.subjectId}:${s.studentId}:${s.componentId}`),
++    );
++
++    const incomplete: Array<{ subjectId: string; studentId: string; componentId: string }> = [];
++    for (const { subjectId, studentId } of candidates) {
++      for (const componentId of activeComponentIds) {
++        if (!decided.has(`${subjectId}:${studentId}:${componentId}`)) {
++          incomplete.push({ subjectId, studentId, componentId });
++        }
++      }
++    }
++    return incomplete;
++  }
++
+   private subjectLockKey(schoolId: string, subjectId: string, classArmId: string, termId: string): string {
+     return `grades:${schoolId}:${subjectId}:${classArmId}:${termId}`;
+   }
+diff --git a/apps/api/test/assessment-components.e2e-spec.ts b/apps/api/test/assessment-components.e2e-spec.ts
+index 9d31d11..fb466d9 100644
+--- a/apps/api/test/assessment-components.e2e-spec.ts
++++ b/apps/api/test/assessment-components.e2e-spec.ts
+@@ -122,7 +122,7 @@ describe("Assessment components (e2e)", () => {
+           components: [
+             { name: "First CA", weight: 30, sortOrder: 1 },
+             { name: "Second CA", weight: 30, sortOrder: 2 },
+-            { name: "Final Exam", weight: 40, sortOrder: 3 },
++            { name: "Final Exam", weight: 40, sortOrder: 3, requiresApproval: true },
+           ],
+         });
+       expect(response.status).toBe(200);
+@@ -134,6 +134,46 @@ describe("Assessment components (e2e)", () => {
+       expect(persisted.body.map((c: { name: string }) => c.name)).toEqual(["First CA", "Second CA", "Final Exam"]);
+     });
+ 
++    // Gap-1 fix (SPEC_V0.5.md §3/Q7): a structure with zero approval
++    // components can never leave DRAFT (docs/DECISIONS.md).
++    it("rejects a zero-approval-component set atomically, and leaves the prior set intact", async () => {
++      const before = await request(app.getHttpServer())
++        .get("/api/v1/assessment-components")
++        .set(auth(sunriseAdminToken));
++
++      const response = await request(app.getHttpServer())
++        .put("/api/v1/assessment-components")
++        .set(auth(sunriseAdminToken))
++        .send({
++          components: [
++            { name: "Gap1 CA", weight: 40, sortOrder: 1, requiresApproval: false },
++            { name: "Gap1 Exam", weight: 60, sortOrder: 2 },
++          ],
++        });
++      expect(response.status).toBe(400);
++      expect(response.body.message).toMatch(/at least one component must require approval/i);
++
++      const stillThere = await request(app.getHttpServer())
++        .get("/api/v1/assessment-components")
++        .set(auth(sunriseAdminToken));
++      expect(stillThere.body).toEqual(before.body);
++    });
++
++    it("accepts a set with exactly one requiresApproval component", async () => {
++      const response = await request(app.getHttpServer())
++        .put("/api/v1/assessment-components")
++        .set(auth(sunriseAdminToken))
++        .send({
++          components: [
++            { name: "Gap1 CA Only", weight: 40, sortOrder: 1, requiresApproval: false },
++            { name: "Gap1 Exam Only", weight: 60, sortOrder: 2, requiresApproval: true },
++          ],
++        });
++      expect(response.status).toBe(200);
++      const exam = response.body.find((c: { name: string }) => c.name === "Gap1 Exam Only");
++      expect(exam.requiresApproval).toBe(true);
++    });
++
+     it("TEACHER cannot PUT", async () => {
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+diff --git a/apps/api/test/class-arm-results.e2e-spec.ts b/apps/api/test/class-arm-results.e2e-spec.ts
+index 407d0c5..e19865b 100644
+--- a/apps/api/test/class-arm-results.e2e-spec.ts
++++ b/apps/api/test/class-arm-results.e2e-spec.ts
+@@ -31,6 +31,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
+   let resultsArmId: string;
+   let partialArmId: string;
+   let ca1Id: string;
++  let ca2Id: string;
+   let examId: string;
+   const [s0, s1] = [0, 1];
+   let resultsStudentIds: string[];
+@@ -118,6 +119,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
+ 
+     const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
+     ca1Id = components[0].id;
++    ca2Id = components[1].id;
+     examId = components[2].id;
+ 
+     resultsArmId = await createArm("Results");
+@@ -252,6 +254,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
+       { studentId: p1, rawScore: 10 },
+     ], partialArmId);
+     await score(sunriseAdminToken, subjectId, examId, [{ studentId: p0, rawScore: 100 }], partialArmId);
++    await score(sunriseAdminToken, subjectId, ca2Id, [{ studentId: p0, rawScore: 0 }], partialArmId); // completeness gate
+     // p0: PENDING_APPROVAL (exam scored). p1: DRAFT (no exam yet).
+ 
+     const beforePublish = await request(app.getHttpServer())
+diff --git a/apps/api/test/grades-grid.e2e-spec.ts b/apps/api/test/grades-grid.e2e-spec.ts
+index cbc411d..d70e80d 100644
+--- a/apps/api/test/grades-grid.e2e-spec.ts
++++ b/apps/api/test/grades-grid.e2e-spec.ts
+@@ -178,6 +178,11 @@ describe("Grades grid (e2e)", () => {
+           .put("/api/v1/grades/grid")
+           .set(auth(sunriseAdminToken))
+           .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, componentId: examId, termId: sunriseTermId, scores: [{ studentId: published.id, rawScore: 60 }] });
++        // CA2 = 0 (decided, not blank) — completeness gate (SPEC_V0.5.md §2.2).
++        await request(app.getHttpServer())
++          .put("/api/v1/grades/grid")
++          .set(auth(sunriseAdminToken))
++          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, componentId: ca2Id, termId: sunriseTermId, scores: [{ studentId: published.id, rawScore: 0 }] });
+         const publishRes = await request(app.getHttpServer())
+           .post("/api/v1/grades/publish")
+           .set(auth(sunriseAdminToken))
+@@ -657,6 +662,190 @@ describe("Grades grid (e2e)", () => {
+     });
+   });
+ 
++  describe("PUT /grades/grid — absent (SPEC_V0.5.md §2.1, v0.5 step 2)", () => {
++    it("marking a student absent persists (rawScore null, isAbsent true) and flows through the existing recompute — excluded from the total, and an absent EXAM reaches PENDING_APPROVAL", async () => {
++      const [student] = jss2ARoster.slice(70, 71);
++      await request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 15 }] });
++
++      const absentRes = await request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId, scores: [{ studentId: student.id, isAbsent: true }] });
++      expect(absentRes.status).toBe(200);
++      const row = absentRes.body.rows[0];
++      expect(row.rawScore).toBeNull();
++      expect(row.isAbsent).toBe(true);
++      // Absent is a DECIDED outcome for the approval-required component
++      // (step 1's computeSubjectStatus extension) — PENDING_APPROVAL, not
++      // stuck in DRAFT. Total excludes the absent Exam entirely: only CA1
++      // counts, 15/20*20=15 — NOT a 0 and NOT rescaled.
++      expect(row.status).toBe("PENDING_APPROVAL");
++      expect(row.totalScore).toBe(15);
++
++      const persisted = await prisma.studentScore.findUniqueOrThrow({
++        where: {
++          studentId_subjectId_componentId_termId_sessionId: {
++            studentId: student.id, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId, sessionId: sunriseSessionId,
++          },
++        },
++      });
++      expect(persisted.rawScore).toBeNull();
++      expect(persisted.isAbsent).toBe(true);
++    });
++
++    it("a real score entered after a prior absent mark clears isAbsent back to false (not left stale)", async () => {
++      const [student] = jss2ARoster.slice(71, 72);
++      const absentRes = await request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, isAbsent: true }] });
++      expect(absentRes.body.rows[0].isAbsent).toBe(true);
++      expect(absentRes.body.rows[0].rawScore).toBeNull();
++
++      const scoredRes = await request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 18 }] });
++      expect(scoredRes.status).toBe(200);
++      expect(scoredRes.body.rows[0].rawScore).toBe(18);
++      expect(scoredRes.body.rows[0].isAbsent).toBe(false);
++
++      // Not just the response echo — the persisted row itself, which is
++      // what the DB CHECK constraint actually guards. A stale isAbsent:
++      // true left behind here alongside the new rawScore would violate
++      // student_scores_raw_score_or_absent_check.
++      const persisted = await prisma.studentScore.findUniqueOrThrow({
++        where: {
++          studentId_subjectId_componentId_termId_sessionId: {
++            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
++          },
++        },
++      });
++      expect(Number(persisted.rawScore)).toBe(18);
++      expect(persisted.isAbsent).toBe(false);
++    });
++
++    it("marking absent after a prior real score clears rawScore to null (the other direction)", async () => {
++      const [student] = jss2ARoster.slice(72, 73);
++      const scoredRes = await request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 12 }] });
++      expect(scoredRes.body.rows[0].rawScore).toBe(12);
++      expect(scoredRes.body.rows[0].isAbsent).toBe(false);
++
++      const absentRes = await request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, isAbsent: true }] });
++      expect(absentRes.status).toBe(200);
++      expect(absentRes.body.rows[0].rawScore).toBeNull();
++      expect(absentRes.body.rows[0].isAbsent).toBe(true);
++
++      const persisted = await prisma.studentScore.findUniqueOrThrow({
++        where: {
++          studentId_subjectId_componentId_termId_sessionId: {
++            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
++          },
++        },
++      });
++      expect(persisted.rawScore).toBeNull();
++      expect(persisted.isAbsent).toBe(true);
++    });
++
++    it("400s a payload with both rawScore and isAbsent set, writing nothing (DTO-level mutual exclusion)", async () => {
++      // ca1Id at ANY index already has a row by this point in the file (the
++      // ~100-student bulk save test above touches every student) — so
++      // "writing nothing" is proven by before/after EQUALITY, not by
++      // assuming no prior row, same pattern as the existing "400s a
++      // rawScore above max_score" test above.
++      const [student] = jss2ARoster.slice(73, 74);
++      const before = await prisma.studentScore.findUnique({
++        where: {
++          studentId_subjectId_componentId_termId_sessionId: {
++            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
++          },
++        },
++      });
++
++      const response = await request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 10, isAbsent: true }] });
++      expect(response.status).toBe(400);
++
++      const after = await prisma.studentScore.findUnique({
++        where: {
++          studentId_subjectId_componentId_termId_sessionId: {
++            studentId: student.id, subjectId: scratchSubjectId, componentId: ca1Id, termId: sunriseTermId, sessionId: sunriseSessionId,
++          },
++        },
++      });
++      expect(after).toEqual(before);
++    });
++
++    it("GET /grades/grid round-trips isAbsent alongside a normally-scored classmate in the same response", async () => {
++      const [absentStudent, scoredStudent] = jss2ARoster.slice(74, 76);
++      await request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send({
++          classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId,
++          scores: [{ studentId: absentStudent.id, isAbsent: true }, { studentId: scoredStudent.id, rawScore: 45 }],
++        });
++
++      const response = await request(app.getHttpServer())
++        .get("/api/v1/grades/grid")
++        .query({ classArmId: jss2AArmId, subjectId: scratchSubjectId, componentId: examId, termId: sunriseTermId })
++        .set(auth(sunriseAdminToken));
++      expect(response.status).toBe(200);
++      const rows = response.body.rows as Array<{ studentId: string; rawScore: number | null; isAbsent: boolean }>;
++      const absentRow = rows.find((r) => r.studentId === absentStudent.id);
++      const scoredRow = rows.find((r) => r.studentId === scoredStudent.id);
++      expect(absentRow?.isAbsent).toBe(true);
++      expect(absentRow?.rawScore).toBeNull();
++      expect(scoredRow?.isAbsent).toBe(false);
++      expect(scoredRow?.rawScore).toBe(45);
++    });
++
++    it("the DB CHECK constraint still rejects a hand-crafted both-set row, entirely bypassing the DTO", async () => {
++      // A canary against a future regression removing/weakening
++      // student_scores_raw_score_or_absent_check — goes straight through
++      // Prisma, never through the DTO's own mutual-exclusion validator
++      // proven above, so this is the last line of defense, not the first.
++      const canaryComponent = await prisma.assessmentComponent.create({
++        data: { schoolId: sunriseId, name: "E2E CHECK Canary", weight: 1, sortOrder: 97, maxScore: 100, requiresApproval: false },
++      });
++      try {
++        const [student] = jss2ARoster.slice(76, 77);
++        const admin = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "admin@sunrise.test" } });
++        await expect(
++          prisma.studentScore.create({
++            data: {
++              schoolId: sunriseId,
++              studentId: student.id,
++              subjectId: scratchSubjectId,
++              componentId: canaryComponent.id,
++              sessionId: sunriseSessionId,
++              termId: sunriseTermId,
++              classArmId: jss2AArmId,
++              rawScore: 50,
++              isAbsent: true,
++              enteredBy: admin.id,
++              enteredAt: new Date(),
++            },
++          }),
++        ).rejects.toThrow();
++      } finally {
++        await prisma.studentScore.deleteMany({ where: { componentId: canaryComponent.id } });
++        await prisma.assessmentComponent.delete({ where: { id: canaryComponent.id } });
++      }
++    });
++  });
++
+   describe("POST /grades/recompute", () => {
+     it("SCHOOL_ADMIN can re-trigger recompute for a class/subject/term", async () => {
+       const response = await request(app.getHttpServer())
+diff --git a/apps/api/test/grades-publish.e2e-spec.ts b/apps/api/test/grades-publish.e2e-spec.ts
+index bea879c..4e1d074 100644
+--- a/apps/api/test/grades-publish.e2e-spec.ts
++++ b/apps/api/test/grades-publish.e2e-spec.ts
+@@ -46,6 +46,11 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+   // ranked cohort to assert an exact final position against.
+   let gapTwoArmId: string;
+   let gapTwoConcurrencyArmId: string;
++  // Dedicated scratch arm for the completeness gate's own tests
++  // (SPEC_V0.5.md §2.2, v0.5 step 2) — same isolation reasoning as the
++  // arms above, kept separate so a blank-component candidate here can
++  // never leak into another suite's publish-success assertions.
++  let completenessArmId: string;
+   let ca1Id: string; // weight 20, max_score 20, requiresApproval false
+   let examId: string; // weight 60, max_score 100, requiresApproval true
+   let ca2Id: string; // weight 20, max_score 20, requiresApproval false
+@@ -139,6 +144,9 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+     gapTwoConcurrencyArmId = (
+       await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Gap2Conc-${Date.now()}` } })
+     ).id;
++    completenessArmId = (
++      await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Completeness-${Date.now()}` } })
++    ).id;
+ 
+     const components = await prisma.assessmentComponent.findMany({
+       where: { schoolId: sunriseId, deletedAt: null },
+@@ -212,6 +220,9 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+     if (gapTwoConcurrencyArmId) {
+       await prisma.classArm.delete({ where: { id: gapTwoConcurrencyArmId } });
+     }
++    if (completenessArmId) {
++      await prisma.classArm.delete({ where: { id: completenessArmId } });
++    }
+     if (hillcrestScratchProprietorId) {
+       // Real login flow (loginAs) issued a refresh token for this user —
+       // must go before the user row itself (refresh_tokens.user_id FK).
+@@ -236,6 +247,15 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+         { studentId: s1, rawScore: 100 },
+         { studentId: s2, rawScore: 25 },
+       ]);
++      // CA2 left at 0 for everyone — a real, decided score (not a blank),
++      // contributes nothing to the total (0/20*20=0), so it satisfies the
++      // completeness gate (SPEC_V0.5.md §2.2) without perturbing any of
++      // this test's hand-verified totals below.
++      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [
++        { studentId: s0, rawScore: 0 },
++        { studentId: s1, rawScore: 0 },
++        { studentId: s2, rawScore: 0 },
++      ]);
+       // s0, s1: 20 + 60 = 80 (tied). s2: 5 + 15 = 20.
+ 
+       const response = await request(app.getHttpServer())
+@@ -290,6 +310,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+       const [s0] = await createScratchStudents(1, "Idem");
+       await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 20 }]);
+       await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 100 }]);
++      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 0 }]); // completeness gate — see the Tie test above
+       const first = await request(app.getHttpServer())
+         .post("/api/v1/grades/publish")
+         .set(auth(sunriseAdminToken))
+@@ -343,6 +364,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+       const [s0] = await createScratchStudents(1, "Unpub");
+       await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 20 }]);
+       await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 100 }]);
++      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 0 }]); // completeness gate
+ 
+       const publishRes = await request(app.getHttpServer())
+         .post("/api/v1/grades/publish")
+@@ -479,6 +501,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+       const [s0] = await createScratchStudents(1, "OvrPublished");
+       await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }]);
+       await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 60 }]);
++      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 0 }]); // completeness gate
+       const publishRes = await request(app.getHttpServer())
+         .post("/api/v1/grades/publish")
+         .set(auth(sunriseAdminToken))
+@@ -591,6 +614,17 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+         ],
+         overallArmId,
+       );
++      await scoreComponent(
++        sunriseAdminToken,
++        sharedSubjectId,
++        ca2Id,
++        [
++          { studentId: t, rawScore: 0 },
++          { studentId: q, rawScore: 0 },
++          { studentId: r, rawScore: 0 },
++        ],
++        overallArmId,
++      ); // completeness gate — 0 contributes nothing, totals below unaffected
+       // T: 15+45=60. Q: 10+30=40. R: 12+36=48.
+ 
+       // R ALSO has a second subject, scored but never published — this is
+@@ -612,6 +646,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+       // P takes only the solo subject.
+       await scoreComponent(sunriseAdminToken, soloSubjectId, ca1Id, [{ studentId: p, rawScore: 20 }], overallArmId);
+       await scoreComponent(sunriseAdminToken, soloSubjectId, examId, [{ studentId: p, rawScore: 100 }], overallArmId);
++      await scoreComponent(sunriseAdminToken, soloSubjectId, ca2Id, [{ studentId: p, rawScore: 0 }], overallArmId); // completeness gate
+       // P: 20+60=80.
+       const soloPublish = await request(app.getHttpServer())
+         .post("/api/v1/grades/publish")
+@@ -677,6 +712,105 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+   // student's term_overall_result is currently PUBLISHED, must revert the
+   // overall to PENDING_APPROVAL and re-rank the shrunken published
+   // cohort — not leave a stale PUBLISHED status/position behind.
++  // Completeness gate (SPEC_V0.5.md §2.2, v0.5 step 2): publish() now
++  // rejects (409) a subject with a PENDING_APPROVAL candidate that has a
++  // blank component — no row, or a row with neither a score nor an
++  // absent mark. Scoped to publish CANDIDATES only (docs/DECISIONS.md —
++  // the spec's literal "every student in the roster" is read as "every
++  // student being published in THIS call", preserving v0.4's staggered/
++  // repeatable publish rather than requiring 100% roster completeness
++  // before anyone can publish).
++  describe("Completeness gate (SPEC_V0.5.md §2.2)", () => {
++    it("blocks the ENTIRE publish call atomically when even one candidate has a blank component — naming exactly that student+component, leaving a genuinely complete classmate un-transitioned", async () => {
++      const subjectId = await createScratchSubject("E2E Completeness Blocks");
++      const [complete, incomplete] = await createScratchStudents(2, "CompleteGate", completenessArmId);
++
++      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [
++        { studentId: complete, rawScore: 15 },
++        { studentId: incomplete, rawScore: 10 },
++      ], completenessArmId);
++      await scoreComponent(sunriseAdminToken, subjectId, examId, [
++        { studentId: complete, rawScore: 60 },
++        { studentId: incomplete, rawScore: 50 },
++      ], completenessArmId);
++      // `complete` also gets CA2 — `incomplete` deliberately does not:
++      // never entered, never marked absent. Both reach PENDING_APPROVAL
++      // (Exam decided), but only `incomplete` is blank on CA2.
++      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: complete, rawScore: 5 }], completenessArmId);
++
++      const response = await request(app.getHttpServer())
++        .post("/api/v1/grades/publish")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: completenessArmId, subjectId, termId: sunriseTermId });
++      expect(response.status).toBe(409);
++      expect(response.body.message).toMatch(/1 student/i);
++      expect(response.body.incompleteEntries).toEqual([{ studentId: incomplete, componentId: ca2Id }]);
++
++      // Atomic — `complete`, who was perfectly eligible, must NOT have
++      // been transitioned just because a batch-mate was blank.
++      const completeRow = await prisma.termSubjectResult.findUniqueOrThrow({
++        where: { studentId_subjectId_termId_sessionId: { studentId: complete, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
++      });
++      expect(completeRow.status).toBe("PENDING_APPROVAL");
++      expect(completeRow.publishedAt).toBeNull();
++    });
++
++    it("resolving the blank with a real score unblocks publish for both students", async () => {
++      const subjectId = await createScratchSubject("E2E Completeness Resolve");
++      const [s0, s1] = await createScratchStudents(2, "CompleteResolve", completenessArmId);
++
++      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [
++        { studentId: s0, rawScore: 15 },
++        { studentId: s1, rawScore: 10 },
++      ], completenessArmId);
++      await scoreComponent(sunriseAdminToken, subjectId, examId, [
++        { studentId: s0, rawScore: 60 },
++        { studentId: s1, rawScore: 50 },
++      ], completenessArmId);
++      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 5 }], completenessArmId);
++      // s1's CA2 still blank.
++
++      const blocked = await request(app.getHttpServer())
++        .post("/api/v1/grades/publish")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: completenessArmId, subjectId, termId: sunriseTermId });
++      expect(blocked.status).toBe(409);
++      expect(blocked.body.incompleteEntries).toEqual([{ studentId: s1, componentId: ca2Id }]);
++
++      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s1, rawScore: 8 }], completenessArmId);
++
++      const allowed = await request(app.getHttpServer())
++        .post("/api/v1/grades/publish")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: completenessArmId, subjectId, termId: sunriseTermId });
++      expect(allowed.status).toBe(200);
++      expect(allowed.body.publishedCount).toBe(2);
++    });
++
++    it("an all-absent-on-one-component roster still publishes — absent is a decided outcome, not blank", async () => {
++      const subjectId = await createScratchSubject("E2E Completeness Absent");
++      const [s0] = await createScratchStudents(1, "CompleteAbsent", completenessArmId);
++
++      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }], completenessArmId);
++      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 60 }], completenessArmId);
++      // CA2 marked ABSENT, not scored — a decided outcome, satisfies the gate.
++      const absentRes = await request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: completenessArmId, subjectId, componentId: ca2Id, termId: sunriseTermId, scores: [{ studentId: s0, isAbsent: true }] });
++      expect(absentRes.status).toBe(200);
++
++      const response = await request(app.getHttpServer())
++        .post("/api/v1/grades/publish")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: completenessArmId, subjectId, termId: sunriseTermId });
++      expect(response.status).toBe(200);
++      expect(response.body.publishedCount).toBe(1);
++      // Total excludes the absent CA2 entirely: 15 (CA1) + 36 (Exam) = 51 — NOT a 0, NOT rescaled.
++      expect(response.body.subjectPositions[0].totalScore).toBe(51);
++    });
++  });
++
+   describe("saveGrid triggering an overall recompute (gap #2 fix)", () => {
+     it("stale-rank reproduction: a brand-new subject for a published-overall student reverts their overall and re-ranks the rest of the cohort", async () => {
+       const subjectA = await createScratchSubject("E2E Gap2 SubjectA");
+@@ -693,6 +827,11 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+         { studentId: s1, rawScore: 75 },
+         { studentId: s2, rawScore: 50 },
+       ], gapTwoArmId);
++      await scoreComponent(sunriseAdminToken, subjectA, ca2Id, [
++        { studentId: s0, rawScore: 0 },
++        { studentId: s1, rawScore: 0 },
++        { studentId: s2, rawScore: 0 },
++      ], gapTwoArmId); // completeness gate — 0 contributes nothing
+ 
+       const publishRes = await request(app.getHttpServer())
+         .post("/api/v1/grades/publish")
+@@ -783,6 +922,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+       // far) -> overall PUBLISHED, position 1 (sole ranked student).
+       await scoreComponent(sunriseAdminToken, subjectA2, ca1Id, [{ studentId: sA, rawScore: 20 }], gapTwoConcurrencyArmId);
+       await scoreComponent(sunriseAdminToken, subjectA2, examId, [{ studentId: sA, rawScore: 100 }], gapTwoConcurrencyArmId);
++      await scoreComponent(sunriseAdminToken, subjectA2, ca2Id, [{ studentId: sA, rawScore: 0 }], gapTwoConcurrencyArmId); // completeness gate
+       const publishA2 = await request(app.getHttpServer())
+         .post("/api/v1/grades/publish")
+         .set(auth(sunriseAdminToken))
+@@ -794,6 +934,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+       // publish.
+       await scoreComponent(sunriseAdminToken, subjectC2, ca1Id, [{ studentId: sB, rawScore: 20 }], gapTwoConcurrencyArmId);
+       await scoreComponent(sunriseAdminToken, subjectC2, examId, [{ studentId: sB, rawScore: 100 }], gapTwoConcurrencyArmId);
++      await scoreComponent(sunriseAdminToken, subjectC2, ca2Id, [{ studentId: sB, rawScore: 0 }], gapTwoConcurrencyArmId); // completeness gate
+ 
+       // Fire concurrently: sA's first-ever score in subject B2 (triggers
+       // the gap-#2 recompute — sA's overall is currently PUBLISHED) vs.
+@@ -839,6 +980,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+       const [s0] = await createScratchStudents(1, "ConcSave");
+       await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }]);
+       await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 60 }]);
++      // CA2 pre-seeded at 0 (not left blank) so the completeness gate is
++      // already satisfied going into the race below — the race is about
++      // whether the CONCURRENT EDIT (0 -> 10) lands before or after
++      // publish(), same property as before, just no longer conflated with
++      // "is this student publishable at all" (SPEC_V0.5.md §2.2).
++      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 0 }]);
+       // PENDING_APPROVAL, total 51.
+ 
+       const [publishRes, saveRes] = await Promise.all([
+@@ -874,11 +1021,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+         where: { studentId_subjectId_componentId_termId_sessionId: { studentId: s0, subjectId, componentId: ca2Id, termId: sunriseTermId, sessionId: sunriseSessionId } },
+       });
+       // Consistency check: the stored raw score always agrees with which
+-      // path the total reflects.
++      // path the total reflects. CA2 always has a row (pre-seeded at 0
++      // above) — the question is only whether the concurrent edit landed.
+       if (saveRes.status === 200) {
+         expect(Number(ca2Score?.rawScore)).toBe(10);
+       } else {
+-        expect(ca2Score).toBeNull();
++        expect(Number(ca2Score?.rawScore)).toBe(0);
+       }
+     });
+ 
+@@ -891,6 +1039,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+       await scoreComponent(sunriseAdminToken, subjectC, examId, [{ studentId: s0, rawScore: 100 }], overallArmId);
+       await scoreComponent(sunriseAdminToken, subjectD, ca1Id, [{ studentId: s0, rawScore: 10 }], overallArmId);
+       await scoreComponent(sunriseAdminToken, subjectD, examId, [{ studentId: s0, rawScore: 50 }], overallArmId);
++      await scoreComponent(sunriseAdminToken, subjectC, ca2Id, [{ studentId: s0, rawScore: 0 }], overallArmId); // completeness gate
++      await scoreComponent(sunriseAdminToken, subjectD, ca2Id, [{ studentId: s0, rawScore: 0 }], overallArmId); // completeness gate
+       // C: 80. D: 40. Both PENDING_APPROVAL.
+ 
+       const [resC, resD] = await Promise.all([
+@@ -938,6 +1088,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+         examId,
+         students.map((studentId, i) => ({ studentId, rawScore: 20 + (i % 60) })),
+       );
++      await scoreComponent(
++        sunriseAdminToken,
++        subjectId,
++        ca2Id,
++        students.map((studentId) => ({ studentId, rawScore: 0 })),
++      ); // completeness gate — 0 contributes nothing
+ 
+       const start = Date.now();
+       const response = await request(app.getHttpServer())
+diff --git a/apps/api/test/grades-review.e2e-spec.ts b/apps/api/test/grades-review.e2e-spec.ts
+index 7073ffb..899f70e 100644
+--- a/apps/api/test/grades-review.e2e-spec.ts
++++ b/apps/api/test/grades-review.e2e-spec.ts
+@@ -24,6 +24,7 @@ describe("GET /grades/review (e2e)", () => {
+   let reviewArmId: string;
+   let studentIds: string[];
+   let ca1Id: string;
++  let ca2Id: string;
+   let examId: string;
+ 
+   let hillcrestId: string;
+@@ -67,6 +68,7 @@ describe("GET /grades/review (e2e)", () => {
+ 
+     const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
+     ca1Id = components[0].id;
++    ca2Id = components[1].id;
+     examId = components[2].id;
+ 
+     const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
+@@ -121,6 +123,9 @@ describe("GET /grades/review (e2e)", () => {
+     // s0: CA1+Exam -> PENDING_APPROVAL, total 20+36=56.
+     await score(subjectId, ca1Id, [{ studentId: studentIds[0], rawScore: 20 }]);
+     await score(subjectId, examId, [{ studentId: studentIds[0], rawScore: 60 }]);
++    // CA2 = 0 (a real, decided score, not blank) — completeness gate
++    // (SPEC_V0.5.md §2.2); contributes nothing, so 56 is unaffected.
++    await score(subjectId, ca2Id, [{ studentId: studentIds[0], rawScore: 0 }]);
+     // s1: CA1 only -> DRAFT, total 10.
+     await score(subjectId, ca1Id, [{ studentId: studentIds[1], rawScore: 10 }]);
+     // s2, s3: untouched entirely.
+@@ -138,7 +143,7 @@ describe("GET /grades/review (e2e)", () => {
+     expect(subject.publishedCount).toBe(0);
+     expect(subject.averageScore).toBe(33);
+     expect(subject.averageGrade).toBe("F9");
+-    expect(subject.canPublish).toBe(true); // pendingApprovalCount > 0
++    expect(subject.canPublish).toBe(true); // pendingApprovalCount > 0 AND s0 is complete (CA2 = 0, decided)
+   });
+ 
+   it("canPublish: false is verified against the REAL publish() 409, not just asserted in isolation", async () => {
+@@ -160,10 +165,53 @@ describe("GET /grades/review (e2e)", () => {
+     expect(publishRes.status).toBe(409);
+   });
+ 
++  it("canPublish: false when a PENDING_APPROVAL candidate has a blank component, true once resolved — both verified against the REAL publish() outcome", async () => {
++    const subjectId = await createSubject("E2E Review CanPublishBlank");
++    // CA1 + Exam scored -> PENDING_APPROVAL, but CA2 is genuinely blank
++    // (never entered, never marked absent) — exactly the gap SPEC_V0.5.md
++    // §2.2 closes: a subject can reach PENDING_APPROVAL without every
++    // component being decided.
++    await score(subjectId, ca1Id, [{ studentId: studentIds[0], rawScore: 20 }]);
++    await score(subjectId, examId, [{ studentId: studentIds[0], rawScore: 60 }]);
++
++    const blankReview = await request(app.getHttpServer())
++      .get("/api/v1/grades/review")
++      .query({ classArmId: reviewArmId, termId: sunriseTermId })
++      .set(auth(sunriseAdminToken));
++    const blankSubject = blankReview.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
++    expect(blankSubject.canPublish).toBe(false);
++
++    const blockedPublish = await request(app.getHttpServer())
++      .post("/api/v1/grades/publish")
++      .set(auth(sunriseAdminToken))
++      .send({ classArmId: reviewArmId, subjectId, termId: sunriseTermId });
++    expect(blockedPublish.status).toBe(409);
++    expect(blockedPublish.body.incompleteEntries).toEqual([{ studentId: studentIds[0], componentId: ca2Id }]);
++
++    // Resolve the blank with a real score — canPublish flips, and the
++    // SAME publish() call that just 409'd now genuinely succeeds.
++    await score(subjectId, ca2Id, [{ studentId: studentIds[0], rawScore: 5 }]);
++
++    const resolvedReview = await request(app.getHttpServer())
++      .get("/api/v1/grades/review")
++      .query({ classArmId: reviewArmId, termId: sunriseTermId })
++      .set(auth(sunriseAdminToken));
++    const resolvedSubject = resolvedReview.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
++    expect(resolvedSubject.canPublish).toBe(true);
++
++    const allowedPublish = await request(app.getHttpServer())
++      .post("/api/v1/grades/publish")
++      .set(auth(sunriseAdminToken))
++      .send({ classArmId: reviewArmId, subjectId, termId: sunriseTermId });
++    expect(allowedPublish.status).toBe(200);
++    expect(allowedPublish.body.publishedCount).toBe(1);
++  });
++
+   it("status= filter: 'at least one student in this status'", async () => {
+     const subjectId = await createSubject("E2E Review StatusFilter");
+     await score(subjectId, ca1Id, [{ studentId: studentIds[0], rawScore: 20 }]);
+     await score(subjectId, examId, [{ studentId: studentIds[0], rawScore: 60 }]);
++    await score(subjectId, ca2Id, [{ studentId: studentIds[0], rawScore: 0 }]); // completeness gate
+     const publishRes = await request(app.getHttpServer())
+       .post("/api/v1/grades/publish")
+       .set(auth(sunriseAdminToken))
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index ee18256..461f832 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -2530,3 +2530,89 @@ v0.4 e2e suite (244 tests, 24 suites) still green on the freshly seeded DB
+ suite (7 tests) green. `pnpm run ci` green end-to-end (typecheck, lint,
+ 244 e2e, 126 web Vitest, 7 unit) at both the api and root level. No API or
+ UI changes — schema/computation/seed only, per this step's explicit scope.
++
++## 2026-08-15 — v0.5 step 2: absent API + completeness gate + gap-1 fix
++
++**Absent entry**: `GridScoreItemDto` gained `isAbsent?: boolean` plus a
++custom class-validator constraint (`RawScoreConsistentWithAbsenceConstraint`,
++first custom validator in this codebase) enforcing the same mutual
++exclusion as `student_scores`' DB CHECK — belt (DTO, 400) and suspenders
++(DB CHECK, last resort) both live, proven independently by two different
++e2e tests. `saveGrid`'s upsert now sets `isAbsent` EXPLICITLY on every
++write (create and update), never a partial update — the same discipline
++`rawScore` already had. This matters concretely: a student marked absent
++last save who gets a real score entered this save must have `isAbsent`
++flipped back to `false` in the SAME write, or the stale flag survives
++alongside the new `rawScore` and violates the CHECK on that exact row.
++Proven both directions (score-after-absent, absent-after-score) — both are
++paths to the same CHECK-violating state. `GET /grades/grid` and `saveGrid`'s
++response both surface `isAbsent` per row now (round-trip, not just write).
++
++**Completeness gate (SPEC_V0.5.md §2.2)**: enforced inside `publish()`
++only — the only finalization surface that exists. Reading of the spec's
++"every student in the roster" wording: scoped to **publish CANDIDATES
++only** (rows currently `PENDING_APPROVAL`, about to transition this call),
++not the whole class-arm roster and not already-`PUBLISHED` rows. A literal
++whole-roster reading would have required 100% of a class to be scored
++before ANY student could publish, directly regressing v0.4's tested,
++documented staggered/repeatable publish (stragglers finishing later, re-
++publish calls that only pick up new PENDING_APPROVAL rows). The per-
++candidate reading satisfies "no student is ever silently published with a
++blank component" without that regression. "Blank" = no `student_scores`
++row for (student, active component), or a row with `rawScore IS NULL AND
++isAbsent = false` — both are indistinguishable today (both silently
++contribute 0), which is exactly the bug being closed. Absent is NOT
++blank — a decided outcome, so an all-absent-on-one-component cohort still
++publishes (proven). Rejection is atomic: one incomplete candidate blocks
++the WHOLE `publish()` call, including classmates who were individually
++complete (proven — a complete classmate's row is asserted still
++`PENDING_APPROVAL`, not partially transitioned). Rejection shape is
++`incompleteEntries: {studentId, componentId}[]` — named `incompleteEntries`
++deliberately, not reusing v0.4's `lockedStudentIds` (a different meaning:
++locked = already published, blocking further writes; incomplete = not yet
++publishable). Checked with one batched `student_scores` query over every
++candidate at once (no per-student query), shared via a new private
++`findIncompleteEntries` helper.
++
++**`getReview()`'s `canPublish` kept honest**: its own doc comment already
++promised it "mirrors publish()'s own nothing-to-do 409 condition exactly."
++Once `publish()` gained the completeness gate, that promise would have
++gone stale — `canPublish: true` while the real endpoint 409s is worse than
++no flag at all, since step 5's web UI trusts it to gate the Publish button.
++`canPublish` now reuses the exact same `findIncompleteEntries` helper (one
++definition of "complete," shared, not two that can drift), batched across
++EVERY subject in the class-arm/term at once (no per-subject query) —
++proven both directions against the REAL `publish()` outcome, not asserted
++in isolation.
++
++**Gap-1 fix (Q7)**: `AssessmentComponentsService.replaceAll`'s existing
++`validate()` now also requires at least one `requiresApproval` component.
++Confirmed by grep that `replaceAll` is the SOLE mutation path for
++`assessment_components` (every create/update/soft-delete/hard-delete in
++this codebase happens inside that one transaction) — no other endpoint or
++service touches the table, so this one check covers every school, every
++edit, with nothing left to find later. Forward-only: no backfill/migration
++for an already-broken structure, since neither seeded school is affected
++(both already have Exam `requiresApproval: true`) and there's no real
++production data yet to protect.
++
++**Existing-test ripple from the completeness gate — the sizable, non-
++obvious part of this step**: the gate is genuinely behavior-changing for
++any fixture that publishes a student scored on only 2 of the school's 3
++active components (a very common shorthand across the existing suite: CA1
+++ Exam, CA2 always left blank). ~10 previously-passing `publish()` calls
++across `grades-publish.e2e-spec.ts`, `grades-review.e2e-spec.ts`, and
++`class-arm-results.e2e-spec.ts` needed a CA2 score added before their
++publish call to keep passing — chose `rawScore: 0` throughout (a real,
++decided score, weight 20/max 20 → contributes exactly 0), which satisfies
++the gate while leaving every one of those tests' hand-verified totals
++completely unperturbed. One test (`assessment-components.e2e-spec.ts`'s
++"accepts a valid 100-total set") had zero `requiresApproval` components in
++its fixture and would have failed the NEW gap-1 check on an unrelated
++assertion — added `requiresApproval: true` to its Exam-equivalent item.
++
++**Proof**: full v0.4+v0.5-step-1 e2e suite plus this step's new/updated
++tests all green on a freshly rebuilt, freshly seeded stack; typecheck +
++lint clean; web Vitest and the new unit suite unaffected (no schema, no
++web changes this step — API only, per the explicit scope). No migration —
++`is_absent` and the CHECK already existed from step 1.

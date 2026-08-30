@@ -1,0 +1,825 @@
+diff --git a/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx b/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx
+index c84d50f..897f664 100644
+--- a/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx
+@@ -1,11 +1,14 @@
+ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+-import { screen, cleanup, within, waitFor } from "@testing-library/react";
++import { screen, cleanup, render, waitFor } from "@testing-library/react";
+ import userEvent from "@testing-library/user-event";
+-import type { AssessmentComponent, ClassArmDetail, ClassLevelOverview, MyTeaching, Paginated, Term, AcademicSession } from "@scholametric/shared";
+-import { renderWithProviders } from "../../test/render-with-providers";
++import { MemoryRouter } from "react-router-dom";
++import { QueryClientProvider } from "@tanstack/react-query";
++import type { AssessmentComponent, ClassArmDetail, MyTeaching, Paginated, Term, AcademicSession } from "@scholametric/shared";
++import { renderWithProviders, createTestQueryClient } from "../../test/render-with-providers";
+ import { authStore } from "../../lib/auth-store";
+-import { apiRequest } from "../../lib/api-client";
++import { apiRequest, ApiError } from "../../lib/api-client";
+ import { ScoreEntryGridPage } from "./ScoreEntryGridPage";
++import { AppRoutes } from "../../App";
+ 
+ vi.mock("../../lib/api-client", async (importOriginal) => {
+   const actual = await importOriginal<typeof import("../../lib/api-client")>();
+@@ -25,66 +28,6 @@ const TEACHER_USER = {
+   school: { id: "s1", name: "Sunrise College", slug: "sunrise", type: "SECONDARY", status: "ACTIVE", address: null, phone: null, email: null },
+ };
+ 
+-const TEACHING: MyTeaching = {
+-  classTeacherOf: [],
+-  subjects: [
+-    { id: "sa1", subjectId: "sub1", subjectName: "Mathematics", classArmId: "arm1", className: "JSS 1 A" },
+-    { id: "sa2", subjectId: "sub2", subjectName: "English Language", classArmId: "arm2", className: "JSS 2 A" },
+-  ],
+-  currentSessionId: "sess1",
+-  currentTermId: "term1",
+-  currentTermName: "FIRST",
+-};
+-
+-const COMPONENTS: AssessmentComponent[] = [
+-  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
+-];
+-
+-beforeEach(() => {
+-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+-});
+-
+-afterEach(() => {
+-  cleanup();
+-  vi.restoreAllMocks();
+-  authStore.clear();
+-});
+-
+-describe("ScoreEntryGridPage — teacher scoping", () => {
+-  it("TEACHER's picker only offers their own assigned class+subject pairs, and never calls admin-only session/term endpoints", async () => {
+-    mockedApiRequest.mockImplementation(async (path) => {
+-      if (path === "/api/v1/auth/me") return TEACHER_USER;
+-      if (path === "/api/v1/me/teaching") return TEACHING;
+-      if (path === "/api/v1/assessment-components") return COMPONENTS;
+-      if (path === "/api/v1/sessions" || path === "/api/v1/terms") {
+-        throw new Error(`${path} should never be called for a TEACHER`);
+-      }
+-      // useClasses()/useAllSubjects() are legitimately teacher-readable but
+-      // unused in the rendered UI for this role — resolve harmlessly.
+-      if (path === "/api/v1/classes") return [];
+-      if (path === "/api/v1/subjects") return { items: [], total: 0, page: 1, pageSize: 100 };
+-      throw new Error(`unexpected call: ${path}`);
+-    });
+-
+-    renderWithProviders(<ScoreEntryGridPage />);
+-
+-    const select = await screen.findByLabelText("Class & subject");
+-    const options = within(select).getAllByRole("option").filter((o) => (o as HTMLOptionElement).value !== "");
+-    expect(options).toHaveLength(2);
+-    expect(options.map((o) => o.textContent)).toEqual([
+-      "Mathematics — JSS 1 A",
+-      "English Language — JSS 2 A",
+-    ]);
+-
+-    // The term picker shows the fixed current term as text, not a dropdown.
+-    expect(screen.getByText("First term")).toBeInTheDocument();
+-    expect(screen.queryByLabelText("Term")).not.toBeInTheDocument();
+-
+-    expect(mockedApiRequest).not.toHaveBeenCalledWith("/api/v1/sessions", expect.anything());
+-    expect(mockedApiRequest).not.toHaveBeenCalledWith("/api/v1/terms", expect.anything());
+-  });
+-});
+-
+ const ADMIN_USER = {
+   id: "u1",
+   email: "admin@sunrise.test",
+@@ -96,16 +39,19 @@ const ADMIN_USER = {
+   school: { id: "s1", name: "Sunrise College", slug: "sunrise", type: "SECONDARY", status: "ACTIVE", address: null, phone: null, email: null },
+ };
+ 
+-const CLASSES: ClassLevelOverview[] = [
+-  {
+-    id: "lvl1",
+-    name: "JSS 1",
+-    rank: 1,
+-    arms: [
+-      { id: "arm1", name: "A", enrollmentCount: 20, classTeacher: null },
+-      { id: "arm2", name: "B", enrollmentCount: 18, classTeacher: null },
+-    ],
+-  },
++const TEACHING: MyTeaching = {
++  classTeacherOf: [],
++  subjects: [{ id: "sa1", subjectId: "sub1", subjectName: "Mathematics", classArmId: "arm1", className: "JSS 1 A" }],
++  currentSessionId: "sess1",
++  currentTermId: "term1",
++  currentTermName: "FIRST",
++};
++
++const EMPTY_TEACHING: MyTeaching = { classTeacherOf: [], subjects: [], currentSessionId: null, currentTermId: null, currentTermName: null };
++
++const COMPONENTS: AssessmentComponent[] = [
++  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
++  { id: "c2", schoolId: "s1", name: "Exam", weight: 80, sortOrder: 2, requiresApproval: true, deletedAt: null, createdAt: "t", updatedAt: "t" },
+ ];
+ 
+ const SESSIONS: Paginated<AcademicSession> = {
+@@ -121,8 +67,11 @@ const TERMS: Paginated<Term> = {
+   pageSize: 20,
+ };
+ 
+-// arm1 has one subject with a teacher assigned; arm2 (SPEC_V0.5.1.md
+-// §2.1/§2.2) has none — no subject_teacher_assignment exists there yet.
++// Mathematics is assigned for arm1 this session; the "params-rejected" tests
++// below target a DIFFERENT subject (sub2) that never appears here — arm-level
++// access is fine (armDetail succeeds), but that specific subject has no
++// assignment, which is exactly the case assertTeacherAssignment (v0.5.1 step
++// 1) rejects on GET /grades/grid.
+ const ARM1_DETAIL: ClassArmDetail = {
+   id: "arm1",
+   name: "A",
+@@ -133,89 +82,219 @@ const ARM1_DETAIL: ClassArmDetail = {
+   ],
+   students: { items: [], total: 0, page: 1, pageSize: 1 },
+ };
+-const ARM2_DETAIL: ClassArmDetail = {
+-  id: "arm2",
+-  name: "B",
+-  classLevel: { id: "lvl1", name: "JSS 1", rank: 1 },
+-  classTeacher: null,
+-  subjectTeachers: [],
+-  students: { items: [], total: 0, page: 1, pageSize: 1 },
+-};
+ 
+-function mockAdminCommon() {
++beforeEach(() => {
++  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++});
++
++afterEach(() => {
++  cleanup();
++  vi.restoreAllMocks();
++  authStore.clear();
++});
++
++// SPEC_V0.5.1.md §2.3, v0.5.1 step 3 — Flag 1: a bare hit on /grades/grid (no
++// classArmId/subjectId) has no legitimate starting point, so it redirects
++// rather than rendering a free-roam picker. Exercises the REAL route tree
++// (App.tsx's <AppRoutes>), same approach as ChangePasswordFlow.test.tsx,
++// because the redirect target depends on real sibling routes.
++describe("ScoreEntryGridPage — bare-route redirect (no free-roam entry point)", () => {
++  function renderApp(route: string) {
++    const queryClient = createTestQueryClient();
++    return render(
++      <QueryClientProvider client={queryClient}>
++        <MemoryRouter initialEntries={[route]}>
++          <AppRoutes />
++        </MemoryRouter>
++      </QueryClientProvider>,
++    );
++  }
++
++  it("TEACHER: redirects to /dashboard (MyClassesView — their real Enter-grades source), never a roaming picker", async () => {
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path === "/api/v1/auth/me") return TEACHER_USER;
++      if (path === "/api/v1/me/teaching") return TEACHING;
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
++
++    renderApp("/grades/grid");
++
++    expect(await screen.findByText("Classes I teach")).toBeInTheDocument();
++    expect(screen.queryByRole("heading", { name: "Enter grades" })).not.toBeInTheDocument();
++    expect(screen.queryByLabelText("Class")).not.toBeInTheDocument();
++  });
++
++  it("SCHOOL_ADMIN/PROPRIETOR: redirects to /classes (class-arm-detail is where their Enter-grades action lives)", async () => {
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path === "/api/v1/auth/me") return ADMIN_USER;
++      if (path === "/api/v1/classes") return [];
++      if (path === "/api/v1/subjects") return { items: [], total: 0, page: 1, pageSize: 100 };
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
++
++    renderApp("/grades/grid");
++
++    expect(await screen.findByRole("tab", { name: "Classes" })).toBeInTheDocument();
++    expect(screen.queryByRole("heading", { name: "Enter grades" })).not.toBeInTheDocument();
++    expect(screen.queryByLabelText("Class")).not.toBeInTheDocument();
++  });
++});
++
++function mockGridPage(role: "SCHOOL_ADMIN" | "TEACHER") {
+   mockedApiRequest.mockImplementation(async (path: string) => {
+-    if (path === "/api/v1/auth/me") return ADMIN_USER;
+-    if (path === "/api/v1/classes") return CLASSES;
++    if (path === "/api/v1/auth/me") return role === "SCHOOL_ADMIN" ? ADMIN_USER : TEACHER_USER;
++    if (path === "/api/v1/me/teaching") return TEACHING;
++    if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL;
+     if (path === "/api/v1/assessment-components") return COMPONENTS;
+     if (path === "/api/v1/sessions") return SESSIONS;
+     if (path === "/api/v1/terms") return TERMS;
+-    if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL;
+-    if (path === "/api/v1/class-arms/arm2") return ARM2_DETAIL;
+-    throw new Error(`unexpected call: ${path}`);
++    throw new Error(`unexpected apiRequest call: ${path}`);
+   });
+ }
+ 
+-// SPEC_V0.5.1.md §2.1/§2.2 — the free unfiltered subject dropdown
+-// (GET /subjects) is the exact bug this step closes: an admin could pick
+-// any subject in the school for any class, whether or not a teacher was
+-// assigned there. These tests prove the replacement (class-arm-scoped
+-// subjectTeachers) is what actually renders, and that GET /subjects is
+-// never called for this picker at all.
+-// The class select itself starts disabled (useClasses() hasn't resolved on
+-// first render) — waiting for it to become enabled before selecting avoids
+-// a race against the mocked query settling.
+-async function selectClassArm(user: ReturnType<typeof userEvent.setup>, value: string) {
+-  const classSelect = (await screen.findByLabelText("Class")) as HTMLSelectElement;
+-  await waitFor(() => expect(classSelect).not.toBeDisabled());
+-  await user.selectOptions(classSelect, value);
+-}
++describe("ScoreEntryGridPage — class+subject locked as read-only labels (SPEC_V0.5.1.md §2.3)", () => {
++  it("SCHOOL_ADMIN: renders 'JSS 1 A · Mathematics' as plain text, with no Class or Subject picker anywhere — Component and Term stay real, interactive selects", async () => {
++    mockGridPage("SCHOOL_ADMIN");
++    renderWithProviders(<ScoreEntryGridPage />, { route: "/grades/grid?classArmId=arm1&subjectId=sub1" });
+ 
+-describe("ScoreEntryGridPage — admin subject picker scoped by teacher assignment", () => {
+-  it("subject dropdown is empty/disabled until a class is picked, then offers only that class's teacher-assigned subjects", async () => {
+-    mockAdminCommon();
+-    const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGridPage />);
++    expect(await screen.findByText("JSS 1 A · Mathematics")).toBeInTheDocument();
++
++    // No roaming class/subject picker anywhere — neither a labelled select
++    // nor any select at all beyond Component/Term.
++    expect(screen.queryByLabelText("Class")).not.toBeInTheDocument();
++    expect(screen.queryByLabelText("Subject")).not.toBeInTheDocument();
++    expect(screen.queryByLabelText("Class & subject")).not.toBeInTheDocument();
++    expect(screen.getAllByRole("combobox")).toHaveLength(2); // Component + Term only
++
++    const componentSelect = screen.getByLabelText("Component") as HTMLSelectElement;
++    expect(componentSelect.tagName).toBe("SELECT");
++    expect(componentSelect).not.toBeDisabled();
++
++    const termSelect = screen.getByLabelText("Term") as HTMLSelectElement;
++    expect(termSelect.tagName).toBe("SELECT");
++    await waitFor(() => expect(termSelect).not.toBeDisabled());
++  });
++
++  it("TEACHER: renders the same locked label; Term is fixed text (unchanged), Component is still a real select", async () => {
++    mockGridPage("TEACHER");
++    renderWithProviders(<ScoreEntryGridPage />, { route: "/grades/grid?classArmId=arm1&subjectId=sub1" });
+ 
+-    const subjectSelect = (await screen.findByLabelText("Subject")) as HTMLSelectElement;
+-    expect(subjectSelect).toBeDisabled();
++    expect(await screen.findByText("JSS 1 A · Mathematics")).toBeInTheDocument();
++    expect(screen.queryByLabelText("Class")).not.toBeInTheDocument();
++    expect(screen.queryByLabelText("Subject")).not.toBeInTheDocument();
++    expect(screen.queryByLabelText("Class & subject")).not.toBeInTheDocument();
++    expect(screen.queryByLabelText("Term")).not.toBeInTheDocument();
++    expect(screen.getByText("First term")).toBeInTheDocument();
+ 
+-    await selectClassArm(user, "arm1");
++    expect(screen.getByLabelText("Component")).toBeInTheDocument();
++  });
+ 
+-    await waitFor(() => expect(subjectSelect).not.toBeDisabled());
+-    const options = within(subjectSelect).getAllByRole("option").filter((o) => (o as HTMLOptionElement).value !== "");
+-    expect(options.map((o) => o.textContent)).toEqual(["Mathematics"]);
++  it("picking a component (term already resolved to current) loads the grid for the locked class+subject", async () => {
++    mockGridPage("SCHOOL_ADMIN");
++    mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, unknown> }) => {
++      if (path === "/api/v1/auth/me") return ADMIN_USER;
++      if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL;
++      if (path === "/api/v1/assessment-components") return COMPONENTS;
++      if (path === "/api/v1/sessions") return SESSIONS;
++      if (path === "/api/v1/terms") return TERMS;
++      if (path === "/api/v1/grades/grid") {
++        expect(opts?.query).toMatchObject({ classArmId: "arm1", subjectId: "sub1" });
++        return { classArmId: "arm1", subjectId: "sub1", componentId: "c1", termId: "term1", maxScore: 20, requiresApproval: false, termClosed: false, locked: false, unlockReason: null, rows: [] };
++      }
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
+ 
+-    expect(mockedApiRequest).not.toHaveBeenCalledWith("/api/v1/subjects", expect.anything());
++    const user = userEvent.setup();
++    renderWithProviders(<ScoreEntryGridPage />, { route: "/grades/grid?classArmId=arm1&subjectId=sub1" });
++
++    await screen.findByText("JSS 1 A · Mathematics");
++    await user.selectOptions(screen.getByLabelText("Component"), "c1");
++
++    expect(await screen.findByText("No students enrolled in this class.")).toBeInTheDocument();
+   });
++});
++
++describe("ScoreEntryGridPage — params-rejected: the backend gate (assertTeacherAssignment), not the frontend, is the real boundary", () => {
++  it("SCHOOL_ADMIN: an unassigned subject 404s cleanly through the grid, not a broken/blank state", async () => {
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path === "/api/v1/auth/me") return ADMIN_USER;
++      if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL; // arm-level access is fine
++      if (path === "/api/v1/assessment-components") return COMPONENTS;
++      if (path === "/api/v1/sessions") return SESSIONS;
++      if (path === "/api/v1/terms") return TERMS;
++      if (path === "/api/v1/grades/grid") {
++        throw new ApiError(404, {
++          statusCode: 404,
++          message: "No teacher is assigned to teach this subject for this class.",
++          error: "Not Found",
++          path: "/api/v1/grades/grid",
++          timestamp: new Date().toISOString(),
++        });
++      }
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
+ 
+-  it("a class with no teacher-assigned subjects shows a message instead of a pickable dropdown", async () => {
+-    mockAdminCommon();
+     const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGridPage />);
++    // sub2 is deliberately absent from ARM1_DETAIL.subjectTeachers — the
++    // label falls back to "Subject" (arm-level access succeeded, but this
++    // specific subject was never assigned), same as a hand-edited URL would.
++    renderWithProviders(<ScoreEntryGridPage />, { route: "/grades/grid?classArmId=arm1&subjectId=sub2" });
+ 
+-    await selectClassArm(user, "arm2");
++    await screen.findByText("JSS 1 A · Subject");
++    await user.selectOptions(screen.getByLabelText("Component"), "c1");
+ 
+-    expect(await screen.findByText("No subjects have a teacher assigned for this class yet.")).toBeInTheDocument();
+-    expect(screen.queryByLabelText("Subject")).not.toBeInTheDocument();
++    expect(await screen.findByText("No teacher is assigned to teach this subject for this class.")).toBeInTheDocument();
++    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+   });
+ 
+-  it("switching classes clears a previously-picked subject that may not apply to the new class", async () => {
+-    mockAdminCommon();
++  it("TEACHER: a subject they don't personally teach 403s cleanly through the grid", async () => {
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path === "/api/v1/auth/me") return TEACHER_USER;
++      if (path === "/api/v1/me/teaching") return TEACHING;
++      if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL;
++      if (path === "/api/v1/assessment-components") return COMPONENTS;
++      if (path === "/api/v1/grades/grid") {
++        throw new ApiError(403, {
++          statusCode: 403,
++          message: "You are not assigned to teach this subject for this class.",
++          error: "Forbidden",
++          path: "/api/v1/grades/grid",
++          timestamp: new Date().toISOString(),
++        });
++      }
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
++
+     const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGridPage />);
++    renderWithProviders(<ScoreEntryGridPage />, { route: "/grades/grid?classArmId=arm1&subjectId=sub2" });
+ 
+-    await selectClassArm(user, "arm1");
+-    const subjectSelect = (await screen.findByLabelText("Subject")) as HTMLSelectElement;
+-    await waitFor(() => expect(subjectSelect).not.toBeDisabled());
+-    await user.selectOptions(subjectSelect, "sub1");
+-    expect(subjectSelect.value).toBe("sub1");
++    await screen.findByText("JSS 1 A · Subject");
++    await user.selectOptions(screen.getByLabelText("Component"), "c1");
++
++    expect(await screen.findByText("You are not assigned to teach this subject for this class.")).toBeInTheDocument();
++  });
++});
++
++describe("ScoreEntryGridPage — armDetail itself rejecting (e.g. a stale link to a class no longer taught)", () => {
++  it("TEACHER: 403 from GET /class-arms/:id replaces the whole picker+grid area with a clean error, not a crash", async () => {
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path === "/api/v1/auth/me") return TEACHER_USER;
++      if (path === "/api/v1/me/teaching") return EMPTY_TEACHING;
++      if (path === "/api/v1/class-arms/arm1") {
++        throw new ApiError(403, {
++          statusCode: 403,
++          message: "You are not assigned to this class.",
++          error: "Forbidden",
++          path: "/api/v1/class-arms/arm1",
++          timestamp: new Date().toISOString(),
++        });
++      }
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
+ 
+-    await selectClassArm(user, "arm2");
+-    expect(await screen.findByText("No subjects have a teacher assigned for this class yet.")).toBeInTheDocument();
++    renderWithProviders(<ScoreEntryGridPage />, { route: "/grades/grid?classArmId=arm1&subjectId=sub1" });
+ 
+-    await user.selectOptions(await screen.findByLabelText("Class"), "arm1");
+-    const subjectSelectAgain = (await screen.findByLabelText("Subject")) as HTMLSelectElement;
+-    await waitFor(() => expect(subjectSelectAgain).not.toBeDisabled());
+-    expect(subjectSelectAgain.value).toBe("");
++    expect(await screen.findByText("You are not assigned to this class.")).toBeInTheDocument();
++    expect(screen.queryByLabelText("Component")).not.toBeInTheDocument();
+   });
+ });
+diff --git a/apps/web/src/features/grades/ScoreEntryGridPage.tsx b/apps/web/src/features/grades/ScoreEntryGridPage.tsx
+index 14f2c27..06c6f9f 100644
+--- a/apps/web/src/features/grades/ScoreEntryGridPage.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGridPage.tsx
+@@ -1,11 +1,12 @@
+-import { useEffect, useMemo, useRef, useState } from "react";
+-import { useSearchParams } from "react-router-dom";
++import { useEffect, useState } from "react";
++import { useNavigate, useSearchParams } from "react-router-dom";
+ import { PageHeader } from "../../components/PageHeader";
+ import { Label } from "../../components/ui/label";
+ import { Spinner } from "../../components/ui/spinner";
++import { Button } from "../../components/ui/button";
++import { getErrorMessage } from "../../lib/api-client";
+ import { useCurrentUser } from "../shell/use-current-user";
+ import { useMyTeaching } from "../dashboard/use-my-teaching";
+-import { useClasses } from "../classes/use-classes";
+ import { useClassArmDetail } from "../classes/use-class-arm-detail";
+ import { useAssessmentComponents } from "../settings/use-assessment-components";
+ import { useAdminCurrentTerm } from "./use-admin-current-term";
+@@ -17,212 +18,149 @@ function formatTermName(name: string): string {
+   return name.charAt(0) + name.slice(1).toLowerCase() + " term";
+ }
+ 
+-// The bulk score-entry grid's picker row + page shell (SPEC_V0.4.md §4
+-// item 1). TEACHER only ever sees their own assigned class+subject pairs
+-// (from GET /me/teaching) and a fixed current term — never a selection
+-// that would 403. SCHOOL_ADMIN/PROPRIETOR get full class/subject/term
+-// dropdowns.
++// SPEC_V0.5.1.md §2.3, v0.5.1 step 3: class + subject are locked to
++// whichever "Enter grades" link the caller arrived through
++// (ClassArmDetailPage for admin/proprietor, MyClassesView for teacher) —
++// rendered as a read-only context label, never pickers. Only component and
++// term roam within that locked class+subject (they vary per grading job;
++// class+subject roaming was the actual disorganization this finding fixes).
++// The lock is UX, not the security boundary — GradesService's
++// assertTeacherAssignment (v0.5.1 step 1) still rejects an unassigned/
++// unauthorized class+subject regardless of how this page got there; a
++// hand-edited URL just surfaces that rejection as a clean error below,
++// same as any other failed load in this app.
+ export function ScoreEntryGridPage() {
+   const { data: currentUser } = useCurrentUser();
++  const navigate = useNavigate();
+   const [searchParams] = useSearchParams();
+   const isTeacher = currentUser?.role === "TEACHER";
+-  // Fail CLOSED, not open: before /auth/me resolves, currentUser is
+-  // undefined and role is unknown — default to "not admin" so the
+-  // admin-only sessions/terms queries stay disabled during that window,
+-  // rather than defaulting to "admin" and firing a doomed request for
+-  // whatever the caller turns out to be (isTeacher alone would do this,
+-  // since `!isTeacher` is true while role is still unknown).
+   const isConfirmedAdmin = currentUser?.role === "SCHOOL_ADMIN" || currentUser?.role === "PROPRIETOR";
+ 
+-  const [classArmId, setClassArmId] = useState(searchParams.get("classArmId") ?? "");
+-  const [subjectId, setSubjectId] = useState(searchParams.get("subjectId") ?? "");
++  const classArmId = searchParams.get("classArmId") ?? "";
++  const subjectId = searchParams.get("subjectId") ?? "";
+   const [componentId, setComponentId] = useState("");
+-
+-  const myTeaching = useMyTeaching();
+-  const classes = useClasses();
+-  // SPEC_V0.5.1.md §2.1/§2.2: a subject is only pickable for a class once a
+-  // teacher is assigned to teach it there — reuse the same class-arm-detail
+-  // data that already backs the correctly-scoped "Enter grades" links on
+-  // the Classes tab (its subjectTeachers is sourced from
+-  // subject_teacher_assignment), instead of the unfiltered full subject
+-  // list. Only fetched once a class is picked; page/pageSize are irrelevant
+-  // here, we only read subjectTeachers.
+-  const armDetail = useClassArmDetail(isConfirmedAdmin && classArmId ? classArmId : undefined, 1, 1);
+-  const components = useAssessmentComponents();
+-  const adminTerm = useAdminCurrentTerm(isConfirmedAdmin);
+   const [termId, setTermId] = useState("");
+ 
+-  const subjectOptions = useMemo(() => armDetail.data?.subjectTeachers ?? [], [armDetail.data]);
+-
+-  // Picking a different class can invalidate the previously-picked subject
+-  // (it may have no teacher assigned in the new class) — clear it so the
+-  // admin re-picks from the new class's actual options, rather than
+-  // leaving a stale cross-product combo selected. Only fires on a real
+-  // class change after mount, not on the initial load of a URL-seeded
+-  // classArmId+subjectId pair (a stale bookmarked pair is instead caught
+-  // by getGrid's own 404, surfaced as a readable error by ScoreEntryGrid).
+-  const previousClassArmId = useRef(classArmId);
++  const hasLockedParams = Boolean(classArmId && subjectId);
++
++  // No legitimate flow ever lands here without both params (every real
++  // "Enter grades" link carries them) — a bare hit is a stale bookmark or
++  // typed URL, not a free-roam entry point. Redirect (replace, so Back
++  // doesn't bounce to the dead route) to wherever this caller's own real
++  // "Enter grades" links actually live: MyClassesView (teacher) or the
++  // Classes list (admin/proprietor, whose class-arm-detail page is where
++  // the Enter-grades action lives — teacher's own class-arm-detail view has
++  // no such action, see ClassArmDetailPage.tsx's canManage gate, so sending
++  // a teacher there instead would be its own dead end).
+   useEffect(() => {
+-    if (previousClassArmId.current !== classArmId) {
+-      setSubjectId("");
+-      previousClassArmId.current = classArmId;
++    if (!hasLockedParams && currentUser) {
++      navigate(currentUser.role === "TEACHER" ? "/dashboard" : "/classes", { replace: true });
+     }
+-  }, [classArmId]);
++  }, [hasLockedParams, currentUser, navigate]);
+ 
+-  const effectiveTermId = isTeacher ? (myTeaching.data?.currentTermId ?? "") : termId || adminTerm.currentTermId || "";
++  const armDetail = useClassArmDetail(hasLockedParams ? classArmId : undefined, 1, 1);
++  const myTeaching = useMyTeaching();
++  const components = useAssessmentComponents();
++  const adminTerm = useAdminCurrentTerm(isConfirmedAdmin);
+ 
+-  const teacherPairs = myTeaching.data?.subjects ?? [];
+-  const teacherPairKey = (pair: { classArmId: string; subjectId: string }) => `${pair.classArmId}::${pair.subjectId}`;
+-  const selectedTeacherPairKey = classArmId && subjectId ? `${classArmId}::${subjectId}` : "";
++  const effectiveTermId = isTeacher ? (myTeaching.data?.currentTermId ?? "") : termId || adminTerm.currentTermId || "";
++  const ready = Boolean(componentId && effectiveTermId && armDetail.data);
+ 
+-  const classArmOptions = useMemo(
+-    () => (classes.data ?? []).flatMap((level) => level.arms.map((arm) => ({ id: arm.id, label: `${level.name} ${arm.name}` }))),
+-    [classes.data],
+-  );
++  if (!hasLockedParams) {
++    return (
++      <div className="flex items-center gap-2 text-sm text-muted">
++        <Spinner /> Redirecting…
++      </div>
++    );
++  }
+ 
+-  const ready = classArmId && subjectId && componentId && effectiveTermId;
++  const armLabel = armDetail.data ? `${armDetail.data.classLevel.name} ${armDetail.data.name}` : "";
++  const subjectLabel = armDetail.data?.subjectTeachers.find((entry) => entry.subjectId === subjectId)?.subjectName ?? "Subject";
+ 
+   return (
+     <div>
+-      <PageHeader title="Enter grades" description="Pick a class, subject, and component to load the entry grid." />
++      <PageHeader title="Enter grades" description="Pick a component and term to load the entry grid." />
+ 
+-      <div className="mb-6 flex flex-col gap-4 rounded-lg border border-muted/20 bg-card p-4 sm:flex-row sm:flex-wrap sm:items-end">
+-        {isTeacher ? (
+-          <div className="flex flex-col gap-1.5">
+-            <Label htmlFor="grid-class-subject">Class &amp; subject</Label>
+-            {myTeaching.isLoading ? (
+-              <div className="flex h-10 items-center text-sm text-muted">
+-                <Spinner className="mr-2" /> Loading…
+-              </div>
+-            ) : teacherPairs.length === 0 ? (
+-              <p className="text-sm text-muted">You have no subject assignments this term.</p>
+-            ) : (
+-              <select
+-                id="grid-class-subject"
+-                className={SELECT_CLASS}
+-                value={selectedTeacherPairKey}
+-                onChange={(event) => {
+-                  const pair = teacherPairs.find((p) => teacherPairKey(p) === event.target.value);
+-                  setClassArmId(pair?.classArmId ?? "");
+-                  setSubjectId(pair?.subjectId ?? "");
+-                }}
+-              >
+-                <option value="" disabled>
+-                  Select…
+-                </option>
+-                {teacherPairs.map((pair) => (
+-                  <option key={teacherPairKey(pair)} value={teacherPairKey(pair)}>
+-                    {pair.subjectName} — {pair.className}
+-                  </option>
+-                ))}
+-              </select>
+-            )}
+-          </div>
+-        ) : (
+-          <>
++      {armDetail.isLoading ? (
++        <div className="flex items-center gap-2 p-10 text-sm text-muted">
++          <Spinner /> Loading class…
++        </div>
++      ) : armDetail.isError ? (
++        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
++          <p className="text-sm text-danger">{getErrorMessage(armDetail.error, "Couldn't load this class.")}</p>
++          <Button type="button" variant="outline" size="sm" onClick={() => armDetail.refetch()}>
++            Try again
++          </Button>
++        </div>
++      ) : (
++        <>
++          <div className="mb-6 flex flex-col gap-4 rounded-lg border border-muted/20 bg-card p-4 sm:flex-row sm:flex-wrap sm:items-end">
+             <div className="flex flex-col gap-1.5">
+-              <Label htmlFor="grid-class">Class</Label>
++              <Label>Class &amp; subject</Label>
++              <p className="flex h-10 items-center text-sm font-medium text-text">
++                {armLabel} · {subjectLabel}
++              </p>
++            </div>
++
++            <div className="flex flex-col gap-1.5">
++              <Label htmlFor="grid-component">Component</Label>
+               <select
+-                id="grid-class"
++                id="grid-component"
+                 className={SELECT_CLASS}
+-                value={classArmId}
+-                onChange={(event) => setClassArmId(event.target.value)}
+-                disabled={classes.isLoading}
++                value={componentId}
++                onChange={(event) => setComponentId(event.target.value)}
++                disabled={components.isLoading}
+               >
+                 <option value="" disabled>
+                   Select…
+                 </option>
+-                {classArmOptions.map((option) => (
+-                  <option key={option.id} value={option.id}>
+-                    {option.label}
++                {(components.data ?? []).map((component) => (
++                  <option key={component.id} value={component.id}>
++                    {component.name}
+                   </option>
+                 ))}
+               </select>
+             </div>
+ 
+             <div className="flex flex-col gap-1.5">
+-              <Label htmlFor="grid-subject">Subject</Label>
+-              {classArmId && !armDetail.isLoading && subjectOptions.length === 0 ? (
+-                <p className="flex h-10 items-center text-sm text-muted sm:w-56">No subjects have a teacher assigned for this class yet.</p>
++              <Label htmlFor="grid-term">Term</Label>
++              {isTeacher ? (
++                <p className="flex h-10 items-center text-sm text-text">
++                  {myTeaching.data?.currentTermName ? formatTermName(myTeaching.data.currentTermName) : "—"}
++                </p>
+               ) : (
+                 <select
+-                  id="grid-subject"
++                  id="grid-term"
+                   className={SELECT_CLASS}
+-                  value={subjectId}
+-                  onChange={(event) => setSubjectId(event.target.value)}
+-                  disabled={!classArmId || armDetail.isLoading}
++                  value={effectiveTermId}
++                  onChange={(event) => setTermId(event.target.value)}
++                  disabled={adminTerm.isLoading}
+                 >
+                   <option value="" disabled>
+                     Select…
+                   </option>
+-                  {subjectOptions.map((entry) => (
+-                    <option key={entry.subjectId} value={entry.subjectId}>
+-                      {entry.subjectName}
++                  {adminTerm.terms.map((term) => (
++                    <option key={term.id} value={term.id}>
++                      {formatTermName(term.name)}
++                      {term.isCurrent ? " (current)" : ""}
+                     </option>
+                   ))}
+                 </select>
+               )}
+             </div>
+-          </>
+-        )}
+-
+-        <div className="flex flex-col gap-1.5">
+-          <Label htmlFor="grid-component">Component</Label>
+-          <select
+-            id="grid-component"
+-            className={SELECT_CLASS}
+-            value={componentId}
+-            onChange={(event) => setComponentId(event.target.value)}
+-            disabled={components.isLoading}
+-          >
+-            <option value="" disabled>
+-              Select…
+-            </option>
+-            {(components.data ?? []).map((component) => (
+-              <option key={component.id} value={component.id}>
+-                {component.name}
+-              </option>
+-            ))}
+-          </select>
+-        </div>
++          </div>
+ 
+-        <div className="flex flex-col gap-1.5">
+-          <Label htmlFor="grid-term">Term</Label>
+-          {isTeacher ? (
+-            <p className="flex h-10 items-center text-sm text-text">
+-              {myTeaching.data?.currentTermName ? formatTermName(myTeaching.data.currentTermName) : "—"}
+-            </p>
++          {ready ? (
++            <ScoreEntryGrid
++              params={{ classArmId, subjectId, componentId, termId: effectiveTermId }}
++              canManageTermLock={isConfirmedAdmin}
++            />
+           ) : (
+-            <select
+-              id="grid-term"
+-              className={SELECT_CLASS}
+-              value={effectiveTermId}
+-              onChange={(event) => setTermId(event.target.value)}
+-              disabled={adminTerm.isLoading}
+-            >
+-              <option value="" disabled>
+-                Select…
+-              </option>
+-              {adminTerm.terms.map((term) => (
+-                <option key={term.id} value={term.id}>
+-                  {formatTermName(term.name)}
+-                  {term.isCurrent ? " (current)" : ""}
+-                </option>
+-              ))}
+-            </select>
++            <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
++              Choose a component and term to load the grid.
++            </p>
+           )}
+-        </div>
+-      </div>
+-
+-      {ready ? (
+-        <ScoreEntryGrid
+-          params={{ classArmId, subjectId, componentId, termId: effectiveTermId }}
+-          canManageTermLock={isConfirmedAdmin}
+-        />
+-      ) : (
+-        <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
+-          Choose a class, subject, component, and term to load the grid.
+-        </p>
++        </>
+       )}
+     </div>
+   );
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index 2f99400..f452ba3 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -3249,3 +3249,77 @@ crash). Full `pnpm run ci` (typecheck + lint + 28 e2e suites/308 tests +
+ `docker compose down -v` → migrate → seed database (no new migration —
+ this step is queries/logic only); `docker compose up -d --build` boots
+ the full stack from scratch, `/health` reports `db: true, redis: true`.
++
++## 2026-08-22 — v0.5.1 step 3: Enter-grades locked to class+subject (SPEC_V0.5.1.md §2.3)
++
++**Rule**: class + subject are locked to whichever "Enter grades" link the
++caller arrived through — rendered as a read-only label ("JSS 1 A ·
++Mathematics"), never a picker. Component and term stay real, interactive
++selects (they vary per grading job; class/subject roaming was the actual
++disorganization finding 2.3 fixes). Pure frontend — no migration, no DTO
++change, no new e2e; `GetGradesGridQueryDto`/`SaveGradesGridDto` already
++required both as UUIDs, and `assertTeacherAssignment` (step 1) already
++gates every combination regardless of how the page got there.
++
++**Every real entry point already carried both params**: `ClassArmDetailPage`
++(admin/proprietor, `canManage`-gated) and — found during research, not
++previously called out in any spec — `MyClassesView`'s "Subjects I teach"
++table (the teacher's actual entry point, already link-based). There is no
++sidebar nav item pointing at `/grades/grid` bare for either role. This is
++what let the fix be a straight removal, not a redesign: `useClasses()`,
++the admin free Class+Subject dropdowns, and the teacher's own scoped-but-
++still-a-dropdown "Class & subject" select (fed by `useMyTeaching`, and
++itself a Step 1 addition once Step 1 correctly scoped its options) are all
++deleted outright — `MyClassesView` was already the correct, already-scoped
++teacher flow, so removing its parallel dropdown loses nothing.
++
++**Label resolution reuses `useClassArmDetail`**, now for BOTH roles (Step 1
++had it admin-gated, feeding dropdown options; step 3 uses the exact same
++fetch purely to read two display strings — `classLevel.name`+`name` and a
++`subjectTeachers` lookup by `subjectId`). Heavier than a two-string label
++strictly needs (it also pulls a page of students, unused here) — the same
++"revisit if the picker gets reworked" note from Step 1's DECISIONS.md entry
++anticipated this exact moment; not addressed now, since a dedicated
++lightweight endpoint wasn't asked for and the existing one is already
++proven correct and multi-tenant-safe.
++
++**Bare-route redirect is role-aware** (Flag 1): `/grades/grid` with no
++`classArmId`/`subjectId` `navigate()`s with `{ replace: true }` — to
++`/dashboard` for `TEACHER` (renders `MyClassesView`, their real Enter-
++grades source) and `/classes` for `SCHOOL_ADMIN`/`PROPRIETOR` (whose
++Enter-grades action lives on `ClassArmDetailPage`, one click away).
++Deliberately NOT the same target for both: a teacher's own
++`ClassArmDetailPage` view has no Enter-grades action at all (`canManage`-
++gated), so sending a teacher to `/classes` would just relocate the dead
++end one page later instead of fixing it. Waits for `currentUser` to
++resolve before firing, so the redirect target is never guessed wrong
++during the brief window before `/auth/me` returns.
++
++**The lock is UX, not the security boundary** (explicit refinement): a
++hand-edited URL to an unassigned/unauthorized class+subject still 404s
++(admin/proprietor) or 403s (teacher) via `assertTeacherAssignment`,
++exactly as before this step — `ScoreEntryGrid`'s existing generic error
++branch (`getErrorMessage` + Try again, unchanged code) already rendered
++this cleanly; step 3 adds no new handling for it, just proves it still
++works once the picker in front of it is gone. A separate, genuinely new
++failure mode this step introduces: `useClassArmDetail` itself can now
++reject (a stale link to a class the teacher lost access to, via step 2's
++403) — that gets the same clean full-area error treatment as every other
++page in this app that guards on a single resource fetch.
++
++**Proof**: `ScoreEntryGridPage.test.tsx` rewritten (8 tests, replacing the
++now-deleted dropdown-scoping tests from step 1): bare-route redirect for
++both roles (via the real `<AppRoutes>` tree, `ChangePasswordFlow.test.tsx`'s
++pattern, since the target depends on real sibling routes) confirms neither
++lands on a picker; locked label renders as plain text for both roles with
++zero `<select>`/labelled-Class-or-Subject elements anywhere (asserted via
++`getAllByRole("combobox")` having length exactly 2 — Component + Term);
++Component/Term remain real, interactive selects and successfully load the
++grid; the 404 (admin) and 403 (teacher) params-rejected shapes both render
++the clean existing error state; a stale-link 403 from `useClassArmDetail`
++itself replaces the whole area with its own clean error. Full `pnpm run ci`
++(typecheck + lint + 28 e2e suites/308 tests, unchanged — no backend touched
++— + 29 web Vitest files/164 tests + unit) green on a fresh
++`docker compose down -v` → migrate → seed database; `docker compose up -d
++--build` boots the full stack from scratch, `/health` reports `db: true,
++redis: true`.

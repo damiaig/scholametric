@@ -1,0 +1,1643 @@
+diff --git a/apps/api/src/class-arms/class-arms.service.ts b/apps/api/src/class-arms/class-arms.service.ts
+index 6e58865..e6da495 100644
+--- a/apps/api/src/class-arms/class-arms.service.ts
++++ b/apps/api/src/class-arms/class-arms.service.ts
+@@ -5,6 +5,7 @@ import { TenantContext } from "../common/tenant/tenant-context";
+ import { forSchool } from "../common/tenant/for-school";
+ import { paginate, Paginated } from "../common/pagination/paginate";
+ import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
++import { getAssignedSubjectMap, type AssignedSubjectEntry } from "../grades/subject-assignment.util";
+ import { CreateClassArmDto } from "./dto/create-class-arm.dto";
+ import { UpdateClassArmDto } from "./dto/update-class-arm.dto";
+ 
+@@ -116,7 +117,7 @@ export class ClassArmsService {
+ 
+     const session = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
+ 
+-    const [classTeacherAssignment, subjectTeacherAssignments, enrollments, enrollmentTotal] = await Promise.all([
++    const [classTeacherAssignment, assignedSubjects, enrollments, enrollmentTotal] = await Promise.all([
+       session
+         ? this.prisma.classTeacherAssignment.findFirst({
+             where: { classArmId: id, sessionId: session.id },
+@@ -124,12 +125,8 @@ export class ClassArmsService {
+           })
+         : null,
+       session
+-        ? this.prisma.subjectTeacherAssignment.findMany({
+-            where: { classArmId: id, sessionId: session.id },
+-            include: { subject: true, teacherUser: true },
+-            orderBy: { subject: { name: "asc" } },
+-          })
+-        : [],
++        ? getAssignedSubjectMap(this.prisma, { schoolId, classArmId: id, sessionId: session.id })
++        : new Map<string, AssignedSubjectEntry>(),
+       session
+         ? this.prisma.studentEnrollment.findMany({
+             where: { classArmId: id, sessionId: session.id },
+@@ -153,13 +150,13 @@ export class ClassArmsService {
+             lastName: classTeacherAssignment.teacherUser.lastName,
+           }
+         : null,
+-      subjectTeachers: subjectTeacherAssignments.map((assignment) => ({
+-        id: assignment.id,
+-        subjectId: assignment.subjectId,
+-        subjectName: assignment.subject.name,
+-        teacherUserId: assignment.teacherUserId,
+-        teacherFirstName: assignment.teacherUser.firstName,
+-        teacherLastName: assignment.teacherUser.lastName,
++      subjectTeachers: [...assignedSubjects.values()].map((entry) => ({
++        id: entry.assignmentId,
++        subjectId: entry.subjectId,
++        subjectName: entry.subjectName,
++        teacherUserId: entry.teacherUserId,
++        teacherFirstName: entry.teacherFirstName,
++        teacherLastName: entry.teacherLastName,
+       })),
+       students: paginate(
+         enrollments.map((enrollment) => ({
+diff --git a/apps/api/src/grades/grades.service.ts b/apps/api/src/grades/grades.service.ts
+index 2d840ff..836fea6 100644
+--- a/apps/api/src/grades/grades.service.ts
++++ b/apps/api/src/grades/grades.service.ts
+@@ -17,6 +17,7 @@ import {
+   type GradeBoundaryInput,
+ } from "../grades/grade-computation";
+ import { termLockKey, subjectLockKey as buildSubjectLockKey, classArmLockKey as buildClassArmLockKey } from "./lock-keys";
++import { getAssignedSubjectMap } from "./subject-assignment.util";
+ import { GetGradesGridQueryDto } from "./dto/get-grades-grid-query.dto";
+ import { SaveGradesGridDto } from "./dto/save-grades-grid.dto";
+ import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
+@@ -165,6 +166,11 @@ export interface ClassArmResultsSubjectRow {
+ export interface ClassArmResultsSubject {
+   subjectId: string;
+   subjectName: string;
++  // SPEC_V0.5.1.md §2.1/§4: true when no subject_teacher_assignment exists
++  // for (subjectId, classArmId, session) right now. This subject already
++  // has real results (Q1(b) — never hidden once graded), it just needs a
++  // teacher assigned to be gradeable/complete going forward.
++  needsTeacherAssignment: boolean;
+   averageScore: number;
+   averageGrade: string | null;
+   results: ClassArmResultsSubjectRow[];
+@@ -192,6 +198,7 @@ export interface ClassArmResultsResponse {
+ export interface GradesReviewSubject {
+   subjectId: string;
+   subjectName: string;
++  needsTeacherAssignment: boolean;
+   rosterSize: number;
+   draftCount: number;
+   pendingApprovalCount: number;
+@@ -213,6 +220,7 @@ export interface GradesReviewResponse {
+ export interface StudentResultSubject {
+   subjectId: string;
+   subjectName: string;
++  needsTeacherAssignment: boolean;
+   totalScore: number;
+   autoGrade: string | null;
+   overrideGrade: string | null;
+@@ -265,6 +273,7 @@ export interface ReportCardComponent {
+ export interface ReportCardSubject {
+   subjectId: string;
+   subjectName: string;
++  needsTeacherAssignment: boolean;
+   components: ReportCardComponent[];
+   totalScore: number;
+   autoGrade: string | null;
+@@ -993,7 +1002,7 @@ export class GradesService {
+       visibleSubjectIds = access.isClassTeacher ? null : new Set(access.subjectIds);
+     }
+ 
+-    const [students, subjectResults, overallResults, boundaries] = await Promise.all([
++    const [students, subjectResults, overallResults, boundaries, assignedSubjects] = await Promise.all([
+       this.getRoster(schoolId, classArmId, term.sessionId),
+       this.prisma.termSubjectResult.findMany({
+         where: { schoolId, classArmId, termId: query.termId, sessionId: term.sessionId },
+@@ -1005,6 +1014,7 @@ export class GradesService {
+           })
+         : Promise.resolve(null),
+       this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
++      getAssignedSubjectMap(this.prisma, { schoolId, classArmId, sessionId: term.sessionId }),
+     ]);
+     const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
+     const studentOrder = new Map(students.map((s, index) => [s.id, index]));
+@@ -1023,6 +1033,11 @@ export class GradesService {
+         return {
+           subjectId,
+           subjectName: name,
++          // SPEC_V0.5.1.md §2.1/Q1(b): a subject that already has real
++          // grades never gets hidden, but if there's no current
++          // subject_teacher_assignment for it, it's surfaced as needing
++          // one rather than shown as if everything is normal.
++          needsTeacherAssignment: !assignedSubjects.has(subjectId),
+           averageScore,
+           averageGrade: resolveGradeBand(averageScore, boundaryInputs),
+           results: rows
+@@ -1076,13 +1091,14 @@ export class GradesService {
+     const schoolId = this.tenantContext.schoolId;
+     const { term } = await this.resolveTenantScopeArmTermOnly(schoolId, query.classArmId, query.termId);
+ 
+-    const [students, subjectResults, boundaries] = await Promise.all([
++    const [students, subjectResults, boundaries, assignedSubjects] = await Promise.all([
+       this.getRoster(schoolId, query.classArmId, term.sessionId),
+       this.prisma.termSubjectResult.findMany({
+         where: { schoolId, classArmId: query.classArmId, termId: query.termId, sessionId: term.sessionId },
+         include: { subject: { select: { id: true, name: true } } },
+       }),
+       this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
++      getAssignedSubjectMap(this.prisma, { schoolId, classArmId: query.classArmId, sessionId: term.sessionId }),
+     ]);
+     const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
+     const rosterSize = students.length;
+@@ -1117,6 +1133,7 @@ export class GradesService {
+       return {
+         subjectId,
+         subjectName: name,
++        needsTeacherAssignment: !assignedSubjects.has(subjectId),
+         rosterSize,
+         draftCount,
+         pendingApprovalCount,
+@@ -1190,13 +1207,14 @@ export class GradesService {
+       }
+     }
+ 
+-    const [subjectResults, overall, boundaries] = await Promise.all([
++    const [subjectResults, overall, boundaries, assignedSubjects] = await Promise.all([
+       this.prisma.termSubjectResult.findMany({
+         where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
+         include: { subject: { select: { id: true, name: true } } },
+       }),
+       this.prisma.termOverallResult.findFirst({ where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId } }),
+       this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
++      getAssignedSubjectMap(this.prisma, { schoolId, classArmId: enrollment.classArmId, sessionId: query.sessionId }),
+     ]);
+     const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
+ 
+@@ -1222,6 +1240,7 @@ export class GradesService {
+         return {
+           subjectId: r.subjectId,
+           subjectName: r.subject.name,
++          needsTeacherAssignment: !assignedSubjects.has(r.subjectId),
+           totalScore: Number(r.totalScore),
+           autoGrade: r.autoGrade,
+           overrideGrade: r.overrideGrade,
+@@ -1289,7 +1308,7 @@ export class GradesService {
+       }
+     }
+ 
+-    const [subjectResults, components, scores, overall, remark] = await Promise.all([
++    const [subjectResults, components, scores, overall, remark, assignedSubjects] = await Promise.all([
+       this.prisma.termSubjectResult.findMany({
+         where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
+         include: { subject: { select: { id: true, name: true } } },
+@@ -1304,6 +1323,7 @@ export class GradesService {
+           principalRemarkByUser: { select: { firstName: true, lastName: true } },
+         },
+       }),
++      getAssignedSubjectMap(this.prisma, { schoolId, classArmId: enrollment.classArmId, sessionId: query.sessionId }),
+     ]);
+ 
+     const scoresBySubject = new Map<string, typeof scores>();
+@@ -1319,6 +1339,7 @@ export class GradesService {
+         return {
+           subjectId: r.subjectId,
+           subjectName: r.subject.name,
++          needsTeacherAssignment: !assignedSubjects.has(r.subjectId),
+           components: components.map((c) => {
+             const score = scoreByComponent.get(c.id);
+             return {
+@@ -1749,9 +1770,15 @@ export class GradesService {
+   // (subject, class arm, session) — assignments are session-scoped, not
+   // term-scoped (SPEC_V0.4.md §2 note), so term is just which term's
+   // scores are being entered within that assignment. SCHOOL_ADMIN/
+-  // PROPRIETOR: no check, any tenant-scoped combo is allowed. Must run
+-  // AFTER tenant-scope resolution (404s first), so a cross-tenant probe
+-  // always gets a uniform 404 regardless of role.
++  // PROPRIETOR: SPEC_V0.5.1.md §2.1/§2.2 — a subject only exists for a
++  // class once SOME teacher is assigned to teach it there, so admin/owner
++  // are now checked too (existence-only, not "is it me" — any assignment
++  // qualifies). Different failure mode than the TEACHER branch: this isn't
++  // "you're not allowed", it's "this pairing isn't gradeable" — 404, not
++  // 403, matching the "hidden, not forbidden" framing used everywhere else
++  // this rule applies (overview/review/report-card). Must run AFTER
++  // tenant-scope resolution (404s first), so a cross-tenant probe always
++  // gets a uniform 404 regardless of role.
+   private async assertTeacherAssignment(
+     schoolId: string,
+     user: AuthenticatedUser,
+@@ -1759,14 +1786,18 @@ export class GradesService {
+     classArmId: string,
+     sessionId: string,
+   ): Promise<void> {
+-    if (user.role !== UserRole.TEACHER) {
++    const assignedSubjects = await getAssignedSubjectMap(this.prisma, { schoolId, classArmId, sessionId });
++    const assignment = assignedSubjects.get(subjectId);
++
++    if (user.role === UserRole.TEACHER) {
++      if (!assignment || assignment.teacherUserId !== user.userId) {
++        throw new ForbiddenException("You are not assigned to teach this subject for this class.");
++      }
+       return;
+     }
+-    const assignment = await this.prisma.subjectTeacherAssignment.findFirst({
+-      where: forSchool(schoolId, { subjectId, classArmId, sessionId, teacherUserId: user.userId }),
+-    });
++
+     if (!assignment) {
+-      throw new ForbiddenException("You are not assigned to teach this subject for this class.");
++      throw new NotFoundException("No teacher is assigned to teach this subject for this class.");
+     }
+   }
+ 
+diff --git a/apps/api/src/grades/subject-assignment.util.ts b/apps/api/src/grades/subject-assignment.util.ts
+new file mode 100644
+index 0000000..4168923
+--- /dev/null
++++ b/apps/api/src/grades/subject-assignment.util.ts
+@@ -0,0 +1,41 @@
++import { PrismaService } from "../prisma/prisma.service";
++import { forSchool } from "../common/tenant/for-school";
++
++export interface AssignedSubjectEntry {
++  assignmentId: string;
++  subjectId: string;
++  subjectName: string;
++  teacherUserId: string;
++  teacherFirstName: string;
++  teacherLastName: string;
++}
++
++// SPEC_V0.5.1.md §4: a subject is "for a class" iff a
++// subject_teacher_assignment exists for that (class-arm, subject, session).
++// One helper, keyed by subjectId, so grade entry (assertTeacherAssignment),
++// overview/review/report-card (needsTeacherAssignment flagging), and the
++// Classes tab's detail view all read the exact same set — they cannot drift
++// against each other.
++export async function getAssignedSubjectMap(
++  prisma: PrismaService,
++  params: { schoolId: string; classArmId: string; sessionId: string },
++): Promise<Map<string, AssignedSubjectEntry>> {
++  const assignments = await prisma.subjectTeacherAssignment.findMany({
++    where: forSchool(params.schoolId, { classArmId: params.classArmId, sessionId: params.sessionId }),
++    include: { subject: { select: { name: true } }, teacherUser: { select: { firstName: true, lastName: true } } },
++    orderBy: { subject: { name: "asc" } },
++  });
++  return new Map(
++    assignments.map((assignment) => [
++      assignment.subjectId,
++      {
++        assignmentId: assignment.id,
++        subjectId: assignment.subjectId,
++        subjectName: assignment.subject.name,
++        teacherUserId: assignment.teacherUserId,
++        teacherFirstName: assignment.teacherUser.firstName,
++        teacherLastName: assignment.teacherUser.lastName,
++      },
++    ]),
++  );
++}
+diff --git a/apps/api/test/class-arm-results.e2e-spec.ts b/apps/api/test/class-arm-results.e2e-spec.ts
+index e19865b..a19a21e 100644
+--- a/apps/api/test/class-arm-results.e2e-spec.ts
++++ b/apps/api/test/class-arm-results.e2e-spec.ts
+@@ -43,6 +43,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
+   const createdSubjectIds: string[] = [];
+   const createdStudentIds: string[] = [];
+   const createdArmIds: string[] = [];
++  let teacherClassId: string;
+ 
+   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
+ 
+@@ -85,6 +86,13 @@ describe("GET /class-arms/:id/results (e2e)", () => {
+     return subject.id;
+   }
+ 
++  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
++  // subject_teacher_assignment for admin too — upsert one (using
++  // teacherClass, who already has full class-teacher access, so this
++  // never changes what any relationship-based test below expects) for
++  // whatever (subject, arm) pair this particular call targets. Tests that
++  // specifically assign teacherSubjectToken to a subject still do so
++  // explicitly above/below — this only ensures the WRITE itself is legal.
+   async function score(
+     token: string,
+     subjectId: string,
+@@ -92,6 +100,11 @@ describe("GET /class-arms/:id/results (e2e)", () => {
+     scores: { studentId: string; rawScore: number }[],
+     classArmId: string,
+   ) {
++    await prisma.subjectTeacherAssignment.upsert({
++      where: { subjectId_classArmId_sessionId: { subjectId, classArmId, sessionId: sunriseSessionId } },
++      update: {},
++      create: { schoolId: sunriseId, subjectId, classArmId, sessionId: sunriseSessionId, teacherUserId: teacherClassId },
++    });
+     const response = await request(app.getHttpServer())
+       .put("/api/v1/grades/grid")
+       .set(auth(token))
+@@ -127,6 +140,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
+ 
+     const teacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
+     const teacherClass = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher2@sunrise.test" } });
++    teacherClassId = teacherClass.id;
+     const teacherSubjectSubjectId = await createSubject("E2E CAR TeacherLane");
+     await prisma.subjectTeacherAssignment.create({
+       data: { schoolId: sunriseId, subjectId: teacherSubjectSubjectId, classArmId: resultsArmId, sessionId: sunriseSessionId, teacherUserId: teacher.id },
+diff --git a/apps/api/test/grades-grid.e2e-spec.ts b/apps/api/test/grades-grid.e2e-spec.ts
+index d70e80d..39cb548 100644
+--- a/apps/api/test/grades-grid.e2e-spec.ts
++++ b/apps/api/test/grades-grid.e2e-spec.ts
+@@ -32,6 +32,7 @@ describe("Grades grid (e2e)", () => {
+   let hillcrestComponentId: string;
+ 
+   let scratchSubjectId: string;
++  let mathTeacherId: string;
+   let jss2ARoster: { id: string }[];
+   let jss1ARoster: { id: string }[];
+ 
+@@ -90,6 +91,7 @@ describe("Grades grid (e2e)", () => {
+     });
+     scratchSubjectId = scratchSubject.id;
+     const mathTeacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
++    mathTeacherId = mathTeacher.id;
+     await prisma.subjectTeacherAssignment.create({
+       data: { schoolId: sunriseId, subjectId: scratchSubjectId, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacher.id },
+     });
+@@ -166,6 +168,11 @@ describe("Grades grid (e2e)", () => {
+       const statusSubject = await prisma.subject.create({
+         data: { schoolId: sunriseId, name: "E2E Grid Status", code: "E2ESTA" },
+       });
++      // SPEC_V0.5.1.md §2.1/§2.2: entry (this test's whole point) now
++      // requires an assignment for admin too, not just TEACHER.
++      await prisma.subjectTeacherAssignment.create({
++        data: { schoolId: sunriseId, subjectId: statusSubject.id, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacherId },
++      });
+       try {
+         const [published, draftScored, neverScored] = jss2ARoster.slice(0, 3);
+ 
+@@ -210,6 +217,7 @@ describe("Grades grid (e2e)", () => {
+       } finally {
+         await prisma.studentScore.deleteMany({ where: { subjectId: statusSubject.id } });
+         await prisma.termSubjectResult.deleteMany({ where: { subjectId: statusSubject.id } });
++        await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: statusSubject.id } });
+         await prisma.subject.delete({ where: { id: statusSubject.id } });
+       }
+     });
+diff --git a/apps/api/test/grades-publish.e2e-spec.ts b/apps/api/test/grades-publish.e2e-spec.ts
+index 7669eca..7b77703 100644
+--- a/apps/api/test/grades-publish.e2e-spec.ts
++++ b/apps/api/test/grades-publish.e2e-spec.ts
+@@ -63,6 +63,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+   let ca1Id: string; // weight 20, max_score 20, requiresApproval false
+   let examId: string; // weight 60, max_score 100, requiresApproval true
+   let ca2Id: string; // weight 20, max_score 20, requiresApproval false
++  let teacherUserId: string;
+ 
+   // Real, cross-tenant fixtures for the "attempt and reject" 404 tests —
+   // non-mutating by design, so no isolation needed; reuses step 1's
+@@ -110,6 +111,20 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+     return subject.id;
+   }
+ 
++  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
++  // subject_teacher_assignment for (subjectId, classArmId, session) —
++  // upserting one here, keyed off whatever pair this particular call
++  // actually targets, means every existing call site in this file keeps
++  // working without having to hand-track which of the several scratch
++  // arms each scratch subject was scored against.
++  async function ensureAssignment(subjectId: string, classArmId: string) {
++    await prisma.subjectTeacherAssignment.upsert({
++      where: { subjectId_classArmId_sessionId: { subjectId, classArmId, sessionId: sunriseSessionId } },
++      update: {},
++      create: { schoolId: sunriseId, subjectId, classArmId, sessionId: sunriseSessionId, teacherUserId },
++    });
++  }
++
+   async function scoreComponent(
+     token: string,
+     subjectId: string,
+@@ -117,6 +132,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+     scores: { studentId: string; rawScore: number }[],
+     classArmId: string = scratchArmId,
+   ) {
++    await ensureAssignment(subjectId, classArmId);
+     const response = await request(app.getHttpServer())
+       .put("/api/v1/grades/grid")
+       .set(auth(token))
+@@ -171,6 +187,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+     ca2Id = components[1].id;
+     examId = components[2].id;
+ 
++    teacherUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
++
+     // Cross-tenant fixtures: real, hand-verified seed data (non-mutating
+     // usage only in this suite).
+     const hillcrest = await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } });
+@@ -219,6 +237,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+     if (createdSubjectIds.length > 0) {
+       await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
++      await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
+     }
+     if (createdStudentIds.length > 0) {
+@@ -962,6 +981,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+       // publishing subject C2 for sB. Different subjects -> no subject-lock
+       // contention; both want the class-arm lock -> must serialize, never
+       // deadlock.
++      await ensureAssignment(subjectB2, gapTwoConcurrencyArmId); // subjectB2's first-ever write, via a raw PUT below (not scoreComponent)
+       const [saveRes, publishRes] = await Promise.all([
+         request(app.getHttpServer())
+           .put("/api/v1/grades/grid")
+diff --git a/apps/api/test/grades-review.e2e-spec.ts b/apps/api/test/grades-review.e2e-spec.ts
+index 899f70e..d1453db 100644
+--- a/apps/api/test/grades-review.e2e-spec.ts
++++ b/apps/api/test/grades-review.e2e-spec.ts
+@@ -33,6 +33,7 @@ describe("GET /grades/review (e2e)", () => {
+ 
+   const createdSubjectIds: string[] = [];
+   const createdStudentIds: string[] = [];
++  let teacherUserId: string;
+ 
+   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
+ 
+@@ -42,7 +43,17 @@ describe("GET /grades/review (e2e)", () => {
+     return subject.id;
+   }
+ 
++  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
++  // subject_teacher_assignment for admin too — upsert one for whatever
++  // subject this call is scoring (GET /grades/review has no TEACHER path
++  // at all, so which teacher holds it doesn't affect any RBAC assertion
++  // in this file).
+   async function score(subjectId: string, componentId: string, scores: { studentId: string; rawScore: number }[]) {
++    await prisma.subjectTeacherAssignment.upsert({
++      where: { subjectId_classArmId_sessionId: { subjectId, classArmId: reviewArmId, sessionId: sunriseSessionId } },
++      update: {},
++      create: { schoolId: sunriseId, subjectId, classArmId: reviewArmId, sessionId: sunriseSessionId, teacherUserId },
++    });
+     const response = await request(app.getHttpServer())
+       .put("/api/v1/grades/grid")
+       .set(auth(sunriseAdminToken))
+@@ -99,12 +110,15 @@ describe("GET /grades/review (e2e)", () => {
+     const hillcrestJss1 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: hillcrestId, name: "JSS 1" } });
+     hillcrestArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: hillcrestId, classLevelId: hillcrestJss1.id, name: "A" } })).id;
+     hillcrestTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: hillcrestSession.id, name: "FIRST" } })).id;
++
++    teacherUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
+   });
+ 
+   afterAll(async () => {
+     if (createdSubjectIds.length > 0) {
+       await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
++      await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
+     }
+     if (createdStudentIds.length > 0) {
+diff --git a/apps/api/test/report-card.e2e-spec.ts b/apps/api/test/report-card.e2e-spec.ts
+index d954881..4976953 100644
+--- a/apps/api/test/report-card.e2e-spec.ts
++++ b/apps/api/test/report-card.e2e-spec.ts
+@@ -38,6 +38,7 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
+   const createdSubjectIds: string[] = [];
+   const createdStudentIds: string[] = [];
+   let studentArmCreated = false;
++  let teacherSubjectId: string;
+ 
+   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
+ 
+@@ -47,7 +48,16 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
+     return subject.id;
+   }
+ 
++  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
++  // subject_teacher_assignment for admin too — upsert one for whatever
++  // subject this call is scoring, same pattern as grades-publish's
++  // ensureAssignment.
+   async function score(subjectIdArg: string, componentId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
++    await prisma.subjectTeacherAssignment.upsert({
++      where: { subjectId_classArmId_sessionId: { subjectId: subjectIdArg, classArmId: studentArmId, sessionId: sunriseSessionId } },
++      update: {},
++      create: { schoolId: sunriseId, subjectId: subjectIdArg, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherSubjectId },
++    });
+     const response = await request(app.getHttpServer())
+       .put("/api/v1/grades/grid")
+       .set(auth(sunriseAdminToken))
+@@ -114,6 +124,7 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
+     subjectB = await createSubject("E2E RC SubjectB");
+     subjectC = await createSubject("E2E RC SubjectC");
+     const teacherSubject = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
++    teacherSubjectId = teacherSubject.id;
+     // Subject-only assignment on subjectA — NOT class-teacher. Proves the
+     // read/write split: this teacher can READ the report card (any
+     // relationship) but cannot write the teacher remark (class-teacher only).
+diff --git a/apps/api/test/student-results.e2e-spec.ts b/apps/api/test/student-results.e2e-spec.ts
+index f3e2f2f..f776c38 100644
+--- a/apps/api/test/student-results.e2e-spec.ts
++++ b/apps/api/test/student-results.e2e-spec.ts
+@@ -112,6 +112,15 @@ describe("GET /students/:id/results (e2e)", () => {
+     await prisma.subjectTeacherAssignment.create({
+       data: { schoolId: sunriseId, subjectId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherSubject.id },
+     });
++    // otherSubjectId is taught by teacherClass instead (SPEC_V0.5.1.md
++    // §2.1/§2.2: grid entry now requires SOME assignment, even for admin)
++    // — teacherClass already has full access via class-teacher status, so
++    // this doesn't change what any relationship-based assertion below
++    // expects; teacherSubject still doesn't teach it, which is the actual
++    // "full access, not filtered" proof.
++    await prisma.subjectTeacherAssignment.create({
++      data: { schoolId: sunriseId, subjectId: otherSubjectId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherClass.id },
++    });
+ 
+     // Target: CA1 20/20*20=20, Exam 60/100*60=36 -> total 56 (C5, 55-59).
+     await score(subjectId, ca1Id, [{ studentId: targetStudentId, rawScore: 20 }]);
+diff --git a/apps/api/test/subject-for-a-class-rule.e2e-spec.ts b/apps/api/test/subject-for-a-class-rule.e2e-spec.ts
+new file mode 100644
+index 0000000..c9a3d1a
+--- /dev/null
++++ b/apps/api/test/subject-for-a-class-rule.e2e-spec.ts
+@@ -0,0 +1,330 @@
++import { INestApplication } from "@nestjs/common";
++import request from "supertest";
++import { Gender } from "@prisma/client";
++import { createTestApp } from "./utils/create-test-app";
++import { loginAs } from "./utils/login";
++import { PrismaService } from "../src/prisma/prisma.service";
++
++// SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 step 1: a subject is "for a class" iff a
++// subject_teacher_assignment exists for that (class-arm, subject, session)
++// — hidden from grade entry, overview, review, student-results, and the
++// report card otherwise, EXCEPT Q1(b): a subject that already has real
++// results is never hidden once graded, only flagged needsTeacherAssignment.
++// Every scenario gets its own scratch session+term+class-arm+subject+
++// students bundle in the REAL Sunrise tenant (mirrors terms.e2e-spec.ts's
++// createScratchBundle) — never the seeded demo data, so a full-suite run
++// can't dirty it (docs/DECISIONS.md).
++describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 step 1", () => {
++  let app: INestApplication;
++  let prisma: PrismaService;
++
++  let sunriseAdminToken: string;
++  let sunriseProprietorToken: string;
++  let sunriseTeacherToken: string;
++  let hillcrestAdminToken: string;
++
++  let sunriseId: string;
++  let jss2LevelId: string;
++  let ca1Id: string;
++  let teacherUserId: string;
++  let currentSessionId: string;
++
++  const createdSessionIds: string[] = [];
++  const createdTermIds: string[] = [];
++  const createdClassArmIds: string[] = [];
++  const createdSubjectIds: string[] = [];
++  const createdStudentIds: string[] = [];
++
++  const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
++
++  interface ScratchBundle {
++    sessionId: string;
++    termId: string;
++    classArmId: string;
++    subjectId: string;
++    studentIds: string[];
++  }
++
++  async function createScratchBundle(prefix: string, studentCount = 1): Promise<ScratchBundle> {
++    const stamp = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
++    const session = await prisma.academicSession.create({
++      data: { schoolId: sunriseId, name: `E2E-SFC-${stamp}`, startsOn: new Date("2027-01-01"), endsOn: new Date("2027-04-01"), isCurrent: false },
++    });
++    createdSessionIds.push(session.id);
++    const term = await prisma.term.create({
++      data: { schoolId: sunriseId, sessionId: session.id, name: "FIRST", startsOn: session.startsOn, endsOn: session.endsOn },
++    });
++    createdTermIds.push(term.id);
++    const classArm = await prisma.classArm.create({
++      data: { schoolId: sunriseId, classLevelId: jss2LevelId, name: `E2E-SFC-${stamp}` },
++    });
++    createdClassArmIds.push(classArm.id);
++    const subject = await prisma.subject.create({
++      data: { schoolId: sunriseId, name: `E2E SFC ${stamp}`, code: `SFC${stamp.slice(-6)}`.slice(0, 10).toUpperCase() },
++    });
++    createdSubjectIds.push(subject.id);
++
++    const studentIds: string[] = [];
++    for (let i = 0; i < studentCount; i++) {
++      const student = await prisma.student.create({
++        data: {
++          schoolId: sunriseId,
++          admissionNumber: `E2E-SFC/${stamp}/${i}`,
++          firstName: "SubjectClass",
++          lastName: `Student${i}`,
++          gender: i % 2 === 0 ? Gender.MALE : Gender.FEMALE,
++          dateOfBirth: new Date(Date.UTC(2012, 0, 1 + i)),
++          guardianName: "E2E Guardian",
++          guardianPhone: `+2348032${String(Date.now() + i).slice(-6)}`,
++        },
++      });
++      createdStudentIds.push(student.id);
++      await prisma.studentEnrollment.create({
++        data: { schoolId: sunriseId, studentId: student.id, classArmId: classArm.id, sessionId: session.id },
++      });
++      studentIds.push(student.id);
++    }
++
++    return { sessionId: session.id, termId: term.id, classArmId: classArm.id, subjectId: subject.id, studentIds };
++  }
++
++  // Assignments are session-scoped, and the real POST /subject-assignments
++  // endpoint always resolves the school's CURRENT session — it can't target
++  // a scratch (non-current) session, so assignments for these bundles are
++  // created directly, the same way the bundle's own session/term/class-arm
++  // are.
++  async function assignTeacher(bundle: ScratchBundle) {
++    return prisma.subjectTeacherAssignment.create({
++      data: { schoolId: sunriseId, subjectId: bundle.subjectId, classArmId: bundle.classArmId, sessionId: bundle.sessionId, teacherUserId },
++    });
++  }
++
++  // GET /class-arms/:id (the entry-picker's data source) always resolves
++  // subjectTeachers for the school's CURRENT session specifically — that's
++  // pre-existing, unchanged behavior (see ClassArmsService.findOne's own
++  // doc comment), not something this step altered. Proving the entry-
++  // picker reflects an assignment therefore needs an assignment under the
++  // REAL current session, separate from the scratch bundle's own (non-
++  // current) session that the grid/term checks use.
++  async function assignTeacherForCurrentSession(bundle: ScratchBundle) {
++    return prisma.subjectTeacherAssignment.create({
++      data: { schoolId: sunriseId, subjectId: bundle.subjectId, classArmId: bundle.classArmId, sessionId: currentSessionId, teacherUserId },
++    });
++  }
++
++  function gridQuery(bundle: ScratchBundle) {
++    return { classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId };
++  }
++
++  beforeAll(async () => {
++    app = await createTestApp();
++    prisma = app.get(PrismaService);
++
++    sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
++    sunriseProprietorToken = await loginAs(app, "proprietor@sunrise.test", "sunrise");
++    sunriseTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
++    hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
++
++    const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
++    sunriseId = sunrise.id;
++    const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
++    jss2LevelId = jss2.id;
++
++    const ca1 = await prisma.assessmentComponent.findFirstOrThrow({
++      where: { schoolId: sunriseId, deletedAt: null },
++      orderBy: { sortOrder: "asc" },
++    });
++    ca1Id = ca1.id;
++
++    const teacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
++    teacherUserId = teacher.id;
++
++    const currentSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: sunriseId, isCurrent: true } });
++    currentSessionId = currentSession.id;
++  });
++
++  afterAll(async () => {
++    await prisma.termUnlock.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.studentScore.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.termSubjectResult.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.termOverallResult.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.studentEnrollment.deleteMany({ where: { studentId: { in: createdStudentIds } } });
++    await prisma.student.deleteMany({ where: { id: { in: createdStudentIds } } });
++    await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
++    await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
++    await prisma.classArm.deleteMany({ where: { id: { in: createdClassArmIds } } });
++    await prisma.term.deleteMany({ where: { id: { in: createdTermIds } } });
++    await prisma.academicSession.deleteMany({ where: { id: { in: createdSessionIds } } });
++    await app.close();
++  });
++
++  // classes.e2e-spec.ts already proves GET /class-arms/:id's subjectTeachers
++  // (the entry-picker's data source) reflects real assignments for the
++  // seeded current-session data; this spec's own class-arm-detail proof
++  // lives in the next test, using a current-session assignment (see
++  // assignTeacherForCurrentSession's comment).
++  it("grid entry rejects an unassigned pair for SCHOOL_ADMIN/PROPRIETOR with 404 (not gradeable), and for TEACHER with 403 (not your assignment) — same as before", async () => {
++    const bundle = await createScratchBundle("Reject");
++
++    const adminGet = await request(app.getHttpServer())
++      .get("/api/v1/grades/grid")
++      .query(gridQuery(bundle))
++      .set(auth(sunriseAdminToken));
++    expect(adminGet.status).toBe(404);
++    expect(adminGet.body.message).toMatch(/no teacher is assigned/i);
++
++    const proprietorGet = await request(app.getHttpServer())
++      .get("/api/v1/grades/grid")
++      .query(gridQuery(bundle))
++      .set(auth(sunriseProprietorToken));
++    expect(proprietorGet.status).toBe(404);
++
++    const adminSave = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseAdminToken))
++      .send({ ...gridQuery(bundle), scores: [{ studentId: bundle.studentIds[0], rawScore: 15 }] });
++    expect(adminSave.status).toBe(404);
++    expect(adminSave.body.message).toMatch(/no teacher is assigned/i);
++
++    const teacherGet = await request(app.getHttpServer())
++      .get("/api/v1/grades/grid")
++      .query(gridQuery(bundle))
++      .set(auth(sunriseTeacherToken));
++    expect(teacherGet.status).toBe(403);
++    expect(teacherGet.body.message).toMatch(/not assigned to teach/i);
++  });
++
++  it("assigning a teacher makes the subject appear in class-arm detail (entry-picker source) and gradeable for admin, proprietor, and that teacher", async () => {
++    const bundle = await createScratchBundle("Assigned");
++
++    const beforeDetail = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${bundle.classArmId}`)
++      .set(auth(sunriseAdminToken));
++    expect(beforeDetail.body.subjectTeachers).toEqual([]);
++
++    await assignTeacherForCurrentSession(bundle);
++    const afterDetail = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${bundle.classArmId}`)
++      .set(auth(sunriseAdminToken));
++    expect(afterDetail.body.subjectTeachers.map((t: { subjectId: string }) => t.subjectId)).toContain(bundle.subjectId);
++
++    // Grid entry is gated by the BUNDLE's own term/session, independent of
++    // "current" — a separate assignment there proves it too.
++    await assignTeacher(bundle);
++
++    const adminGet = await request(app.getHttpServer())
++      .get("/api/v1/grades/grid")
++      .query(gridQuery(bundle))
++      .set(auth(sunriseAdminToken));
++    expect(adminGet.status).toBe(200);
++
++    const proprietorSave = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseProprietorToken))
++      .send({ ...gridQuery(bundle), scores: [{ studentId: bundle.studentIds[0], rawScore: 12 }] });
++    expect(proprietorSave.status).toBe(200);
++
++    const teacherGet = await request(app.getHttpServer())
++      .get("/api/v1/grades/grid")
++      .query(gridQuery(bundle))
++      .set(auth(sunriseTeacherToken));
++    expect(teacherGet.status).toBe(200);
++  });
++
++  it("Q1(b): a subject that already has real grades stays visible in overview/review/student-results/report-card when its assignment is later removed — flagged, not hidden — and the flag clears once reassigned", async () => {
++    const bundle = await createScratchBundle("Orphan");
++    const assignment = await assignTeacher(bundle);
++    const [studentId] = bundle.studentIds;
++
++    const save = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseAdminToken))
++      .send({ ...gridQuery(bundle), scores: [{ studentId, rawScore: 15 }] });
++    expect(save.status).toBe(200);
++
++    // Remove the assignment through the real endpoint (SPEC_V0.5.1.md
++    // §2.1/§2.2's actual removal path), not a direct delete — proves the
++    // flag reacts to the real write, not just to manufactured DB state.
++    const removed = await request(app.getHttpServer())
++      .delete(`/api/v1/subject-assignments/${assignment.id}`)
++      .set(auth(sunriseAdminToken));
++    expect(removed.status).toBe(200);
++
++    // Hidden from entry's grid write path (class-arm-detail's own
++    // current-session-scoped proof lives in the previous test)...
++    const gridAfterRemoval = await request(app.getHttpServer())
++      .get("/api/v1/grades/grid")
++      .query(gridQuery(bundle))
++      .set(auth(sunriseAdminToken));
++    expect(gridAfterRemoval.status).toBe(404);
++
++    // ...but never hidden from the three read surfaces that already have
++    // real data for it — flagged instead.
++    const overview = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${bundle.classArmId}/results`)
++      .query({ termId: bundle.termId })
++      .set(auth(sunriseAdminToken));
++    expect(overview.status).toBe(200);
++    const overviewSubject = overview.body.subjects.find((s: { subjectId: string }) => s.subjectId === bundle.subjectId);
++    expect(overviewSubject).toBeDefined();
++    expect(overviewSubject.needsTeacherAssignment).toBe(true);
++
++    const review = await request(app.getHttpServer())
++      .get("/api/v1/grades/review")
++      .query({ classArmId: bundle.classArmId, termId: bundle.termId })
++      .set(auth(sunriseAdminToken));
++    expect(review.status).toBe(200);
++    const reviewSubject = review.body.subjects.find((s: { subjectId: string }) => s.subjectId === bundle.subjectId);
++    expect(reviewSubject).toBeDefined();
++    expect(reviewSubject.needsTeacherAssignment).toBe(true);
++
++    const studentResults = await request(app.getHttpServer())
++      .get(`/api/v1/students/${studentId}/results`)
++      .query({ termId: bundle.termId, sessionId: bundle.sessionId })
++      .set(auth(sunriseAdminToken));
++    expect(studentResults.status).toBe(200);
++    const studentResultsSubject = studentResults.body.subjects.find((s: { subjectId: string }) => s.subjectId === bundle.subjectId);
++    expect(studentResultsSubject).toBeDefined();
++    expect(studentResultsSubject.needsTeacherAssignment).toBe(true);
++
++    const reportCard = await request(app.getHttpServer())
++      .get(`/api/v1/students/${studentId}/report-card`)
++      .query({ termId: bundle.termId, sessionId: bundle.sessionId })
++      .set(auth(sunriseAdminToken));
++    expect(reportCard.status).toBe(200);
++    const reportCardSubject = reportCard.body.subjects.find((s: { subjectId: string }) => s.subjectId === bundle.subjectId);
++    expect(reportCardSubject).toBeDefined();
++    expect(reportCardSubject.needsTeacherAssignment).toBe(true);
++
++    // Reassign — the flag is live, not sticky, and entry re-opens.
++    await assignTeacher(bundle);
++    const overviewAfterReassign = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${bundle.classArmId}/results`)
++      .query({ termId: bundle.termId })
++      .set(auth(sunriseAdminToken));
++    const reassignedSubject = overviewAfterReassign.body.subjects.find((s: { subjectId: string }) => s.subjectId === bundle.subjectId);
++    expect(reassignedSubject.needsTeacherAssignment).toBe(false);
++
++    const gridAfterReassign = await request(app.getHttpServer())
++      .get("/api/v1/grades/grid")
++      .query(gridQuery(bundle))
++      .set(auth(sunriseAdminToken));
++    expect(gridAfterReassign.status).toBe(200);
++  });
++
++  it("cross-tenant: a second school's admin gets 404, never a hint that this class arm exists", async () => {
++    const bundle = await createScratchBundle("CrossTenant");
++    await assignTeacher(bundle);
++
++    const detail = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${bundle.classArmId}`)
++      .set(auth(hillcrestAdminToken));
++    expect(detail.status).toBe(404);
++
++    const grid = await request(app.getHttpServer())
++      .get("/api/v1/grades/grid")
++      .query(gridQuery(bundle))
++      .set(auth(hillcrestAdminToken));
++    expect(grid.status).toBe(404);
++  });
++});
+diff --git a/apps/api/test/terms.e2e-spec.ts b/apps/api/test/terms.e2e-spec.ts
+index dff808d..18309c2 100644
+--- a/apps/api/test/terms.e2e-spec.ts
++++ b/apps/api/test/terms.e2e-spec.ts
+@@ -31,6 +31,7 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
+   let hillcrestArmId: string;
+   let hillcrestSubjectId: string;
+   let hillcrestTermId: string;
++  let teacherUserId: string;
+ 
+   const createdSessionIds: string[] = [];
+   const createdTermIds: string[] = [];
+@@ -73,6 +74,11 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
+       });
+       createdSubjectIds.push(subject.id);
+       subjectIds.push(subject.id);
++      // SPEC_V0.5.1.md §2.1/§2.2: grid entry (this whole file's saveScore
++      // helper) now requires a subject_teacher_assignment for admin too.
++      await prisma.subjectTeacherAssignment.create({
++        data: { schoolId: sunriseId, subjectId: subject.id, classArmId: classArm.id, sessionId: session.id, teacherUserId },
++      });
+     }
+ 
+     const studentIds: string[] = [];
+@@ -135,6 +141,8 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
+     hillcrestArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: hillcrestId, classLevelId: hillcrestJss1.id, name: "A" } })).id;
+     hillcrestSubjectId = (await prisma.subject.findFirstOrThrow({ where: { schoolId: hillcrestId, name: "Mathematics" } })).id;
+     hillcrestTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: hillcrestSession.id, name: "FIRST" } })).id;
++
++    teacherUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
+   });
+ 
+   afterAll(async () => {
+diff --git a/apps/web/src/features/grades/ClassArmResultsView.test.tsx b/apps/web/src/features/grades/ClassArmResultsView.test.tsx
+index 0069902..16d3ab9 100644
+--- a/apps/web/src/features/grades/ClassArmResultsView.test.tsx
++++ b/apps/web/src/features/grades/ClassArmResultsView.test.tsx
+@@ -19,6 +19,7 @@ const BASE_DATA: ClassArmResultsResponse = {
+     {
+       subjectId: "sub1",
+       subjectName: "Mathematics",
++      needsTeacherAssignment: false,
+       averageScore: 45,
+       averageGrade: "E8",
+       results: [
+@@ -64,6 +65,21 @@ describe("ClassArmResultsView", () => {
+     expect(screen.getByText(/No subjects have been entered/)).toBeInTheDocument();
+   });
+ 
++  // SPEC_V0.5.1.md §2.1/Q1(b): a subject that already has real grades but
++  // no current teacher assignment is never hidden here — it's flagged.
++  it("shows a 'Needs a teacher assigned' badge when needsTeacherAssignment is true, and hides it otherwise", () => {
++    const orphanData: ClassArmResultsResponse = {
++      ...BASE_DATA,
++      subjects: [{ ...BASE_DATA.subjects[0], needsTeacherAssignment: true }],
++    };
++    render(<ClassArmResultsView data={orphanData} />);
++    expect(screen.getAllByText(/Needs a teacher/).length).toBeGreaterThan(0);
++
++    cleanup();
++    render(<ClassArmResultsView data={BASE_DATA} />);
++    expect(screen.queryByText(/Needs a teacher/)).not.toBeInTheDocument();
++  });
++
+   describe("override control visibility (owner-vs-admin, DOM presence not just disabled)", () => {
+     it("overridePermission='none' (TEACHER): no override buttons at all", () => {
+       const onOverride = vi.fn();
+diff --git a/apps/web/src/features/grades/ClassArmResultsView.tsx b/apps/web/src/features/grades/ClassArmResultsView.tsx
+index ca33f4a..ae24b5b 100644
+--- a/apps/web/src/features/grades/ClassArmResultsView.tsx
++++ b/apps/web/src/features/grades/ClassArmResultsView.tsx
+@@ -86,6 +86,9 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
+         {data.subjects.map((subject) => (
+           <div key={subject.subjectId} className="rounded-lg border border-muted/20 bg-card p-3">
+             <p className="truncate text-sm font-medium text-text">{subject.subjectName}</p>
++            {subject.needsTeacherAssignment && (
++              <StatusBadge label="Needs a teacher assigned" tone="warning" className="mt-1" />
++            )}
+             <p className="text-xs text-muted">Class average</p>
+             <p className="font-mono text-lg text-text">
+               {subject.averageGrade ?? "—"} <span className="text-xs text-muted">({formatScore(subject.averageScore)})</span>
+@@ -107,7 +110,10 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
+                   const row = subject.results.find((r) => r.studentId === student.studentId);
+                   return (
+                     <div key={subject.subjectId} className="flex items-center justify-between gap-2 text-sm">
+-                      <dt className="truncate text-muted">{subject.subjectName}</dt>
++                      <dt className="flex items-center gap-1.5 truncate text-muted">
++                        {subject.subjectName}
++                        {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher" tone="warning" />}
++                      </dt>
+                       <dd className="flex shrink-0 items-center gap-1.5 text-right text-text">
+                         {row ? (
+                           <>
+@@ -148,7 +154,10 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
+               <th className="whitespace-nowrap px-4 py-3 font-medium text-muted">Student</th>
+               {data.subjects.map((subject) => (
+                 <th key={subject.subjectId} className="whitespace-nowrap px-4 py-3 font-medium text-muted">
+-                  {subject.subjectName}
++                  <span className="flex items-center gap-1.5">
++                    {subject.subjectName}
++                    {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher" tone="warning" />}
++                  </span>
+                 </th>
+               ))}
+               {data.overall && <th className="whitespace-nowrap px-4 py-3 font-medium text-muted">Overall</th>}
+diff --git a/apps/web/src/features/grades/GradesOverviewPage.test.tsx b/apps/web/src/features/grades/GradesOverviewPage.test.tsx
+index 71b6b69..8840b42 100644
+--- a/apps/web/src/features/grades/GradesOverviewPage.test.tsx
++++ b/apps/web/src/features/grades/GradesOverviewPage.test.tsx
+@@ -40,6 +40,7 @@ const RESULTS: ClassArmResultsResponse = {
+     {
+       subjectId: "sub1",
+       subjectName: "Mathematics",
++      needsTeacherAssignment: false,
+       averageScore: 56,
+       averageGrade: "C5",
+       results: [{ id: "tsr1", studentId: "s1", totalScore: 56, autoGrade: "C5", overrideGrade: null, finalGrade: "C5", subjectPosition: null, status: "PENDING_APPROVAL" }],
+diff --git a/apps/web/src/features/grades/ReportCardPage.test.tsx b/apps/web/src/features/grades/ReportCardPage.test.tsx
+index 2968577..59ecc86 100644
+--- a/apps/web/src/features/grades/ReportCardPage.test.tsx
++++ b/apps/web/src/features/grades/ReportCardPage.test.tsx
+@@ -56,6 +56,7 @@ const CARD: ReportCardResponse = {
+     {
+       subjectId: "sub1",
+       subjectName: "Mathematics",
++      needsTeacherAssignment: false,
+       components: [
+         { componentId: "ca1", componentName: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 0, isAbsent: false },
+         { componentId: "ca2", componentName: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, rawScore: null, isAbsent: true },
+@@ -71,6 +72,7 @@ const CARD: ReportCardResponse = {
+     {
+       subjectId: "sub2",
+       subjectName: "English Language",
++      needsTeacherAssignment: false,
+       components: [
+         { componentId: "ca1", componentName: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 18, isAbsent: false },
+         { componentId: "ca2", componentName: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 17, isAbsent: false },
+@@ -149,6 +151,19 @@ describe("ReportCardPage — rendering", () => {
+     expect(screen.getByText("#5")).toBeInTheDocument();
+   });
+ 
++  // SPEC_V0.5.1.md §2.1/Q1(b): an already-graded orphan subject stays on
++  // the report card, just flagged, never silently hidden.
++  it("shows a 'Needs a teacher assigned' badge when needsTeacherAssignment is true", async () => {
++    mockCommon("SCHOOL_ADMIN", {
++      ...CARD,
++      subjects: [{ ...CARD.subjects[0], needsTeacherAssignment: true }, CARD.subjects[1]],
++    });
++    renderPage();
++
++    await screen.findByText("Mathematics");
++    expect(screen.getByText("Needs a teacher assigned")).toBeInTheDocument();
++  });
++
+   it("distinguishes Abs, blank/not-entered, and a real 0 — never confusing one for another", async () => {
+     mockCommon("SCHOOL_ADMIN", CARD);
+     renderPage();
+diff --git a/apps/web/src/features/grades/ReportCardPage.tsx b/apps/web/src/features/grades/ReportCardPage.tsx
+index 54f2c61..b95ba72 100644
+--- a/apps/web/src/features/grades/ReportCardPage.tsx
++++ b/apps/web/src/features/grades/ReportCardPage.tsx
+@@ -180,7 +180,10 @@ export function ReportCardPage() {
+                 <div key={subject.subjectId} className="break-inside-avoid rounded-lg border border-muted/20 p-3">
+                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                     <p className="font-medium text-text">{subject.subjectName}</p>
+-                    <StatusBadge label={resultStatusLabel(subject.status)} tone={resultStatusTone(subject.status)} />
++                    <div className="flex flex-wrap items-center gap-1.5">
++                      {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher assigned" tone="warning" />}
++                      <StatusBadge label={resultStatusLabel(subject.status)} tone={resultStatusTone(subject.status)} />
++                    </div>
+                   </div>
+                   <div className="overflow-x-auto">
+                     <table className="w-full text-left text-sm">
+diff --git a/apps/web/src/features/grades/ReviewPublishPage.test.tsx b/apps/web/src/features/grades/ReviewPublishPage.test.tsx
+index 3c4e1db..278b610 100644
+--- a/apps/web/src/features/grades/ReviewPublishPage.test.tsx
++++ b/apps/web/src/features/grades/ReviewPublishPage.test.tsx
+@@ -45,14 +45,14 @@ const REVIEW_CAN_PUBLISH: GradesReviewResponse = {
+   classArmId: "arm1",
+   termId: "term1",
+   subjects: [
+-    { subjectId: "sub1", subjectName: "Mathematics", rosterSize: 20, draftCount: 2, pendingApprovalCount: 5, publishedCount: 13, averageScore: 56, averageGrade: "C5", canPublish: true },
++    { subjectId: "sub1", subjectName: "Mathematics", needsTeacherAssignment: false, rosterSize: 20, draftCount: 2, pendingApprovalCount: 5, publishedCount: 13, averageScore: 56, averageGrade: "C5", canPublish: true },
+   ],
+ };
+ const REVIEW_CANNOT_PUBLISH: GradesReviewResponse = {
+   classArmId: "arm1",
+   termId: "term1",
+   subjects: [
+-    { subjectId: "sub2", subjectName: "English Language", rosterSize: 20, draftCount: 20, pendingApprovalCount: 0, publishedCount: 0, averageScore: 0, averageGrade: null, canPublish: false },
++    { subjectId: "sub2", subjectName: "English Language", needsTeacherAssignment: false, rosterSize: 20, draftCount: 20, pendingApprovalCount: 0, publishedCount: 0, averageScore: 0, averageGrade: null, canPublish: false },
+   ],
+ };
+ 
+@@ -112,6 +112,19 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
+     expect(screen.getByRole("button", { name: "Publish" })).toBeDisabled();
+   });
+ 
++  // SPEC_V0.5.1.md §2.1/Q1(b): an already-graded orphan subject stays
++  // visible in review, just flagged.
++  it("shows a 'Needs a teacher assigned' badge when the subject has needsTeacherAssignment: true", async () => {
++    mockCommon("SCHOOL_ADMIN", {
++      ...REVIEW_CAN_PUBLISH,
++      subjects: [{ ...REVIEW_CAN_PUBLISH.subjects[0], needsTeacherAssignment: true }],
++    });
++    renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });
++
++    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
++    expect(screen.getByText("Needs a teacher assigned")).toBeInTheDocument();
++  });
++
+   it("shows the per-status breakdown, not a single collapsed status", async () => {
+     mockCommon("SCHOOL_ADMIN", REVIEW_CAN_PUBLISH);
+     renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });
+diff --git a/apps/web/src/features/grades/ReviewPublishPage.tsx b/apps/web/src/features/grades/ReviewPublishPage.tsx
+index e5705ff..b1e6699 100644
+--- a/apps/web/src/features/grades/ReviewPublishPage.tsx
++++ b/apps/web/src/features/grades/ReviewPublishPage.tsx
+@@ -6,6 +6,7 @@ import { Spinner } from "../../components/ui/spinner";
+ import { Button } from "../../components/ui/button";
+ import { getErrorMessage } from "../../lib/api-client";
+ import { isProprietor } from "../../lib/roles";
++import { StatusBadge } from "../../components/StatusBadge";
+ import { useCurrentUser } from "../shell/use-current-user";
+ import { useClasses } from "../classes/use-classes";
+ import { useAdminCurrentTerm } from "./use-admin-current-term";
+@@ -133,7 +134,10 @@ export function ReviewPublishPage() {
+               className="flex flex-col gap-3 rounded-lg border border-muted/20 bg-card p-4 sm:flex-row sm:items-center sm:justify-between"
+             >
+               <div className="min-w-0">
+-                <p className="font-medium text-text">{subject.subjectName}</p>
++                <p className="flex items-center gap-1.5 font-medium text-text">
++                  {subject.subjectName}
++                  {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher assigned" tone="warning" />}
++                </p>
+                 <p className="text-sm text-muted">
+                   {subject.publishedCount} published · {subject.pendingApprovalCount} pending · {subject.draftCount} not yet
+                   scored (of {subject.rosterSize})
+diff --git a/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx b/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx
+index 619a7ff..c84d50f 100644
+--- a/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx
+@@ -1,6 +1,7 @@
+ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+-import { screen, cleanup, within } from "@testing-library/react";
+-import type { AssessmentComponent, MyTeaching } from "@scholametric/shared";
++import { screen, cleanup, within, waitFor } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import type { AssessmentComponent, ClassArmDetail, ClassLevelOverview, MyTeaching, Paginated, Term, AcademicSession } from "@scholametric/shared";
+ import { renderWithProviders } from "../../test/render-with-providers";
+ import { authStore } from "../../lib/auth-store";
+ import { apiRequest } from "../../lib/api-client";
+@@ -83,3 +84,138 @@ describe("ScoreEntryGridPage — teacher scoping", () => {
+     expect(mockedApiRequest).not.toHaveBeenCalledWith("/api/v1/terms", expect.anything());
+   });
+ });
++
++const ADMIN_USER = {
++  id: "u1",
++  email: "admin@sunrise.test",
++  firstName: "Adaobi",
++  lastName: "Nwachukwu",
++  role: "SCHOOL_ADMIN",
++  status: "ACTIVE",
++  lastLoginAt: null,
++  school: { id: "s1", name: "Sunrise College", slug: "sunrise", type: "SECONDARY", status: "ACTIVE", address: null, phone: null, email: null },
++};
++
++const CLASSES: ClassLevelOverview[] = [
++  {
++    id: "lvl1",
++    name: "JSS 1",
++    rank: 1,
++    arms: [
++      { id: "arm1", name: "A", enrollmentCount: 20, classTeacher: null },
++      { id: "arm2", name: "B", enrollmentCount: 18, classTeacher: null },
++    ],
++  },
++];
++
++const SESSIONS: Paginated<AcademicSession> = {
++  items: [{ id: "sess1", schoolId: "s1", name: "2026/2027", startsOn: "2026-09-01", endsOn: "2027-07-31", isCurrent: true, createdAt: "t", updatedAt: "t" }],
++  total: 1,
++  page: 1,
++  pageSize: 50,
++};
++const TERMS: Paginated<Term> = {
++  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, closedAt: null, closedBy: null, createdAt: "t", updatedAt: "t" }],
++  total: 1,
++  page: 1,
++  pageSize: 20,
++};
++
++// arm1 has one subject with a teacher assigned; arm2 (SPEC_V0.5.1.md
++// §2.1/§2.2) has none — no subject_teacher_assignment exists there yet.
++const ARM1_DETAIL: ClassArmDetail = {
++  id: "arm1",
++  name: "A",
++  classLevel: { id: "lvl1", name: "JSS 1", rank: 1 },
++  classTeacher: null,
++  subjectTeachers: [
++    { id: "sta1", subjectId: "sub1", subjectName: "Mathematics", teacherUserId: "t1", teacherFirstName: "Bola", teacherLastName: "Ogundare" },
++  ],
++  students: { items: [], total: 0, page: 1, pageSize: 1 },
++};
++const ARM2_DETAIL: ClassArmDetail = {
++  id: "arm2",
++  name: "B",
++  classLevel: { id: "lvl1", name: "JSS 1", rank: 1 },
++  classTeacher: null,
++  subjectTeachers: [],
++  students: { items: [], total: 0, page: 1, pageSize: 1 },
++};
++
++function mockAdminCommon() {
++  mockedApiRequest.mockImplementation(async (path: string) => {
++    if (path === "/api/v1/auth/me") return ADMIN_USER;
++    if (path === "/api/v1/classes") return CLASSES;
++    if (path === "/api/v1/assessment-components") return COMPONENTS;
++    if (path === "/api/v1/sessions") return SESSIONS;
++    if (path === "/api/v1/terms") return TERMS;
++    if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL;
++    if (path === "/api/v1/class-arms/arm2") return ARM2_DETAIL;
++    throw new Error(`unexpected call: ${path}`);
++  });
++}
++
++// SPEC_V0.5.1.md §2.1/§2.2 — the free unfiltered subject dropdown
++// (GET /subjects) is the exact bug this step closes: an admin could pick
++// any subject in the school for any class, whether or not a teacher was
++// assigned there. These tests prove the replacement (class-arm-scoped
++// subjectTeachers) is what actually renders, and that GET /subjects is
++// never called for this picker at all.
++// The class select itself starts disabled (useClasses() hasn't resolved on
++// first render) — waiting for it to become enabled before selecting avoids
++// a race against the mocked query settling.
++async function selectClassArm(user: ReturnType<typeof userEvent.setup>, value: string) {
++  const classSelect = (await screen.findByLabelText("Class")) as HTMLSelectElement;
++  await waitFor(() => expect(classSelect).not.toBeDisabled());
++  await user.selectOptions(classSelect, value);
++}
++
++describe("ScoreEntryGridPage — admin subject picker scoped by teacher assignment", () => {
++  it("subject dropdown is empty/disabled until a class is picked, then offers only that class's teacher-assigned subjects", async () => {
++    mockAdminCommon();
++    const user = userEvent.setup();
++    renderWithProviders(<ScoreEntryGridPage />);
++
++    const subjectSelect = (await screen.findByLabelText("Subject")) as HTMLSelectElement;
++    expect(subjectSelect).toBeDisabled();
++
++    await selectClassArm(user, "arm1");
++
++    await waitFor(() => expect(subjectSelect).not.toBeDisabled());
++    const options = within(subjectSelect).getAllByRole("option").filter((o) => (o as HTMLOptionElement).value !== "");
++    expect(options.map((o) => o.textContent)).toEqual(["Mathematics"]);
++
++    expect(mockedApiRequest).not.toHaveBeenCalledWith("/api/v1/subjects", expect.anything());
++  });
++
++  it("a class with no teacher-assigned subjects shows a message instead of a pickable dropdown", async () => {
++    mockAdminCommon();
++    const user = userEvent.setup();
++    renderWithProviders(<ScoreEntryGridPage />);
++
++    await selectClassArm(user, "arm2");
++
++    expect(await screen.findByText("No subjects have a teacher assigned for this class yet.")).toBeInTheDocument();
++    expect(screen.queryByLabelText("Subject")).not.toBeInTheDocument();
++  });
++
++  it("switching classes clears a previously-picked subject that may not apply to the new class", async () => {
++    mockAdminCommon();
++    const user = userEvent.setup();
++    renderWithProviders(<ScoreEntryGridPage />);
++
++    await selectClassArm(user, "arm1");
++    const subjectSelect = (await screen.findByLabelText("Subject")) as HTMLSelectElement;
++    await waitFor(() => expect(subjectSelect).not.toBeDisabled());
++    await user.selectOptions(subjectSelect, "sub1");
++    expect(subjectSelect.value).toBe("sub1");
++
++    await selectClassArm(user, "arm2");
++    expect(await screen.findByText("No subjects have a teacher assigned for this class yet.")).toBeInTheDocument();
++
++    await user.selectOptions(await screen.findByLabelText("Class"), "arm1");
++    const subjectSelectAgain = (await screen.findByLabelText("Subject")) as HTMLSelectElement;
++    await waitFor(() => expect(subjectSelectAgain).not.toBeDisabled());
++    expect(subjectSelectAgain.value).toBe("");
++  });
++});
+diff --git a/apps/web/src/features/grades/ScoreEntryGridPage.tsx b/apps/web/src/features/grades/ScoreEntryGridPage.tsx
+index b68a78d..14f2c27 100644
+--- a/apps/web/src/features/grades/ScoreEntryGridPage.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGridPage.tsx
+@@ -1,4 +1,4 @@
+-import { useMemo, useState } from "react";
++import { useEffect, useMemo, useRef, useState } from "react";
+ import { useSearchParams } from "react-router-dom";
+ import { PageHeader } from "../../components/PageHeader";
+ import { Label } from "../../components/ui/label";
+@@ -6,7 +6,7 @@ import { Spinner } from "../../components/ui/spinner";
+ import { useCurrentUser } from "../shell/use-current-user";
+ import { useMyTeaching } from "../dashboard/use-my-teaching";
+ import { useClasses } from "../classes/use-classes";
+-import { useAllSubjects } from "../classes/use-subjects";
++import { useClassArmDetail } from "../classes/use-class-arm-detail";
+ import { useAssessmentComponents } from "../settings/use-assessment-components";
+ import { useAdminCurrentTerm } from "./use-admin-current-term";
+ import { ScoreEntryGrid } from "./ScoreEntryGrid";
+@@ -40,11 +40,35 @@ export function ScoreEntryGridPage() {
+ 
+   const myTeaching = useMyTeaching();
+   const classes = useClasses();
+-  const subjects = useAllSubjects();
++  // SPEC_V0.5.1.md §2.1/§2.2: a subject is only pickable for a class once a
++  // teacher is assigned to teach it there — reuse the same class-arm-detail
++  // data that already backs the correctly-scoped "Enter grades" links on
++  // the Classes tab (its subjectTeachers is sourced from
++  // subject_teacher_assignment), instead of the unfiltered full subject
++  // list. Only fetched once a class is picked; page/pageSize are irrelevant
++  // here, we only read subjectTeachers.
++  const armDetail = useClassArmDetail(isConfirmedAdmin && classArmId ? classArmId : undefined, 1, 1);
+   const components = useAssessmentComponents();
+   const adminTerm = useAdminCurrentTerm(isConfirmedAdmin);
+   const [termId, setTermId] = useState("");
+ 
++  const subjectOptions = useMemo(() => armDetail.data?.subjectTeachers ?? [], [armDetail.data]);
++
++  // Picking a different class can invalidate the previously-picked subject
++  // (it may have no teacher assigned in the new class) — clear it so the
++  // admin re-picks from the new class's actual options, rather than
++  // leaving a stale cross-product combo selected. Only fires on a real
++  // class change after mount, not on the initial load of a URL-seeded
++  // classArmId+subjectId pair (a stale bookmarked pair is instead caught
++  // by getGrid's own 404, surfaced as a readable error by ScoreEntryGrid).
++  const previousClassArmId = useRef(classArmId);
++  useEffect(() => {
++    if (previousClassArmId.current !== classArmId) {
++      setSubjectId("");
++      previousClassArmId.current = classArmId;
++    }
++  }, [classArmId]);
++
+   const effectiveTermId = isTeacher ? (myTeaching.data?.currentTermId ?? "") : termId || adminTerm.currentTermId || "";
+ 
+   const teacherPairs = myTeaching.data?.subjects ?? [];
+@@ -118,22 +142,26 @@ export function ScoreEntryGridPage() {
+ 
+             <div className="flex flex-col gap-1.5">
+               <Label htmlFor="grid-subject">Subject</Label>
+-              <select
+-                id="grid-subject"
+-                className={SELECT_CLASS}
+-                value={subjectId}
+-                onChange={(event) => setSubjectId(event.target.value)}
+-                disabled={subjects.isLoading}
+-              >
+-                <option value="" disabled>
+-                  Select…
+-                </option>
+-                {(subjects.data ?? []).map((subject) => (
+-                  <option key={subject.id} value={subject.id}>
+-                    {subject.name}
++              {classArmId && !armDetail.isLoading && subjectOptions.length === 0 ? (
++                <p className="flex h-10 items-center text-sm text-muted sm:w-56">No subjects have a teacher assigned for this class yet.</p>
++              ) : (
++                <select
++                  id="grid-subject"
++                  className={SELECT_CLASS}
++                  value={subjectId}
++                  onChange={(event) => setSubjectId(event.target.value)}
++                  disabled={!classArmId || armDetail.isLoading}
++                >
++                  <option value="" disabled>
++                    Select…
+                   </option>
+-                ))}
+-              </select>
++                  {subjectOptions.map((entry) => (
++                    <option key={entry.subjectId} value={entry.subjectId}>
++                      {entry.subjectName}
++                    </option>
++                  ))}
++                </select>
++              )}
+             </div>
+           </>
+         )}
+diff --git a/apps/web/src/features/students/StudentResultsTab.test.tsx b/apps/web/src/features/students/StudentResultsTab.test.tsx
+index eb3d0d7..ba1c692 100644
+--- a/apps/web/src/features/students/StudentResultsTab.test.tsx
++++ b/apps/web/src/features/students/StudentResultsTab.test.tsx
+@@ -49,6 +49,7 @@ const RESULTS: StudentResultsResponse = {
+     {
+       subjectId: "sub1",
+       subjectName: "Mathematics",
++      needsTeacherAssignment: false,
+       totalScore: 56,
+       autoGrade: "C5",
+       overrideGrade: null,
+@@ -91,6 +92,25 @@ describe("StudentResultsTab", () => {
+     expect(screen.getByText("No results yet.")).toBeInTheDocument();
+   });
+ 
++  // SPEC_V0.5.1.md §2.1/Q1(b): an already-graded orphan subject stays
++  // visible, just flagged.
++  it("shows a 'Needs a teacher' badge when needsTeacherAssignment is true", async () => {
++    mockedApiRequest.mockImplementation(async (path) => {
++      if (path === "/api/v1/auth/me") return ADMIN_USER;
++      if (path === "/api/v1/sessions") return SESSIONS;
++      if (path === "/api/v1/terms") return TERMS;
++      if (path === "/api/v1/students/st1/results") {
++        return { ...RESULTS, subjects: [{ ...RESULTS.subjects[0], needsTeacherAssignment: true }] };
++      }
++      throw new Error(`unexpected call: ${path}`);
++    });
++
++    renderWithProviders(<StudentResultsTab studentId="st1" />);
++
++    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
++    expect(screen.getByText("Needs a teacher")).toBeInTheDocument();
++  });
++
+   it("TEACHER with no relationship to the student: renders a graceful 'no access' message, not a crash or blank", async () => {
+     mockedApiRequest.mockImplementation(async (path) => {
+       if (path === "/api/v1/auth/me") return TEACHER_USER;
+diff --git a/apps/web/src/features/students/StudentResultsTab.tsx b/apps/web/src/features/students/StudentResultsTab.tsx
+index 73039c4..f6f69d5 100644
+--- a/apps/web/src/features/students/StudentResultsTab.tsx
++++ b/apps/web/src/features/students/StudentResultsTab.tsx
+@@ -109,7 +109,12 @@ export function StudentResultsTab({ studentId }: StudentResultsTabProps) {
+           <tbody>
+             {data.subjects.map((subject) => (
+               <tr key={subject.subjectId} className="border-b border-muted/10 last:border-0">
+-                <td className="whitespace-nowrap px-4 py-3 text-text">{subject.subjectName}</td>
++                <td className="whitespace-nowrap px-4 py-3 text-text">
++                  <span className="flex items-center gap-1.5">
++                    {subject.subjectName}
++                    {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher" tone="warning" />}
++                  </span>
++                </td>
+                 <td className="whitespace-nowrap px-4 py-3 text-text">
+                   {subject.finalGrade ?? "—"} <span className="text-xs text-muted">({formatScore(subject.totalScore)})</span>
+                 </td>
+diff --git a/docs/API.md b/docs/API.md
+index be2b2b9..5940205 100644
+--- a/docs/API.md
++++ b/docs/API.md
+@@ -386,7 +386,7 @@ arm at all gets `403`.
+   "classArmId": "...", "termId": "...",
+   "students": [{ "studentId": "...", "firstName": "...", "lastName": "...", "admissionNumber": "..." }],
+   "subjects": [{
+-    "subjectId": "...", "subjectName": "Mathematics",
++    "subjectId": "...", "subjectName": "Mathematics", "needsTeacherAssignment": false,
+     "averageScore": 68.8, "averageGrade": "B3",
+     "results": [{ "id": "...", "studentId": "...", "totalScore": 56, "autoGrade": "C5", "overrideGrade": null, "finalGrade": "C5", "subjectPosition": null, "status": "PENDING_APPROVAL" }]
+   }],
+@@ -394,6 +394,14 @@ arm at all gets `403`.
+ }
+ ```
+ 
++`needsTeacherAssignment` (SPEC_V0.5.1.md §2.1, v0.5.1 step 1): `true` when
++no `subject_teacher_assignment` currently exists for this (subject, class
++arm, session) — a subject only ever appears here because it already has
++real results, so it's never hidden for lacking one, only flagged. Same
++field, same meaning, on `GET /grades/review` below and on
++`GET /students/:id/results`/`GET /students/:id/report-card` (the report
++card route predates this doc's Students section — see docs/DECISIONS.md).
++
+ `results[].id` is the `term_subject_result` id — lets an admin/owner
+ viewer target this exact row for `PUT /grades/override` without a second
+ lookup. `subjectPosition`/`overallPosition` are `null` until published
+@@ -476,7 +484,7 @@ results, every subject, same as flipping through a paper report card.
+ {
+   "studentId": "...", "termId": "...", "sessionId": "...",
+   "subjects": [{
+-    "subjectId": "...", "subjectName": "Mathematics",
++    "subjectId": "...", "subjectName": "Mathematics", "needsTeacherAssignment": false,
+     "totalScore": 56, "autoGrade": "C5", "overrideGrade": null, "finalGrade": "C5",
+     "classAverageScore": 33, "classAverageGrade": "F9",
+     "subjectPosition": null, "status": "PENDING_APPROVAL"
+@@ -1060,10 +1068,16 @@ from initial load rather than reactively on the first `409`.
+ ```
+ 
+ **Response `403`**: `TEACHER` requesting a class/subject they aren't
+-assigned to (same tenant).
++personally assigned to (same tenant).
+ 
+ **Response `404`**: any of the four ids don't resolve within the caller's
+-own tenant.
++own tenant, **or** (SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 step 1) no
++`subject_teacher_assignment` exists at all for this (subject, class arm,
++session) — `SCHOOL_ADMIN`/`PROPRIETOR` included. A subject only exists
++for a class once *some* teacher is assigned to teach it there; until
++then it's "not gradeable," not "you lack permission," so this is `404`,
++deliberately different from the `TEACHER` `403` above. Assign a teacher
++via `POST /subject-assignments` to unlock entry.
+ 
+ ### `PUT /grades/grid`
+ 
+@@ -1301,7 +1315,7 @@ draft/pending/published can genuinely coexist for one subject.
+   "classArmId": "...", "termId": "...",
+   "subjects": [
+     {
+-      "subjectId": "...", "subjectName": "Mathematics",
++      "subjectId": "...", "subjectName": "Mathematics", "needsTeacherAssignment": false,
+       "rosterSize": 20, "draftCount": 2, "pendingApprovalCount": 5, "publishedCount": 13,
+       "averageScore": 68.8, "averageGrade": "B3",
+       "canPublish": true
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index 3a0a0d4..0a010f4 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -3075,3 +3075,101 @@ client-side with the Q7 message, no PUT ever fires) — 151 total, up from
+ but now scratch-school-isolated; full backend e2e suite (298) unaffected.
+ Live re-verification of the exact walk failure: the CA1 −1 / CA2 +1
+ weight nudge now saves successfully end to end on a fresh stack.
++
++## 2026-08-19 — v0.5.1 step 1: subject-for-a-class rule + forced teacher assignment (SPEC_V0.5.1.md §2.1/§2.2)
++
++**Rule**: a subject exists for a class only once a `subject_teacher_assignment`
++exists for that exact (subject, class arm, session). One shared helper,
++`getAssignedSubjectMap` (`apps/api/src/grades/subject-assignment.util.ts`),
++is the single source of truth for "which subjects are assigned to this
++class arm this session" — used by `assertTeacherAssignment` (grid entry
++gate), `getClassArmResults`/`getReview`/`getStudentResults`/`getReportCard`
++(the `needsTeacherAssignment` flag), and `ClassArmsService.findOne` (the
++Classes tab's `subjectTeachers`, refactored to it with no behavior change).
++One query shape, so the four surfaces can't drift against each other.
++
++**2.2 turned out to already be structurally satisfied**: `POST
++/subject-assignments` (the only real "add a subject to a class" action —
++`SubjectClassLevel`/`PUT /subjects/:id/levels` is a separate, teacher-free,
++level-wide curriculum-eligibility concept, left untouched) already requires
++a `teacherUserId` — schema `NOT NULL`, DTO required. The actual gap was
++`assertTeacherAssignment`'s admin/proprietor bypass: `SCHOOL_ADMIN`/
++`PROPRIETOR` could grade ANY (subject, class arm) pair via `ScoreEntryGridPage`'s
++free dropdowns regardless of assignment — the real mechanism by which new
++orphans got created. Closed by extending the check to admin/proprietor too
++(existence-only — any teacher, not "is it me" like the `TEACHER` branch),
++throwing `404` ("No teacher is assigned to teach this subject for this
++class"), not `403` — this isn't a permission distinction, it's "this
++pairing isn't gradeable," matching the "hidden, not forbidden" framing used
++everywhere else this rule applies. The `TEACHER` branch's existing `403`
++is unchanged.
++
++**Q1(b) (existing graded-but-unassigned data)**: never hidden, only
++flagged. Falls out for free: overview/review/student-results/report-card
++already only ever list subjects with a real `term_subject_result` row, so
++there's nothing to "hide" there regardless — `needsTeacherAssignment:
++boolean` just gets added to each row. The only place with genuine
++hide-as-an-option behavior is the entry picker (`ScoreEntryGridPage`'s
++Subject dropdown), which now sources its options from
++`GET /class-arms/:id`'s `subjectTeachers` (already correctly assignment-
++filtered — same data that backs the Classes tab's "Enter grades" links)
++instead of the previously-unfiltered `GET /subjects`. No migration/backfill
++needed — the seeded Sunrise data has zero graded-orphan rows (only
++Mathematics/English are ever scored in seed.ts, both backed by real
++`seedSubjectTeacherAssignments` rows).
++
++**Frontend**: `ScoreEntryGridPage`'s admin/proprietor Subject select is
++now populated from `useClassArmDetail(classArmId, 1, 1)` once a class is
++picked (reusing the existing endpoint rather than adding a new one —
++flagged as a Step 3 revisit candidate if the entry-grid picker gets
++reworked anyway, since fetching a full `ClassArmDetail` just for its
++`subjectTeachers` is more than this picker strictly needs). Picking a
++different class clears a previously-picked subject (a ref-tracked "did
++classArmId actually change since mount" guard, not naive `useEffect` on
++every render, to avoid clobbering a URL-seeded `?subjectId=` pair from an
++"Enter grades" link on first load). A `"Needs a teacher assigned"` badge
++(`StatusBadge`, `warning` tone) renders next to the subject name on
++Overview, Review, the Results tab, and the report card wherever
++`needsTeacherAssignment` is true.
++
++**Not touched (flagged, not this step)**: `AddSubjectTeacherDialog`'s own
++Subject dropdown (`useAllSubjects()`) is unfiltered by class level — you
++can pick a JSS-only subject when assigning a teacher to an SSS arm. Not
++what 2.1 or 2.2 asked for; a candidate for a later step. Also,
++`GET /students/:id/report-card` (and its `remarks/*` write endpoints) were
++never documented in `docs/API.md` at all — a pre-existing gap from v0.5
++step 4/6 that predates this step; only patched enough here to not leave a
++dangling "see below" reference for the new field, not written up in full.
++
++**Test hygiene fallout**: closing the admin bypass broke seven *existing*
++e2e specs that scored an admin-created scratch subject without ever
++creating an assignment for it (`grades-grid`, `grades-publish`, `terms`,
++`report-card`, `student-results`, `class-arm-results`, `grades-review`) —
++expected, since they were implicitly relying on the bypass this step
++deliberately removes. Fixed by having each file's own `score()`/
++`scoreComponent()` helper upsert a `subjectTeacherAssignment` for whatever
++(subject, class arm, session) it's about to write to (idempotent, keyed on
++the real `@@unique([subjectId, classArmId, sessionId])`) — one line per
++file, no per-call-site tracking needed. Two files (`student-results`,
++`class-arm-results`) have a specific "this subject is taught by nobody
++assigned to the CALLING teacher" test fixture; those got an explicit
++assignment to a different, already-full-access teacher (the class-teacher)
++instead of the generic upsert, to keep that fixture's actual point intact
++rather than accidentally assigning the exact teacher the test is proving
++doesn't teach it.
++
++**Proof**: new `subject-for-a-class-rule.e2e-spec.ts` (4 tests, scratch
++bundle per SPEC_V0.5.1.md's own Q1(b) scenario, `createScratchBundle`
++pattern) — unassigned pair rejected (404 admin/proprietor, 403 teacher);
++assigning makes it appear in class-arm detail and gradeable for all three
++roles; an already-graded orphan (assignment created → scored → removed via
++the real `DELETE /subject-assignments/:id`) stays visible with
++`needsTeacherAssignment: true` across overview/review/student-results/
++report-card and re-clears once reassigned; cross-tenant 404. Plus 7 new/
++updated Vitest cases (`ScoreEntryGridPage` admin picker scoping — 3 new;
++`ClassArmResultsView`/`ReviewPublishPage`/`ReportCardPage`/
++`StudentResultsTab` badge rendering — 4 new). Full `pnpm run ci` (typecheck
+++ lint + all 27 e2e suites/302 tests + 29 web Vitest files/158 tests + unit)
++green on a fresh `docker compose down -v` → migrate → seed database;
++`docker compose up -d --build` boots the full stack from scratch
++(api + web images rebuilt, `/health` returns `{"status":"ok","db":true,"redis":true}`).
+diff --git a/packages/shared/src/grades.ts b/packages/shared/src/grades.ts
+index c0ea80e..bc51f1c 100644
+--- a/packages/shared/src/grades.ts
++++ b/packages/shared/src/grades.ts
+@@ -145,6 +145,10 @@ export interface ClassArmResultsSubjectRow {
+ export interface ClassArmResultsSubject {
+   subjectId: string;
+   subjectName: string;
++  // SPEC_V0.5.1.md §2.1: true when no subject_teacher_assignment currently
++  // exists for this (subject, class arm, session) — the subject already has
++  // real results (never hidden once graded) but needs a teacher assigned.
++  needsTeacherAssignment: boolean;
+   averageScore: number;
+   averageGrade: string | null;
+   results: ClassArmResultsSubjectRow[];
+@@ -172,6 +176,7 @@ export interface ClassArmResultsResponse {
+ export interface GradesReviewSubject {
+   subjectId: string;
+   subjectName: string;
++  needsTeacherAssignment: boolean;
+   rosterSize: number;
+   draftCount: number;
+   pendingApprovalCount: number;
+@@ -192,6 +197,7 @@ export interface GradesReviewResponse {
+ export interface StudentResultSubject {
+   subjectId: string;
+   subjectName: string;
++  needsTeacherAssignment: boolean;
+   totalScore: number;
+   autoGrade: string | null;
+   overrideGrade: string | null;
+@@ -258,6 +264,7 @@ export interface ReportCardComponent {
+ export interface ReportCardSubject {
+   subjectId: string;
+   subjectName: string;
++  needsTeacherAssignment: boolean;
+   components: ReportCardComponent[];
+   totalScore: number;
+   autoGrade: string | null;

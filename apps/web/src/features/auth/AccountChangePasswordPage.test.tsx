@@ -87,6 +87,27 @@ describe("AccountChangePasswordPage", () => {
     ).resolves.toMatchObject({ accessToken: "login-access-token" });
   });
 
+  it("shows the 8-character requirement up front, and a <8-char new password blocks submission client-side — no API call, no success, no navigation", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path) => {
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(<AccountChangePasswordPage />);
+
+    // Shown up front, before any submit attempt.
+    expect(screen.getByText("At least 8 characters.")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Current password"), OLD_PASSWORD);
+    await user.type(screen.getByLabelText("New password"), "short1!");
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+
+    expect(await screen.findByText("Password must be at least 8 characters")).toBeInTheDocument();
+    expect(screen.queryByText("Password changed.")).not.toBeInTheDocument();
+    expect(mockedApiRequest).not.toHaveBeenCalled();
+  });
+
   it("wrong current password shows the API's error message, not a silent no-op", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path, options) => {

@@ -19,6 +19,14 @@ interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   body?: unknown;
   query?: Record<string, string | number | undefined>;
+  // Some endpoints can legitimately 401 for a reason that has nothing to
+  // do with the access token (e.g. POST /auth/change-password rejecting a
+  // wrong currentPassword) — retrying with a refreshed token would just
+  // 401 again for the same reason, and the fallback below would then
+  // authStore.clear() the caller's perfectly valid session out from under
+  // them. Callers that know their 401 means "the submitted data was
+  // wrong," not "my token expired," opt out of the retry-then-logout path.
+  skipAuthRetry?: boolean;
 }
 
 function buildUrl(path: string, query?: RequestOptions["query"]): string {
@@ -85,7 +93,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   try {
     return await rawFetch<T>(path, options, tokens?.accessToken);
   } catch (error) {
-    if (error instanceof ApiError && error.status === 401 && tokens) {
+    if (error instanceof ApiError && error.status === 401 && tokens && !options.skipAuthRetry) {
       try {
         const refreshed = await refreshTokens();
         authStore.setTokens(refreshed);

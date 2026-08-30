@@ -66,7 +66,16 @@ export function AccountChangePasswordPage() {
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="newPassword">New password</Label>
-              <Input id="newPassword" type="password" autoComplete="new-password" {...register("newPassword")} />
+              <Input
+                id="newPassword"
+                type="password"
+                autoComplete="new-password"
+                aria-describedby="newPassword-hint"
+                {...register("newPassword")}
+              />
+              <p id="newPassword-hint" className="text-xs text-muted">
+                At least 8 characters.
+              </p>
               <FieldError message={errors.newPassword?.message} />
             </div>
 

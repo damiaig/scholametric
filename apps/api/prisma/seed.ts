@@ -557,9 +557,13 @@ async function seedStudents(
       create: { schoolId, studentId: created.id, classArmId, sessionId },
     });
 
+    // The family's REAL surname belongs in lastName — it's what
+    // provisionFamily's surnameToStem() reads to build the portal
+    // username stem (ADEYEMI, not HOUSEHOLD). firstName is just a
+    // plausible placeholder so the account displays like a real parent.
     await seedPrimaryGuardian(schoolId, created.id, {
-      firstName: student.lastName,
-      lastName: "Household",
+      firstName: "Guardian",
+      lastName: student.lastName,
       phone: guardianPhone,
       email: guardianEmail,
     });
@@ -605,9 +609,12 @@ async function seedBulkClassArm(
       create: { schoolId, studentId: created.id, classArmId, sessionId },
     });
 
+    // Same fix as seedStudents above: lastName carries the real family
+    // surname (what surnameToStem() reads); firstName is just a
+    // plausible placeholder.
     await seedPrimaryGuardian(schoolId, created.id, {
-      firstName: student.lastName,
-      lastName: "Household",
+      firstName: "Guardian",
+      lastName: student.lastName,
       phone: guardianPhone,
       email: guardianEmail,
     });

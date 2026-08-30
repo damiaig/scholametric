@@ -1,0 +1,822 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index cb778e0..bda1e87 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -73,5 +73,5 @@ jobs:
+       - name: Seed database
+         run: pnpm seed
+ 
+-      - name: Typecheck, lint, test
++      - name: Typecheck, lint, test, unit test
+         run: pnpm run ci
+diff --git a/apps/api/package.json b/apps/api/package.json
+index 4b855dc..7631051 100644
+--- a/apps/api/package.json
++++ b/apps/api/package.json
+@@ -10,6 +10,7 @@
+     "typecheck": "tsc --noEmit -p tsconfig.json",
+     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\"",
+     "test": "jest --config ./test/jest-e2e.json --runInBand",
++    "test:unit": "jest --config ./test/jest-unit.json",
+     "prisma:migrate": "prisma migrate dev",
+     "prisma:seed": "prisma db seed"
+   },
+diff --git a/apps/api/prisma/migrations/20260815142448_v0_5_absent_term_lifecycle_remarks/migration.sql b/apps/api/prisma/migrations/20260815142448_v0_5_absent_term_lifecycle_remarks/migration.sql
+new file mode 100644
+index 0000000..060797a
+--- /dev/null
++++ b/apps/api/prisma/migrations/20260815142448_v0_5_absent_term_lifecycle_remarks/migration.sql
+@@ -0,0 +1,117 @@
++-- NOTE: prisma migrate dev's diff engine wanted to DROP
++-- students_first_name_trgm_idx / students_last_name_trgm_idx here — both
++-- are hand-added (initial migration; Prisma's index DSL can't express
++-- gin_trgm_ops) and untracked by schema.prisma, so an unrelated schema
++-- change makes Prisma see them as "extra" and want them gone. Removed
++-- from this migration by hand — never touch these two indexes as a side
++-- effect of an unrelated change. See docs/DECISIONS.md.
++
++-- AlterTable
++ALTER TABLE "student_scores" ADD COLUMN     "is_absent" BOOLEAN NOT NULL DEFAULT false;
++
++-- A row can be a real score OR absent, never both — this is a data-
++-- integrity invariant (an uninterpretable row), not a business rule, so
++-- it belongs at the DB layer regardless of which future write path
++-- (score-entry API, a later import, a manual fix) produces the row.
++-- Step 2's DTO enforces the same rule again at the API layer.
++ALTER TABLE "student_scores" ADD CONSTRAINT "student_scores_raw_score_or_absent_check"
++  CHECK (NOT (raw_score IS NOT NULL AND is_absent = true));
++
++-- AlterTable
++ALTER TABLE "terms" ADD COLUMN     "closed_at" TIMESTAMP(3),
++ADD COLUMN     "closed_by" UUID;
++
++-- CreateTable
++CREATE TABLE "term_unlocks" (
++    "id" UUID NOT NULL,
++    "school_id" UUID NOT NULL,
++    "term_id" UUID NOT NULL,
++    "class_arm_id" UUID NOT NULL,
++    "subject_id" UUID NOT NULL,
++    "reason" TEXT NOT NULL,
++    "unlocked_by" UUID NOT NULL,
++    "unlocked_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++    "relocked_by" UUID,
++    "relocked_at" TIMESTAMP(3),
++    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++    "updated_at" TIMESTAMP(3) NOT NULL,
++
++    CONSTRAINT "term_unlocks_pkey" PRIMARY KEY ("id")
++);
++
++-- CreateTable
++CREATE TABLE "term_remarks" (
++    "id" UUID NOT NULL,
++    "school_id" UUID NOT NULL,
++    "student_id" UUID NOT NULL,
++    "session_id" UUID NOT NULL,
++    "term_id" UUID NOT NULL,
++    "class_arm_id" UUID NOT NULL,
++    "teacher_remark" TEXT,
++    "teacher_remark_by" UUID,
++    "teacher_remark_at" TIMESTAMP(3),
++    "principal_remark" TEXT,
++    "principal_remark_by" UUID,
++    "principal_remark_at" TIMESTAMP(3),
++    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
++    "updated_at" TIMESTAMP(3) NOT NULL,
++
++    CONSTRAINT "term_remarks_pkey" PRIMARY KEY ("id")
++);
++
++-- CreateIndex
++CREATE INDEX "term_unlocks_school_id_term_id_class_arm_id_subject_id_idx" ON "term_unlocks"("school_id", "term_id", "class_arm_id", "subject_id");
++
++-- At most one ACTIVE (not-yet-relocked) unlock per (term, class arm,
++-- subject) at a time — Prisma's schema DSL can't express a partial
++-- unique index, same pattern as the is_current partial uniques elsewhere
++-- in this schema (hand-added in earlier migrations).
++CREATE UNIQUE INDEX "term_unlocks_active_unique" ON "term_unlocks"("term_id", "class_arm_id", "subject_id") WHERE "relocked_at" IS NULL;
++
++-- CreateIndex
++CREATE INDEX "term_remarks_school_id_class_arm_id_term_id_idx" ON "term_remarks"("school_id", "class_arm_id", "term_id");
++
++-- CreateIndex
++CREATE UNIQUE INDEX "term_remarks_student_id_term_id_session_id_key" ON "term_remarks"("student_id", "term_id", "session_id");
++
++-- AddForeignKey
++ALTER TABLE "terms" ADD CONSTRAINT "terms_closed_by_fkey" FOREIGN KEY ("closed_by") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_unlocks" ADD CONSTRAINT "term_unlocks_school_id_fkey" FOREIGN KEY ("school_id") REFERENCES "schools"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_unlocks" ADD CONSTRAINT "term_unlocks_term_id_fkey" FOREIGN KEY ("term_id") REFERENCES "terms"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_unlocks" ADD CONSTRAINT "term_unlocks_class_arm_id_fkey" FOREIGN KEY ("class_arm_id") REFERENCES "class_arms"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_unlocks" ADD CONSTRAINT "term_unlocks_subject_id_fkey" FOREIGN KEY ("subject_id") REFERENCES "subjects"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_unlocks" ADD CONSTRAINT "term_unlocks_unlocked_by_fkey" FOREIGN KEY ("unlocked_by") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_unlocks" ADD CONSTRAINT "term_unlocks_relocked_by_fkey" FOREIGN KEY ("relocked_by") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_remarks" ADD CONSTRAINT "term_remarks_school_id_fkey" FOREIGN KEY ("school_id") REFERENCES "schools"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_remarks" ADD CONSTRAINT "term_remarks_student_id_fkey" FOREIGN KEY ("student_id") REFERENCES "students"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_remarks" ADD CONSTRAINT "term_remarks_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "academic_sessions"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_remarks" ADD CONSTRAINT "term_remarks_term_id_fkey" FOREIGN KEY ("term_id") REFERENCES "terms"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_remarks" ADD CONSTRAINT "term_remarks_class_arm_id_fkey" FOREIGN KEY ("class_arm_id") REFERENCES "class_arms"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_remarks" ADD CONSTRAINT "term_remarks_teacher_remark_by_fkey" FOREIGN KEY ("teacher_remark_by") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
++
++-- AddForeignKey
++ALTER TABLE "term_remarks" ADD CONSTRAINT "term_remarks_principal_remark_by_fkey" FOREIGN KEY ("principal_remark_by") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+diff --git a/apps/api/prisma/schema.prisma b/apps/api/prisma/schema.prisma
+index 5817f58..17d6066 100644
+--- a/apps/api/prisma/schema.prisma
++++ b/apps/api/prisma/schema.prisma
+@@ -113,6 +113,8 @@ model School {
+   studentScores             StudentScore[]
+   termSubjectResults        TermSubjectResult[]
+   termOverallResults        TermOverallResult[]
++  termUnlocks               TermUnlock[]
++  termRemarks               TermRemark[]
+ 
+   @@map("schools")
+ }
+@@ -141,6 +143,11 @@ model User {
+   classTeacherAssignments   ClassTeacherAssignment[]
+   subjectTeacherAssignments SubjectTeacherAssignment[]
+   scoresEntered             StudentScore[]             @relation("StudentScoreEnteredBy")
++  termsClosed               Term[]                     @relation("TermClosedBy")
++  termUnlocksUnlocked       TermUnlock[]               @relation("TermUnlockUnlockedBy")
++  termUnlocksRelocked       TermUnlock[]               @relation("TermUnlockRelockedBy")
++  termRemarksAsTeacher      TermRemark[]               @relation("TermRemarkTeacherBy")
++  termRemarksAsPrincipal    TermRemark[]               @relation("TermRemarkPrincipalBy")
+ 
+   @@unique([schoolId, email])
+   @@index([schoolId])
+@@ -185,6 +192,7 @@ model AcademicSession {
+   studentScores             StudentScore[]
+   termSubjectResults        TermSubjectResult[]
+   termOverallResults        TermOverallResult[]
++  termRemarks               TermRemark[]
+ 
+   @@unique([schoolId, name])
+   @@index([schoolId])
+@@ -194,21 +202,31 @@ model AcademicSession {
+ // Exactly one is_current = true per session is enforced by a partial
+ // unique index added by hand in the initial migration, same as above.
+ model Term {
+-  id        String   @id @default(uuid(7)) @db.Uuid
+-  schoolId  String   @map("school_id") @db.Uuid
+-  sessionId String   @map("session_id") @db.Uuid
++  id        String    @id @default(uuid(7)) @db.Uuid
++  schoolId  String    @map("school_id") @db.Uuid
++  sessionId String    @map("session_id") @db.Uuid
+   name      TermName
+-  startsOn  DateTime @map("starts_on") @db.Date
+-  endsOn    DateTime @map("ends_on") @db.Date
+-  isCurrent Boolean  @default(false) @map("is_current")
+-  createdAt DateTime @default(now()) @map("created_at")
+-  updatedAt DateTime @updatedAt @map("updated_at")
++  startsOn  DateTime  @map("starts_on") @db.Date
++  endsOn    DateTime  @map("ends_on") @db.Date
++  isCurrent Boolean   @default(false) @map("is_current")
++  // SPEC_V0.5.md §2.3 — null = open (v0.4's implicit state, unchanged for
++  // every existing term). Set by a deliberate principal/proprietor close
++  // action (v0.5 step 3); there is no "reopen the whole term" concept —
++  // editing a closed term happens per class-arm+subject via term_unlocks
++  // below, not by flipping this back to null.
++  closedAt  DateTime? @map("closed_at")
++  closedBy  String?   @map("closed_by") @db.Uuid
++  createdAt DateTime  @default(now()) @map("created_at")
++  updatedAt DateTime  @updatedAt @map("updated_at")
+ 
+   school             School              @relation(fields: [schoolId], references: [id])
+   session            AcademicSession     @relation(fields: [sessionId], references: [id])
++  closedByUser       User?               @relation("TermClosedBy", fields: [closedBy], references: [id])
+   studentScores      StudentScore[]
+   termSubjectResults TermSubjectResult[]
+   termOverallResults TermOverallResult[]
++  termUnlocks        TermUnlock[]
++  termRemarks        TermRemark[]
+ 
+   @@unique([sessionId, name])
+   @@index([schoolId])
+@@ -248,6 +266,8 @@ model ClassArm {
+   studentScores             StudentScore[]
+   termSubjectResults        TermSubjectResult[]
+   termOverallResults        TermOverallResult[]
++  termUnlocks               TermUnlock[]
++  termRemarks               TermRemark[]
+ 
+   @@unique([classLevelId, name])
+   @@index([schoolId])
+@@ -286,6 +306,7 @@ model Student {
+   studentScores      StudentScore[]
+   termSubjectResults TermSubjectResult[]
+   termOverallResults TermOverallResult[]
++  termRemarks        TermRemark[]
+ 
+   @@unique([schoolId, admissionNumber])
+   @@index([schoolId])
+@@ -367,6 +388,7 @@ model Subject {
+   teacherAssignments SubjectTeacherAssignment[]
+   studentScores      StudentScore[]
+   termSubjectResults TermSubjectResult[]
++  termUnlocks        TermUnlock[]
+ 
+   @@unique([schoolId, name])
+   @@index([schoolId])
+@@ -557,6 +579,16 @@ model StudentScore {
+   // student_enrollments on every read.
+   classArmId  String    @map("class_arm_id") @db.Uuid
+   rawScore    Decimal?  @map("raw_score") @db.Decimal(5, 2)
++  // SPEC_V0.5.md §2.1 — a third, explicit state distinct from both
++  // not-entered (no row / raw_score null, isAbsent false) and a real 0
++  // (raw_score set). Excluded from the weighted subject total (contributes
++  // nothing, not a 0, not rescaled — grade-computation.ts), but counts as a
++  // DECIDED outcome for computeSubjectStatus, unlike not-entered. A row
++  // with both raw_score set AND is_absent true is uninterpretable — see
++  // this table's CHECK constraint (hand-added in the migration SQL,
++  // Prisma's DSL can't express it) and the DTO validation step 2 adds on
++  // top of it.
++  isAbsent    Boolean   @default(false) @map("is_absent")
+   enteredBy   String?   @map("entered_by") @db.Uuid
+   enteredAt   DateTime? @map("entered_at")
+   createdAt   DateTime  @default(now()) @map("created_at")
+@@ -650,3 +682,73 @@ model TermOverallResult {
+   @@index([schoolId, classArmId, termId])
+   @@map("term_overall_results")
+ }
++
++// SPEC_V0.5.md §2.3/Q3 — a principal-granted clearance to edit a CLOSED
++// term's scores, scoped to one class arm + subject (not the whole term —
++// minimizes blast radius). One row per unlock EPISODE, not a flag: created
++// on unlock (relocked_at null = currently active), closed out on re-lock
++// (relocked_at set). "Currently unlocked" is `WHERE relocked_at IS NULL`;
++// at most one such row per (term, class arm, subject) is enforced by a
++// hand-added partial unique index in the migration SQL (Prisma's DSL can't
++// express partial indexes — same pattern as the is_current partial
++// uniques elsewhere in this file). `reason` is required, not optional — a
++// clearance action needs a stated reason for accountability.
++model TermUnlock {
++  id         String    @id @default(uuid(7)) @db.Uuid
++  schoolId   String    @map("school_id") @db.Uuid
++  termId     String    @map("term_id") @db.Uuid
++  classArmId String    @map("class_arm_id") @db.Uuid
++  subjectId  String    @map("subject_id") @db.Uuid
++  reason     String
++  unlockedBy String    @map("unlocked_by") @db.Uuid
++  unlockedAt DateTime  @default(now()) @map("unlocked_at")
++  relockedBy String?   @map("relocked_by") @db.Uuid
++  relockedAt DateTime? @map("relocked_at")
++  createdAt  DateTime  @default(now()) @map("created_at")
++  updatedAt  DateTime  @updatedAt @map("updated_at")
++
++  school         School   @relation(fields: [schoolId], references: [id])
++  term           Term     @relation(fields: [termId], references: [id])
++  classArm       ClassArm @relation(fields: [classArmId], references: [id])
++  subject        Subject  @relation(fields: [subjectId], references: [id])
++  unlockedByUser User     @relation("TermUnlockUnlockedBy", fields: [unlockedBy], references: [id])
++  relockedByUser User?    @relation("TermUnlockRelockedBy", fields: [relockedBy], references: [id])
++
++  @@index([schoolId, termId, classArmId, subjectId])
++  @@map("term_unlocks")
++}
++
++// SPEC_V0.5.md §2.4/Q6 — two free-text remarks per student+term: the class
++// teacher's remark and the principal's remark, each independently
++// attributed (who wrote it, when). classArmId is denormalized, same
++// reasoning as term_overall_results — a report-card run or a remarks-entry
++// screen needs "every remark for this whole class arm's roster," not a
++// per-student lookup re-deriving the arm from enrollment each time.
++model TermRemark {
++  id                String    @id @default(uuid(7)) @db.Uuid
++  schoolId          String    @map("school_id") @db.Uuid
++  studentId         String    @map("student_id") @db.Uuid
++  sessionId         String    @map("session_id") @db.Uuid
++  termId            String    @map("term_id") @db.Uuid
++  classArmId        String    @map("class_arm_id") @db.Uuid
++  teacherRemark     String?   @map("teacher_remark")
++  teacherRemarkBy   String?   @map("teacher_remark_by") @db.Uuid
++  teacherRemarkAt   DateTime? @map("teacher_remark_at")
++  principalRemark   String?   @map("principal_remark")
++  principalRemarkBy String?   @map("principal_remark_by") @db.Uuid
++  principalRemarkAt DateTime? @map("principal_remark_at")
++  createdAt         DateTime  @default(now()) @map("created_at")
++  updatedAt         DateTime  @updatedAt @map("updated_at")
++
++  school                School          @relation(fields: [schoolId], references: [id])
++  student               Student         @relation(fields: [studentId], references: [id])
++  session               AcademicSession @relation(fields: [sessionId], references: [id])
++  term                  Term            @relation(fields: [termId], references: [id])
++  classArm              ClassArm        @relation(fields: [classArmId], references: [id])
++  teacherRemarkByUser   User?           @relation("TermRemarkTeacherBy", fields: [teacherRemarkBy], references: [id])
++  principalRemarkByUser User?           @relation("TermRemarkPrincipalBy", fields: [principalRemarkBy], references: [id])
++
++  @@unique([studentId, termId, sessionId])
++  @@index([schoolId, classArmId, termId])
++  @@map("term_remarks")
++}
+diff --git a/apps/api/prisma/seed.ts b/apps/api/prisma/seed.ts
+index 1193b34..bd1c3e5 100644
+--- a/apps/api/prisma/seed.ts
++++ b/apps/api/prisma/seed.ts
+@@ -588,20 +588,39 @@ async function seedSubjectGrades(params: {
+   boundaries: GradeBoundaryInput[];
+   enteredByUserId: string;
+   publish: boolean;
++  // SPEC_V0.5.md §2.1 — indices are positions in this call's own
++  // studentId-ordered enrollment list (below), not SUNRISE_STUDENTS array
++  // positions. Marks that student ABSENT for that component instead of
++  // giving them a deterministic score.
++  absentStudentComponents?: Array<{ studentIndex: number; componentId: string }>;
+ }): Promise<string[]> {
+-  const { schoolId, sessionId, termId, classArmId, subjectId, subjectIndex, components, boundaries, enteredByUserId, publish } = params;
++  const {
++    schoolId,
++    sessionId,
++    termId,
++    classArmId,
++    subjectId,
++    subjectIndex,
++    components,
++    boundaries,
++    enteredByUserId,
++    publish,
++    absentStudentComponents = [],
++  } = params;
+ 
+   const enrollments = await prisma.studentEnrollment.findMany({
+     where: { schoolId, classArmId, sessionId },
+     orderBy: { studentId: "asc" },
+   });
+   const studentIds = enrollments.map((e) => e.studentId);
++  const absentSet = new Set(absentStudentComponents.map((a) => `${a.studentIndex}:${a.componentId}`));
+ 
+   for (let i = 0; i < studentIds.length; i++) {
+     const studentId = studentIds[i];
+     for (let c = 0; c < components.length; c++) {
+       const component = components[c];
+-      const rawScore = deterministicScore(i, c, subjectIndex, component.maxScore);
++      const isAbsent = absentSet.has(`${i}:${component.id}`);
++      const rawScore = isAbsent ? null : deterministicScore(i, c, subjectIndex, component.maxScore);
+       await prisma.studentScore.upsert({
+         where: {
+           studentId_subjectId_componentId_termId_sessionId: {
+@@ -612,7 +631,7 @@ async function seedSubjectGrades(params: {
+             sessionId,
+           },
+         },
+-        update: { rawScore, enteredBy: enteredByUserId, enteredAt: new Date() },
++        update: { rawScore, isAbsent, enteredBy: enteredByUserId, enteredAt: new Date() },
+         create: {
+           schoolId,
+           studentId,
+@@ -622,6 +641,7 @@ async function seedSubjectGrades(params: {
+           termId,
+           classArmId,
+           rawScore,
++          isAbsent,
+           enteredBy: enteredByUserId,
+           enteredAt: new Date(),
+         },
+@@ -636,6 +656,7 @@ async function seedSubjectGrades(params: {
+     const scoreInputs = scores.map((s) => ({
+       componentId: s.componentId,
+       rawScore: s.rawScore === null ? null : Number(s.rawScore),
++      isAbsent: s.isAbsent,
+     }));
+     totals.set(studentId, computeSubjectTotal(components, scoreInputs));
+     draftOrPending.set(studentId, computeSubjectStatus(components, scoreInputs));
+@@ -907,6 +928,125 @@ async function main() {
+     });
+   }
+ 
++  // SPEC_V0.5.md §2.1/§2.3 — a fresh Second Term slice, deliberately not
++  // touching First Term's already-reviewed v0.4 baseline (docs/DECISIONS.md).
++  // JSS 2 A Mathematics (the ~100-student bulk arm, term-scoped so First
++  // Term's data is untouched): 3 students marked absent across 3 different
++  // components incl. one absent-exam, then the term closed by the
++  // principal, then one fully-resolved unlock -> edit -> relock round trip.
++  const sunriseSecondTermId = sunriseAcademics.termIds[TermName.SECOND];
++  const jss2AArmId = sunriseAcademics.arms["JSS 2-A"];
++  const [ca1Component, ca2Component, examComponent] = sunriseComponents;
++
++  const secondTermMathStudentIds = await seedSubjectGrades({
++    schoolId: sunrise.id,
++    sessionId: sunriseAcademics.sessionId,
++    termId: sunriseSecondTermId,
++    classArmId: jss2AArmId,
++    subjectId: sunriseSubjectIds["Mathematics"],
++    subjectIndex: 0,
++    components: sunriseComponents,
++    boundaries: sunriseBoundaries,
++    enteredByUserId: sunriseTeacherUserIds[0],
++    publish: true,
++    absentStudentComponents: [
++      { studentIndex: 3, componentId: ca1Component.id },
++      { studentIndex: 47, componentId: ca2Component.id },
++      { studentIndex: 91, componentId: examComponent.id },
++    ],
++  });
++
++  // Principal closes Second Term (SPEC_V0.5.md §2.3) — read-only from here;
++  // editing requires the unlock flow below. Fixed timestamp, not `new
++  // Date()` — stable across reseeds, same reproducibility principle as
++  // deterministicScore above.
++  await prisma.term.update({
++    where: { id: sunriseSecondTermId },
++    data: { closedAt: new Date("2027-01-18T08:00:00Z"), closedBy: sunriseAdmin.id },
++  });
++
++  // A fully-resolved unlock -> edit -> relock round trip for JSS 2 A
++  // Mathematics, demoable from seed for step 3's term-lifecycle UI. The
++  // "edit" corrects one student's CA 1 score directly (no HTTP surface yet
++  // — same seed-writes-state-directly pattern as seedSubjectGrades /
++  // seedOverallResults) and its term_subject_result total is recomputed to
++  // match, mirroring "an edit recomputes total/grade/position and
++  // re-publishes the corrected number" (SPEC_V0.5.md §2.3).
++  const unlockedAt = new Date("2027-01-20T09:00:00Z");
++  const relockedAt = new Date("2027-01-20T09:20:00Z");
++  const correctedStudentId = secondTermMathStudentIds[10];
++  const correctedScoreWhere = {
++    studentId_subjectId_componentId_termId_sessionId: {
++      studentId: correctedStudentId,
++      subjectId: sunriseSubjectIds["Mathematics"],
++      componentId: ca1Component.id,
++      termId: sunriseSecondTermId,
++      sessionId: sunriseAcademics.sessionId,
++    },
++  };
++  await prisma.studentScore.update({
++    where: correctedScoreWhere,
++    data: { rawScore: 19, isAbsent: false, enteredBy: sunriseTeacherUserIds[0], enteredAt: unlockedAt },
++  });
++  const correctedScores = await prisma.studentScore.findMany({
++    where: {
++      studentId: correctedStudentId,
++      subjectId: sunriseSubjectIds["Mathematics"],
++      termId: sunriseSecondTermId,
++      sessionId: sunriseAcademics.sessionId,
++    },
++  });
++  const correctedScoreInputs = correctedScores.map((s) => ({
++    componentId: s.componentId,
++    rawScore: s.rawScore === null ? null : Number(s.rawScore),
++    isAbsent: s.isAbsent,
++  }));
++  const correctedTotal = computeSubjectTotal(sunriseComponents, correctedScoreInputs);
++  const correctedGrade = resolveGradeBand(correctedTotal, sunriseBoundaries);
++  await prisma.termSubjectResult.update({
++    where: {
++      studentId_subjectId_termId_sessionId: {
++        studentId: correctedStudentId,
++        subjectId: sunriseSubjectIds["Mathematics"],
++        termId: sunriseSecondTermId,
++        sessionId: sunriseAcademics.sessionId,
++      },
++    },
++    data: { totalScore: correctedTotal, autoGrade: correctedGrade, finalGrade: correctedGrade },
++  });
++
++  // The active-unlock partial-unique index (term_unlocks_active_unique)
++  // only guards ACTIVE (relocked_at IS NULL) rows — this one is already
++  // resolved, so a plain upsert-by-uniqueness isn't available; check first
++  // so reseeding doesn't pile up duplicate resolved rows.
++  const existingUnlock = await prisma.termUnlock.findFirst({
++    where: { termId: sunriseSecondTermId, classArmId: jss2AArmId, subjectId: sunriseSubjectIds["Mathematics"] },
++  });
++  if (!existingUnlock) {
++    await prisma.termUnlock.create({
++      data: {
++        schoolId: sunrise.id,
++        termId: sunriseSecondTermId,
++        classArmId: jss2AArmId,
++        subjectId: sunriseSubjectIds["Mathematics"],
++        reason: "Parent flagged a CA 1 transcription error at the term review meeting",
++        unlockedBy: sunriseAdmin.id,
++        unlockedAt,
++        relockedBy: sunriseAdmin.id,
++        relockedAt,
++      },
++    });
++  }
++
++  await seedOverallResults({
++    schoolId: sunrise.id,
++    sessionId: sunriseAcademics.sessionId,
++    termId: sunriseSecondTermId,
++    classArmId: jss2AArmId,
++    studentIds: secondTermMathStudentIds,
++    boundaries: sunriseBoundaries,
++  });
++
+   // SPEC_V0.3.md §3: a teacher forced through change-password on first
+   // login — seeded separately from SUNRISE_TEACHERS (not added to that
+   // array) so it never enters the class-teacher/subject-teacher
+diff --git a/apps/api/src/grades/grade-computation.spec.ts b/apps/api/src/grades/grade-computation.spec.ts
+new file mode 100644
+index 0000000..f709518
+--- /dev/null
++++ b/apps/api/src/grades/grade-computation.spec.ts
+@@ -0,0 +1,83 @@
++import { computeSubjectTotal, computeSubjectStatus, type ComponentInput, type ComponentScoreInput } from "./grade-computation";
++
++describe("computeSubjectTotal — absent exclusion (SPEC_V0.5.md §2.1)", () => {
++  const components: ComponentInput[] = [
++    { id: "ca1", weight: 20, maxScore: 20, requiresApproval: false },
++    { id: "ca2", weight: 20, maxScore: 20, requiresApproval: false },
++    { id: "exam", weight: 60, maxScore: 100, requiresApproval: true },
++  ];
++
++  it("excludes an absent component from the weighted total — hand-verified example", () => {
++    // CA1 18/20 w20 + CA2 ABSENT + Exam 55/100 w60 = 51, NOT a rescale to 63.75.
++    const scores: ComponentScoreInput[] = [
++      { componentId: "ca1", rawScore: 18, isAbsent: false },
++      { componentId: "ca2", rawScore: null, isAbsent: true },
++      { componentId: "exam", rawScore: 55, isAbsent: false },
++    ];
++    expect(computeSubjectTotal(components, scores)).toBe(51);
++  });
++
++  it("returns 0 when absent for every component", () => {
++    const scores: ComponentScoreInput[] = [
++      { componentId: "ca1", rawScore: null, isAbsent: true },
++      { componentId: "ca2", rawScore: null, isAbsent: true },
++      { componentId: "exam", rawScore: null, isAbsent: true },
++    ];
++    expect(computeSubjectTotal(components, scores)).toBe(0);
++  });
++
++  it("mixes scored, absent, and not-entered components correctly", () => {
++    const scores: ComponentScoreInput[] = [
++      { componentId: "ca1", rawScore: 10, isAbsent: false },
++      { componentId: "ca2", rawScore: null, isAbsent: true },
++      // exam: no row at all — not entered
++    ];
++    // Only CA1 contributes: (10/20)*20 = 10.
++    expect(computeSubjectTotal(components, scores)).toBe(10);
++  });
++
++  it("gives not-entered and absent the SAME total but a DIFFERENT status", () => {
++    const notEntered: ComponentScoreInput[] = [
++      { componentId: "ca1", rawScore: 18, isAbsent: false },
++      { componentId: "ca2", rawScore: 20, isAbsent: false },
++      // exam not entered at all
++    ];
++    const absentExam: ComponentScoreInput[] = [
++      { componentId: "ca1", rawScore: 18, isAbsent: false },
++      { componentId: "ca2", rawScore: 20, isAbsent: false },
++      { componentId: "exam", rawScore: null, isAbsent: true },
++    ];
++
++    expect(computeSubjectTotal(components, notEntered)).toBe(computeSubjectTotal(components, absentExam));
++    expect(computeSubjectStatus(components, notEntered)).toBe("DRAFT");
++    expect(computeSubjectStatus(components, absentExam)).toBe("PENDING_APPROVAL");
++  });
++});
++
++describe("computeSubjectStatus — absent is a decided outcome (SPEC_V0.5.md §2.1)", () => {
++  const components: ComponentInput[] = [
++    { id: "ca1", weight: 20, maxScore: 20, requiresApproval: false },
++    { id: "exam", weight: 80, maxScore: 100, requiresApproval: true },
++  ];
++
++  it("reaches PENDING_APPROVAL when the approval-required component is marked absent", () => {
++    const scores: ComponentScoreInput[] = [
++      { componentId: "ca1", rawScore: 15, isAbsent: false },
++      { componentId: "exam", rawScore: null, isAbsent: true },
++    ];
++    expect(computeSubjectStatus(components, scores)).toBe("PENDING_APPROVAL");
++  });
++
++  it("stays DRAFT when only a non-approval component is absent and exam is genuinely untouched", () => {
++    const scores: ComponentScoreInput[] = [{ componentId: "ca1", rawScore: null, isAbsent: true }];
++    expect(computeSubjectStatus(components, scores)).toBe("DRAFT");
++  });
++
++  it("reaches PENDING_APPROVAL when the approval-required component is scored normally", () => {
++    const scores: ComponentScoreInput[] = [
++      { componentId: "ca1", rawScore: 15, isAbsent: false },
++      { componentId: "exam", rawScore: 70, isAbsent: false },
++    ];
++    expect(computeSubjectStatus(components, scores)).toBe("PENDING_APPROVAL");
++  });
++});
+diff --git a/apps/api/src/grades/grade-computation.ts b/apps/api/src/grades/grade-computation.ts
+index d2f2c2a..d9f04dd 100644
+--- a/apps/api/src/grades/grade-computation.ts
++++ b/apps/api/src/grades/grade-computation.ts
+@@ -15,6 +15,12 @@ export interface ComponentInput {
+ export interface ComponentScoreInput {
+   componentId: string;
+   rawScore: number | null;
++  // SPEC_V0.5.md §2.1 — a third state, distinct from both "not entered"
++  // (rawScore null, isAbsent false) and a real 0 (rawScore set). A row
++  // with rawScore set AND isAbsent true is uninterpretable and never
++  // reaches here — enforced by student_scores' CHECK constraint and (from
++  // v0.5 step 2) the score-entry DTO.
++  isAbsent: boolean;
+ }
+ 
+ export interface GradeBoundaryInput {
+@@ -28,36 +34,41 @@ export interface GradeBoundaryInput {
+  * component.weight), 0–100. A component with no score yet contributes 0 —
+  * NOT a rescale to the entered weight's own 100% (SPEC_V0.4.md §1
+  * resolution: avoids a class average that visibly drops once Exam scores
+- * land, which would look like a bug).
++ * land, which would look like a bug). A component the student was marked
++ * ABSENT for is excluded the same way — SPEC_V0.5.md §2.1: honestly lower
++ * over the components actually sat, not a 0 and not rescaled.
+  */
+ export function computeSubjectTotal(components: ComponentInput[], scores: ComponentScoreInput[]): number {
+-  const rawByComponent = new Map(scores.map((s) => [s.componentId, s.rawScore]));
++  const scoreByComponent = new Map(scores.map((s) => [s.componentId, s]));
+   let total = 0;
+   for (const component of components) {
+-    const raw = rawByComponent.get(component.id);
+-    if (raw === null || raw === undefined) continue;
+-    total += (raw / component.maxScore) * component.weight;
++    const score = scoreByComponent.get(component.id);
++    if (!score || score.isAbsent || score.rawScore === null || score.rawScore === undefined) continue;
++    total += (score.rawScore / component.maxScore) * component.weight;
+   }
+   return Math.round(total * 100) / 100;
+ }
+ 
+ /**
+- * DRAFT until an approval-required (exam-type) component has a score for
+- * this student, then PENDING_APPROVAL. Never returns PUBLISHED — that only
++ * DRAFT until an approval-required (exam-type) component has been decided
++ * for this student — scored OR marked absent, both are a decided outcome,
++ * unlike not-yet-entered (SPEC_V0.5.md §2.1: absent is not "stuck in
++ * DRAFT"). Then PENDING_APPROVAL. Never returns PUBLISHED — that only
+  * happens via an explicit publish action, not score-triggered recompute.
+  */
+ export function computeSubjectStatus(
+   components: ComponentInput[],
+   scores: ComponentScoreInput[],
+ ): "DRAFT" | "PENDING_APPROVAL" {
+-  const rawByComponent = new Map(scores.map((s) => [s.componentId, s.rawScore]));
+-  const anyApprovalRequiredScored = components
++  const scoreByComponent = new Map(scores.map((s) => [s.componentId, s]));
++  const anyApprovalRequiredDecided = components
+     .filter((c) => c.requiresApproval)
+     .some((c) => {
+-      const raw = rawByComponent.get(c.id);
+-      return raw !== null && raw !== undefined;
++      const score = scoreByComponent.get(c.id);
++      if (!score) return false;
++      return score.isAbsent || (score.rawScore !== null && score.rawScore !== undefined);
+     });
+-  return anyApprovalRequiredScored ? "PENDING_APPROVAL" : "DRAFT";
++  return anyApprovalRequiredDecided ? "PENDING_APPROVAL" : "DRAFT";
+ }
+ 
+ /**
+diff --git a/apps/api/src/grades/grades.service.ts b/apps/api/src/grades/grades.service.ts
+index aa868af..56070d5 100644
+--- a/apps/api/src/grades/grades.service.ts
++++ b/apps/api/src/grades/grades.service.ts
+@@ -1080,6 +1080,7 @@ export class GradesService {
+       const scoreInputs: ComponentScoreInput[] = scores.map((s) => ({
+         componentId: s.componentId,
+         rawScore: s.rawScore === null ? null : Number(s.rawScore),
++        isAbsent: s.isAbsent,
+       }));
+       const totalScore = computeSubjectTotal(componentInputs, scoreInputs);
+       const status = computeSubjectStatus(componentInputs, scoreInputs);
+diff --git a/apps/api/test/jest-unit.json b/apps/api/test/jest-unit.json
+new file mode 100644
+index 0000000..1e461e7
+--- /dev/null
++++ b/apps/api/test/jest-unit.json
+@@ -0,0 +1,10 @@
++{
++  "moduleFileExtensions": ["js", "json", "ts"],
++  "rootDir": "..",
++  "roots": ["<rootDir>/src"],
++  "testEnvironment": "node",
++  "testRegex": "\\.spec\\.ts$",
++  "transform": {
++    "^.+\\.(t|j)s$": "ts-jest"
++  }
++}
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index bbd4544..ee18256 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -2451,3 +2451,82 @@ Full ci green: typecheck + lint, full e2e suite (244 tests, 24 suites — 3
+ new tests) on a from-scratch database, existing `grades-grid`/
+ `grades-publish` suites otherwise unchanged and still green. No schema/
+ migration changes.
++
++## 2026-08-15 — v0.5 step 1: absent state, term lifecycle, remarks — schema + computation + seed
++
++Schema-only-first version. `student_scores.is_absent boolean @default(false)`
++plus the existing nullable `raw_score` gives three states (not-entered,
++scored, absent), guarded by a hand-added CHECK
++(`student_scores_raw_score_or_absent_check`) so a row can never be both —
++Prisma's DSL can't express a CHECK, same discipline as every partial-unique
++index in this schema. `terms.closed_at`/`closed_by` follow the existing
++nullable-timestamp-as-status convention (`deleted_at`, `published_at`).
++New `term_unlocks` (one row per unlock/relock episode, not a flag —
++"currently unlocked" = `relocked_at IS NULL`, enforced to at most one active
++row per term+class-arm+subject by a hand-added partial unique index) and
++`term_remarks` (two remarks + who/when each, triple-unique per
++student+term+session) tables, five new named `User` relations for the
++disambiguated FKs.
++
++**`prisma migrate dev --create-only` caught a real regression before it
++shipped**: the diff engine wanted to `DROP` both hand-added trigram indexes
++(`students_first_name_trgm_idx`/`students_last_name_trgm_idx`) as an
++unrelated side effect — they use `gin_trgm_ops`, untracked by
++schema.prisma, so any unrelated schema change makes Prisma see them as
++"extra". Removed the two `DROP INDEX` statements by hand; verified via
++`psql \di` on both the pre-existing dev DB and a from-scratch one that both
++indexes survive.
++
++**Computation** (`grade-computation.ts`): `ComponentScoreInput` gained
++`isAbsent: boolean`. `computeSubjectTotal` now skips a component when
++`isAbsent` is true, same zero-contribution path as a null `rawScore` —
++excluded, not a 0, not rescaled (hand-verified: CA1 18/20 w20 + CA2 ABSENT +
++Exam 55/100 w60 = 51, not a 63.75 rescale). `computeSubjectStatus` now
++treats "scored OR marked absent" as a decided outcome for the
++approval-required check — an absent-for-exam student reaches
++`PENDING_APPROVAL`, not stuck in `DRAFT` (extended now per the approved
++plan, not deferred to step 2). Not-entered and absent give the identical
++total but a different status — the regression case a future edit could
++silently break. `grades.service.ts`'s `recomputeStudents` and `seed.ts`'s
++own total/status calls both got the mechanical `isAbsent` field threaded
++through to keep compiling — zero behavior change, `is_absent` defaults
++`false` everywhere pre-existing.
++
++**No backend unit-test harness existed before this step** — only
++`test/jest-e2e.json`. Added `test/jest-unit.json` (colocated `src/**/*.spec.ts`,
++already-installed `jest`/`ts-jest`, no new dependency) + a `test:unit`
++script at both the api and root level, wired into the root `ci` script
++(`pnpm run ci` → typecheck && lint && test && test:unit) so CI runs it —
++a proof that doesn't run in CI rots. 7 new tests in
++`grade-computation.spec.ts`: the hand-verified example, absent-for-every-
++component (total 0), a mixed case, the not-entered-vs-absent regression,
++and three `computeSubjectStatus` cases.
++
++**Seed**: a fresh Second Term slice for Sunrise's ~102-student JSS 2 A
++Mathematics — deliberately not First Term, so the already-reviewed v0.4
++baseline stays untouched. `seedSubjectGrades` gained an optional
++`absentStudentComponents` param (indices into that call's own
++studentId-ordered enrollment list) to mark specific students absent on
++specific components instead of giving them a deterministic score: 3
++students, 3 different components, one of them the approval-required Exam.
++Term closed by the principal (fixed timestamp, not `new Date()` — stable
++across reseeds like `deterministicScore`). One fully-resolved
++unlock → edit → relock round trip: a principal unlock reason, a direct
++correction to one student's CA 1 score (no HTTP surface yet, same
++seed-writes-state-directly pattern as the rest of this file), its
++`term_subject_result` total recomputed to match, then relocked — the
++`term_unlocks` row has both `unlocked_at` and `relocked_at` set, so it
++never touches the active-unlock partial-unique index (which only guards
++`relocked_at IS NULL` rows); reseed idempotency for that row instead uses
++an explicit existence check, since there's no natural upsert key for a
++resolved unlock.
++
++**Proof**: migration applied clean via `--create-only` review, both against
++the already-non-empty dev DB and a genuine `docker compose down -v` →
++rebuild → `migrate deploy` from-scratch DB; seed re-run confirmed
++idempotent on both (same unlock count, same absent count, no errors). Full
++v0.4 e2e suite (244 tests, 24 suites) still green on the freshly seeded DB
++— the new Second Term data didn't disturb any existing fixture. New unit
++suite (7 tests) green. `pnpm run ci` green end-to-end (typecheck, lint,
++244 e2e, 126 web Vitest, 7 unit) at both the api and root level. No API or
++UI changes — schema/computation/seed only, per this step's explicit scope.
+diff --git a/package.json b/package.json
+index 62d3d2e..aea1961 100644
+--- a/package.json
++++ b/package.json
+@@ -10,8 +10,9 @@
+     "typecheck": "pnpm -r --if-present run typecheck",
+     "lint": "pnpm -r --if-present run lint",
+     "test": "pnpm -r --if-present run test",
++    "test:unit": "pnpm -r --if-present run test:unit",
+     "seed": "pnpm --filter @scholametric/api exec prisma db seed",
+-    "ci": "pnpm typecheck && pnpm lint && pnpm test"
++    "ci": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:unit"
+   },
+   "packageManager": "pnpm@11.18.0"
+ }

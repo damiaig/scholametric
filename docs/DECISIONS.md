@@ -4073,3 +4073,120 @@ this page never itself calls `/auth/login`; plus a wrong-current-password
 error case). Full frontend Vitest suite green (35 files/196 tests) and
 full `pnpm run ci` green on a fresh `docker compose down -v` → migrate →
 seed stack — no new migration, no backend files touched at all this step.
+
+## 2026-08-30 — v0.6 acceptance-walk fix 1: isolate the e2e test database
+
+**Through v0.6, the backend e2e suite ran against the exact same Postgres
+database as the seeded dev/walk stack** — `apps/api/test/setup-env.ts`'s
+`DATABASE_URL` and `apps/api/.env`'s `DATABASE_URL` were byte-for-byte
+identical (`localhost:5433/scholametric`). `createTestApp()` boots a real
+Nest app in-process against whatever `DATABASE_URL` is in the environment
+at the time — there was no separate test database, no schema namespace,
+no transaction-per-test rollback. Discovered during the acceptance walk:
+a real seeded student's portal account (`ADEYEMI1`) turned up with a
+password that no longer matched its provisioning-response plaintext,
+`mustChangePassword` still `true`, and zero `audit_logs` rows for it —
+the exact fingerprint of `reissueForClassArm`'s internal `reissue()` call
+(unaudited by design, since it's a same-class method call, not a second
+HTTP round-trip), landing on a real class arm instead of a test's own
+scratch fixture.
+
+**Fixed by creating a wholly separate `scholametric_test` database**, not
+by trying to harden every test's query scope. `apps/api/test/test-db.ts`
+holds the two connection strings (the test DB, and Postgres's always-
+present `postgres` maintenance DB, needed only to issue `CREATE DATABASE`
+since a database can't target itself). `apps/api/test/global-setup.ts`
+(wired in as Jest's `globalSetup`, so it runs exactly once before any
+test file) creates `scholametric_test` if it doesn't exist, then runs the
+SAME `prisma migrate deploy` + `prisma db seed` the dev stack uses,
+against that isolated target. `setup-env.ts`'s `DATABASE_URL` is now
+force-assigned (`=`, not `??=`) rather than defaulted — an ambient
+`DATABASE_URL` in the shell/CI environment must never leak the dev
+database into a test run, not just "not usually."
+
+**This likely explains CI flakes earlier in this session that were
+attributed to a paused sandbox.** Several times this session, an
+unrelated-looking test failure with an abnormally long runtime was
+treated as a transient sandbox artifact and resolved by re-running. Some
+of those may genuinely have been that; but any of them could equally have
+been a real seeded row getting mutated mid-suite by exactly this
+mechanism, then a LATER test in the same run tripping on data that no
+longer matched its expectations. There's no way to retroactively
+distinguish the two now, which is precisely the risk isolation removes
+going forward.
+
+**The exact one-off write that hit `ADEYEMI1` is deliberately left
+unpinned.** Every code path was checked: `provision()` cannot touch an
+existing account (explicit skip-and-continue); the only caller of
+`reissueForClassArm` anywhere in the repo
+(`portal-accounts-reissue.e2e-spec.ts`) demonstrably creates its own
+uniquely-named class arm and enrolls only its own scratch students; the
+event did not reproduce across three separate full-suite re-runs
+(including one with second-by-second live DB polling) against the same
+persisted dev-DB state. The mechanism class (shared DB) is proven and
+sufficient; the specific historical trigger is not worth more effort,
+because isolation makes it structurally unreachable regardless of what it
+was.
+
+**Proof**: with the dev stack seeded and provisioned, ran the full e2e
+suite (33 suites, 375 tests, green) against `scholametric_test`, then
+re-queried the dev database's `ADEYEMI1` row — `password_hash` and
+`updated_at` byte-for-byte identical to the snapshot taken before the run
+(and to the other previously-affected rows: `AKINTOLA1`, `AKINTOLA`,
+`ALABI1`, `ALABI`, `ADEYEMI`, all unchanged). `grades-grid.e2e-spec.ts`,
+which had started failing against the dev DB because diagnostic students
+added there during the acceptance walk polluted its "JSS 1 A" roster
+assertion, now passes cleanly too — a direct, visible side benefit of no
+longer sharing state with manual poking at the dev stack.
+
+## 2026-08-30 — v0.6 acceptance-walk fix 2: first-login password-change UX
+
+**The auth/password-change chain itself was already proven sound**
+(reproduced live at the API in the acceptance walk: fresh temp password
+logs in, change-password 200s, new password logs in, old one 401s
+afterward). This step is a frontend-only UX pass on top of that — no
+backend change, policy stays `newPassword` min 8 characters.
+
+**Found a real bug while implementing the "surface loudly, never a
+silent no-op" requirement, not just missing copy.** `apiRequest`
+(`lib/api-client.ts`) treats every 401 as "the access token expired":
+refresh once, retry once. `POST /auth/change-password` can ALSO 401 for
+a reason that has nothing to do with the token — a wrong
+`currentPassword` — and retrying that request with a freshly refreshed
+token still 401s, for the same reason. The fallback in that case calls
+`authStore.clear()`, silently logging the user out from underneath an
+error message that otherwise looked handled: the screen still showed
+"Current password is incorrect," but the session was already gone, so
+the next navigation (or the next background query) would bounce the
+user to `/login` with no explanation. This is almost certainly what
+"never a silent no-op that dumps the user to login" in the request was
+describing.
+
+**Fixed with a `skipAuthRetry` request option, not a special case inside
+`apiRequest` for this one path.** Any caller that knows its own 401 means
+"the submitted data was wrong" (not "my token expired") can opt out of
+the retry-then-clear fallback entirely; `useChangePassword()` — the ONE
+hook both `ChangePasswordPage` (forced) and `AccountChangePasswordPage`
+(voluntary) already share — passes it. Every other endpoint's existing
+refresh-and-retry behavior is untouched (covered by a regression test:
+a 401 without `skipAuthRetry` still refreshes/retries, and still clears
+the session if the retry ALSO fails — the legitimate expired-and-
+unrecoverable case).
+
+**The 8-character requirement is now shown up front** (a plain `<p>`
+under the New password field, `aria-describedby`-linked to the input) on
+both pages, instead of only appearing reactively via `FieldError` after a
+failed submit attempt.
+
+**Proof**: new `lib/api-client.test.ts` (3 tests) proves the fix directly
+against the real, unmocked `apiRequest` — `skipAuthRetry` throws on 401
+without ever calling `/auth/refresh` or touching `authStore`; without the
+flag, the existing refresh-and-retry-once behavior is unchanged; a 401 on
+the retry itself still clears the session (proving the fix is scoped,
+not a blanket "never logout" change). `ChangePasswordFlow.test.tsx` and
+`AccountChangePasswordPage.test.tsx` each gained a `<8`-char rejection
+test (shows the requirement, blocks submission client-side, zero API
+calls, no navigation) and the wrong-current-password path now asserts the
+user stays on the change-password screen with the error visible. Full
+frontend Vitest suite green (36 files/202 tests). Combined with fix 1,
+full `pnpm run ci` green — see below.

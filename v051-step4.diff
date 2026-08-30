@@ -1,0 +1,1371 @@
+diff --git a/apps/api/src/grades/grades.service.ts b/apps/api/src/grades/grades.service.ts
+index 9b234b6..f19cfb5 100644
+--- a/apps/api/src/grades/grades.service.ts
++++ b/apps/api/src/grades/grades.service.ts
+@@ -474,9 +474,19 @@ export class GradesService {
+           },
+         });
+         const lockedStudentIds = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).map((r) => r.studentId);
+-        if (lockedStudentIds.length > 0) {
++        // SPEC_V0.5.1.md §2.5, v0.5.1 step 4: SCHOOL_ADMIN/PROPRIETOR may
++        // pass this gate — the real case is correcting an is_absent flag
++        // (either direction) discovered after publishing. TEACHER still
++        // 409s here unconditionally, exactly as before this step. This is
++        // the ONLY change to this gate; the term-closed check above is
++        // untouched and still applies to everyone, admin included — the
++        // published-lock bypass must never leak into the closed-term gate
++        // (docs/DECISIONS.md).
++        const isPublishedBypassAllowed = user.role === UserRole.SCHOOL_ADMIN || user.role === UserRole.PROPRIETOR;
++        if (lockedStudentIds.length > 0 && !isPublishedBypassAllowed) {
+           throw this.publishedLockException("save scores", lockedStudentIds);
+         }
++        const bypassedPublishedStudentIds = new Set<string>(isPublishedBypassAllowed ? lockedStudentIds : []);
+ 
+         // Gap #2 (docs/DECISIONS.md): a student's overall can only be
+         // PUBLISHED if every subject they've been scored in so far is
+@@ -499,6 +509,13 @@ export class GradesService {
+           });
+           needsOverallRecompute = overallRows.some((r) => r.status === ResultStatus.PUBLISHED);
+         }
++        // A bypassed published row's total is about to change — that
++        // student's overall (and, once the subject re-ranks below,
++        // possibly every other published student's overall too) needs the
++        // same cross-subject cascade gap #2 already triggers this lock for.
++        if (bypassedPublishedStudentIds.size > 0) {
++          needsOverallRecompute = true;
++        }
+ 
+         await Promise.all(
+           dto.scores.map((item) => {
+@@ -544,8 +561,27 @@ export class GradesService {
+           tx,
+           { schoolId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, classArmId: dto.classArmId },
+           affectedStudentIds,
++          bypassedPublishedStudentIds,
+         );
+ 
++        // A bypassed student's total just moved, which can shift the
++        // relative rank of every OTHER already-published student in this
++        // subject too, not just theirs — same re-rank publish() itself
++        // does after transitioning students to PUBLISHED (identical
++        // computeStandardCompetitionRanking call), just triggered here by
++        // a correction instead of a fresh publish. Still under the subject
++        // lock already held above; no new lock needed for a single
++        // subject's own rows.
++        if (bypassedPublishedStudentIds.size > 0) {
++          const publishedRows = await tx.termSubjectResult.findMany({
++            where: { schoolId, classArmId: dto.classArmId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, status: ResultStatus.PUBLISHED },
++          });
++          const ranking = computeStandardCompetitionRanking(publishedRows, (row) => Number(row.totalScore));
++          await Promise.all(
++            ranking.map(({ item, position }) => tx.termSubjectResult.update({ where: { id: item.id }, data: { subjectPosition: position } })),
++          );
++        }
++
+         // Class-arm lock ALWAYS after the subject lock, never before —
+         // same fixed order publish()/unpublish() already use, so no
+         // caller can deadlock against another (only ever contend ON the
+@@ -578,6 +614,12 @@ export class GradesService {
+               componentId: dto.componentId,
+               termId: dto.termId,
+               scoreCount: dto.scores.length,
++              // Empty for every ordinary save — only non-empty when
++              // admin/proprietor corrected an already-PUBLISHED student's
++              // score/absence, so this specific sensitive path stays
++              // traceable in the same audit row rather than a silent
++              // side effect of a routine save.
++              publishedBypassStudentIds: [...bypassedPublishedStudentIds],
+             },
+           },
+         });
+@@ -1486,10 +1528,24 @@ export class GradesService {
+   // silently keep applying to a total that's no longer final (step-3
+   // resolution: override_grade is non-null only when status is
+   // PENDING_APPROVAL or PUBLISHED).
++  // `preservePublishedStudentIds` (SPEC_V0.5.1.md §2.5, v0.5.1 step 4):
++  // normally this function's whole point is that a recomputed row can
++  // never be PUBLISHED (only publish() itself sets that) — a save always
++  // reverts to DRAFT/PENDING_APPROVAL and clears subjectPosition/
++  // publishedAt, because normally nothing can even reach a recompute while
++  // PUBLISHED (saveGrid's own lock blocks it). The one exception is an
++  // admin/proprietor correcting an already-published row's absence/score:
++  // that row stays PUBLISHED with its ORIGINAL publishedAt (this corrects
++  // the data, it isn't a new publish event) and a freshly-computed total —
++  // subjectPosition is still nulled here and re-ranked by the caller
++  // immediately after, same as every other student. Every other caller
++  // (saveGrid's normal path, recompute()) passes nothing here and gets
++  // the exact same behavior as before this step.
+   private async recomputeStudents(
+     tx: Prisma.TransactionClient,
+     ctx: RecomputeContext,
+     studentIds: string[],
++    preservePublishedStudentIds?: Set<string>,
+   ): Promise<RecomputedRow[]> {
+     const [components, boundaries, existingRows] = await Promise.all([
+       tx.assessmentComponent.findMany({ where: { schoolId: ctx.schoolId, deletedAt: null } }),
+@@ -1510,6 +1566,7 @@ export class GradesService {
+       maxScore: b.maxScore,
+     }));
+     const existingOverrideByStudent = new Map(existingRows.map((r) => [r.studentId, r.overrideGrade]));
++    const existingPublishedAtByStudent = new Map(existingRows.map((r) => [r.studentId, r.publishedAt]));
+ 
+     const results: RecomputedRow[] = [];
+     for (const studentId of studentIds) {
+@@ -1522,7 +1579,9 @@ export class GradesService {
+         isAbsent: s.isAbsent,
+       }));
+       const totalScore = computeSubjectTotal(componentInputs, scoreInputs);
+-      const status = computeSubjectStatus(componentInputs, scoreInputs);
++      const computedStatus = computeSubjectStatus(componentInputs, scoreInputs);
++      const preservePublished = preservePublishedStudentIds?.has(studentId) ?? false;
++      const status = preservePublished ? ResultStatus.PUBLISHED : computedStatus;
+       const autoGrade = resolveGradeBand(totalScore, boundaryInputs);
+       const overrideGrade = status === ResultStatus.DRAFT ? null : (existingOverrideByStudent.get(studentId) ?? null);
+       const finalGrade = resolveFinalGrade(autoGrade, overrideGrade);
+@@ -1544,7 +1603,7 @@ export class GradesService {
+           classArmId: ctx.classArmId,
+           overrideGrade,
+           subjectPosition: null,
+-          publishedAt: null,
++          publishedAt: preservePublished ? (existingPublishedAtByStudent.get(studentId) ?? null) : null,
+         },
+         create: {
+           schoolId: ctx.schoolId,
+diff --git a/apps/api/test/grades-grid.e2e-spec.ts b/apps/api/test/grades-grid.e2e-spec.ts
+index 39cb548..bb3c3fa 100644
+--- a/apps/api/test/grades-grid.e2e-spec.ts
++++ b/apps/api/test/grades-grid.e2e-spec.ts
+@@ -616,7 +616,13 @@ describe("Grades grid (e2e)", () => {
+       expect(response.status).toBe(404);
+     });
+ 
+-    it("409s a write against the real, seeded PUBLISHED JSS 1 A English result, leaving it unchanged", async () => {
++    // SPEC_V0.5.1.md §2.5, v0.5.1 step 4: SCHOOL_ADMIN/PROPRIETOR now pass
++    // this gate (see mark-absent-after-publish.e2e-spec.ts for that full
++    // flow, scratch-isolated) — TEACHER still 409s here unconditionally,
++    // exactly as before this step. Uses the English teacher specifically
++    // (not the admin token this test used pre-step-4), since that's the
++    // role this lock still actually blocks.
++    it("409s a TEACHER's write against the real, seeded PUBLISHED JSS 1 A English result, leaving it unchanged", async () => {
+       const [student] = jss1ARoster;
+       const before = await prisma.termSubjectResult.findUniqueOrThrow({
+         where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: englishId, termId: sunriseTermId, sessionId: sunriseSessionId } },
+@@ -625,7 +631,7 @@ describe("Grades grid (e2e)", () => {
+ 
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/grades/grid")
+-        .set(auth(sunriseAdminToken))
++        .set(auth(sunriseEnglishTeacherToken))
+         .send({
+           classArmId: jss1AArmId, subjectId: englishId, componentId: ca1Id, termId: sunriseTermId,
+           scores: [{ studentId: student.id, rawScore: 1 }],
+diff --git a/apps/api/test/mark-absent-after-publish.e2e-spec.ts b/apps/api/test/mark-absent-after-publish.e2e-spec.ts
+new file mode 100644
+index 0000000..f40c6fb
+--- /dev/null
++++ b/apps/api/test/mark-absent-after-publish.e2e-spec.ts
+@@ -0,0 +1,464 @@
++import { INestApplication } from "@nestjs/common";
++import request from "supertest";
++import { Gender } from "@prisma/client";
++import { createTestApp } from "./utils/create-test-app";
++import { loginAs } from "./utils/login";
++import { PrismaService } from "../src/prisma/prisma.service";
++
++// SPEC_V0.5.1.md §2.5, v0.5.1 step 4: SCHOOL_ADMIN/PROPRIETOR may now pass
++// PUT /grades/grid's PUBLISHED-student gate (the same reviewed write path
++// grades-grid.e2e-spec.ts already covers for the normal, non-published
++// case) — TEACHER still 409s there unconditionally. Every scenario gets its
++// own scratch session+term+class-arm+subject+students bundle in the REAL
++// Sunrise tenant (same discipline as grades-publish.e2e-spec.ts) so a full-
++// suite run never touches the seeded demo data.
++describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 4", () => {
++  let app: INestApplication;
++  let prisma: PrismaService;
++
++  let sunriseAdminToken: string;
++  let sunriseTeacherToken: string;
++  let hillcrestAdminToken: string;
++
++  let sunriseId: string;
++  let jss2LevelId: string;
++  let ca1Id: string;
++  let ca2Id: string;
++  let examId: string;
++  let teacherUserId: string;
++
++  const createdSessionIds: string[] = [];
++  const createdTermIds: string[] = [];
++  const createdClassArmIds: string[] = [];
++  const createdSubjectIds: string[] = [];
++  const createdStudentIds: string[] = [];
++
++  const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
++
++  interface ScratchBundle {
++    sessionId: string;
++    termId: string;
++    classArmId: string;
++    subjectId: string;
++    studentIds: string[]; // [high, mid, low]
++  }
++
++  async function createScratchBundle(prefix: string): Promise<ScratchBundle> {
++    const stamp = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
++    const session = await prisma.academicSession.create({
++      data: { schoolId: sunriseId, name: `E2E-MAP-${stamp}`, startsOn: new Date("2027-01-01"), endsOn: new Date("2027-04-01"), isCurrent: false },
++    });
++    createdSessionIds.push(session.id);
++    const term = await prisma.term.create({
++      data: { schoolId: sunriseId, sessionId: session.id, name: "FIRST", startsOn: session.startsOn, endsOn: session.endsOn },
++    });
++    createdTermIds.push(term.id);
++    const classArm = await prisma.classArm.create({
++      data: { schoolId: sunriseId, classLevelId: jss2LevelId, name: `E2E-MAP-${stamp}` },
++    });
++    createdClassArmIds.push(classArm.id);
++    const subject = await prisma.subject.create({
++      data: { schoolId: sunriseId, name: `E2E MAP ${stamp}`, code: `MAP${stamp.slice(-6)}`.slice(0, 10).toUpperCase() },
++    });
++    createdSubjectIds.push(subject.id);
++    // Step 1's rule: a subject only exists for a class once a teacher is
++    // assigned — required for ANY grid write, admin included, not specific
++    // to this step's own bypass.
++    await prisma.subjectTeacherAssignment.create({
++      data: { schoolId: sunriseId, subjectId: subject.id, classArmId: classArm.id, sessionId: session.id, teacherUserId },
++    });
++
++    const studentIds: string[] = [];
++    for (let i = 0; i < 3; i++) {
++      const student = await prisma.student.create({
++        data: {
++          schoolId: sunriseId,
++          admissionNumber: `E2E-MAP/${stamp}/${i}`,
++          firstName: "MarkAbsent",
++          lastName: `Student${i}`,
++          gender: i % 2 === 0 ? Gender.MALE : Gender.FEMALE,
++          dateOfBirth: new Date(Date.UTC(2012, 0, 1 + i)),
++          guardianName: "E2E Guardian",
++          guardianPhone: `+2348033${String(Date.now() + i).slice(-6)}`,
++        },
++      });
++      createdStudentIds.push(student.id);
++      await prisma.studentEnrollment.create({
++        data: { schoolId: sunriseId, studentId: student.id, classArmId: classArm.id, sessionId: session.id },
++      });
++      studentIds.push(student.id);
++    }
++
++    return { sessionId: session.id, termId: term.id, classArmId: classArm.id, subjectId: subject.id, studentIds };
++  }
++
++  function gridBody(bundle: ScratchBundle, componentId: string, studentId: string, extra: { rawScore?: number | null; isAbsent?: boolean }) {
++    return {
++      classArmId: bundle.classArmId,
++      subjectId: bundle.subjectId,
++      componentId,
++      termId: bundle.termId,
++      scores: [{ studentId, ...extra }],
++    };
++  }
++
++  async function scoreAll(token: string, bundle: ScratchBundle, scores: { ca1: number; ca2: number; exam: number }[]) {
++    for (let i = 0; i < bundle.studentIds.length; i++) {
++      const studentId = bundle.studentIds[i];
++      const { ca1, ca2, exam } = scores[i];
++      for (const [componentId, rawScore] of [
++        [ca1Id, ca1],
++        [ca2Id, ca2],
++        [examId, exam],
++      ] as const) {
++        const res = await request(app.getHttpServer())
++          .put("/api/v1/grades/grid")
++          .set(auth(token))
++          .send(gridBody(bundle, componentId, studentId, { rawScore }));
++        if (res.status !== 200) throw new Error(`score failed: ${res.status} ${JSON.stringify(res.body)}`);
++      }
++    }
++  }
++
++  async function publishSubject(bundle: ScratchBundle) {
++    const res = await request(app.getHttpServer())
++      .post("/api/v1/grades/publish")
++      .set(auth(sunriseAdminToken))
++      .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, termId: bundle.termId });
++    if (res.status !== 200) throw new Error(`publish failed: ${res.status} ${JSON.stringify(res.body)}`);
++    return res.body;
++  }
++
++  async function resultFor(bundle: ScratchBundle, studentId: string) {
++    return prisma.termSubjectResult.findUniqueOrThrow({
++      where: { studentId_subjectId_termId_sessionId: { studentId, subjectId: bundle.subjectId, termId: bundle.termId, sessionId: bundle.sessionId } },
++    });
++  }
++
++  async function overallFor(bundle: ScratchBundle, studentId: string) {
++    return prisma.termOverallResult.findUniqueOrThrow({
++      where: { studentId_termId_sessionId: { studentId, termId: bundle.termId, sessionId: bundle.sessionId } },
++    });
++  }
++
++  beforeAll(async () => {
++    app = await createTestApp();
++    prisma = app.get(PrismaService);
++
++    sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
++    sunriseTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
++    hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
++
++    const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
++    sunriseId = sunrise.id;
++    const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
++    jss2LevelId = jss2.id;
++
++    const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
++    ca1Id = components[0].id; // weight 20, max 20
++    ca2Id = components[1].id; // weight 20, max 20
++    examId = components[2].id; // weight 60, max 100
++
++    teacherUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
++  });
++
++  afterAll(async () => {
++    await prisma.termUnlock.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.studentScore.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.termSubjectResult.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.termOverallResult.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.auditLog.deleteMany({ where: { entityId: { in: createdClassArmIds } } });
++    await prisma.studentEnrollment.deleteMany({ where: { studentId: { in: createdStudentIds } } });
++    await prisma.student.deleteMany({ where: { id: { in: createdStudentIds } } });
++    await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
++    await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
++    await prisma.classArm.deleteMany({ where: { id: { in: createdClassArmIds } } });
++    await prisma.term.deleteMany({ where: { id: { in: createdTermIds } } });
++    await prisma.academicSession.deleteMany({ where: { id: { in: createdSessionIds } } });
++    await app.close();
++  });
++
++  it("admin marks a published student absent: total drops, subject AND overall re-rank the WHOLE cohort, stays PUBLISHED, audited", async () => {
++    const bundle = await createScratchBundle("MarkAbsent");
++    const [high, mid, low] = bundle.studentIds;
++
++    // high: 20+20+60(=100 raw ->60 weighted) = 100. mid: 15+15+39=69. low: 10+10+15=35.
++    await scoreAll(sunriseAdminToken, bundle, [
++      { ca1: 20, ca2: 20, exam: 100 },
++      { ca1: 15, ca2: 15, exam: 65 },
++      { ca1: 10, ca2: 10, exam: 25 },
++    ]);
++    await publishSubject(bundle);
++
++    const beforeHigh = await resultFor(bundle, high);
++    const beforeMid = await resultFor(bundle, mid);
++    const beforeLow = await resultFor(bundle, low);
++    expect(beforeHigh.status).toBe("PUBLISHED");
++    expect(Number(beforeHigh.totalScore)).toBe(100);
++    expect(beforeHigh.subjectPosition).toBe(1);
++    expect(beforeMid.subjectPosition).toBe(2);
++    expect(beforeLow.subjectPosition).toBe(3);
++    const beforeOverallHigh = await overallFor(bundle, high);
++    expect(beforeOverallHigh.status).toBe("PUBLISHED");
++    expect(beforeOverallHigh.overallPosition).toBe(1);
++
++    // Mark `high` absent on the Exam component — their new total (40) now
++    // falls BELOW mid's (69), a genuine cohort re-rank, not just their own.
++    const markAbsent = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseAdminToken))
++      .send(gridBody(bundle, examId, high, { isAbsent: true }));
++    expect(markAbsent.status).toBe(200);
++
++    const afterHigh = await resultFor(bundle, high);
++    const afterMid = await resultFor(bundle, mid);
++    const afterLow = await resultFor(bundle, low);
++
++    // Stays published, not reverted — the core assertion of this step.
++    expect(afterHigh.status).toBe("PUBLISHED");
++    expect(afterHigh.publishedAt?.getTime()).toBe(beforeHigh.publishedAt?.getTime()); // preserved, not refreshed
++    expect(Number(afterHigh.totalScore)).toBe(40); // 20 + 20 + 0(absent, excluded)
++
++    // Whole-cohort re-rank: mid (69) now leads, high (40) drops to 2nd, low (35) stays last.
++    expect(afterMid.subjectPosition).toBe(1);
++    expect(afterHigh.subjectPosition).toBe(2);
++    expect(afterLow.subjectPosition).toBe(3);
++
++    // Overall recomputes too (single-subject cohort here, so it mirrors
++    // the subject ranking exactly) — proves the class-arm-level cascade
++    // fired, not just the one row's total.
++    const afterOverallHigh = await overallFor(bundle, high);
++    const afterOverallMid = await overallFor(bundle, mid);
++    expect(afterOverallHigh.status).toBe("PUBLISHED");
++    expect(afterOverallMid.overallPosition).toBe(1);
++    expect(afterOverallHigh.overallPosition).toBe(2);
++
++    // The CHECK constraint's own shape: a decided absence is null+true,
++    // never both set (this step's write path didn't touch the upsert
++    // logic itself, but proves the bypass still respects it).
++    const score = await prisma.studentScore.findUniqueOrThrow({
++      where: { studentId_subjectId_componentId_termId_sessionId: { studentId: high, subjectId: bundle.subjectId, componentId: examId, termId: bundle.termId, sessionId: bundle.sessionId } },
++    });
++    expect(score.rawScore).toBeNull();
++    expect(score.isAbsent).toBe(true);
++
++    // Audited, with the sensitive bypass explicitly traceable.
++    const auditRow = await prisma.auditLog.findFirstOrThrow({
++      where: { schoolId: sunriseId, action: "grades.saveGrid", entityId: bundle.classArmId },
++      orderBy: { createdAt: "desc" },
++    });
++    expect((auditRow.metadata as { publishedBypassStudentIds: string[] }).publishedBypassStudentIds).toEqual([high]);
++  });
++
++  it("admin then corrects back to a real score: symmetric restore, re-rank, stays published", async () => {
++    const bundle = await createScratchBundle("UnAbsent");
++    const [high, mid] = bundle.studentIds;
++
++    await scoreAll(sunriseAdminToken, bundle, [
++      { ca1: 20, ca2: 20, exam: 100 },
++      { ca1: 15, ca2: 15, exam: 65 },
++      { ca1: 10, ca2: 10, exam: 25 },
++    ]);
++    await publishSubject(bundle);
++
++    await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseAdminToken))
++      .send(gridBody(bundle, examId, high, { isAbsent: true }));
++    const mid1 = await resultFor(bundle, mid);
++    expect(mid1.subjectPosition).toBe(1); // re-ranked as in the previous test
++
++    // Correct back: the exam score WAS 100 (a data-entry mistake calling it
++    // absent) — restore it.
++    const restore = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseAdminToken))
++      .send(gridBody(bundle, examId, high, { rawScore: 100 }));
++    expect(restore.status).toBe(200);
++
++    const afterHigh = await resultFor(bundle, high);
++    const afterMid = await resultFor(bundle, mid);
++    expect(afterHigh.status).toBe("PUBLISHED");
++    expect(Number(afterHigh.totalScore)).toBe(100);
++    expect(afterHigh.subjectPosition).toBe(1);
++    expect(afterMid.subjectPosition).toBe(2);
++
++    const score = await prisma.studentScore.findUniqueOrThrow({
++      where: { studentId_subjectId_componentId_termId_sessionId: { studentId: high, subjectId: bundle.subjectId, componentId: examId, termId: bundle.termId, sessionId: bundle.sessionId } },
++    });
++    expect(Number(score.rawScore)).toBe(100);
++    expect(score.isAbsent).toBe(false);
++  });
++
++  it("TEACHER still 409s on both directions — the published lock is unchanged for them", async () => {
++    const bundle = await createScratchBundle("TeacherBlocked");
++    const [high] = bundle.studentIds;
++    await scoreAll(sunriseAdminToken, bundle, [
++      { ca1: 20, ca2: 20, exam: 100 },
++      { ca1: 15, ca2: 15, exam: 65 },
++      { ca1: 10, ca2: 10, exam: 25 },
++    ]);
++    await publishSubject(bundle);
++
++    const markAbsent = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseTeacherToken))
++      .send(gridBody(bundle, examId, high, { isAbsent: true }));
++    expect(markAbsent.status).toBe(409);
++    expect(markAbsent.body.lockedStudentIds).toEqual([high]);
++
++    const restore = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseTeacherToken))
++      .send(gridBody(bundle, examId, high, { rawScore: 50 }));
++    expect(restore.status).toBe(409);
++    expect(restore.body.lockedStudentIds).toEqual([high]);
++
++    const unchanged = await resultFor(bundle, high);
++    expect(Number(unchanged.totalScore)).toBe(100);
++  });
++
++  it("a CLOSED term still blocks the admin correction pending unlock — the published-bypass never leaks into the closed-term gate", async () => {
++    const bundle = await createScratchBundle("ClosedTerm");
++    const [high] = bundle.studentIds;
++    await scoreAll(sunriseAdminToken, bundle, [
++      { ca1: 20, ca2: 20, exam: 100 },
++      { ca1: 15, ca2: 15, exam: 65 },
++      { ca1: 10, ca2: 10, exam: 25 },
++    ]);
++    await publishSubject(bundle);
++
++    const closeRes = await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++    expect(closeRes.status).toBe(200);
++
++    const markAbsent = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseAdminToken))
++      .send(gridBody(bundle, examId, high, { isAbsent: true }));
++    expect(markAbsent.status).toBe(409);
++    expect(markAbsent.body.termLocked).toBe(true);
++
++    const unchanged = await resultFor(bundle, high);
++    expect(Number(unchanged.totalScore)).toBe(100);
++    expect(unchanged.status).toBe("PUBLISHED");
++
++    // Unlocking this exact class+subject re-opens the SAME admin correction.
++    const unlockRes = await request(app.getHttpServer())
++      .post(`/api/v1/terms/${bundle.termId}/unlock`)
++      .set(auth(sunriseAdminToken))
++      .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Correcting a published absence" });
++    expect(unlockRes.status).toBe(200);
++
++    const markAbsentAfterUnlock = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseAdminToken))
++      .send(gridBody(bundle, examId, high, { isAbsent: true }));
++    expect(markAbsentAfterUnlock.status).toBe(200);
++    const afterUnlock = await resultFor(bundle, high);
++    expect(Number(afterUnlock.totalScore)).toBe(40);
++    expect(afterUnlock.status).toBe("PUBLISHED");
++  });
++
++  it("the DB CHECK constraint still rejects a hand-crafted both-set row, entirely bypassing the DTO", async () => {
++    const bundle = await createScratchBundle("CheckCanary");
++    const [high] = bundle.studentIds;
++    await expect(
++      prisma.studentScore.upsert({
++        where: { studentId_subjectId_componentId_termId_sessionId: { studentId: high, subjectId: bundle.subjectId, componentId: examId, termId: bundle.termId, sessionId: bundle.sessionId } },
++        update: { rawScore: 50, isAbsent: true },
++        create: {
++          schoolId: sunriseId,
++          studentId: high,
++          subjectId: bundle.subjectId,
++          componentId: examId,
++          termId: bundle.termId,
++          sessionId: bundle.sessionId,
++          classArmId: bundle.classArmId,
++          rawScore: 50,
++          isAbsent: true,
++          enteredBy: teacherUserId,
++          enteredAt: new Date(),
++        },
++      }),
++    ).rejects.toThrow(/constraint|check/i);
++  });
++
++  it("concurrency: an admin correction on one subject and a publish on a DIFFERENT subject of the same arm, fired concurrently, don't deadlock and both land correctly", async () => {
++    const bundle = await createScratchBundle("Concurrency");
++    const [high, mid, low] = bundle.studentIds;
++
++    // subjectA (the bundle's own subject): scored + published, then corrected concurrently below.
++    await scoreAll(sunriseAdminToken, bundle, [
++      { ca1: 20, ca2: 20, exam: 100 },
++      { ca1: 15, ca2: 15, exam: 65 },
++      { ca1: 10, ca2: 10, exam: 25 },
++    ]);
++    await publishSubject(bundle);
++
++    // subjectB: a second subject on the SAME class arm, scored but left
++    // PENDING_APPROVAL — published concurrently with subjectA's correction.
++    const subjectB = await prisma.subject.create({ data: { schoolId: sunriseId, name: `E2E MAP ConcB ${Date.now()}`, code: `MAPB${Date.now()}`.slice(0, 10).toUpperCase() } });
++    createdSubjectIds.push(subjectB.id);
++    await prisma.subjectTeacherAssignment.create({
++      data: { schoolId: sunriseId, subjectId: subjectB.id, classArmId: bundle.classArmId, sessionId: bundle.sessionId, teacherUserId },
++    });
++    for (const studentId of [high, mid, low]) {
++      for (const [componentId, rawScore] of [
++        [ca1Id, 20],
++        [ca2Id, 20],
++        [examId, 60],
++      ] as const) {
++        await request(app.getHttpServer())
++          .put("/api/v1/grades/grid")
++          .set(auth(sunriseAdminToken))
++          .send({ classArmId: bundle.classArmId, subjectId: subjectB.id, componentId, termId: bundle.termId, scores: [{ studentId, rawScore }] });
++      }
++    }
++
++    const [correctionRes, publishBRes] = await Promise.all([
++      request(app.getHttpServer())
++        .put("/api/v1/grades/grid")
++        .set(auth(sunriseAdminToken))
++        .send(gridBody(bundle, examId, high, { isAbsent: true })),
++      request(app.getHttpServer())
++        .post("/api/v1/grades/publish")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: subjectB.id, termId: bundle.termId }),
++    ]);
++
++    expect(correctionRes.status).toBe(200);
++    expect(publishBRes.status).toBe(200);
++
++    const afterHigh = await resultFor(bundle, high);
++    expect(afterHigh.status).toBe("PUBLISHED");
++    expect(Number(afterHigh.totalScore)).toBe(40);
++
++    const subjectBHigh = await prisma.termSubjectResult.findUniqueOrThrow({
++      where: { studentId_subjectId_termId_sessionId: { studentId: high, subjectId: subjectB.id, termId: bundle.termId, sessionId: bundle.sessionId } },
++    });
++    expect(subjectBHigh.status).toBe("PUBLISHED");
++
++    // Overall reflects BOTH subjects consistently — no lost update from
++    // either transaction racing the other's class-arm-lock-held cascade.
++    const overallHigh = await overallFor(bundle, high);
++    expect(overallHigh.subjectsCount).toBe(2);
++    expect(overallHigh.status).toBe("PUBLISHED");
++  });
++
++  it("404s (not 403) cross-tenant", async () => {
++    const bundle = await createScratchBundle("CrossTenant");
++    const [high] = bundle.studentIds;
++    await scoreAll(sunriseAdminToken, bundle, [
++      { ca1: 20, ca2: 20, exam: 100 },
++      { ca1: 15, ca2: 15, exam: 65 },
++      { ca1: 10, ca2: 10, exam: 25 },
++    ]);
++    await publishSubject(bundle);
++
++    const response = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(hillcrestAdminToken))
++      .send(gridBody(bundle, examId, high, { isAbsent: true }));
++    expect(response.status).toBe(404);
++  });
++});
+diff --git a/apps/web/src/features/grades/ClassArmResultsView.test.tsx b/apps/web/src/features/grades/ClassArmResultsView.test.tsx
+index 16d3ab9..a48edfc 100644
+--- a/apps/web/src/features/grades/ClassArmResultsView.test.tsx
++++ b/apps/web/src/features/grades/ClassArmResultsView.test.tsx
+@@ -132,4 +132,43 @@ describe("ClassArmResultsView", () => {
+       });
+     });
+   });
++
++  // SPEC_V0.5.1.md §2.5, v0.5.1 step 4 — unlike override, no admin-vs-owner
++  // split: canMarkAbsent is a plain boolean, and the control only ever
++  // appears on an already-PUBLISHED row (a non-published row's absence is
++  // already editable through the normal Enter-grades grid).
++  describe("mark-absent-after-publish control visibility", () => {
++    it("canMarkAbsent=false (default): no mark-absent buttons at all, even on the published row", () => {
++      const onMarkAbsent = vi.fn();
++      render(<ClassArmResultsView data={BASE_DATA} onMarkAbsent={onMarkAbsent} />);
++      expect(screen.queryByLabelText(/Mark absent or correct score/)).not.toBeInTheDocument();
++    });
++
++    it("canMarkAbsent=true: the button appears on the PUBLISHED row only, never the PENDING_APPROVAL row", () => {
++      const onMarkAbsent = vi.fn();
++      render(<ClassArmResultsView data={BASE_DATA} canMarkAbsent onMarkAbsent={onMarkAbsent} />);
++      // Mobile card + desktop table both render in jsdom — two copies.
++      expect(screen.getAllByLabelText("Mark absent or correct score for Bola Coker — Mathematics").length).toBe(2);
++      expect(screen.queryByLabelText("Mark absent or correct score for Ada Bello — Mathematics")).not.toBeInTheDocument();
++    });
++
++    it("clicking it calls onMarkAbsent with the exact target, including classArmId/termId from the response", () => {
++      const onMarkAbsent = vi.fn();
++      render(<ClassArmResultsView data={BASE_DATA} canMarkAbsent onMarkAbsent={onMarkAbsent} />);
++      screen.getAllByLabelText("Mark absent or correct score for Bola Coker — Mathematics")[0].click();
++      expect(onMarkAbsent).toHaveBeenCalledWith({
++        studentId: "s2",
++        studentName: "Bola Coker",
++        subjectId: "sub1",
++        subjectName: "Mathematics",
++        classArmId: "arm1",
++        termId: "term1",
++      });
++    });
++
++    it("without onMarkAbsent provided, no button renders even with canMarkAbsent=true", () => {
++      render(<ClassArmResultsView data={BASE_DATA} canMarkAbsent />);
++      expect(screen.queryByLabelText(/Mark absent or correct score/)).not.toBeInTheDocument();
++    });
++  });
+ });
+diff --git a/apps/web/src/features/grades/ClassArmResultsView.tsx b/apps/web/src/features/grades/ClassArmResultsView.tsx
+index ae24b5b..32d5ea8 100644
+--- a/apps/web/src/features/grades/ClassArmResultsView.tsx
++++ b/apps/web/src/features/grades/ClassArmResultsView.tsx
+@@ -1,4 +1,4 @@
+-import { Pencil } from "lucide-react";
++import { Pencil, UserX } from "lucide-react";
+ import type { ClassArmResultsResponse, ClassArmResultsSubject, ClassArmResultsSubjectRow } from "@scholametric/shared";
+ import { StatusBadge } from "../../components/StatusBadge";
+ import { resultStatusTone, resultStatusLabel } from "./result-status";
+@@ -14,6 +14,21 @@ export interface OverrideTarget {
+   overrideGrade: string | null;
+ }
+ 
++// SPEC_V0.5.1.md §2.5, v0.5.1 step 4 — a PUBLISHED result's absence/score
++// correction. Deliberately lighter than OverrideTarget: the component to
++// correct is picked inside MarkAbsentDialog itself (this view only shows
++// the subject TOTAL, not a per-component breakdown), so the target is just
++// enough to identify the (student, subject, class, term) the dialog needs
++// to fetch that breakdown from GET /grades/grid once a component is chosen.
++export interface MarkAbsentTarget {
++  studentId: string;
++  studentName: string;
++  subjectId: string;
++  subjectName: string;
++  classArmId: string;
++  termId: string;
++}
++
+ // "none": TEACHER, never offered. "pendingOnly": SCHOOL_ADMIN — may
+ // override while PENDING_APPROVAL, but not once PUBLISHED (owner-only
+ // past that point, GradesService.override()'s rule). "any": PROPRIETOR.
+@@ -23,6 +38,11 @@ interface ClassArmResultsViewProps {
+   data: ClassArmResultsResponse;
+   overridePermission?: OverridePermission;
+   onOverride?: (target: OverrideTarget) => void;
++  // SPEC_V0.5.1.md §2.5: unlike override, no SCHOOL_ADMIN/PROPRIETOR
++  // asymmetry — either role may correct a published absence/score, so this
++  // is a plain boolean, not a three-way permission like OverridePermission.
++  canMarkAbsent?: boolean;
++  onMarkAbsent?: (target: MarkAbsentTarget) => void;
+ }
+ 
+ function positionLabel(position: number | null): string {
+@@ -45,7 +65,13 @@ function canOverrideRow(row: ClassArmResultsSubjectRow, permission: OverridePerm
+ // column count is subject-count-dependent (~6-10 for a real class, not a
+ // fixed width). A subject the caller can't see (TEACHER row-filtering)
+ // simply isn't in `data.subjects` — nothing special to render for that.
+-export function ClassArmResultsView({ data, overridePermission = "none", onOverride }: ClassArmResultsViewProps) {
++export function ClassArmResultsView({
++  data,
++  overridePermission = "none",
++  onOverride,
++  canMarkAbsent = false,
++  onMarkAbsent,
++}: ClassArmResultsViewProps) {
+   if (data.subjects.length === 0) {
+     return (
+       <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
+@@ -80,6 +106,33 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
+     );
+   }
+ 
++  // Only offered on an already-PUBLISHED row (SPEC_V0.5.1.md §2.5) — a
++  // non-published row's absence/score is already freely editable through
++  // the normal Enter-grades grid, so this control would just be a
++  // redundant second path there.
++  function markAbsentButton(subject: ClassArmResultsSubject, row: ClassArmResultsSubjectRow, studentName: string) {
++    if (!onMarkAbsent || !canMarkAbsent || row.status !== "PUBLISHED") return null;
++    return (
++      <button
++        type="button"
++        aria-label={`Mark absent or correct score for ${studentName} — ${subject.subjectName}`}
++        className="text-muted hover:text-primary"
++        onClick={() =>
++          onMarkAbsent({
++            studentId: row.studentId,
++            studentName,
++            subjectId: subject.subjectId,
++            subjectName: subject.subjectName,
++            classArmId: data.classArmId,
++            termId: data.termId,
++          })
++        }
++      >
++        <UserX className="h-3.5 w-3.5" aria-hidden="true" />
++      </button>
++    );
++  }
++
+   return (
+     <div className="flex flex-col gap-6">
+       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+@@ -119,6 +172,7 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
+                           <>
+                             {row.finalGrade ?? "—"} <span className="text-xs text-muted">({positionLabel(row.subjectPosition)})</span>
+                             {overrideButton(subject, row, studentName)}
++                            {markAbsentButton(subject, row, studentName)}
+                           </>
+                         ) : (
+                           <span className="text-muted">Not yet entered</span>
+@@ -184,6 +238,7 @@ export function ClassArmResultsView({ data, overridePermission = "none", onOverr
+                             <StatusBadge label={resultStatusLabel(row.status)} tone={resultStatusTone(row.status)} />
+                             <span className="text-xs text-muted">{positionLabel(row.subjectPosition)}</span>
+                             {overrideButton(subject, row, studentName)}
++                            {markAbsentButton(subject, row, studentName)}
+                           </div>
+                         ) : (
+                           <span className="text-sm text-muted">Not yet entered</span>
+diff --git a/apps/web/src/features/grades/GradesOverviewPage.tsx b/apps/web/src/features/grades/GradesOverviewPage.tsx
+index a3b8e3b..1d7b450 100644
+--- a/apps/web/src/features/grades/GradesOverviewPage.tsx
++++ b/apps/web/src/features/grades/GradesOverviewPage.tsx
+@@ -11,8 +11,9 @@ import { useMyTeaching } from "../dashboard/use-my-teaching";
+ import { useClasses } from "../classes/use-classes";
+ import { useAdminCurrentTerm } from "./use-admin-current-term";
+ import { useClassArmResults } from "./use-class-arm-results";
+-import { ClassArmResultsView, type OverridePermission, type OverrideTarget } from "./ClassArmResultsView";
++import { ClassArmResultsView, type OverridePermission, type OverrideTarget, type MarkAbsentTarget } from "./ClassArmResultsView";
+ import { OverrideGradeDialog } from "./OverrideGradeDialog";
++import { MarkAbsentDialog } from "./MarkAbsentDialog";
+ 
+ const SELECT_CLASS = "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
+ 
+@@ -50,12 +51,16 @@ export function GradesOverviewPage() {
+   const [classArmId, setClassArmId] = useState(searchParams.get("classArmId") ?? "");
+   const [termId, setTermId] = useState("");
+   const [overrideTarget, setOverrideTarget] = useState<OverrideTarget | null>(null);
++  const [markAbsentTarget, setMarkAbsentTarget] = useState<MarkAbsentTarget | null>(null);
+ 
+   const overridePermission: OverridePermission = isProprietor(currentUser?.role)
+     ? "any"
+     : isSchoolAdmin(currentUser?.role)
+       ? "pendingOnly"
+       : "none";
++  // SPEC_V0.5.1.md §2.5: unlike override, no SCHOOL_ADMIN/PROPRIETOR split
++  // for correcting a published absence/score.
++  const canMarkAbsent = isSchoolAdmin(currentUser?.role);
+ 
+   const myTeaching = useMyTeaching();
+   const classes = useClasses();
+@@ -186,10 +191,17 @@ export function GradesOverviewPage() {
+       )}
+ 
+       {ready && resultsQuery.data && (
+-        <ClassArmResultsView data={resultsQuery.data} overridePermission={overridePermission} onOverride={setOverrideTarget} />
++        <ClassArmResultsView
++          data={resultsQuery.data}
++          overridePermission={overridePermission}
++          onOverride={setOverrideTarget}
++          canMarkAbsent={canMarkAbsent}
++          onMarkAbsent={setMarkAbsentTarget}
++        />
+       )}
+ 
+       <OverrideGradeDialog target={overrideTarget} onClose={() => setOverrideTarget(null)} />
++      <MarkAbsentDialog target={markAbsentTarget} onClose={() => setMarkAbsentTarget(null)} />
+     </div>
+   );
+ }
+diff --git a/apps/web/src/features/grades/MarkAbsentDialog.test.tsx b/apps/web/src/features/grades/MarkAbsentDialog.test.tsx
+new file mode 100644
+index 0000000..09289ef
+--- /dev/null
++++ b/apps/web/src/features/grades/MarkAbsentDialog.test.tsx
+@@ -0,0 +1,207 @@
++import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
++import { screen, cleanup, waitFor } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import type { AssessmentComponent, GradesGridResponse } from "@scholametric/shared";
++import { renderWithProviders } from "../../test/render-with-providers";
++import { authStore } from "../../lib/auth-store";
++import { apiRequest, ApiError } from "../../lib/api-client";
++import { MarkAbsentDialog } from "./MarkAbsentDialog";
++import type { MarkAbsentTarget } from "./ClassArmResultsView";
++
++vi.mock("../../lib/api-client", async (importOriginal) => {
++  const actual = await importOriginal<typeof import("../../lib/api-client")>();
++  return { ...actual, apiRequest: vi.fn() };
++});
++
++const mockedApiRequest = vi.mocked(apiRequest);
++
++const TARGET: MarkAbsentTarget = {
++  studentId: "st1",
++  studentName: "Chidi Okoro",
++  subjectId: "sub1",
++  subjectName: "Mathematics",
++  classArmId: "arm1",
++  termId: "term1",
++};
++
++const COMPONENTS: AssessmentComponent[] = [
++  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
++  { id: "exam", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 2, requiresApproval: true, deletedAt: null, createdAt: "t", updatedAt: "t" },
++];
++
++function gridResponse(overrides: Partial<GradesGridResponse["rows"][number]>): GradesGridResponse {
++  return {
++    classArmId: "arm1",
++    subjectId: "sub1",
++    componentId: "exam",
++    termId: "term1",
++    maxScore: 100,
++    requiresApproval: true,
++    termClosed: false,
++    locked: false,
++    unlockReason: null,
++    rows: [
++      { studentId: "st1", firstName: "Chidi", lastName: "Okoro", admissionNumber: "SUN/0001", rawScore: 100, isAbsent: false, status: "PUBLISHED", ...overrides },
++    ],
++  };
++}
++
++beforeEach(() => {
++  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++});
++
++// The component select starts disabled (useAssessmentComponents() hasn't
++// resolved on first render) — waiting for it to enable before selecting
++// avoids a race against the mocked query settling.
++async function selectComponent(user: ReturnType<typeof userEvent.setup>, value: string) {
++  const select = (await screen.findByLabelText("Component")) as HTMLSelectElement;
++  await waitFor(() => expect(select).not.toBeDisabled());
++  await user.selectOptions(select, value);
++}
++
++afterEach(() => {
++  cleanup();
++  vi.restoreAllMocks();
++  authStore.clear();
++});
++
++describe("MarkAbsentDialog", () => {
++  it("renders nothing when target is null", () => {
++    mockedApiRequest.mockImplementation(async () => {
++      throw new Error("should not be called");
++    });
++    renderWithProviders(<MarkAbsentDialog target={null} onClose={vi.fn()} />);
++    expect(screen.queryByText("Correct a published result")).not.toBeInTheDocument();
++  });
++
++  it("picking a component loads and prefills the student's current value", async () => {
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path === "/api/v1/assessment-components") return COMPONENTS;
++      if (path === "/api/v1/grades/grid") return gridResponse({ rawScore: 100, isAbsent: false });
++      throw new Error(`unexpected call: ${path}`);
++    });
++
++    const user = userEvent.setup();
++    renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={vi.fn()} />);
++
++    expect(await screen.findByText(/Chidi Okoro — Mathematics/)).toBeInTheDocument();
++    await selectComponent(user, "exam");
++
++    const scoreInput = (await screen.findByLabelText(/Score \(out of 100\)/)) as HTMLInputElement;
++    await waitFor(() => expect(scoreInput.value).toBe("100"));
++    expect((screen.getByLabelText("Mark absent") as HTMLInputElement).checked).toBe(false);
++  });
++
++  it("prefills as absent (checkbox checked, score field disabled) when the current row is already absent", async () => {
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path === "/api/v1/assessment-components") return COMPONENTS;
++      if (path === "/api/v1/grades/grid") return gridResponse({ rawScore: null, isAbsent: true });
++      throw new Error(`unexpected call: ${path}`);
++    });
++
++    const user = userEvent.setup();
++    renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={vi.fn()} />);
++    await selectComponent(user, "exam");
++
++    const checkbox = (await screen.findByLabelText("Mark absent")) as HTMLInputElement;
++    await waitFor(() => expect(checkbox.checked).toBe(true));
++    expect(screen.getByLabelText(/Score \(out of 100\)/)).toBeDisabled();
++  });
++
++  it("submitting a mark-absent correction calls PUT /grades/grid with rawScore: null, isAbsent: true, and closes on success", async () => {
++    const onClose = vi.fn();
++    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
++      if (path === "/api/v1/assessment-components") return COMPONENTS;
++      if (path === "/api/v1/grades/grid" && (!opts?.method || opts.method === "GET")) return gridResponse({ rawScore: 100, isAbsent: false });
++      if (path === "/api/v1/grades/grid" && opts?.method === "PUT") {
++        expect(opts.body).toEqual({
++          classArmId: "arm1",
++          subjectId: "sub1",
++          componentId: "exam",
++          termId: "term1",
++          scores: [{ studentId: "st1", rawScore: null, isAbsent: true }],
++        });
++        return gridResponse({ rawScore: null, isAbsent: true });
++      }
++      throw new Error(`unexpected call: ${path} ${opts?.method ?? "GET"}`);
++    });
++
++    const user = userEvent.setup();
++    renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={onClose} />);
++    await selectComponent(user, "exam");
++    await screen.findByDisplayValue("100");
++
++    await user.click(screen.getByLabelText("Mark absent"));
++    await user.click(screen.getByRole("button", { name: "Save correction" }));
++
++    await waitFor(() => expect(onClose).toHaveBeenCalled());
++  });
++
++  it("submitting a score correction (un-absent) sends the real rawScore with isAbsent: false", async () => {
++    const onClose = vi.fn();
++    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
++      if (path === "/api/v1/assessment-components") return COMPONENTS;
++      if (path === "/api/v1/grades/grid" && (!opts?.method || opts.method === "GET")) return gridResponse({ rawScore: null, isAbsent: true });
++      if (path === "/api/v1/grades/grid" && opts?.method === "PUT") {
++        expect(opts.body).toEqual({
++          classArmId: "arm1",
++          subjectId: "sub1",
++          componentId: "exam",
++          termId: "term1",
++          scores: [{ studentId: "st1", rawScore: 85, isAbsent: false }],
++        });
++        return gridResponse({ rawScore: 85, isAbsent: false });
++      }
++      throw new Error(`unexpected call: ${path} ${opts?.method ?? "GET"}`);
++    });
++
++    const user = userEvent.setup();
++    renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={onClose} />);
++    await selectComponent(user, "exam");
++    await waitFor(() => expect((screen.getByLabelText("Mark absent") as HTMLInputElement).checked).toBe(true));
++
++    await user.click(screen.getByLabelText("Mark absent")); // uncheck
++    const scoreInput = screen.getByLabelText(/Score \(out of 100\)/);
++    await user.clear(scoreInput);
++    await user.type(scoreInput, "85");
++
++    await user.click(screen.getByRole("button", { name: "Save correction" }));
++    await waitFor(() => expect(onClose).toHaveBeenCalled());
++  });
++
++  it("a rejected correction (e.g. closed term) shows the backend's message, not a silent failure", async () => {
++    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
++      if (path === "/api/v1/assessment-components") return COMPONENTS;
++      if (path === "/api/v1/grades/grid" && (!opts?.method || opts.method === "GET")) return gridResponse({ rawScore: 100, isAbsent: false });
++      if (path === "/api/v1/grades/grid" && opts?.method === "PUT") {
++        throw new ApiError(409, {
++          statusCode: 409,
++          message: "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
++          error: "Conflict",
++          path: "/api/v1/grades/grid",
++          timestamp: new Date().toISOString(),
++        });
++      }
++      throw new Error(`unexpected call: ${path}`);
++    });
++
++    const user = userEvent.setup();
++    renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={vi.fn()} />);
++    await selectComponent(user, "exam");
++    await screen.findByDisplayValue("100");
++
++    await user.click(screen.getByLabelText("Mark absent"));
++    await user.click(screen.getByRole("button", { name: "Save correction" }));
++
++    expect(await screen.findByText(/This term is closed/)).toBeInTheDocument();
++  });
++
++  it("Save correction is disabled until a component is chosen", async () => {
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path === "/api/v1/assessment-components") return COMPONENTS;
++      throw new Error(`unexpected call: ${path}`);
++    });
++    renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={vi.fn()} />);
++    expect(await screen.findByRole("button", { name: "Save correction" })).toBeDisabled();
++  });
++});
+diff --git a/apps/web/src/features/grades/MarkAbsentDialog.tsx b/apps/web/src/features/grades/MarkAbsentDialog.tsx
+new file mode 100644
+index 0000000..4d60dbd
+--- /dev/null
++++ b/apps/web/src/features/grades/MarkAbsentDialog.tsx
+@@ -0,0 +1,166 @@
++import { useEffect, useState } from "react";
++import { validateGridScore } from "@scholametric/shared";
++import { Dialog } from "../../components/ui/dialog";
++import { Button } from "../../components/ui/button";
++import { Label } from "../../components/ui/label";
++import { Input } from "../../components/ui/input";
++import { Checkbox } from "../../components/ui/checkbox";
++import { Spinner } from "../../components/ui/spinner";
++import { getErrorMessage } from "../../lib/api-client";
++import { useAssessmentComponents } from "../settings/use-assessment-components";
++import { useGradesGrid } from "./use-grades-grid";
++import { useCorrectPublishedScore } from "./use-correct-published-score";
++import type { MarkAbsentTarget } from "./ClassArmResultsView";
++
++const SELECT_CLASS = "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50";
++
++interface MarkAbsentDialogProps {
++  target: MarkAbsentTarget | null;
++  onClose: () => void;
++}
++
++// SPEC_V0.5.1.md §2.5, v0.5.1 step 4: corrects one component's absence/
++// score on an already-PUBLISHED result — the real case is "a teacher
++// entered a score, but the student was actually absent" (or the reverse),
++// discovered after publishing. This view only shows the subject TOTAL, not
++// a per-component breakdown, so a component is picked here first; once
++// picked, GET /grades/grid (the same query the entry grid itself uses)
++// shows this student's CURRENT value for that exact cell to correct from.
++export function MarkAbsentDialog({ target, onClose }: MarkAbsentDialogProps) {
++  const components = useAssessmentComponents();
++  const [componentId, setComponentId] = useState("");
++  const [isAbsent, setIsAbsent] = useState(false);
++  const [scoreText, setScoreText] = useState("");
++
++  const gridQuery = useGradesGrid(
++    target && componentId ? { classArmId: target.classArmId, subjectId: target.subjectId, componentId, termId: target.termId } : null,
++  );
++  const currentRow = gridQuery.data?.rows.find((r) => r.studentId === target?.studentId);
++
++  const correctScore = useCorrectPublishedScore();
++
++  useEffect(() => {
++    if (target) {
++      setComponentId("");
++      setIsAbsent(false);
++      setScoreText("");
++    }
++  }, [target]);
++
++  // Once the current row for the chosen component loads, prefill the form
++  // from its actual state — an admin correcting a mistake needs to see
++  // what's on record now, not start from a blank slate.
++  useEffect(() => {
++    if (currentRow) {
++      setIsAbsent(currentRow.isAbsent);
++      setScoreText(currentRow.rawScore === null ? "" : String(currentRow.rawScore));
++    }
++  }, [currentRow]);
++
++  const maxScore = gridQuery.data?.maxScore ?? null;
++  const scoreValidation =
++    isAbsent || scoreText.trim() === "" || maxScore === null ? { isValid: true } : validateGridScore(Number(scoreText), maxScore);
++  const canSubmit = componentId !== "" && (isAbsent || (scoreText.trim() !== "" && scoreValidation.isValid));
++
++  function handleSubmit() {
++    if (!target || !canSubmit) return;
++    correctScore.mutate(
++      {
++        classArmId: target.classArmId,
++        subjectId: target.subjectId,
++        componentId,
++        termId: target.termId,
++        studentId: target.studentId,
++        rawScore: isAbsent ? null : Number(scoreText),
++        isAbsent,
++      },
++      { onSuccess: () => onClose() },
++    );
++  }
++
++  return (
++    <Dialog open={target !== null} onClose={onClose} title="Correct a published result">
++      <div className="flex flex-col gap-4 p-6">
++        <div>
++          <h2 className="text-lg font-semibold text-text">Correct a published result</h2>
++          {target && (
++            <p className="mt-1 text-sm text-muted">
++              {target.studentName} — {target.subjectName}. This result is already published; correcting it recomputes the
++              total and re-ranks the class, and stays published.
++            </p>
++          )}
++        </div>
++
++        <div className="flex flex-col gap-1.5">
++          <Label htmlFor="mark-absent-component">Component</Label>
++          <select
++            id="mark-absent-component"
++            className={SELECT_CLASS}
++            value={componentId}
++            onChange={(event) => setComponentId(event.target.value)}
++            disabled={components.isLoading}
++          >
++            <option value="" disabled>
++              Select…
++            </option>
++            {(components.data ?? []).map((component) => (
++              <option key={component.id} value={component.id}>
++                {component.name}
++              </option>
++            ))}
++          </select>
++        </div>
++
++        {componentId && gridQuery.isLoading && (
++          <div className="flex items-center gap-2 text-sm text-muted">
++            <Spinner /> Loading current value…
++          </div>
++        )}
++
++        {componentId && gridQuery.isError && (
++          <p className="text-sm text-danger">{getErrorMessage(gridQuery.error, "Couldn't load the current value.")}</p>
++        )}
++
++        {componentId && gridQuery.data && (
++          <>
++            <div className="flex items-center gap-2">
++              <Checkbox id="mark-absent-checkbox" checked={isAbsent} onChange={(event) => setIsAbsent(event.target.checked)} />
++              <Label htmlFor="mark-absent-checkbox">Mark absent</Label>
++            </div>
++
++            <div className="flex flex-col gap-1.5">
++              <Label htmlFor="mark-absent-score">Score (out of {gridQuery.data.maxScore})</Label>
++              <Input
++                id="mark-absent-score"
++                type="text"
++                inputMode="decimal"
++                value={scoreText}
++                disabled={isAbsent}
++                onChange={(event) => setScoreText(event.target.value)}
++              />
++              {!isAbsent && scoreText.trim() !== "" && !scoreValidation.isValid && (
++                <p className="text-sm text-danger">{scoreValidation.error}</p>
++              )}
++            </div>
++          </>
++        )}
++
++        {correctScore.isError && (
++          <p role="alert" className="text-sm text-danger">
++            {getErrorMessage(correctScore.error)}
++          </p>
++        )}
++
++        <div className="mt-2 flex justify-end gap-2">
++          <Button type="button" variant="outline" onClick={onClose}>
++            Cancel
++          </Button>
++          <Button type="button" onClick={handleSubmit} disabled={!canSubmit || correctScore.isPending}>
++            {correctScore.isPending && <Spinner className="mr-2" />}
++            Save correction
++          </Button>
++        </div>
++      </div>
++    </Dialog>
++  );
++}
+diff --git a/apps/web/src/features/grades/use-correct-published-score.ts b/apps/web/src/features/grades/use-correct-published-score.ts
+new file mode 100644
+index 0000000..4452260
+--- /dev/null
++++ b/apps/web/src/features/grades/use-correct-published-score.ts
+@@ -0,0 +1,44 @@
++import { useMutation, useQueryClient } from "@tanstack/react-query";
++import type { SaveGradesGridResponse } from "@scholametric/shared";
++import { apiRequest } from "../../lib/api-client";
++
++export interface CorrectPublishedScoreInput {
++  classArmId: string;
++  subjectId: string;
++  componentId: string;
++  termId: string;
++  studentId: string;
++  rawScore: number | null;
++  isAbsent: boolean;
++}
++
++// SPEC_V0.5.1.md §2.5, v0.5.1 step 4 — reuses PUT /grades/grid directly
++// (the exact same reviewed write path the score-entry grid itself uses,
++// just a single-item scores[]), not a new endpoint. SCHOOL_ADMIN/
++// PROPRIETOR pass the PUBLISHED-student gate there; the result stays
++// PUBLISHED with corrected total/grade/position (GradesService.saveGrid).
++export function useCorrectPublishedScore() {
++  const queryClient = useQueryClient();
++  return useMutation({
++    mutationFn: (input: CorrectPublishedScoreInput) =>
++      apiRequest<SaveGradesGridResponse>("/api/v1/grades/grid", {
++        method: "PUT",
++        body: {
++          classArmId: input.classArmId,
++          subjectId: input.subjectId,
++          componentId: input.componentId,
++          termId: input.termId,
++          scores: [{ studentId: input.studentId, rawScore: input.rawScore, isAbsent: input.isAbsent }],
++        },
++      }),
++    onSuccess: () => {
++      // Same broad-invalidate as override (use-override-grade.ts) — the
++      // correction can move subject AND overall positions across the whole
++      // class arm, not just this one student's row.
++      queryClient.invalidateQueries({ queryKey: ["grades", "review"] });
++      queryClient.invalidateQueries({ queryKey: ["grades", "class-arm-results"] });
++      queryClient.invalidateQueries({ queryKey: ["grades", "student-results"] });
++      queryClient.invalidateQueries({ queryKey: ["grades", "grid"] });
++    },
++  });
++}
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index f452ba3..b60fde9 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -3323,3 +3323,92 @@ itself replaces the whole area with its own clean error. Full `pnpm run ci`
+ `docker compose down -v` → migrate → seed database; `docker compose up -d
+ --build` boots the full stack from scratch, `/health` reports `db: true,
+ redis: true`.
++
++## 2026-08-22 — v0.5.1 step 4: mark absent after publish (SPEC_V0.5.1.md §2.5)
++
++**Reuses `saveGrid` directly — no new endpoint, no parallel recompute.**
++The fix is the PUBLISHED-student gate in `GradesService.saveGrid()`: it now
++lets `SCHOOL_ADMIN`/`PROPRIETOR` pass (existence-tracked in a new
++`bypassedPublishedStudentIds` set), where before it 409'd everyone
++unconditionally. `TEACHER` still hits the exact same 409 as before this
++step. The term-closed check earlier in the same transaction is completely
++untouched — the published-lock bypass does not (and must not) extend to
++the closed-term gate; a closed term still needs the unlock flow first,
++admin included. Same fixed lock order as always (term → subject →
++conditional class-arm, `lock-keys.ts` unchanged) — the class-arm lock's
++condition is simply broadened to also fire when a bypass happened,
++alongside the pre-existing gap-#2 condition.
++
++**The one real design fork**: `recomputeStudents()` has always reverted
++ANY recomputed row to DRAFT/PENDING_APPROVAL and nulled
++`subjectPosition`/`publishedAt` — correct for every existing caller,
++because nothing could previously reach a recompute while PUBLISHED at all
++(the very gate this step opens). Calling it unmodified on a bypassed row
++would silently un-publish the correction, contradicting the whole point.
++Fixed with one additive, optional parameter —
++`preservePublishedStudentIds` — that, only for students genuinely
++PUBLISHED before this write, forces `status: PUBLISHED` and keeps the
++ORIGINAL `publishedAt` (this corrects data, it isn't a new publish event).
++Every other caller (`saveGrid`'s normal path, `recompute()`, `unpublish()`)
++passes nothing and is byte-for-byte unaffected — confirmed by the full
++existing e2e suite passing unchanged.
++
++**The subject-wide re-rank is new code, but not a new algorithm**: a
++bypassed student's total moving can shift every OTHER published student's
++relative rank in that subject too, not just theirs, so `saveGrid` now runs
++the identical `computeStandardCompetitionRanking` pass `publish()` already
++does (same call, copied to a new call site) whenever a bypass occurred —
++still under the subject lock already held, no new lock. `recomputeOverallForClassArm`
++(unmodified) then cascades the same change across subjects via the
++existing class-arm lock.
++
++**UI location — an explicit design question, not assumed**: the spec's own
++implementation note says "a UI control on the review/overview screen," and
++the score-entry grid client-side hard-locks any `PUBLISHED` row regardless
++of role (`ScoreEntryRow.tsx`'s `isLocked`) — unlocking that cell for admin
++would have repurposed the grid Step 3 just locked to a specific class+
++subject into a correction workflow it wasn't designed for. Asked Dami
++directly rather than guessing; confirmed: a new "Correct a published
++result" control (`UserX` icon, next to the existing Override pencil icon)
++on `ClassArmResultsView`/Overview, opening `MarkAbsentDialog` — picks a
++component (Overview only shows the subject total, not a per-component
++breakdown), loads that cell's current value via the same `GET /grades/grid`
++the entry grid itself uses, and submits through `useCorrectPublishedScore`
++→ `PUT /grades/grid` with a single-item `scores[]`. No admin/proprietor
++asymmetry (`canMarkAbsent` is a plain boolean, unlike override's `pendingOnly`/`any`
++split) — the button only ever appears on an already-PUBLISHED row (a
++non-published row's absence is already freely editable through the normal
++grid).
++
++**Test hygiene**: one pre-existing `grades-grid.e2e-spec.ts` test asserted
++that even `admin@sunrise.test` got 409'd writing to the real, seeded
++PUBLISHED JSS 1 A English result — now factually the wrong expectation for
++admin. Fixed by switching that specific assertion to the English subject's
++actual TEACHER token (`teacher2@sunrise.test`), which is exactly who this
++lock still blocks; the sibling `POST /grades/recompute` published-lock test
++right below it was untouched (that endpoint has no bypass — this step is
++scoped to `saveGrid` only) and needed no change.
++
++**Proof**: new `mark-absent-after-publish.e2e-spec.ts` (7 tests, scratch-
++bundle isolated): admin marks a published student absent — total drops,
++subject AND overall position recompute for the WHOLE 3-student cohort (not
++just the touched student), stays PUBLISHED with the ORIGINAL `publishedAt`,
++audited with the bypass explicitly named in metadata; admin then corrects
++back to a real score — symmetric restore; TEACHER 409s on both directions,
++unchanged; a CLOSED term still blocks the correction pending unlock, then
++succeeds once unlocked (proves the bypass never leaks into the closed-term
++gate); a hand-crafted both-set `student_scores` row still violates the DB
++CHECK constraint; a concurrent admin correction (subject A) and a publish
++of a different subject (B) on the same class arm don't deadlock and both
++land consistently; cross-tenant 404. Plus new `ClassArmResultsView.test.tsx`
++cases (button visibility: published-only, no admin/owner split, calls
++back with the right target) and a new `MarkAbsentDialog.test.tsx` (7
++tests: prefill from the current cell, absent vs. score submission payloads,
++backend-rejection message surfaced, Save disabled until a component is
++picked). Full `pnpm run ci` (typecheck + lint + 29 e2e suites/315 tests +
++30 web Vitest files/175 tests + unit) green on a fresh `docker compose
++down -v` → migrate → seed database (no new migration); `docker compose up
++-d --build` boots the full stack from scratch, `/health` reports `db:
++true, redis: true`. No live browser check this step either — the
++scratchpad's Playwright install is still broken (missing `package.json`
++under its `node_modules/playwright`), noted rather than silently skipped.

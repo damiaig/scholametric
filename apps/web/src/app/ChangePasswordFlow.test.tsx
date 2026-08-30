@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createTestQueryClient } from "../test/render-with-providers";
 import { authStore } from "../lib/auth-store";
-import { apiRequest } from "../lib/api-client";
+import { apiRequest, ApiError } from "../lib/api-client";
 import { AppRoutes } from "../App";
 
 // SPEC_V0.3.md §4 item 4: the frontend must enforce PASSWORD_CHANGE_REQUIRED
@@ -114,6 +114,55 @@ describe("Forced password change (frontend enforcement)", () => {
 
     expect(await screen.findByRole("heading", { name: "My Classes" })).toBeInTheDocument();
     expect(screen.queryByText("Choose your own password to continue")).not.toBeInTheDocument();
+  });
+
+  it("shows the 8-character requirement up front, and a <8-char new password blocks submission — no API call, still on the change-password screen", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/auth/me") return { ...BASE_USER, mustChangePassword: true };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderApp("/dashboard");
+
+    await screen.findByText("Choose your own password to continue");
+    expect(screen.getByText("At least 8 characters.")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Current password"), "Passw0rd!");
+    await user.type(screen.getByLabelText("New password"), "short1!");
+    await user.click(screen.getByRole("button", { name: "Set new password" }));
+
+    expect(await screen.findByText("Password must be at least 8 characters")).toBeInTheDocument();
+    expect(screen.getByText("Choose your own password to continue")).toBeInTheDocument();
+    expect(mockedApiRequest).not.toHaveBeenCalledWith("/api/v1/auth/change-password", expect.anything());
+  });
+
+  it("a wrong current password shows the error and keeps the user on the change-password screen — never a silent logout", async () => {
+    mockedApiRequest.mockImplementation(async (path: string, options?: { method?: string }) => {
+      const method = options?.method ?? "GET";
+      if (path === "/api/v1/auth/me") return { ...BASE_USER, mustChangePassword: true };
+      if (path === "/api/v1/auth/change-password" && method === "POST") {
+        throw new ApiError(401, {
+          statusCode: 401,
+          message: "Current password is incorrect.",
+          error: "Unauthorized",
+          path: "/api/v1/auth/change-password",
+          timestamp: new Date().toISOString(),
+        });
+      }
+      throw new Error(`unexpected apiRequest call: ${method} ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderApp("/dashboard");
+
+    await screen.findByText("Choose your own password to continue");
+    await user.type(screen.getByLabelText("Current password"), "wrong-password");
+    await user.type(screen.getByLabelText("New password"), "NewPassw0rd!");
+    await user.click(screen.getByRole("button", { name: "Set new password" }));
+
+    expect(await screen.findByText("Current password is incorrect.")).toBeInTheDocument();
+    expect(screen.getByText("Choose your own password to continue")).toBeInTheDocument();
   });
 
   it("a non-flagged user visiting /change-password directly is redirected home", async () => {

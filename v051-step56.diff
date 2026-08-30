@@ -1,0 +1,427 @@
+diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
+index b749b58..25c9016 100644
+--- a/apps/web/src/App.tsx
++++ b/apps/web/src/App.tsx
+@@ -16,6 +16,7 @@ import { GradesOverviewPage } from "./features/grades/GradesOverviewPage";
+ import { ReviewPublishPage } from "./features/grades/ReviewPublishPage";
+ import { ReportCardPage } from "./features/grades/ReportCardPage";
+ import { PersonnelListPage } from "./features/personnel/PersonnelListPage";
++import { HelpPage } from "./features/help/HelpPage";
+ import { SettingsLayout } from "./features/settings/SettingsLayout";
+ import { SchoolProfilePage } from "./features/settings/SchoolProfilePage";
+ import { AcademicSettingsPage } from "./features/settings/AcademicSettingsPage";
+@@ -42,6 +43,7 @@ export function AppRoutes() {
+         <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
+         <Route path="/grades/grid" element={<ScoreEntryGridPage />} />
+         <Route path="/grades/overview" element={<GradesOverviewPage />} />
++        <Route path="/help" element={<HelpPage />} />
+ 
+         {/* v0.2 (SPEC_V0.2.md §4): /settings/users no longer exists as a
+             tab — it's a bare redirect to /personnel, which replaced it. */}
+diff --git a/apps/web/src/app/route-smoke.test.tsx b/apps/web/src/app/route-smoke.test.tsx
+index a42ab4c..1ce9fbb 100644
+--- a/apps/web/src/app/route-smoke.test.tsx
++++ b/apps/web/src/app/route-smoke.test.tsx
+@@ -159,6 +159,7 @@ const ROUTES = [
+   "/personnel",
+   "/settings/school",
+   "/settings/academic",
++  "/help",
+ ];
+ 
+ beforeEach(() => {
+diff --git a/apps/web/src/features/grades/ScoreEntryGrid.tsx b/apps/web/src/features/grades/ScoreEntryGrid.tsx
+index 4f39ff4..49782ac 100644
+--- a/apps/web/src/features/grades/ScoreEntryGrid.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGrid.tsx
+@@ -89,9 +89,12 @@ export function ScoreEntryGrid({ params, canManageTermLock, saveQueueTiming }: S
+         canManage={canManageTermLock}
+       />
+ 
+-      <div className="flex items-center justify-between">
+-        <p className="text-sm text-muted">
+-          {enteredCount} of {roster.length} entered · out of {gridQuery.data.maxScore}
++      {/* SPEC_V0.5.1.md §2.6 — grouped into its own bordered bar (matching
++          the roster box directly below it) instead of floating text, so
++          the summary reads as a toolbar for the grid, not a stray line. */}
++      <div className="flex items-center justify-between rounded-lg border border-muted/20 bg-card px-4 py-2.5">
++        <p className="text-sm text-text">
++          <span className="font-medium">{enteredCount}</span> <span className="text-muted">of {roster.length} entered · out of {gridQuery.data.maxScore}</span>
+         </p>
+         <Button type="button" variant="outline" size="sm" onClick={() => gridQuery.refetch()}>
+           <RefreshCw className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
+diff --git a/apps/web/src/features/grades/ScoreEntryGridPage.tsx b/apps/web/src/features/grades/ScoreEntryGridPage.tsx
+index 06c6f9f..fbd38a5 100644
+--- a/apps/web/src/features/grades/ScoreEntryGridPage.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGridPage.tsx
+@@ -97,7 +97,11 @@ export function ScoreEntryGridPage() {
+           <div className="mb-6 flex flex-col gap-4 rounded-lg border border-muted/20 bg-card p-4 sm:flex-row sm:flex-wrap sm:items-end">
+             <div className="flex flex-col gap-1.5">
+               <Label>Class &amp; subject</Label>
+-              <p className="flex h-10 items-center text-sm font-medium text-text">
++              {/* SPEC_V0.5.1.md §2.6 — a bordered pill matching the height/
++                  shape of the Component/Term controls beside it, so this
++                  reads as intentionally fixed context, not a blank/broken
++                  field. */}
++              <p className="flex h-10 w-full items-center rounded-md border border-muted/30 bg-muted/5 px-3 text-sm font-medium text-text sm:w-56">
+                 {armLabel} · {subjectLabel}
+               </p>
+             </div>
+diff --git a/apps/web/src/features/help/HelpPage.test.tsx b/apps/web/src/features/help/HelpPage.test.tsx
+new file mode 100644
+index 0000000..73731b6
+--- /dev/null
++++ b/apps/web/src/features/help/HelpPage.test.tsx
+@@ -0,0 +1,90 @@
++import { describe, it, expect, vi, afterEach } from "vitest";
++import { screen, cleanup } from "@testing-library/react";
++import { renderWithProviders } from "../../test/render-with-providers";
++import { authStore } from "../../lib/auth-store";
++import { apiRequest } from "../../lib/api-client";
++import { HelpPage } from "./HelpPage";
++
++vi.mock("../../lib/api-client", async (importOriginal) => {
++  const actual = await importOriginal<typeof import("../../lib/api-client")>();
++  return { ...actual, apiRequest: vi.fn() };
++});
++
++const mockedApiRequest = vi.mocked(apiRequest);
++
++const BASE_USER = {
++  id: "u1",
++  email: "admin@sunrise.test",
++  firstName: "Adaobi",
++  lastName: "Nwachukwu",
++  role: "SCHOOL_ADMIN",
++  status: "ACTIVE",
++  lastLoginAt: null,
++  school: { id: "s1", name: "Sunrise College", slug: "sunrise", type: "SECONDARY", status: "ACTIVE", address: null, phone: null, email: null },
++};
++
++function mockUser(role: string) {
++  mockedApiRequest.mockImplementation(async (path: string) => {
++    if (path.includes("/auth/me")) return { ...BASE_USER, role };
++    throw new Error(`unexpected apiRequest call: ${path}`);
++  });
++}
++
++afterEach(() => {
++  cleanup();
++  vi.restoreAllMocks();
++  authStore.clear();
++});
++
++// SPEC_V0.5.1.md §2.7, v0.5.1 step 6: static, per-role content — no
++// backend beyond /auth/me for the role. The critical property is
++// negative, not just positive: a teacher's guide must never surface an
++// admin-only power (publish/override/term close-unlock), and vice versa.
++describe("HelpPage", () => {
++  it("SCHOOL_ADMIN/PROPRIETOR: sees the admin guide (setup, entering, review/publish, override, mark-absent-after-publish, terms, assessment structure)", async () => {
++    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++    mockUser("SCHOOL_ADMIN");
++    renderWithProviders(<HelpPage />);
++
++    expect(await screen.findByText("Setting up classes & subjects")).toBeInTheDocument();
++    expect(screen.getByText("Entering grades")).toBeInTheDocument();
++    expect(screen.getByText("Reviewing & publishing")).toBeInTheDocument();
++    expect(screen.getByText("Managing terms")).toBeInTheDocument();
++    expect(screen.getByText("Assessment structure & grading scale")).toBeInTheDocument();
++    expect(screen.getByText(/Override lets you set a manual grade label/)).toBeInTheDocument();
++    expect(screen.getByText(/Correct a published result/)).toBeInTheDocument();
++
++    // Never the teacher-only framing.
++    expect(screen.queryByText("Your classes")).not.toBeInTheDocument();
++    expect(screen.queryByText("Class remarks")).not.toBeInTheDocument();
++  });
++
++  it("PROPRIETOR sees the same admin guide as SCHOOL_ADMIN", async () => {
++    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++    mockUser("PROPRIETOR");
++    renderWithProviders(<HelpPage />);
++
++    expect(await screen.findByText("Setting up classes & subjects")).toBeInTheDocument();
++    expect(screen.getByText("Reviewing & publishing")).toBeInTheDocument();
++  });
++
++  it("TEACHER: sees only their own guide (classes, entering grades, class remarks) — never publish/override/term-lock/assessment-structure", async () => {
++    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++    mockUser("TEACHER");
++    renderWithProviders(<HelpPage />);
++
++    expect(await screen.findByText("Your classes")).toBeInTheDocument();
++    expect(screen.getByText("Entering grades")).toBeInTheDocument();
++    expect(screen.getByText("Class remarks")).toBeInTheDocument();
++
++    // The critical negative assertions: no admin-only power is described.
++    expect(screen.queryByText("Setting up classes & subjects")).not.toBeInTheDocument();
++    expect(screen.queryByText("Reviewing & publishing")).not.toBeInTheDocument();
++    expect(screen.queryByText("Managing terms")).not.toBeInTheDocument();
++    expect(screen.queryByText("Assessment structure & grading scale")).not.toBeInTheDocument();
++    expect(screen.queryByText(/publish/i)).not.toBeInTheDocument();
++    expect(screen.queryByText(/override/i)).not.toBeInTheDocument();
++    expect(screen.queryByText(/unlock/i)).not.toBeInTheDocument();
++    expect(screen.queryByText(/relock/i)).not.toBeInTheDocument();
++  });
++});
+diff --git a/apps/web/src/features/help/HelpPage.tsx b/apps/web/src/features/help/HelpPage.tsx
+new file mode 100644
+index 0000000..6b9a2ed
+--- /dev/null
++++ b/apps/web/src/features/help/HelpPage.tsx
+@@ -0,0 +1,133 @@
++import type { ReactNode } from "react";
++import { PageHeader } from "../../components/PageHeader";
++import { useCurrentUser } from "../shell/use-current-user";
++
++function Section({ title, children }: { title: string; children: ReactNode }) {
++  return (
++    <section className="mb-6 rounded-lg border border-muted/20 bg-card p-4">
++      <h2 className="mb-2 text-base font-semibold text-text">{title}</h2>
++      <div className="flex flex-col gap-2 text-sm text-text">{children}</div>
++    </section>
++  );
++}
++
++// SPEC_V0.5.1.md §2.7, v0.5.1 step 6 (Q5 approved: a simple static per-role
++// page, not a contextual/inline tour). Same "one route, role branches the
++// content" pattern DashboardPage already uses for MyClassesView vs. the
++// admin dashboard. Content is hand-written and role-scoped on purpose —
++// the TEACHER guide describes ONLY actions a teacher can take (grade
++// entry for their own classes/subjects, marking absent, the class remark
++// when they're the class teacher); it never mentions publish, override,
++// or term close/unlock, since a teacher has none of those powers and a
++// guide describing them would just be confusing, not helpful.
++export function HelpPage() {
++  const { data: user } = useCurrentUser();
++
++  if (user?.role === "TEACHER") {
++    return (
++      <div>
++        <PageHeader title="Help" description="What your account can do, and how." />
++        <TeacherHelp />
++      </div>
++    );
++  }
++
++  return (
++    <div>
++      <PageHeader title="Help" description="What your account can do, and how." />
++      <AdminHelp />
++    </div>
++  );
++}
++
++function AdminHelp() {
++  return (
++    <>
++      <Section title="Setting up classes & subjects">
++        <p>
++          Add class levels and arms, then add subjects, from the Classes page. Open a class arm to assign its class
++          teacher and its subject teachers.
++        </p>
++        <p className="text-muted">
++          A subject only becomes gradeable for a class once a teacher is assigned to teach it there — assigning a
++          teacher when you add a subject to a class is what unlocks grade entry, overview, and the report card for
++          that class. If a subject seems to be missing from a class, check whether a teacher has been assigned to it
++          there yet.
++        </p>
++      </Section>
++
++      <Section title="Entering grades">
++        <p>
++          Grades are entered from a specific class and subject, not a free picker — open a class from the Classes
++          page and click "Enter grades" next to the subject you want, or use a subject's "Enter grades" link
++          wherever you see one. From there, pick the assessment component (e.g. CA 1, CA 2, Exam) and enter each
++          student's score, or mark them absent.
++        </p>
++      </Section>
++
++      <Section title="Reviewing & publishing">
++        <p>
++          The Grades overview page shows every subject's results for a class and term. Review &amp; publish shows
++          each subject's readiness (draft / pending approval / published counts) and lets you publish a subject once
++          its scores are complete.
++        </p>
++        <p>
++          Override lets you set a manual grade label on a result, keeping the auto-computed grade on record
++          underneath it. On an already-published result, only the proprietor can override the grade label.
++        </p>
++        <p>
++          If a published result turns out to be wrong — a teacher entered a score but the student was actually
++          absent, or the reverse — use "Correct a published result" on the Grades overview page. It recomputes the
++          total and re-ranks the class, and the result stays published with the corrected numbers.
++        </p>
++      </Section>
++
++      <Section title="Managing terms">
++        <p>
++          Closing a term locks its scores from further editing. If a correction is needed afterward, unlock that
++          exact class and subject (with a reason), make the correction, then relock it when you're done.
++        </p>
++      </Section>
++
++      <Section title="Assessment structure & grading scale">
++        <p>
++          Settings → Academic is where the assessment components (their names, weights, and which one requires
++          approval before a result can publish) and the school's grading scale are configured.
++        </p>
++      </Section>
++    </>
++  );
++}
++
++function TeacherHelp() {
++  return (
++    <>
++      <Section title="Your classes">
++        <p>
++          My Classes (this account's home page) lists the classes you're the class teacher of, and the subjects you
++          teach. Open a class to see its enrolled students.
++        </p>
++      </Section>
++
++      <Section title="Entering grades">
++        <p>
++          From My Classes, click "Enter grades" next to a subject you teach. Pick the assessment component (e.g.
++          CA 1, CA 2, Exam), then enter each student's score. If a student was absent for that component, mark them
++          absent instead of leaving it blank — absent is recorded as a decided outcome, not a missing score.
++        </p>
++        <p className="text-muted">
++          Once a result is finalized, you won't be able to edit it yourself — if a correction is needed afterward,
++          ask your school admin or proprietor.
++        </p>
++      </Section>
++
++      <Section title="Class remarks">
++        <p>
++          If you're the class teacher of an arm, you can write the teacher's remark on a student's report card for
++          that class. If you only teach a subject there (not the class teacher), you can still read the remark, but
++          you can't edit it — that stays with the class teacher.
++        </p>
++      </Section>
++    </>
++  );
++}
+diff --git a/apps/web/src/features/shell/AppShell.test.tsx b/apps/web/src/features/shell/AppShell.test.tsx
+index b7d0d92..a3697a8 100644
+--- a/apps/web/src/features/shell/AppShell.test.tsx
++++ b/apps/web/src/features/shell/AppShell.test.tsx
+@@ -117,4 +117,25 @@ describe("AppShell", () => {
+     expect(await screen.findByRole("link", { name: /Personnel/ })).toBeInTheDocument();
+     expect(screen.getByRole("link", { name: /Settings/ })).toBeInTheDocument();
+   });
++
++  // SPEC_V0.5.1.md §2.7, v0.5.1 step 6 — Help is in BASE_NAV_ITEMS, visible
++  // to every role (HelpPage itself branches content by role).
++  it("Help is visible in the sidebar for both SCHOOL_ADMIN and TEACHER", async () => {
++    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path.includes("/auth/me")) return CURRENT_USER;
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
++    renderShell();
++    expect(await screen.findByRole("link", { name: "Help" })).toHaveAttribute("href", "/help");
++
++    cleanup();
++    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
++    renderShell();
++    expect(await screen.findByRole("link", { name: "Help" })).toHaveAttribute("href", "/help");
++  });
+ });
+diff --git a/apps/web/src/features/shell/Sidebar.tsx b/apps/web/src/features/shell/Sidebar.tsx
+index ad6f7be..d32b616 100644
+--- a/apps/web/src/features/shell/Sidebar.tsx
++++ b/apps/web/src/features/shell/Sidebar.tsx
+@@ -1,5 +1,5 @@
+ import { NavLink } from "react-router-dom";
+-import { LayoutDashboard, Users, UserCog, Layers, IdCard, Settings, GraduationCap } from "lucide-react";
++import { LayoutDashboard, Users, UserCog, Layers, IdCard, Settings, GraduationCap, CircleHelp } from "lucide-react";
+ import { cn } from "../../lib/utils";
+ import { isSchoolAdmin } from "../../lib/roles";
+ import { useCurrentUser } from "./use-current-user";
+@@ -10,11 +10,14 @@ import { UserMenu } from "./UserMenu";
+ // (TEACHER gets read-only views server-side); Personnel and Settings are
+ // PROPRIETOR/SCHOOL_ADMIN only — absent from nav for TEACHER, not disabled,
+ // same convention as every other role-gated nav item in this app.
++// Help (SPEC_V0.5.1.md §2.7, v0.5.1 step 6) is visible to everyone too —
++// HelpPage itself branches its content by role, same pattern as /dashboard.
+ const BASE_NAV_ITEMS = [
+   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+   { to: "/students", label: "Students", icon: Users },
+   { to: "/teachers", label: "Teachers", icon: UserCog },
+   { to: "/classes", label: "Classes", icon: Layers },
++  { to: "/help", label: "Help", icon: CircleHelp },
+ ];
+ 
+ const PERSONNEL_ITEM = { to: "/personnel", label: "Personnel", icon: IdCard };
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index 2ae14a4..0c89289 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -3426,3 +3426,62 @@ down -v` → migrate → seed database (no new migration); `docker compose up
+ true, redis: true`. No live browser check this step either — the
+ scratchpad's Playwright install is still broken (missing `package.json`
+ under its `node_modules/playwright`), noted rather than silently skipped.
++
++## 2026-08-23 — v0.5.1 steps 5+6: Enter-grades styling + per-role help guide (SPEC_V0.5.1.md §2.6/§2.7)
++
++**Step 5 — purely `className` edits, zero logic/prop/query changes**
++(confirmed by the full existing `ScoreEntryGrid.test.tsx`/
++`ScoreEntryGridPage.test.tsx` suites passing unchanged, no new tests
++needed). Two spots, matching the plan exactly: (1) the locked "Class &
++subject" label (`ScoreEntryGridPage.tsx`) gets a bordered pill matching
++the height/shape of its sibling Component/Term controls — previously
++unstyled plain text next to two real bordered `<select>`s read as a
++blank/broken field, not an intentionally-fixed one; (2) the grid's
++summary row (`ScoreEntryGrid.tsx`, "N of M entered · out of X" + Refresh)
++is now grouped into its own bordered bar matching the roster box directly
++below it, instead of floating text, so the two read as one cohesive
++panel. `TermLockBanner.tsx` and the empty/loading/error states were
++reviewed and left untouched — already consistent with the app-wide
++convention (icon + tinted banner; rounded-border/`p-10`/centered text
++respectively), so touching them would have been inconsistency, not
++polish.
++
++**Step 6 — new `/help` route, `HelpPage.tsx`, static content, no
++backend.** Same "one route, role branches the content" pattern
++`DashboardPage` already uses for `MyClassesView` vs. the admin dashboard.
++Reached via a new "Help" item in `Sidebar.tsx`'s `BASE_NAV_ITEMS` (visible
++to every role, same as Dashboard/Students/Teachers/Classes) rather than
++the account/`UserMenu` dropdown, which has no navigational precedent in
++this app (it's account-actions only, currently just Logout).
++
++**Content accuracy was the load-bearing constraint, not styling**: the
++TEACHER guide describes only what a teacher can actually do — their own
++classes, entering grades (incl. marking absent), and the class remark
++(full for the class teacher, read-only otherwise) — and deliberately
++avoids the words "publish," "override," "unlock," and "relock" entirely,
++not just the underlying admin actions; a teacher losing edit access to a
++finalized result is described from their own vantage point ("you won't be
++able to edit it yourself — ask your admin or proprietor") rather than by
++naming the admin-side mechanism. `HelpPage.test.tsx` asserts this
++negatively, not just positively — the teacher-role test fails if
++"publish"/"override"/"unlock"/"relock" appear anywhere in that render, in
++addition to asserting the admin-only sections are entirely absent. The
++admin/proprietor guide includes the two optional lines from the plan: the
++subject-needs-a-teacher-assigned rule (why a subject can seem to "go
++missing" for a class) and that grade entry is always reached via a
++class's subject link, not a free picker.
++
++**Proof**: `HelpPage.test.tsx` (3 tests: admin content + negative
++teacher-content assertions; PROPRIETOR gets the identical admin guide;
++teacher content + negative admin-content/keyword assertions). `/help`
++added to `route-smoke.test.tsx`'s route list (now 14 routes) — mounts
++cleanly off the same `/auth/me` mock every other route already shares, no
++new endpoint needed. `AppShell.test.tsx` gets one new case confirming the
++Help link renders for both SCHOOL_ADMIN and TEACHER. Full `pnpm run ci`
++(typecheck + lint + 29 e2e suites/315 tests, unchanged — no backend
++touched by either step — + 31 web Vitest files/180 tests + unit) green on
++a fresh `docker compose down -v` → migrate → seed database (no new
++migration); `docker compose up -d --build` boots the full stack from
++scratch, `/health` reports `db: true, redis: true`. No live browser check
++— Playwright's scratchpad install is still broken; leaned on Vitest for
++both steps as agreed.

@@ -1,0 +1,668 @@
+diff --git a/apps/api/test/assessment-components.e2e-spec.ts b/apps/api/test/assessment-components.e2e-spec.ts
+index fb466d9..6331cac 100644
+--- a/apps/api/test/assessment-components.e2e-spec.ts
++++ b/apps/api/test/assessment-components.e2e-spec.ts
+@@ -1,9 +1,14 @@
++import { randomUUID } from "node:crypto";
+ import { INestApplication } from "@nestjs/common";
+ import request from "supertest";
+ import { createTestApp } from "./utils/create-test-app";
+-import { loginAs } from "./utils/login";
++import { loginAs, SEED_PASSWORD } from "./utils/login";
++import { PrismaService } from "../src/prisma/prisma.service";
+ 
+-const SEEDED_COMPONENTS = [
++// A baseline structure for the scratch school's PUT tests below — same
++// shape as seed.ts's real Sunrise structure, but this one lives entirely
++// in the scratch tenant, never Sunrise.
++const BASELINE_COMPONENTS = [
+   { name: "CA 1", weight: 20, sortOrder: 1, maxScore: 20, requiresApproval: false },
+   { name: "CA 2", weight: 20, sortOrder: 2, maxScore: 20, requiresApproval: false },
+   { name: "Exam", weight: 60, sortOrder: 3, maxScore: 100, requiresApproval: true },
+@@ -11,33 +16,66 @@ const SEEDED_COMPONENTS = [
+ 
+ describe("Assessment components (e2e)", () => {
+   let app: INestApplication;
++  let prisma: PrismaService;
+   let sunriseAdminToken: string;
+   let sunriseTeacherToken: string;
+   let hillcrestAdminToken: string;
++  let scratchAdminToken: string;
++  let scratchSchoolId: string;
++
++  const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
+ 
+   beforeAll(async () => {
+     app = await createTestApp();
++    prisma = app.get(PrismaService);
+     sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
+     sunriseTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
+     hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
+-  });
+ 
+-  afterAll(async () => {
+-    // Restore the seeded set through the real endpoint, not a raw hard
+-    // delete — once student_scores can reference these rows (SPEC_V0.4.md
+-    // §1), a raw deleteMany FK-violates. PUT already handles this
+-    // correctly (soft-deletes any removed component with referencing
+-    // scores instead of destroying it), which is exactly what's needed
+-    // here since prior tests in this suite may have left a set that no
+-    // longer matches the originally-seeded rows other suites rely on.
++    // Every PUT test below runs against a dedicated scratch school, not
++    // the real seeded Sunrise tenant. assessment_components is school-wide
++    // (no session/term/class-arm to scope a scratch bundle into the way
++    // every other grades e2e spec does — see terms.e2e-spec.ts's
++    // createScratchBundle) — isolating this suite means a whole fresh
++    // school, not just fresh sub-resources within Sunrise. Mutating the
++    // real Sunrise structure here previously left it corrupted (fresh
++    // component ids, orphaned soft-deleted originals) for anyone using
++    // the persistent local dev DB for manual QA/demos after a full test
++    // run — see docs/DECISIONS.md.
++    const superAdminToken = await loginAs(app, "super@scholametric.test", "platform");
++    const suffix = randomUUID().slice(0, 8);
++    const schoolResponse = await request(app.getHttpServer())
++      .post("/api/v1/schools")
++      .set(auth(superAdminToken))
++      .send({
++        name: `Assessment Components E2E ${suffix}`,
++        slug: `ac-e2e-${suffix}`,
++        type: "SECONDARY",
++        admin: { email: `admin-${suffix}@ac-e2e.test`, firstName: "Scratch", lastName: "Admin", password: SEED_PASSWORD },
++      });
++    scratchSchoolId = schoolResponse.body.id;
++    scratchAdminToken = await loginAs(app, schoolResponse.body.admin.email, schoolResponse.body.slug);
++
++    // A brand-new school starts with zero assessment components — seed
++    // the scratch tenant's own baseline once, the same role
++    // prisma/seed.ts plays for the real Sunrise structure.
+     await request(app.getHttpServer())
+       .put("/api/v1/assessment-components")
+-      .set(auth(sunriseAdminToken))
+-      .send({ components: SEEDED_COMPONENTS });
+-    await app.close();
++      .set(auth(scratchAdminToken))
++      .send({ components: BASELINE_COMPONENTS });
+   });
+ 
+-  const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
++  afterAll(async () => {
++    await prisma.assessmentComponent.deleteMany({ where: { schoolId: scratchSchoolId } });
++    // refresh_tokens and audit_logs both FK to users — loginAs() and every
++    // @Audit()-decorated PUT above created rows referencing the scratch
++    // admin, so both have to go before the user does.
++    await prisma.refreshToken.deleteMany({ where: { user: { schoolId: scratchSchoolId } } });
++    await prisma.auditLog.deleteMany({ where: { schoolId: scratchSchoolId } });
++    await prisma.user.deleteMany({ where: { schoolId: scratchSchoolId } });
++    await prisma.school.delete({ where: { id: scratchSchoolId } });
++    await app.close();
++  });
+ 
+   describe("GET /assessment-components", () => {
+     it("returns the seeded set ordered by sortOrder", async () => {
+@@ -71,45 +109,47 @@ describe("Assessment components (e2e)", () => {
+   });
+ 
+   describe("PUT /assessment-components", () => {
++    // Every test in this block runs against the scratch school seeded
++    // with BASELINE_COMPONENTS in the outer beforeAll — never Sunrise.
+     it("rejects a 90-total set, and leaves the prior set intact", async () => {
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken))
++        .set(auth(scratchAdminToken))
+         .send({ components: [{ name: "CA 1", weight: 40, sortOrder: 1 }, { name: "Exam", weight: 50, sortOrder: 2 }] });
+       expect(response.status).toBe(400);
+ 
+       const stillThere = await request(app.getHttpServer())
+         .get("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken));
++        .set(auth(scratchAdminToken));
+       expect(stillThere.body.map((c: { name: string }) => c.name)).toEqual(["CA 1", "CA 2", "Exam"]);
+     });
+ 
+     it("rejects a 110-total set atomically", async () => {
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken))
++        .set(auth(scratchAdminToken))
+         .send({ components: [{ name: "CA 1", weight: 60, sortOrder: 1 }, { name: "Exam", weight: 50, sortOrder: 2 }] });
+       expect(response.status).toBe(400);
+ 
+       const stillThere = await request(app.getHttpServer())
+         .get("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken));
++        .set(auth(scratchAdminToken));
+       expect(stillThere.body.map((c: { name: string }) => c.name)).toEqual(["CA 1", "CA 2", "Exam"]);
+     });
+ 
+     it("rejects duplicate names", async () => {
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken))
+-        .send({ components: [{ name: "CA", weight: 50, sortOrder: 1 }, { name: "CA", weight: 50, sortOrder: 2 }] });
++        .set(auth(scratchAdminToken))
++        .send({ components: [{ name: "CA", weight: 50, sortOrder: 1, requiresApproval: true }, { name: "CA", weight: 50, sortOrder: 2 }] });
+       expect(response.status).toBe(400);
+     });
+ 
+     it("rejects more than 8 components", async () => {
+-      const components = Array.from({ length: 9 }, (_, i) => ({ name: `C${i}`, weight: 100 / 9, sortOrder: i }));
++      const components = Array.from({ length: 9 }, (_, i) => ({ name: `C${i}`, weight: 100 / 9, sortOrder: i, requiresApproval: i === 0 }));
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken))
++        .set(auth(scratchAdminToken))
+         .send({ components });
+       expect(response.status).toBe(400);
+     });
+@@ -117,7 +157,7 @@ describe("Assessment components (e2e)", () => {
+     it("accepts a valid 100-total set and replaces the prior one", async () => {
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken))
++        .set(auth(scratchAdminToken))
+         .send({
+           components: [
+             { name: "First CA", weight: 30, sortOrder: 1 },
+@@ -130,7 +170,7 @@ describe("Assessment components (e2e)", () => {
+ 
+       const persisted = await request(app.getHttpServer())
+         .get("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken));
++        .set(auth(scratchAdminToken));
+       expect(persisted.body.map((c: { name: string }) => c.name)).toEqual(["First CA", "Second CA", "Final Exam"]);
+     });
+ 
+@@ -139,11 +179,11 @@ describe("Assessment components (e2e)", () => {
+     it("rejects a zero-approval-component set atomically, and leaves the prior set intact", async () => {
+       const before = await request(app.getHttpServer())
+         .get("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken));
++        .set(auth(scratchAdminToken));
+ 
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken))
++        .set(auth(scratchAdminToken))
+         .send({
+           components: [
+             { name: "Gap1 CA", weight: 40, sortOrder: 1, requiresApproval: false },
+@@ -155,14 +195,14 @@ describe("Assessment components (e2e)", () => {
+ 
+       const stillThere = await request(app.getHttpServer())
+         .get("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken));
++        .set(auth(scratchAdminToken));
+       expect(stillThere.body).toEqual(before.body);
+     });
+ 
+     it("accepts a set with exactly one requiresApproval component", async () => {
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken))
++        .set(auth(scratchAdminToken))
+         .send({
+           components: [
+             { name: "Gap1 CA Only", weight: 40, sortOrder: 1, requiresApproval: false },
+@@ -174,11 +214,15 @@ describe("Assessment components (e2e)", () => {
+       expect(exam.requiresApproval).toBe(true);
+     });
+ 
++    // Role check only (RolesGuard rejects before the request reaches any
++    // tenant-scoped logic) — reusing the real seeded sunriseTeacherToken
++    // here is safe, it never touches Sunrise's (or the scratch school's)
++    // actual data.
+     it("TEACHER cannot PUT", async () => {
+       const response = await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+         .set(auth(sunriseTeacherToken))
+-        .send({ components: SEEDED_COMPONENTS });
++        .send({ components: BASELINE_COMPONENTS });
+       expect(response.status).toBe(403);
+     });
+ 
+@@ -189,8 +233,8 @@ describe("Assessment components (e2e)", () => {
+ 
+       await request(app.getHttpServer())
+         .put("/api/v1/assessment-components")
+-        .set(auth(sunriseAdminToken))
+-        .send({ components: SEEDED_COMPONENTS });
++        .set(auth(scratchAdminToken))
++        .send({ components: BASELINE_COMPONENTS });
+ 
+       const after = await request(app.getHttpServer())
+         .get("/api/v1/assessment-components")
+diff --git a/apps/web/src/components/ui/checkbox.tsx b/apps/web/src/components/ui/checkbox.tsx
+new file mode 100644
+index 0000000..cfd3f8f
+--- /dev/null
++++ b/apps/web/src/components/ui/checkbox.tsx
+@@ -0,0 +1,19 @@
++import { type InputHTMLAttributes, forwardRef } from "react";
++import { cn } from "../../lib/utils";
++
++export const Checkbox = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
++  ({ className, ...props }, ref) => {
++    return (
++      <input
++        ref={ref}
++        type="checkbox"
++        className={cn(
++          "h-4 w-4 rounded border-muted text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50",
++          className,
++        )}
++        {...props}
++      />
++    );
++  },
++);
++Checkbox.displayName = "Checkbox";
+diff --git a/apps/web/src/features/grades/ReviewPublishPage.test.tsx b/apps/web/src/features/grades/ReviewPublishPage.test.tsx
+index a049ff3..3c4e1db 100644
+--- a/apps/web/src/features/grades/ReviewPublishPage.test.tsx
++++ b/apps/web/src/features/grades/ReviewPublishPage.test.tsx
+@@ -147,8 +147,8 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
+ 
+   it("publish 409s with incompleteEntries (the completeness-gate race): shows blocking components grouped, not a generic toast", async () => {
+     const components: AssessmentComponent[] = [
+-      { id: "ca1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, deletedAt: null, createdAt: "t", updatedAt: "t" },
+-      { id: "examId", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 3, deletedAt: null, createdAt: "t", updatedAt: "t" },
++      { id: "ca1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
++      { id: "examId", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 3, requiresApproval: true, deletedAt: null, createdAt: "t", updatedAt: "t" },
+     ];
+     mockedApiRequest.mockImplementation(async (path, options) => {
+       const method = (options as { method?: string })?.method;
+diff --git a/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx b/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx
+index bacb7de..619a7ff 100644
+--- a/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGridPage.test.tsx
+@@ -36,7 +36,7 @@ const TEACHING: MyTeaching = {
+ };
+ 
+ const COMPONENTS: AssessmentComponent[] = [
+-  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, deletedAt: null, createdAt: "t", updatedAt: "t" },
++  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
+ ];
+ 
+ beforeEach(() => {
+diff --git a/apps/web/src/features/settings/AssessmentStructurePanel.test.tsx b/apps/web/src/features/settings/AssessmentStructurePanel.test.tsx
+index 163cb5c..06aa736 100644
+--- a/apps/web/src/features/settings/AssessmentStructurePanel.test.tsx
++++ b/apps/web/src/features/settings/AssessmentStructurePanel.test.tsx
+@@ -15,9 +15,9 @@ vi.mock("../../lib/api-client", async (importOriginal) => {
+ const mockedApiRequest = vi.mocked(apiRequest);
+ 
+ const SEEDED: AssessmentComponent[] = [
+-  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, deletedAt: null, createdAt: "t", updatedAt: "t" },
+-  { id: "c2", schoolId: "s1", name: "CA 2", weight: 20, sortOrder: 2, deletedAt: null, createdAt: "t", updatedAt: "t" },
+-  { id: "c3", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 3, deletedAt: null, createdAt: "t", updatedAt: "t" },
++  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
++  { id: "c2", schoolId: "s1", name: "CA 2", weight: 20, sortOrder: 2, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
++  { id: "c3", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 3, requiresApproval: true, deletedAt: null, createdAt: "t", updatedAt: "t" },
+ ];
+ 
+ beforeEach(() => {
+@@ -56,20 +56,75 @@ describe("AssessmentStructurePanel", () => {
+     expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+   });
+ 
+-  it("allows saving at exactly 100 and calls PUT with the correct payload", async () => {
++  // v0.5 acceptance-walk fix — the original bug: this exact edit (still
++  // sums to 100, touches nothing approval-related) used to 400 on every
++  // save because requiresApproval was never submitted at all. This is the
++  // live case from the walk, reproduced here.
++  it("a weight-only edit (still summing to 100) preserves each component's requiresApproval and saves successfully", async () => {
+     const user = userEvent.setup();
+     let saved: AssessmentComponent[] = SEEDED;
++    let putBody: { components: { name: string; weight: number; sortOrder: number; requiresApproval: boolean }[] } | null = null;
+     mockedApiRequest.mockImplementation(async (path: string, options?: { method?: string; body?: unknown }) => {
+       const method = options?.method ?? "GET";
+       if (path === "/api/v1/assessment-components" && method === "GET") return saved;
+       if (path === "/api/v1/assessment-components" && method === "PUT") {
+-        const body = options?.body as { components: { name: string; weight: number; sortOrder: number }[] };
++        putBody = options?.body as typeof putBody;
++        saved = putBody!.components.map((c, i) => ({
++          id: `new-${i}`,
++          schoolId: "s1",
++          name: c.name,
++          weight: c.weight,
++          sortOrder: c.sortOrder,
++          requiresApproval: c.requiresApproval,
++          deletedAt: null,
++          createdAt: "t",
++          updatedAt: "t",
++        }));
++        return saved;
++      }
++      throw new Error(`unexpected apiRequest call: ${method} ${path}`);
++    });
++
++    renderWithProviders(<AssessmentStructurePanel />);
++    await screen.findByText("Total: 100/100");
++
++    // CA1 -1, CA2 +1 — still sums to 100, doesn't touch the approval
++    // checkboxes at all.
++    await user.clear(screen.getAllByLabelText("Weight")[0]);
++    await user.type(screen.getAllByLabelText("Weight")[0], "19");
++    await user.clear(screen.getAllByLabelText("Weight")[1]);
++    await user.type(screen.getAllByLabelText("Weight")[1], "21");
++
++    expect(await screen.findByText("Total: 100/100")).toBeInTheDocument();
++    const saveButton = screen.getByRole("button", { name: "Save changes" });
++    expect(saveButton).not.toBeDisabled();
++    await user.click(saveButton);
++
++    expect(await screen.findByText("Saved.")).toBeInTheDocument();
++    expect(putBody).toEqual({
++      components: [
++        { name: "CA 1", weight: 19, sortOrder: 1, requiresApproval: false },
++        { name: "CA 2", weight: 21, sortOrder: 2, requiresApproval: false },
++        { name: "Exam", weight: 60, sortOrder: 3, requiresApproval: true },
++      ],
++    });
++  });
++
++  it("allows saving at exactly 100 and calls PUT with requiresApproval included per item", async () => {
++    const user = userEvent.setup();
++    let saved: AssessmentComponent[] = SEEDED;
++    mockedApiRequest.mockImplementation(async (path: string, options?: { method?: string; body?: unknown }) => {
++      const method = options?.method ?? "GET";
++      if (path === "/api/v1/assessment-components" && method === "GET") return saved;
++      if (path === "/api/v1/assessment-components" && method === "PUT") {
++        const body = options?.body as { components: { name: string; weight: number; sortOrder: number; requiresApproval: boolean }[] };
+         saved = body.components.map((c, i) => ({
+           id: `new-${i}`,
+           schoolId: "s1",
+           name: c.name,
+           weight: c.weight,
+           sortOrder: c.sortOrder,
++          requiresApproval: c.requiresApproval,
+           deletedAt: null,
+           createdAt: "t",
+           updatedAt: "t",
+@@ -99,12 +154,82 @@ describe("AssessmentStructurePanel", () => {
+         method: "PUT",
+         body: {
+           components: [
+-            { name: "CA 1", weight: 20, sortOrder: 1 },
+-            { name: "CA 2", weight: 25, sortOrder: 2 },
+-            { name: "Exam", weight: 55, sortOrder: 3 },
++            { name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false },
++            { name: "CA 2", weight: 25, sortOrder: 2, requiresApproval: false },
++            { name: "Exam", weight: 55, sortOrder: 3, requiresApproval: true },
+           ],
+         },
+       }),
+     );
+   });
++
++  it("toggling a component's Requires approval checkbox round-trips through save", async () => {
++    const user = userEvent.setup();
++    let putBody: { components: { name: string; requiresApproval: boolean }[] } | null = null;
++    let saved: AssessmentComponent[] = SEEDED;
++    mockedApiRequest.mockImplementation(async (path: string, options?: { method?: string; body?: unknown }) => {
++      const method = options?.method ?? "GET";
++      if (path === "/api/v1/assessment-components" && method === "GET") return saved;
++      if (path === "/api/v1/assessment-components" && method === "PUT") {
++        putBody = options?.body as typeof putBody;
++        saved = putBody!.components.map((c, i) => ({
++          id: `new-${i}`,
++          schoolId: "s1",
++          name: c.name,
++          weight: SEEDED[i].weight,
++          sortOrder: SEEDED[i].sortOrder,
++          requiresApproval: c.requiresApproval,
++          deletedAt: null,
++          createdAt: "t",
++          updatedAt: "t",
++        }));
++        return saved;
++      }
++      throw new Error(`unexpected apiRequest call: ${method} ${path}`);
++    });
++
++    renderWithProviders(<AssessmentStructurePanel />);
++    await screen.findByText("Total: 100/100");
++
++    // Move approval from Exam onto CA 1 instead — still exactly one
++    // approval component, so the save should still be allowed.
++    const checkboxes = screen.getAllByLabelText("Requires approval");
++    expect(checkboxes[0]).not.toBeChecked();
++    expect(checkboxes[2]).toBeChecked();
++    await user.click(checkboxes[0]);
++    await user.click(checkboxes[2]);
++    expect(checkboxes[0]).toBeChecked();
++    expect(checkboxes[2]).not.toBeChecked();
++
++    const saveButton = screen.getByRole("button", { name: "Save changes" });
++    expect(saveButton).not.toBeDisabled();
++    await user.click(saveButton);
++
++    expect(await screen.findByText("Saved.")).toBeInTheDocument();
++    expect(putBody).toEqual({
++      components: [
++        { name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: true },
++        { name: "CA 2", weight: 20, sortOrder: 2, requiresApproval: false },
++        { name: "Exam", weight: 60, sortOrder: 3, requiresApproval: false },
++      ],
++    });
++  });
++
++  it("unchecking every component's Requires approval blocks save client-side with the Q7 message, not a raw 400", async () => {
++    const user = userEvent.setup();
++    mockLoad();
++
++    renderWithProviders(<AssessmentStructurePanel />);
++    await screen.findByText("Total: 100/100");
++
++    const checkboxes = screen.getAllByLabelText("Requires approval");
++    await user.click(checkboxes[2]); // Exam was the only one checked
++
++    expect(
++      await screen.findByText("At least one component must require approval, or results can never be published."),
++    ).toBeInTheDocument();
++    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
++    // Never actually round-tripped — the block is client-side, before any PUT.
++    expect(mockedApiRequest).not.toHaveBeenCalledWith("/api/v1/assessment-components", expect.objectContaining({ method: "PUT" }));
++  });
+ });
+diff --git a/apps/web/src/features/settings/AssessmentStructurePanel.tsx b/apps/web/src/features/settings/AssessmentStructurePanel.tsx
+index 00775e5..78aeca3 100644
+--- a/apps/web/src/features/settings/AssessmentStructurePanel.tsx
++++ b/apps/web/src/features/settings/AssessmentStructurePanel.tsx
+@@ -13,6 +13,7 @@ import {
+ import { Card, CardContent } from "../../components/ui/card";
+ import { Input } from "../../components/ui/input";
+ import { Label } from "../../components/ui/label";
++import { Checkbox } from "../../components/ui/checkbox";
+ import { Button } from "../../components/ui/button";
+ import { Spinner } from "../../components/ui/spinner";
+ import { FieldError } from "../../components/FieldError";
+@@ -28,8 +29,19 @@ const formSchema = z.object({
+ });
+ type FormValues = z.infer<typeof formSchema>;
+ 
++// v0.5 acceptance-walk fix: this used to drop requiresApproval entirely,
++// so every save round-tripped it as omitted -> defaulted false server-side
++// for EVERY component, tripping the zero-approval-component rejection on
++// every single save (not just a deliberate bad one). See docs/DECISIONS.md.
+ function toFormValues(items: AssessmentComponent[]): FormValues {
+-  return { components: items.map((item) => ({ name: item.name, weight: item.weight, sortOrder: item.sortOrder })) };
++  return {
++    components: items.map((item) => ({
++      name: item.name,
++      weight: item.weight,
++      sortOrder: item.sortOrder,
++      requiresApproval: item.requiresApproval,
++    })),
++  };
+ }
+ 
+ export function AssessmentStructurePanel() {
+@@ -82,7 +94,9 @@ export function AssessmentStructurePanel() {
+   const crossItem = validateAssessmentComponentsSet(watchedComponents ?? []);
+ 
+   function addComponent() {
+-    append({ name: "", weight: 1, sortOrder: fields.length });
++    // requiresApproval defaults false for a newly-added component — a new
++    // row isn't automatically the exam; the admin opts it in explicitly.
++    append({ name: "", weight: 1, sortOrder: fields.length, requiresApproval: false });
+   }
+ 
+   const onSubmit = handleSubmit((values) => {
+@@ -132,6 +146,13 @@ export function AssessmentStructurePanel() {
+                   />
+                   <FieldError message={errors.components?.[index]?.sortOrder?.message} />
+                 </div>
++                <div className="flex w-full flex-col gap-1.5 sm:w-44">
++                  <Label htmlFor={`component-${index}-requires-approval`}>Requires approval</Label>
++                  <div className="flex h-10 items-center gap-2">
++                    <Checkbox id={`component-${index}-requires-approval`} {...register(`components.${index}.requiresApproval`)} />
++                    <span className="text-xs text-muted">Gates publish (e.g. the exam)</span>
++                  </div>
++                </div>
+                 <Button
+                   type="button"
+                   variant="outline"
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index 90565ee..3a0a0d4 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -2989,3 +2989,89 @@ its "received: empty" detail that ruled out pure timing. Re-confirmed
+ green locally (typecheck, lint, full Vitest suite) before the final
+ repush; GitHub Actions itself is the authoritative confirmation once that
+ push lands.
++
++## 2026-08-17 — pre-tag v0.5 fix: Assessment Structure save was broken for any edit; assessment-components e2e now uses a scratch school
++
++**The bug** (acceptance-walk finding #1): `AssessmentStructurePanel`'s form
++never had a `requiresApproval` field at all — `toFormValues`/`addComponent`
++only carried name/weight/sortOrder. Every save round-tripped
++`requiresApproval` as omitted; the backend defaults an omitted value to
++`false` per item (`item.requiresApproval ?? false` in
++`AssessmentComponentsService.replaceAll`), so a save ALWAYS submitted zero
++approval components — tripping the Q7 zero-approval-lockout check
++(`docs/DECISIONS.md`, gap-1 fix) on every single save, not just a
++deliberate bad one. A harmless weight nudge (CA1 −1, CA2 +1, still summing
++to 100) 400'd with "At least one component must require approval." No
++admin could rename, reweight, or add/remove a component via the UI at
++all — the acceptance walk only caught this because it drove the real form
++through a real save, not a mocked one.
++
++**The fix**: `requiresApproval` is now a real, required field throughout
++the mirror — `AssessmentComponent` (shared type), `assessmentComponentItemSchema`
++(now `z.boolean()`, not omitted — deliberately required on the frontend
++schema even though the backend DTO's own `@IsOptional()` stays as-is for
++other API consumers), `toFormValues` (loads and preserves it per existing
++component), `addComponent` (defaults `false` for a new row — a new
++component isn't automatically the exam). A `Checkbox` UI primitive
++(`components/ui/checkbox.tsx`, styled to match `Input`) gives each row a
++real "Requires approval" control — the only place in the UI that can
++designate which component gates publish, previously not achievable
++through the interface at all.
++
++**Client-side validation**: `validateAssessmentComponentsSet` (the
++shared, hand-mirrored copy of the backend's rules — same file/pattern as
++the weight-sum and unique-name checks it already had) now also mirrors
++the Q7 rule verbatim, so a zero-approval state is caught and explained
++before the round trip, not discovered as a raw 400. The Save button's
++existing `disabled={!crossItem.isValid}` wiring picked this up for free —
++no new UI needed for the block itself, only for the toggle control that
++lets an admin *avoid* the zero-approval state in the first place.
++
++**Also fixed (finding #2): `assessment-components.e2e-spec.ts` was
++mutating the real seeded Sunrise tenant.** Unlike every other grades e2e
++spec (`terms.e2e-spec.ts`'s `createScratchBundle`, etc.), assessment
++components have no session/term/class-arm to scope a scratch bundle
++into — they're school-wide, one set per school, full stop. The original
++file's tests PUT directly against `admin@sunrise.test`'s real school, with
++an `afterAll` that tried to restore the original set via another real PUT
++— which doesn't restore original component ids (every PUT without an
++existing `id` creates fresh rows), so a full-suite run against the
++persistent local dev DB left Sunrise with soft-deleted originals and a
++new component set, exactly the "duplicate-looking" mess the acceptance
++walk tripped over. Fixed by giving the suite its own scratch SCHOOL
++(via the real `POST /schools`, same as `schools-crud.e2e-spec.ts`'s own
++scratch-school pattern) with its own admin, seeded with a baseline
++structure in `beforeAll` — every PUT test now runs there, never Sunrise.
++`afterAll` deletes the scratch school's assessment_components,
++refresh_tokens (from `loginAs`), audit_logs (from the `@Audit()`-decorated
++PUT calls), users, then the school itself, in FK order — full teardown,
++nothing left behind. The four purely-read-only GET tests (verifying the
++real seeded structure loads correctly) and the "TEACHER cannot PUT" test
++(a `RolesGuard` rejection before any tenant logic runs) still use the real
++seeded tokens — they're genuinely harmless and worth keeping as a live
++check that seed.ts's own baseline is intact.
++
++**Not fixed, flagged for a follow-up**: `grade-boundaries.e2e-spec.ts` has
++the identical structural issue (also school-wide, also PUTs the real
++Sunrise tenant directly, also tries to restore via a real PUT in
++`afterAll`) — out of scope for this fix (only asked for the assessment-
++components file), but the exact same scratch-school pattern applies
++directly if/when it's worth doing.
++
++**Also noticed, not fixed** (out of scope — only `requiresApproval` was
++reported broken): `maxScore` has the identical latent defaulting bug
++(`item.maxScore ?? 100` in the same `replaceAll`, also absent from the
++frontend form entirely) — currently harmless only because every seeded
++component already happens to use its default maxScore, so no edit has yet
++observably reset one. Worth the same treatment if a school ever
++configures a non-default maxScore.
++
++**Proof**: 4 new Vitest tests in `AssessmentStructurePanel.test.tsx`
++(weight-only edit preserves each component's flag — the exact failing
++walk case, reproduced; requiresApproval included in the save payload;
++toggling the checkbox round-trips; unchecking every box blocks save
++client-side with the Q7 message, no PUT ever fires) — 151 total, up from
++148. `assessment-components.e2e-spec.ts` unchanged in count (13 tests)
++but now scratch-school-isolated; full backend e2e suite (298) unaffected.
++Live re-verification of the exact walk failure: the CA1 −1 / CA2 +1
++weight nudge now saves successfully end to end on a fresh stack.
+diff --git a/packages/shared/src/grading-config.ts b/packages/shared/src/grading-config.ts
+index 58563db..f5dc878 100644
+--- a/packages/shared/src/grading-config.ts
++++ b/packages/shared/src/grading-config.ts
+@@ -25,15 +25,25 @@ export interface AssessmentComponent {
+   name: string;
+   weight: number;
+   sortOrder: number;
++  // v0.5 acceptance-walk fix: this was missing from the mirror entirely,
++  // which is how AssessmentStructurePanel shipped never round-tripping it
++  // in the first place (see assessmentComponentItemSchema below).
++  requiresApproval: boolean;
+   deletedAt: string | null;
+   createdAt: string;
+   updatedAt: string;
+ }
+ 
++// requiresApproval is REQUIRED here (unlike the backend DTO's @IsOptional,
++// which exists for other API consumers) — the form always has a definite
++// boolean per row via the checkbox below, and making it required is what
++// stops a future edit from silently omitting it again the way this
++// shipped originally (v0.5 acceptance-walk finding #1, docs/DECISIONS.md).
+ export const assessmentComponentItemSchema = z.object({
+   name: z.string().min(1, "Name is required"),
+   weight: z.coerce.number().int("Weight must be a whole number").min(1, "Weight must be at least 1"),
+   sortOrder: z.coerce.number().int().min(0),
++  requiresApproval: z.boolean(),
+ });
+ export type AssessmentComponentItemInput = z.infer<typeof assessmentComponentItemSchema>;
+ 
+@@ -63,6 +73,17 @@ export function validateAssessmentComponentsSet(
+   if (new Set(names).size !== names.length) {
+     return { isValid: false, totalWeight, error: "Component names must be unique." };
+   }
++  // Mirrors AssessmentComponentsService.validate()'s gap-1/Q7 rule exactly
++  // (same message) — catching this client-side before the round trip is
++  // the whole point of the fix: a save that would 400 anyway is blocked
++  // with a clear reason instead of every edit failing opaquely.
++  if (!items.some((item) => item.requiresApproval === true)) {
++    return {
++      isValid: false,
++      totalWeight,
++      error: "At least one component must require approval, or results can never be published.",
++    };
++  }
+   return { isValid: true, totalWeight };
+ }
+ 

@@ -1,0 +1,1228 @@
+diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
+index 2e2682c..b749b58 100644
+--- a/apps/web/src/App.tsx
++++ b/apps/web/src/App.tsx
+@@ -14,6 +14,7 @@ import { ClassArmDetailPage } from "./features/classes/ClassArmDetailPage";
+ import { ScoreEntryGridPage } from "./features/grades/ScoreEntryGridPage";
+ import { GradesOverviewPage } from "./features/grades/GradesOverviewPage";
+ import { ReviewPublishPage } from "./features/grades/ReviewPublishPage";
++import { ReportCardPage } from "./features/grades/ReportCardPage";
+ import { PersonnelListPage } from "./features/personnel/PersonnelListPage";
+ import { SettingsLayout } from "./features/settings/SettingsLayout";
+ import { SchoolProfilePage } from "./features/settings/SchoolProfilePage";
+@@ -34,6 +35,7 @@ export function AppRoutes() {
+         <Route path="/students" element={<StudentsListPage />} />
+         <Route path="/students/new" element={<NewStudentPage />} />
+         <Route path="/students/:id" element={<StudentDetailPage />} />
++        <Route path="/students/:id/report-card" element={<ReportCardPage />} />
+         <Route path="/teachers" element={<TeachersListPage />} />
+         <Route path="/teachers/:id" element={<TeacherDetailPage />} />
+         <Route path="/classes" element={<ClassesPage />} />
+diff --git a/apps/web/src/components/ui/textarea.tsx b/apps/web/src/components/ui/textarea.tsx
+new file mode 100644
+index 0000000..02b0bcd
+--- /dev/null
++++ b/apps/web/src/components/ui/textarea.tsx
+@@ -0,0 +1,18 @@
++import { type TextareaHTMLAttributes, forwardRef } from "react";
++import { cn } from "../../lib/utils";
++
++export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(
++  ({ className, ...props }, ref) => {
++    return (
++      <textarea
++        ref={ref}
++        className={cn(
++          "flex min-h-24 w-full rounded-md border border-muted bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50",
++          className,
++        )}
++        {...props}
++      />
++    );
++  },
++);
++Textarea.displayName = "Textarea";
+diff --git a/apps/web/src/features/grades/RemarkPanel.tsx b/apps/web/src/features/grades/RemarkPanel.tsx
+new file mode 100644
+index 0000000..e8fdc2e
+--- /dev/null
++++ b/apps/web/src/features/grades/RemarkPanel.tsx
+@@ -0,0 +1,99 @@
++import { useEffect, useRef, useState } from "react";
++import type { RemarkAuthor } from "@scholametric/shared";
++import { Button } from "../../components/ui/button";
++import { Textarea } from "../../components/ui/textarea";
++import { Spinner } from "../../components/ui/spinner";
++import { getErrorMessage } from "../../lib/api-client";
++import { formatDate } from "../../lib/format-date";
++import { useCurrentUser } from "../shell/use-current-user";
++import { useWriteTeacherRemark, useWritePrincipalRemark } from "./use-remarks";
++
++interface RemarkPanelProps {
++  label: string;
++  studentId: string;
++  termId: string;
++  sessionId: string;
++  remark: string | null;
++  remarkBy: RemarkAuthor | null;
++  remarkAt: string | null;
++  // Hidden (not disabled) for a viewer who can't write this remark —
++  // SPEC_V0.5.md §2.4/Q6, standing RBAC pattern. The read-only text above
++  // still renders regardless — the read endpoint doesn't gate remarks by
++  // role, only the write endpoints do.
++  showForm: boolean;
++  field: "teacher" | "principal";
++}
++
++// Both remark forms share this shape (only which mutation/copy differs) —
++// SPEC_V0.5.md §2.4 step 6. Admin/proprietor can write EITHER remark (the
++// backend allows it — a principal completing a card when the class teacher
++// hasn't yet is the real workflow), so the copy below says "Teacher
++// remark," never "write as the class teacher" — whoever saves it is
++// stamped with THEIR own name, admin included.
++export function RemarkPanel({ label, studentId, termId, sessionId, remark, remarkBy, remarkAt, showForm, field }: RemarkPanelProps) {
++  const { data: currentUser } = useCurrentUser();
++  const teacherMutation = useWriteTeacherRemark();
++  const principalMutation = useWritePrincipalRemark();
++  const mutation = field === "teacher" ? teacherMutation : principalMutation;
++
++  const [text, setText] = useState(remark ?? "");
++  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
++
++  // Resync from a background refetch (the mutation's own invalidate, or
++  // another viewer's edit) — never while this textarea is actively
++  // focused, same "don't clobber in-progress typing" rule as ScoreEntryRow.
++  useEffect(() => {
++    if (document.activeElement !== textareaRef.current) {
++      setText(remark ?? "");
++    }
++  }, [remark]);
++
++  function handleSave() {
++    if (!currentUser) return;
++    mutation.mutate({
++      studentId,
++      input: { termId, sessionId, remark: text.trim() === "" ? null : text },
++      authorName: { firstName: currentUser.firstName, lastName: currentUser.lastName },
++    });
++  }
++
++  return (
++    <div className="break-inside-avoid rounded-lg border border-muted/20 p-3">
++      <p className="mb-1 font-medium text-text">{label}</p>
++      {remark ? (
++        <>
++          <p className="whitespace-pre-wrap text-sm text-text">{remark}</p>
++          {remarkBy && (
++            <p className="mt-1 text-xs text-muted">
++              — {remarkBy.firstName} {remarkBy.lastName}
++              {remarkAt ? `, ${formatDate(remarkAt)}` : ""}
++            </p>
++          )}
++        </>
++      ) : (
++        <p className="text-sm text-muted">No remark yet.</p>
++      )}
++
++      {showForm && (
++        <div className="mt-3 flex flex-col gap-2 print:hidden">
++          <Textarea
++            ref={textareaRef}
++            aria-label={label}
++            value={text}
++            onChange={(event) => setText(event.target.value)}
++            placeholder={`Write the ${field === "teacher" ? "teacher" : "principal"} remark…`}
++            rows={3}
++          />
++          <div className="flex items-center gap-2">
++            <Button type="button" size="sm" onClick={handleSave} disabled={mutation.isPending}>
++              {mutation.isPending && <Spinner className="mr-2" />}
++              Save
++            </Button>
++            {mutation.isSuccess && !mutation.isPending && <span className="text-xs text-success">Saved</span>}
++          </div>
++          {mutation.isError && <p className="text-xs text-danger">{getErrorMessage(mutation.error)}</p>}
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/web/src/features/grades/ReportCardPage.test.tsx b/apps/web/src/features/grades/ReportCardPage.test.tsx
+new file mode 100644
+index 0000000..2968577
+--- /dev/null
++++ b/apps/web/src/features/grades/ReportCardPage.test.tsx
+@@ -0,0 +1,291 @@
++import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
++import { screen, cleanup, waitFor } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { Route, Routes } from "react-router-dom";
++import type { ClassLevelOverview, Paginated, Term, AcademicSession, ReportCardResponse } from "@scholametric/shared";
++import { renderWithProviders } from "../../test/render-with-providers";
++import { authStore } from "../../lib/auth-store";
++import { apiRequest } from "../../lib/api-client";
++import { ReportCardPage } from "./ReportCardPage";
++
++vi.mock("../../lib/api-client", async (importOriginal) => {
++  const actual = await importOriginal<typeof import("../../lib/api-client")>();
++  return { ...actual, apiRequest: vi.fn() };
++});
++
++const mockedApiRequest = vi.mocked(apiRequest);
++
++const ADMIN_USER = {
++  id: "u1",
++  email: "admin@sunrise.test",
++  firstName: "Adaobi",
++  lastName: "Nwachukwu",
++  role: "SCHOOL_ADMIN",
++  status: "ACTIVE",
++  lastLoginAt: null,
++  school: { id: "s1", name: "Sunrise College", slug: "sunrise", type: "SECONDARY", status: "ACTIVE", address: null, phone: null, email: null },
++};
++
++const TEACHER_USER = { ...ADMIN_USER, id: "u2", email: "teacher@sunrise.test", role: "TEACHER" };
++
++const SESSIONS: Paginated<AcademicSession> = {
++  items: [{ id: "sess1", schoolId: "s1", name: "2026/2027", startsOn: "2026-09-01", endsOn: "2027-07-31", isCurrent: true, createdAt: "t", updatedAt: "t" }],
++  total: 1,
++  page: 1,
++  pageSize: 50,
++};
++const TERMS: Paginated<Term> = {
++  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, closedAt: null, closedBy: null, createdAt: "t", updatedAt: "t" }],
++  total: 1,
++  page: 1,
++  pageSize: 20,
++};
++const CLASSES: ClassLevelOverview[] = [
++  { id: "lvl1", name: "JSS 1", rank: 1, arms: [{ id: "arm1", name: "A", enrollmentCount: 20, classTeacher: null }] },
++];
++
++const CARD: ReportCardResponse = {
++  studentId: "st1",
++  firstName: "Oluwaseun",
++  lastName: "Adeyemi",
++  admissionNumber: "SUN/2026/0001",
++  classArmId: "arm1",
++  termId: "term1",
++  sessionId: "sess1",
++  subjects: [
++    {
++      subjectId: "sub1",
++      subjectName: "Mathematics",
++      components: [
++        { componentId: "ca1", componentName: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 0, isAbsent: false },
++        { componentId: "ca2", componentName: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, rawScore: null, isAbsent: true },
++        { componentId: "exam", componentName: "Exam", weight: 60, maxScore: 100, requiresApproval: true, rawScore: null, isAbsent: false },
++      ],
++      totalScore: 0,
++      autoGrade: "F9",
++      overrideGrade: null,
++      finalGrade: "F9",
++      subjectPosition: 5,
++      status: "DRAFT",
++    },
++    {
++      subjectId: "sub2",
++      subjectName: "English Language",
++      components: [
++        { componentId: "ca1", componentName: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 18, isAbsent: false },
++        { componentId: "ca2", componentName: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 17, isAbsent: false },
++        { componentId: "exam", componentName: "Exam", weight: 60, maxScore: 100, requiresApproval: true, rawScore: 55, isAbsent: false },
++      ],
++      totalScore: 90,
++      autoGrade: "A1",
++      overrideGrade: null,
++      finalGrade: "A1",
++      subjectPosition: null,
++      status: "PENDING_APPROVAL",
++    },
++  ],
++  overall: null,
++  remarks: {
++    teacherRemark: null,
++    teacherRemarkBy: null,
++    teacherRemarkAt: null,
++    principalRemark: "Keep up the effort next term.",
++    principalRemarkBy: { firstName: "Adaobi", lastName: "Nwachukwu" },
++    principalRemarkAt: "2026-12-15T09:00:00Z",
++  },
++};
++
++function mockCommon(role: "SCHOOL_ADMIN" | "TEACHER", card: ReportCardResponse, extra: { classTeacherOf?: unknown[] } = {}) {
++  mockedApiRequest.mockImplementation(async (path) => {
++    if (path === "/api/v1/auth/me") return role === "SCHOOL_ADMIN" ? ADMIN_USER : TEACHER_USER;
++    if (path === "/api/v1/classes") return CLASSES;
++    if (path === "/api/v1/sessions") return SESSIONS;
++    if (path === "/api/v1/terms") return TERMS;
++    if (path === "/api/v1/me/teaching") {
++      return {
++        classTeacherOf: extra.classTeacherOf ?? [],
++        subjects: [{ id: "e1", subjectId: "sub1", subjectName: "Mathematics", classArmId: "arm1", className: "JSS 1 A" }],
++        currentSessionId: "sess1",
++        currentTermId: "term1",
++        currentTermName: "FIRST",
++      };
++    }
++    if (path === "/api/v1/students/st1/report-card") return card;
++    throw new Error(`unexpected call: ${path}`);
++  });
++}
++
++function renderPage(route = "/students/st1/report-card?termId=term1&sessionId=sess1") {
++  return renderWithProviders(
++    <Routes>
++      <Route path="/students/:id/report-card" element={<ReportCardPage />} />
++    </Routes>,
++    { route },
++  );
++}
++
++beforeEach(() => {
++  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++});
++
++afterEach(() => {
++  cleanup();
++  vi.restoreAllMocks();
++  authStore.clear();
++});
++
++describe("ReportCardPage — rendering", () => {
++  it("ADMIN: renders every subject's component breakdown, total/grade/position/status, and the school+student header", async () => {
++    mockCommon("SCHOOL_ADMIN", CARD);
++    renderPage();
++
++    expect(await screen.findByText("Sunrise College")).toBeInTheDocument();
++    expect(screen.getByText("Oluwaseun Adeyemi")).toBeInTheDocument();
++    expect(screen.getByText("SUN/2026/0001")).toBeInTheDocument();
++    expect(screen.getByText("Mathematics")).toBeInTheDocument();
++    expect(screen.getByText("English Language")).toBeInTheDocument();
++    expect(screen.getByText("F9")).toBeInTheDocument();
++    expect(screen.getByText("A1")).toBeInTheDocument();
++    expect(screen.getByText("#5")).toBeInTheDocument();
++  });
++
++  it("distinguishes Abs, blank/not-entered, and a real 0 — never confusing one for another", async () => {
++    mockCommon("SCHOOL_ADMIN", CARD);
++    renderPage();
++
++    await screen.findByText("Mathematics");
++    const mathCells = screen.getAllByRole("cell");
++    const cellTexts = mathCells.map((cell) => cell.textContent);
++    // Mathematics: CA1 = real 0, CA2 = Abs, Exam = blank/not-entered.
++    expect(cellTexts).toContain("0");
++    expect(cellTexts).toContain("Abs");
++    expect(cellTexts.some((text) => text === "—")).toBe(true);
++  });
++
++  it("partial-term states: null overall renders a message (not a blank/zeroed row), a DRAFT subject shows its status, and a null position reads 'Not yet ranked'", async () => {
++    mockCommon("SCHOOL_ADMIN", CARD);
++    renderPage();
++
++    await screen.findByText("Mathematics");
++    expect(screen.getByText("Overall results not yet available.")).toBeInTheDocument();
++    expect(screen.getByText("Draft")).toBeInTheDocument();
++    expect(screen.getByText("Pending approval")).toBeInTheDocument();
++    expect(screen.getByText("Not yet ranked")).toBeInTheDocument();
++  });
++
++  it("no subjects entered this term: an empty-state message, not a bare page", async () => {
++    mockCommon("SCHOOL_ADMIN", { ...CARD, subjects: [] });
++    renderPage();
++
++    expect(await screen.findByText("No results entered for this term yet.")).toBeInTheDocument();
++  });
++});
++
++describe("ReportCardPage — remark visibility and rendering", () => {
++  it("remark text is always shown to any viewer, with author + timestamp — regardless of edit-form access", async () => {
++    mockCommon("SCHOOL_ADMIN", CARD);
++    renderPage();
++
++    // The admin's own edit form for this remark is pre-filled with the same
++    // text (a <textarea>'s initial value renders as DOM text content too),
++    // so scope to the read-only display paragraph specifically.
++    expect(await screen.findByText("Keep up the effort next term.", { selector: "p" })).toBeInTheDocument();
++    expect(screen.getByText(/Adaobi Nwachukwu/)).toBeInTheDocument();
++    expect(screen.getByText("No remark yet.")).toBeInTheDocument(); // teacher remark, unset
++  });
++
++  it("SCHOOL_ADMIN sees BOTH the teacher-remark and principal-remark forms", async () => {
++    mockCommon("SCHOOL_ADMIN", CARD);
++    renderPage();
++
++    await screen.findByText("Mathematics");
++    expect(screen.getByRole("textbox", { name: "Teacher remark" })).toBeInTheDocument();
++    expect(screen.getByRole("textbox", { name: "Principal remark" })).toBeInTheDocument();
++  });
++
++  it("TEACHER who IS the class teacher of this arm sees only the teacher-remark form", async () => {
++    mockCommon("TEACHER", CARD, { classTeacherOf: [{ classArmId: "arm1", className: "JSS 1 A", sessionId: "sess1", sessionName: "2026/2027", enrollmentCount: 20 }] });
++    renderPage();
++
++    await screen.findByText("Mathematics");
++    expect(screen.getByRole("textbox", { name: "Teacher remark" })).toBeInTheDocument();
++    expect(screen.queryByRole("textbox", { name: "Principal remark" })).not.toBeInTheDocument();
++  });
++
++  it("a subject-only TEACHER (not the class teacher) sees neither remark form, but still reads the existing remark text", async () => {
++    mockCommon("TEACHER", CARD, { classTeacherOf: [] });
++    renderPage();
++
++    await screen.findByText("Mathematics");
++    expect(screen.getByText("Keep up the effort next term.")).toBeInTheDocument();
++    expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();
++    expect(screen.queryByRole("textbox", { name: "Principal remark" })).not.toBeInTheDocument();
++  });
++
++  it("saving a remark shows the current user's own name immediately, not a raw id, while the background refetch lands the authoritative copy", async () => {
++    // A real backend's GET reflects a just-written PUT — this mock's GET
++    // must too, or the mutation's own invalidateQueries background refetch
++    // (patchRemark, use-remarks.ts) immediately stomps the optimistic patch
++    // back to the stale unwritten fixture, which isn't what production does.
++    let currentCard = CARD;
++    mockedApiRequest.mockImplementation(async (path, options) => {
++      const method = (options as { method?: string })?.method;
++      if (path === "/api/v1/auth/me") return ADMIN_USER;
++      if (path === "/api/v1/classes") return CLASSES;
++      if (path === "/api/v1/sessions") return SESSIONS;
++      if (path === "/api/v1/terms") return TERMS;
++      if (path === "/api/v1/me/teaching") {
++        return { classTeacherOf: [], subjects: [], currentSessionId: "sess1", currentTermId: "term1", currentTermName: "FIRST" };
++      }
++      if (path === "/api/v1/students/st1/report-card") return currentCard;
++      if (path === "/api/v1/students/st1/remarks/teacher" && method === "PUT") {
++        currentCard = {
++          ...currentCard,
++          remarks: {
++            ...currentCard.remarks,
++            teacherRemark: "Great improvement in class participation.",
++            teacherRemarkBy: { firstName: "Adaobi", lastName: "Nwachukwu" },
++            teacherRemarkAt: "2026-12-15T10:00:00Z",
++          },
++        };
++        return {
++          id: "rem1",
++          studentId: "st1",
++          termId: "term1",
++          sessionId: "sess1",
++          classArmId: "arm1",
++          teacherRemark: "Great improvement in class participation.",
++          teacherRemarkBy: "u1",
++          teacherRemarkAt: "2026-12-15T10:00:00Z",
++          principalRemark: CARD.remarks.principalRemark,
++          principalRemarkBy: "u1",
++          principalRemarkAt: CARD.remarks.principalRemarkAt,
++        };
++      }
++      throw new Error(`unexpected call: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderPage();
++
++    await screen.findByText("Mathematics");
++    const textarea = screen.getByRole("textbox", { name: "Teacher remark" });
++    await user.type(textarea, "Great improvement in class participation.");
++    await user.click(screen.getAllByRole("button", { name: "Save" })[0]);
++
++    await waitFor(() => expect(screen.getByText("Great improvement in class participation.", { selector: "p" })).toBeInTheDocument());
++    // Both remarks are now authored by Adaobi (the principal remark already
++    // was, in the fixture) — two author lines, not a raw id anywhere.
++    expect(screen.getAllByText(/Adaobi Nwachukwu/)).toHaveLength(2);
++  });
++});
++
++describe("ReportCardPage — print controls", () => {
++  it("the picker, back button, and print button are hidden in print output", async () => {
++    mockCommon("SCHOOL_ADMIN", CARD);
++    const { container } = renderPage();
++
++    await screen.findByText("Mathematics");
++    expect(container.querySelectorAll('[class*="print:hidden"]').length).toBeGreaterThan(0);
++    expect(screen.getByRole("button", { name: /Print/ })).toBeInTheDocument();
++  });
++});
+diff --git a/apps/web/src/features/grades/ReportCardPage.tsx b/apps/web/src/features/grades/ReportCardPage.tsx
+new file mode 100644
+index 0000000..54f2c61
+--- /dev/null
++++ b/apps/web/src/features/grades/ReportCardPage.tsx
+@@ -0,0 +1,262 @@
++import { useState } from "react";
++import { useNavigate, useParams, useSearchParams } from "react-router-dom";
++import { Printer } from "lucide-react";
++import { Button } from "../../components/ui/button";
++import { Spinner } from "../../components/ui/spinner";
++import { StatusBadge } from "../../components/StatusBadge";
++import { Label } from "../../components/ui/label";
++import { getErrorMessage } from "../../lib/api-client";
++import { isSchoolAdmin } from "../../lib/roles";
++import { useCurrentUser } from "../shell/use-current-user";
++import { useMyTeaching } from "../dashboard/use-my-teaching";
++import { useClasses } from "../classes/use-classes";
++import { useAdminCurrentTerm } from "./use-admin-current-term";
++import { useReportCard } from "./use-report-card";
++import { resultStatusLabel, resultStatusTone } from "./result-status";
++import { formatScore } from "./format-score";
++import { RemarkPanel } from "./RemarkPanel";
++import type { ReportCardComponent } from "@scholametric/shared";
++
++const SELECT_CLASS =
++  "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
++
++function formatTermName(name: string): string {
++  return name.charAt(0) + name.slice(1).toLowerCase() + " term";
++}
++
++function positionLabel(position: number | null): string {
++  return position === null ? "Not yet ranked" : `#${position}`;
++}
++
++// SPEC_V0.5.md §2.1/§2.4 — the same three-way distinction as the score-entry
++// grid (ScoreEntryRow): isAbsent -> "Abs", null&&!isAbsent -> blank/not-
++// entered ("—", never confused with a real 0), otherwise the real number.
++function componentDisplay(component: ReportCardComponent): string {
++  if (component.isAbsent) return "Abs";
++  if (component.rawScore === null) return "—";
++  return formatScore(component.rawScore);
++}
++
++// Printable per-student term report card (SPEC_V0.5.md §2.4, v0.5 step 6).
++// A dedicated route (not a StudentDetailPage tab) — printing wants a
++// focused, chrome-free document, and this page needs its own term/session
++// picker (a report card is most often printed for whichever term just
++// closed, not "current term" the way the Results tab is scoped). Reached
++// from StudentResultsTab's "Print report card" button (pre-filled via
++// ?termId=&sessionId=) and directly linkable/bookmarkable.
++export function ReportCardPage() {
++  const { id } = useParams<{ id: string }>();
++  const navigate = useNavigate();
++  const [searchParams] = useSearchParams();
++  const { data: currentUser } = useCurrentUser();
++  const isTeacher = currentUser?.role === "TEACHER";
++  // Fail closed before /auth/me resolves — same reasoning as
++  // ScoreEntryGridPage's isConfirmedAdmin (avoids a doomed admin-only
++  // request firing for a role that turns out not to be admin).
++  const isConfirmedAdmin = isSchoolAdmin(currentUser?.role);
++
++  const myTeaching = useMyTeaching();
++  const adminTerm = useAdminCurrentTerm(isConfirmedAdmin);
++  const classes = useClasses();
++  const [adminTermId, setAdminTermId] = useState(searchParams.get("termId") ?? "");
++
++  // TEACHER is current-term-only, matching StudentResultsTab's existing
++  // precedent (SPEC_V0.5.md §2.4 step 6, confirmed) — the backend already
++  // permits reading any term's card, but no historical-term picker exists
++  // anywhere in the app for a TEACHER yet; deferred, see docs/DECISIONS.md.
++  const termId = isTeacher ? (myTeaching.data?.currentTermId ?? "") : adminTermId || adminTerm.currentTermId || "";
++  const sessionId = isTeacher ? (myTeaching.data?.currentSessionId ?? "") : adminTerm.currentSessionId ?? "";
++  const ready = Boolean(id && termId && sessionId);
++
++  const reportCardQuery = useReportCard(ready ? { studentId: id!, termId, sessionId } : null);
++  const data = reportCardQuery.data;
++
++  const classArmLabel =
++    data &&
++    (classes.data ?? [])
++      .flatMap((level) => level.arms.map((arm) => ({ id: arm.id, label: `${level.name} ${arm.name}` })))
++      .find((option) => option.id === data.classArmId)?.label;
++
++  const termLabel = isTeacher
++    ? myTeaching.data?.currentTermName
++      ? formatTermName(myTeaching.data.currentTermName)
++      : null
++    : adminTerm.terms.find((t) => t.id === termId)
++      ? formatTermName(adminTerm.terms.find((t) => t.id === termId)!.name)
++      : null;
++  const sessionLabel = isConfirmedAdmin ? adminTerm.sessions.find((s) => s.id === sessionId)?.name : null;
++
++  // A subject-only TEACHER (any relationship short of class-teacher) gets
++  // neither remark form — read-only remark text still renders below,
++  // matching the standing "hidden, not disabled" RBAC pattern. Admin/
++  // proprietor gets BOTH forms (backend allows it — the real workflow is a
++  // principal completing a card when the class teacher hasn't yet); when
++  // an admin writes the teacher remark, it's stamped with THEIR name, so
++  // the form copy below says "Teacher remark," never "write as the class
++  // teacher."
++  const isClassTeacherHere =
++    isTeacher && data ? (myTeaching.data?.classTeacherOf ?? []).some((c) => c.classArmId === data.classArmId && c.sessionId === data.sessionId) : false;
++  const showTeacherForm = isConfirmedAdmin || isClassTeacherHere;
++  const showPrincipalForm = isConfirmedAdmin;
++
++  return (
++    <div>
++      <div className="mb-4 flex flex-col gap-4 print:hidden sm:flex-row sm:items-end sm:justify-between">
++        <Button type="button" variant="outline" size="sm" onClick={() => navigate(-1)}>
++          Back
++        </Button>
++
++        <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
++          {isConfirmedAdmin && (
++            <div className="flex flex-col gap-1.5">
++              <Label htmlFor="report-card-term">Term</Label>
++              <select
++                id="report-card-term"
++                className={SELECT_CLASS}
++                value={termId}
++                onChange={(event) => setAdminTermId(event.target.value)}
++                disabled={adminTerm.isLoading}
++              >
++                <option value="" disabled>
++                  Select…
++                </option>
++                {adminTerm.terms.map((term) => (
++                  <option key={term.id} value={term.id}>
++                    {formatTermName(term.name)}
++                    {term.isCurrent ? " (current)" : ""}
++                  </option>
++                ))}
++              </select>
++            </div>
++          )}
++
++          <Button type="button" size="sm" disabled={!data} onClick={() => window.print()}>
++            <Printer className="mr-2 h-4 w-4" aria-hidden="true" /> Print
++          </Button>
++        </div>
++      </div>
++
++      {!ready && (
++        <div className="flex items-center gap-2 text-sm text-muted">
++          <Spinner /> Loading…
++        </div>
++      )}
++
++      {ready && reportCardQuery.isLoading && (
++        <div className="flex items-center gap-2 text-sm text-muted">
++          <Spinner /> Loading report card…
++        </div>
++      )}
++
++      {ready && reportCardQuery.isError && (
++        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center print:hidden">
++          <p className="text-sm text-danger">{getErrorMessage(reportCardQuery.error, "Couldn't load this report card.")}</p>
++          <Button type="button" variant="outline" size="sm" onClick={() => reportCardQuery.refetch()}>
++            Try again
++          </Button>
++        </div>
++      )}
++
++      {data && (
++        <div className="mx-auto max-w-3xl rounded-lg border border-muted/20 bg-card p-6 text-text print:border-0 print:p-0 print:shadow-none">
++          <div className="mb-6 flex flex-col items-center gap-1 border-b border-muted/20 pb-4 text-center break-inside-avoid">
++            <p className="text-lg font-semibold">{currentUser?.school.name}</p>
++            <p className="text-sm text-muted">Term Report Card</p>
++            <p className="mt-2 text-xl font-semibold">
++              {data.firstName} {data.lastName}
++            </p>
++            <p className="font-mono text-sm text-muted">{data.admissionNumber}</p>
++            <p className="text-sm text-text">
++              {classArmLabel ?? "—"} · {termLabel ?? "—"}
++              {sessionLabel ? ` · ${sessionLabel}` : ""}
++            </p>
++          </div>
++
++          {data.subjects.length === 0 ? (
++            <p className="py-6 text-center text-sm text-muted">No results entered for this term yet.</p>
++          ) : (
++            <div className="flex flex-col gap-4">
++              {data.subjects.map((subject) => (
++                <div key={subject.subjectId} className="break-inside-avoid rounded-lg border border-muted/20 p-3">
++                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
++                    <p className="font-medium text-text">{subject.subjectName}</p>
++                    <StatusBadge label={resultStatusLabel(subject.status)} tone={resultStatusTone(subject.status)} />
++                  </div>
++                  <div className="overflow-x-auto">
++                    <table className="w-full text-left text-sm">
++                      <thead>
++                        <tr className="border-b border-muted/20">
++                          {subject.components.map((component) => (
++                            <th key={component.componentId} className="whitespace-nowrap px-2 py-1.5 font-medium text-muted">
++                              {component.componentName} <span className="font-normal">(/{component.maxScore})</span>
++                            </th>
++                          ))}
++                          <th className="whitespace-nowrap px-2 py-1.5 font-medium text-muted">Total</th>
++                          <th className="whitespace-nowrap px-2 py-1.5 font-medium text-muted">Grade</th>
++                          <th className="whitespace-nowrap px-2 py-1.5 font-medium text-muted">Position</th>
++                        </tr>
++                      </thead>
++                      <tbody>
++                        <tr>
++                          {subject.components.map((component) => (
++                            <td key={component.componentId} className="whitespace-nowrap px-2 py-1.5 font-mono text-text">
++                              {componentDisplay(component)}
++                            </td>
++                          ))}
++                          <td className="whitespace-nowrap px-2 py-1.5 font-mono text-text">{formatScore(subject.totalScore)}</td>
++                          <td className="whitespace-nowrap px-2 py-1.5 text-text">{subject.finalGrade ?? "—"}</td>
++                          <td className="whitespace-nowrap px-2 py-1.5 text-muted">{positionLabel(subject.subjectPosition)}</td>
++                        </tr>
++                      </tbody>
++                    </table>
++                  </div>
++                </div>
++              ))}
++            </div>
++          )}
++
++          <div className="mt-4 break-inside-avoid rounded-lg border border-muted/20 p-3">
++            <p className="mb-1 font-medium text-text">Overall</p>
++            {data.overall ? (
++              <div className="flex flex-wrap items-center gap-3 text-sm">
++                <p className="text-text">
++                  {data.overall.averageGrade ?? "—"} <span className="text-xs text-muted">({formatScore(data.overall.averageScore)})</span>
++                </p>
++                <p className="text-muted">{positionLabel(data.overall.overallPosition)}</p>
++                <StatusBadge label={resultStatusLabel(data.overall.status)} tone={resultStatusTone(data.overall.status)} />
++                <p className="text-xs text-muted">{data.overall.subjectsCount} subject(s)</p>
++              </div>
++            ) : (
++              <p className="text-sm text-muted">Overall results not yet available.</p>
++            )}
++          </div>
++
++          <div className="mt-4 flex flex-col gap-4">
++            <RemarkPanel
++              label="Teacher remark"
++              studentId={data.studentId}
++              termId={data.termId}
++              sessionId={data.sessionId}
++              remark={data.remarks.teacherRemark}
++              remarkBy={data.remarks.teacherRemarkBy}
++              remarkAt={data.remarks.teacherRemarkAt}
++              showForm={showTeacherForm}
++              field="teacher"
++            />
++            <RemarkPanel
++              label="Principal remark"
++              studentId={data.studentId}
++              termId={data.termId}
++              sessionId={data.sessionId}
++              remark={data.remarks.principalRemark}
++              remarkBy={data.remarks.principalRemarkBy}
++              remarkAt={data.remarks.principalRemarkAt}
++              showForm={showPrincipalForm}
++              field="principal"
++            />
++          </div>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/web/src/features/grades/ScoreEntryGrid.test.tsx b/apps/web/src/features/grades/ScoreEntryGrid.test.tsx
+index 26e9181..977e763 100644
+--- a/apps/web/src/features/grades/ScoreEntryGrid.test.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGrid.test.tsx
+@@ -366,13 +366,22 @@ describe("ScoreEntryGrid", () => {
+         }
+         throw new Error("unexpected call");
+       });
++      const user = userEvent.setup();
+       renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+ 
+       const input = await screen.findByLabelText("Score for Ada Bello");
+-      input.focus();
+-      fireEvent.keyDown(input, { key: "a" });
+-
+-      expect(input).toHaveValue("Abs");
++      // userEvent, not a bare input.focus() + fireEvent.keyDown — the raw
++      // fireEvent path was observed flaky specifically on the GitHub
++      // Actions runner (passed locally every time, intermittently failed
++      // in CI with the value never updating at all, not just late) while
++      // this file's OTHER absent-toggle test, which already used
++      // userEvent throughout, never flaked. userEvent's own dispatch +
++      // flush pipeline is more thoroughly exercised than a raw
++      // fireEvent+manual-focus combo, so prefer it for this interaction.
++      await user.click(input);
++      await user.keyboard("a");
++
++      await waitFor(() => expect(input).toHaveValue("Abs"));
+       expect(input).toBeDisabled();
+       await waitFor(() =>
+         expect(putCalls().some(([, options]) => {
+@@ -427,13 +436,21 @@ describe("ScoreEntryGrid", () => {
+       renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+ 
+       const input = await screen.findByLabelText("Score for Ada Bello");
+-      input.focus();
+-      fireEvent.keyDown(input, { key: "a" });
+-      expect(input).toHaveValue("Abs");
+-
+-      // Toggle absent back off first (matches the component's own
+-      // mutual-exclusion design — typing is disabled while Abs is shown).
+-      fireEvent.keyDown(input, { key: "a" });
++      // userEvent throughout — see the sibling test above for why a bare
++      // fireEvent.keyDown was dropped here (flaked on the GitHub Actions
++      // runner specifically).
++      await user.click(input);
++      await user.keyboard("a");
++      await waitFor(() => expect(input).toHaveValue("Abs"));
++
++      // Toggle absent back off via the chip, not a second "a" keypress on
++      // the input — once isAbsent, the input is `disabled`, and a disabled
++      // element genuinely cannot receive keyboard input from userEvent (or
++      // a real browser); the chip is the only actually-reachable control
++      // at that point, same reasoning as "a locked cell ignores the A
++      // shortcut" below.
++      await user.click(screen.getByLabelText("Mark Ada Bello absent (or press A)"));
++      await waitFor(() => expect(input).not.toBeDisabled());
+       await user.type(input, "14");
+       expect(input).toHaveValue("14");
+       expect(input).not.toBeDisabled();
+diff --git a/apps/web/src/features/grades/use-remarks.ts b/apps/web/src/features/grades/use-remarks.ts
+new file mode 100644
+index 0000000..99d9d83
+--- /dev/null
++++ b/apps/web/src/features/grades/use-remarks.ts
+@@ -0,0 +1,63 @@
++import { useMutation, useQueryClient } from "@tanstack/react-query";
++import type { ReportCardResponse, RemarkResponse, WriteRemarkInput } from "@scholametric/shared";
++import { apiRequest } from "../../lib/api-client";
++import { reportCardQueryKey } from "./use-report-card";
++
++interface WriteRemarkVariables {
++  studentId: string;
++  input: WriteRemarkInput;
++  // RemarkResponse only carries the author's id (not their name) — the
++  // caller already has their own name via useCurrentUser() (they're always
++  // the one being stamped), so it rides along here purely for the
++  // immediate cache patch below. The background refetch (queryClient
++  // .invalidateQueries) lands the server's own authoritative name right
++  // after, which will always match — same person, just confirmed.
++  authorName: { firstName: string; lastName: string };
++}
++
++function patchRemark(
++  queryClient: ReturnType<typeof useQueryClient>,
++  variables: WriteRemarkVariables,
++  data: RemarkResponse,
++  field: "teacher" | "principal",
++) {
++  const key = reportCardQueryKey({ studentId: variables.studentId, termId: data.termId, sessionId: data.sessionId });
++  queryClient.setQueryData<ReportCardResponse>(key, (old) => {
++    if (!old) return old;
++    const remarkText = field === "teacher" ? data.teacherRemark : data.principalRemark;
++    const remarkAt = field === "teacher" ? data.teacherRemarkAt : data.principalRemarkAt;
++    return {
++      ...old,
++      remarks: {
++        ...old.remarks,
++        ...(field === "teacher"
++          ? { teacherRemark: remarkText, teacherRemarkAt: remarkAt, teacherRemarkBy: remarkText ? variables.authorName : null }
++          : { principalRemark: remarkText, principalRemarkAt: remarkAt, principalRemarkBy: remarkText ? variables.authorName : null }),
++      },
++    };
++  });
++  queryClient.invalidateQueries({ queryKey: key });
++}
++
++// Class-teacher-only for TEACHER, unrestricted for SCHOOL_ADMIN/PROPRIETOR
++// (SPEC_V0.5.md §2.4/Q6, v0.5 step 6) — visibility of the form itself is
++// the caller's job (ReportCardPage), this hook just performs the write.
++export function useWriteTeacherRemark() {
++  const queryClient = useQueryClient();
++  return useMutation({
++    mutationFn: ({ studentId, input }: WriteRemarkVariables) =>
++      apiRequest<RemarkResponse>(`/api/v1/students/${studentId}/remarks/teacher`, { method: "PUT", body: input }),
++    onSuccess: (data, variables) => patchRemark(queryClient, variables, data, "teacher"),
++  });
++}
++
++// SCHOOL_ADMIN/PROPRIETOR only server-side (categorical 403 for TEACHER) —
++// same cache-patch shape as the teacher remark above.
++export function useWritePrincipalRemark() {
++  const queryClient = useQueryClient();
++  return useMutation({
++    mutationFn: ({ studentId, input }: WriteRemarkVariables) =>
++      apiRequest<RemarkResponse>(`/api/v1/students/${studentId}/remarks/principal`, { method: "PUT", body: input }),
++    onSuccess: (data, variables) => patchRemark(queryClient, variables, data, "principal"),
++  });
++}
+diff --git a/apps/web/src/features/grades/use-report-card.ts b/apps/web/src/features/grades/use-report-card.ts
+new file mode 100644
+index 0000000..3ce3775
+--- /dev/null
++++ b/apps/web/src/features/grades/use-report-card.ts
+@@ -0,0 +1,24 @@
++import { useQuery } from "@tanstack/react-query";
++import type { ReportCardResponse } from "@scholametric/shared";
++import { apiRequest } from "../../lib/api-client";
++
++export interface ReportCardParams {
++  studentId: string;
++  termId: string;
++  sessionId: string;
++}
++
++export function reportCardQueryKey(params: ReportCardParams) {
++  return ["grades", "report-card", params.studentId, params.termId, params.sessionId] as const;
++}
++
++export function useReportCard(params: ReportCardParams | null) {
++  return useQuery({
++    queryKey: params ? reportCardQueryKey(params) : ["grades", "report-card", "disabled"],
++    queryFn: () =>
++      apiRequest<ReportCardResponse>(`/api/v1/students/${params?.studentId}/report-card`, {
++        query: params ? { termId: params.termId, sessionId: params.sessionId } : undefined,
++      }),
++    enabled: params !== null,
++  });
++}
+diff --git a/apps/web/src/features/shell/AppShell.tsx b/apps/web/src/features/shell/AppShell.tsx
+index b024164..930d581 100644
+--- a/apps/web/src/features/shell/AppShell.tsx
++++ b/apps/web/src/features/shell/AppShell.tsx
+@@ -8,13 +8,16 @@ export function AppShell({ children }: { children: ReactNode }) {
+ 
+   return (
+     <div className="flex min-h-screen bg-background">
+-      <div className="hidden md:block md:w-64 md:shrink-0 md:border-r md:border-muted/20 md:bg-card">
++      {/* print:hidden — SPEC_V0.5.md §2.4, v0.5 step 6. Global, not scoped
++          to the report card: nothing in this app's chrome (nav, topbar)
++          belongs in ANY printed output. */}
++      <div className="hidden md:block md:w-64 md:shrink-0 md:border-r md:border-muted/20 md:bg-card print:hidden">
+         <Sidebar />
+       </div>
+ 
+       <div className="flex min-w-0 flex-1 flex-col">
+         <TopBar onOpenMobileNav={() => setMobileNavOpen(true)} />
+-        <main className="flex-1 p-4 sm:p-6">{children}</main>
++        <main className="flex-1 p-4 sm:p-6 print:p-0">{children}</main>
+       </div>
+ 
+       {mobileNavOpen && (
+diff --git a/apps/web/src/features/shell/TopBar.tsx b/apps/web/src/features/shell/TopBar.tsx
+index 57a2656..35be5bc 100644
+--- a/apps/web/src/features/shell/TopBar.tsx
++++ b/apps/web/src/features/shell/TopBar.tsx
+@@ -7,7 +7,7 @@ interface TopBarProps {
+ 
+ export function TopBar({ onOpenMobileNav }: TopBarProps) {
+   return (
+-    <header className="flex items-center gap-3 border-b border-muted/20 bg-card px-4 py-3 sm:px-6">
++    <header className="flex items-center gap-3 border-b border-muted/20 bg-card px-4 py-3 print:hidden sm:px-6">
+       <button
+         type="button"
+         aria-label="Open menu"
+diff --git a/apps/web/src/features/students/StudentResultsTab.test.tsx b/apps/web/src/features/students/StudentResultsTab.test.tsx
+index 12e20dd..eb3d0d7 100644
+--- a/apps/web/src/features/students/StudentResultsTab.test.tsx
++++ b/apps/web/src/features/students/StudentResultsTab.test.tsx
+@@ -1,5 +1,7 @@
+ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+ import { screen, cleanup } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { Route, Routes } from "react-router-dom";
+ import type { Paginated, Term, AcademicSession, StudentResultsResponse } from "@scholametric/shared";
+ import { renderWithProviders } from "../../test/render-with-providers";
+ import { authStore } from "../../lib/auth-store";
+@@ -108,6 +110,29 @@ describe("StudentResultsTab", () => {
+     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+   });
+ 
++  it("'Print report card' navigates to the dedicated route, pre-filling the term/session already showing here", async () => {
++    mockedApiRequest.mockImplementation(async (path) => {
++      if (path === "/api/v1/auth/me") return ADMIN_USER;
++      if (path === "/api/v1/sessions") return SESSIONS;
++      if (path === "/api/v1/terms") return TERMS;
++      if (path === "/api/v1/students/st1/results") return RESULTS;
++      throw new Error(`unexpected call: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderWithProviders(
++      <Routes>
++        <Route path="/students/:id" element={<StudentResultsTab studentId="st1" />} />
++        <Route path="/students/:id/report-card" element={<p>report-card-route-marker</p>} />
++      </Routes>,
++      { route: "/students/st1" },
++    );
++
++    await screen.findByText("Mathematics");
++    await user.click(screen.getByRole("button", { name: "Print report card" }));
++
++    expect(await screen.findByText("report-card-route-marker")).toBeInTheDocument();
++  });
++
+   it("empty state: zero subjects entered this term", async () => {
+     mockedApiRequest.mockImplementation(async (path) => {
+       if (path === "/api/v1/auth/me") return ADMIN_USER;
+diff --git a/apps/web/src/features/students/StudentResultsTab.tsx b/apps/web/src/features/students/StudentResultsTab.tsx
+index a61e890..73039c4 100644
+--- a/apps/web/src/features/students/StudentResultsTab.tsx
++++ b/apps/web/src/features/students/StudentResultsTab.tsx
+@@ -1,3 +1,5 @@
++import { useNavigate } from "react-router-dom";
++import { Printer } from "lucide-react";
+ import { Spinner } from "../../components/ui/spinner";
+ import { Button } from "../../components/ui/button";
+ import { StatusBadge } from "../../components/StatusBadge";
+@@ -27,6 +29,7 @@ function positionLabel(position: number | null): string {
+ // findOne is intentionally unchanged, out of scope for this step), so the
+ // tab can be reached and must fail softly, not blank or crash.
+ export function StudentResultsTab({ studentId }: StudentResultsTabProps) {
++  const navigate = useNavigate();
+   const { data: currentUser } = useCurrentUser();
+   const isTeacher = currentUser?.role === "TEACHER";
+   const isConfirmedAdmin = currentUser?.role === "SCHOOL_ADMIN" || currentUser?.role === "PROPRIETOR";
+@@ -81,6 +84,17 @@ export function StudentResultsTab({ studentId }: StudentResultsTabProps) {
+ 
+   return (
+     <div className="flex flex-col gap-4">
++      <div className="flex justify-end">
++        <Button
++          type="button"
++          variant="outline"
++          size="sm"
++          onClick={() => navigate(`/students/${studentId}/report-card?termId=${termId}&sessionId=${sessionId}`)}
++        >
++          <Printer className="mr-2 h-4 w-4" aria-hidden="true" /> Print report card
++        </Button>
++      </div>
++
+       <div className="overflow-x-auto rounded-lg border border-muted/20 bg-card">
+         <table className="w-full text-left text-sm">
+           <thead>
+diff --git a/apps/web/src/index.css b/apps/web/src/index.css
+index d329cba..19e04b8 100644
+--- a/apps/web/src/index.css
++++ b/apps/web/src/index.css
+@@ -7,3 +7,18 @@
+ body {
+   @apply bg-background text-text font-sans;
+ }
++
++/* SPEC_V0.5.md §2.4, v0.5 step 6 — client-side print (Q5): the browser's
++   own Print/Save-as-PDF turns the report card's print: classes (and
++   AppShell's chrome-hiding print:hidden) into a clean document. No PDF
++   library, no server round-trip. */
++@media print {
++  @page {
++    size: A4;
++    margin: 14mm 12mm;
++  }
++
++  body {
++    background: white;
++  }
++}
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index ff87950..90565ee 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -2874,3 +2874,118 @@ green on a freshly rebuilt, freshly seeded stack; typecheck + lint clean
+ across the monorepo; a chromium-cli live-stack walk covering the full
+ mark-absent → completeness-gate → close-as-principal →
+ teacher-sees-locked → unlock → edit → relock → blocked-again sequence.
++
++## 2026-08-17 — v0.5 step 6: web — printable report card + remarks entry
++
++**Route + entry point**: a dedicated `/students/:id/report-card` route, not
++a fourth `StudentDetailPage` tab — printing wants a focused, chrome-free
++document, and this page needs its own term/session picker (a card is most
++often printed for whichever term just closed, not "current term" the way
++the Results tab is scoped). Reached from a new "Print report card" button
++on `StudentResultsTab` (pre-fills `?termId=&sessionId=` from what's already
++showing there) and directly linkable/bookmarkable on its own.
++
++**Print approach (Q5, client-side, no new dependency)**: Tailwind's
++built-in `print:` variant (core, no plugin) plus `@page`/`@media print` in
++`index.css`. `print:hidden` was added directly to `AppShell`'s sidebar
++wrapper and `TopBar` — a **shared, global change**, not scoped to this one
++feature: nothing in the app's nav chrome belongs in *any* printed output,
++not just this page's. `window.print()` on a plain button; `break-inside-
++avoid` on each subject/overall/remarks block as a page-break safety net for
++schools with many subjects (the route is naturally one-student-per-page —
++no list to worry about).
++
++**Teacher term picker deferred (current-term-only)**: matches
++`StudentResultsTab`'s existing precedent. The backend already permits a
++TEACHER to read any term's card — this is a frontend scope call, not a
++backend limitation, and it's noted here deliberately so a future step
++doesn't mistake the gap for an oversight.
++
++**Admin/proprietor sees BOTH remark forms**: the backend allows it (no
++extra check beyond the class-level `@Roles()` on the teacher-remark route)
++and the real workflow is a principal completing a card when the class
++teacher hasn't gotten to it yet. Whoever saves a remark is stamped with
++THEIR OWN name — an admin writing the "teacher remark" shows up under
++their own name, never a fabricated "as the class teacher" attribution — so
++the form copy says "Teacher remark," never "write as the class teacher."
++Visibility: class teacher of this arm → teacher form only; subject-only
++teacher → neither form (read-only remark text still shown, same "hidden
++not disabled" pattern used throughout); admin/proprietor → both forms.
++
++**Abs/blank/0 and partial-term rendering** reuse the grid's and
++`StudentResultsTab`'s existing conventions verbatim (`componentDisplay`
++mirrors `ScoreEntryRow`'s isAbsent → "Abs" / null → "—" / real value logic;
++`positionLabel`, `resultStatusLabel/Tone`, `formatScore` are the same
++helpers, not reimplementations) — a null `overall` renders an explicit
++"Overall results not yet available." message, never a blank or zeroed row.
++
++**Remark save UX**: `useWriteTeacherRemark`/`useWritePrincipalRemark`
++patch the report-card query cache directly via `setQueryData` using the
++saving user's own name (the response only carries the author's id, not
++their name — but the saving user is always who gets stamped, so this is
++never a guess) for instant feedback, then `invalidateQueries` triggers a
++background refetch that lands the server's authoritative copy right after
++— same person, just confirmed, never a raw UUID shown in the interim.
++
++**New `Textarea` UI primitive** (`components/ui/textarea.tsx`) — no
++multi-line input component existed yet; styled to match `Input` exactly,
++same `forwardRef` shape.
++
++**Proof**: 11 new Vitest tests (`ReportCardPage.test.tsx`: full-card
++rendering, Abs/blank/0 distinct, partial-term states, all three
++remark-form-visibility combinations, the optimistic-save-then-refetch
++UX, print-hidden classes present; one new `StudentResultsTab.test.tsx`
++case for the print-report-card navigation) — 148 total, up from 137. No
++new backend e2e — `report-card.e2e-spec.ts` (v0.5 step 4) already covers
++Abs/blank assembly, partial-term positions, every RBAC combination on all
++three endpoints, cross-tenant 404s, and remark upsert/null-clearing
++semantics; this step is web-only and added no new backend surface. Full
++`pnpm run ci` green on a freshly rebuilt, freshly seeded stack; typecheck +
++lint clean; a chromium-cli live-stack walk rendering a real student's card
++(Abs cell, unpublished subject, existing remark), writing a teacher remark
++as the class teacher, confirming a subject-only teacher sees no form,
++writing a principal remark as admin, and a print-preview screenshot
++showing the chrome-free card.
++
++**Flaky pre-existing test found and fixed while confirming CI green**: the
++pushed commit's GitHub Actions run failed on two step-5 tests in
++`ScoreEntryGrid.test.tsx` ("pressing A... marks it absent" and the
++mutual-exclusion test) — not anything in this step. Diagnosed over two
++rounds:
++
++Round 1 (wrong): assumed a same-tick propagation race (bare
++`expect(input).toHaveValue("Abs")` immediately after `fireEvent.keyDown`,
++no `await` in between) and wrapped the assertions in `waitFor`. This did
++NOT fix it — the same two tests failed again on the next push, with the
++value coming back completely empty (not just late), which a 1000ms
++`waitFor` should have absorbed if it were only slow flushing.
++
++Round 2 (the real bug): the mutual-exclusion test's SECOND `fireEvent
++.keyDown(input, { key: "a" })` — toggling absent back off — targets an
++input that is, by that point, `disabled` (isAbsent sets `isDisabled` in
++`ScoreEntryRow`). `fireEvent` dispatches DOM events directly, bypassing
++the disabled check a real browser enforces; a real user (and `userEvent`,
++which respects it) cannot send keyboard input to a disabled element at
++all — the only actually-reachable control at that point is the Abs chip.
++The test was exercising a state transition that isn't reachable through
++real interaction, and evidently something about how a disabled-element
++keydown gets processed differs between the local (macOS) and CI (Ubuntu)
++jsdom/Node environment enough to make it silently no-op only sometimes.
++Fixed by switching both tests to `userEvent` throughout — `user.click
++(input)` + `user.keyboard("a")` for the initial toggle-on (matching how
++the file's OTHER absent-toggle test, which never flaked, already worked),
++and clicking the chip (not a second keypress) to toggle back off, which
++is what a real user would actually have to do once the input is disabled.
++
++Confirmed via: reproducing the CI environment exactly (fresh worktree at
++each pushed commit, throwaway Postgres/Redis matching the workflow's
++ports, `pnpm install --frozen-lockfile`, identical env vars) — which
++passed even on the broken Round 1 commit, correctly signaling that "fresh
++install on the same machine" wasn't the actual differentiator; the real
++CI logs (fetched via the local git credential helper's stored token,
++since the Actions logs API needs write access otherwise) were what
++actually pinpointed both the failing assertion and, on the second round,
++its "received: empty" detail that ruled out pure timing. Re-confirmed
++green locally (typecheck, lint, full Vitest suite) before the final
++repush; GitHub Actions itself is the authoritative confirmation once that
++push lands.
+diff --git a/packages/shared/src/grades.ts b/packages/shared/src/grades.ts
+index 6b75e3f..c0ea80e 100644
+--- a/packages/shared/src/grades.ts
++++ b/packages/shared/src/grades.ts
+@@ -240,3 +240,90 @@ export function validateGridScore(rawScore: number, maxScore: number): { isValid
+   }
+   return { isValid: true };
+ }
++
++// Mirrors GradesService.getReportCard()/write*Remark() (SPEC_V0.5.md §2.4,
++// v0.5 step 4 backend / step 6 web). A component with no student_scores row
++// at all is rawScore: null, isAbsent: false — blank/not-entered, distinct
++// from isAbsent: true ("Abs" on the printed card).
++export interface ReportCardComponent {
++  componentId: string;
++  componentName: string;
++  weight: number;
++  maxScore: number;
++  requiresApproval: boolean;
++  rawScore: number | null;
++  isAbsent: boolean;
++}
++
++export interface ReportCardSubject {
++  subjectId: string;
++  subjectName: string;
++  components: ReportCardComponent[];
++  totalScore: number;
++  autoGrade: string | null;
++  overrideGrade: string | null;
++  finalGrade: string | null;
++  subjectPosition: number | null;
++  status: ResultStatus;
++}
++
++export interface ReportCardOverall {
++  averageScore: number;
++  averageGrade: string | null;
++  overallPosition: number | null;
++  status: ResultStatus;
++  subjectsCount: number;
++}
++
++export interface RemarkAuthor {
++  firstName: string;
++  lastName: string;
++}
++
++export interface ReportCardRemarks {
++  teacherRemark: string | null;
++  teacherRemarkBy: RemarkAuthor | null;
++  teacherRemarkAt: string | null;
++  principalRemark: string | null;
++  principalRemarkBy: RemarkAuthor | null;
++  principalRemarkAt: string | null;
++}
++
++// A self-contained printable document — student identity and remark-author
++// names are embedded directly, unlike StudentResultsResponse above, whose
++// caller already has student context.
++export interface ReportCardResponse {
++  studentId: string;
++  firstName: string;
++  lastName: string;
++  admissionNumber: string;
++  classArmId: string;
++  termId: string;
++  sessionId: string;
++  subjects: ReportCardSubject[];
++  overall: ReportCardOverall | null;
++  remarks: ReportCardRemarks;
++}
++
++// PUT /students/:id/remarks/teacher and .../principal share this input
++// shape (v0.5 step 6) — remark is required-but-nullable: omitting the key
++// is a client error, explicit null clears the remark (and its stamps).
++export interface WriteRemarkInput {
++  termId: string;
++  sessionId: string;
++  remark: string | null;
++}
++
++export interface RemarkResponse {
++  id: string;
++  studentId: string;
++  termId: string;
++  sessionId: string;
++  classArmId: string;
++  teacherRemark: string | null;
++  teacherRemarkBy: string | null;
++  teacherRemarkAt: string | null;
++  principalRemark: string | null;
++  principalRemarkBy: string | null;
++  principalRemarkAt: string | null;
++}

@@ -1,0 +1,1239 @@
+diff --git a/apps/api/src/grades/grades.service.ts b/apps/api/src/grades/grades.service.ts
+index 5c7d3b1..971dedd 100644
+--- a/apps/api/src/grades/grades.service.ts
++++ b/apps/api/src/grades/grades.service.ts
+@@ -16,6 +16,7 @@ import {
+   type ComponentScoreInput,
+   type GradeBoundaryInput,
+ } from "../grades/grade-computation";
++import { termLockKey, subjectLockKey as buildSubjectLockKey, classArmLockKey as buildClassArmLockKey } from "./lock-keys";
+ import { GetGradesGridQueryDto } from "./dto/get-grades-grid-query.dto";
+ import { SaveGradesGridDto } from "./dto/save-grades-grid.dto";
+ import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
+@@ -312,17 +313,44 @@ export class GradesService {
+     }
+ 
+     const affectedStudentIds = [...new Set(dto.scores.map((s) => s.studentId))];
+-    const lockKey = this.subjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+-    const classArmLockKey = this.classArmLockKey(schoolId, dto.classArmId, dto.termId);
++    const termLock = termLockKey(schoolId, dto.termId);
++    const subjLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
++    const armLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
+ 
+     return this.prisma.$transaction(
+       async (tx) => {
++        // Term-level lock FIRST, always — same fixed order close()/unlock()/
++        // relock() use for THEIR only lock (SPEC_V0.5.md §2.3, step 3).
++        // Serializes this save against a concurrent close/unlock/relock so
++        // the closed-term check just below can never read a stale value —
++        // whichever transaction gets here first fully commits before the
++        // other's read runs, closing the race a pre-transaction check would
++        // leave open.
++        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
++
++        // Fresh read, not the `term` object from resolveTenantScopeWithComponent
++        // above (fetched before this lock — could be stale by now). Outer
++        // gate: fires before the PUBLISHED-lock below, and deliberately
++        // doesn't relax it — an unlock grants "may edit this slice," not
++        // "may also bypass the separate publish safeguard" (docs/DECISIONS.md).
++        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
++        if (freshTerm.closedAt !== null) {
++          const activeUnlock = await tx.termUnlock.findFirst({
++            where: { termId: dto.termId, classArmId: dto.classArmId, subjectId: dto.subjectId, relockedAt: null },
++          });
++          if (!activeUnlock) {
++            throw new ConflictException(
++              "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
++            );
++          }
++        }
++
+         // Serializes concurrent grid saves for the same subject+class+term
+         // (SPEC_V0.4.md §5) — without this, two overlapping saves could
+         // both read student_scores before either commits and produce a
+         // lost update on the derived total_score. Same discipline as
+         // StudentsService's admission-number advisory lock.
+-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
++        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
+ 
+         const existingResults = await tx.termSubjectResult.findMany({
+           where: {
+@@ -412,7 +440,7 @@ export class GradesService {
+         // different subject lock). Only acquired when genuinely needed
+         // (gap #2, see above) — the normal save path never touches it.
+         if (needsOverallRecompute) {
+-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${classArmLockKey}))`;
++          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${armLockKey}))`;
+           await this.recomputeOverallForClassArm(tx, {
+             schoolId,
+             classArmId: dto.classArmId,
+@@ -470,12 +498,16 @@ export class GradesService {
+   // No new computation logic: same recomputeStudents() PUT /grades/grid
+   // already uses.
+   //
+-  // Carries the same latent gap #2 saveGrid() was just fixed for (see its
+-  // comment): this can also create a first-ever term_subject_result for a
+-  // student whose overall is currently PUBLISHED, and doesn't (yet)
+-  // trigger an overall recompute for that case. Not fixed here —
+-  // deliberately out of this fix's scope (docs/DECISIONS.md), not slipped
+-  // in unapproved.
++  // Gap-2-twin (SPEC_V0.5.md §3, fixed this step): carried the same latent
++  // gap #2 saveGrid() was fixed for in v0.4 (af94921) — re-deriving a
++  // first-ever term_subject_result for a student whose overall is
++  // currently PUBLISHED left the overall stale. Mirrors that fix exactly:
++  // conditional class-arm lock ALWAYS after the subject lock, same fixed
++  // order, only acquired when a real candidate exists. NOT gated by the
++  // closed-term/unlock check below (docs/DECISIONS.md) — this only
++  // re-derives from student_scores rows that already passed that gate at
++  // write time, introduces no new data, and stays off the term-lock
++  // entirely, preserving the existing no-deadlock argument.
+   async recompute(dto: RecomputeGradesDto): Promise<{ recomputedCount: number }> {
+     const schoolId = this.tenantContext.schoolId;
+     const { term } = await this.resolveTenantScopeSubjectOnly(schoolId, dto);
+@@ -486,7 +518,8 @@ export class GradesService {
+       return { recomputedCount: 0 };
+     }
+ 
+-    const lockKey = this.subjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
++    const lockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
++    const armLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
+ 
+     return this.prisma.$transaction(
+       async (tx) => {
+@@ -500,14 +533,34 @@ export class GradesService {
+           throw this.publishedLockException("recompute", lockedStudentIds);
+         }
+ 
++        const studentsWithNoExistingRow = studentIds.filter((id) => !existingResults.some((r) => r.studentId === id));
++        let needsOverallRecompute = false;
++        if (studentsWithNoExistingRow.length > 0) {
++          const overallRows = await tx.termOverallResult.findMany({
++            where: { studentId: { in: studentsWithNoExistingRow }, termId: dto.termId, sessionId: term.sessionId },
++          });
++          needsOverallRecompute = overallRows.some((r) => r.status === ResultStatus.PUBLISHED);
++        }
++
+         const recomputed = await this.recomputeStudents(
+           tx,
+           { schoolId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, classArmId: dto.classArmId },
+           studentIds,
+         );
++
++        if (needsOverallRecompute) {
++          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${armLockKey}))`;
++          await this.recomputeOverallForClassArm(tx, {
++            schoolId,
++            classArmId: dto.classArmId,
++            termId: dto.termId,
++            sessionId: term.sessionId,
++          });
++        }
++
+         return { recomputedCount: recomputed.length };
+       },
+-      { timeout: 15000 },
++      { timeout: 20000 }, // was 15000 — bumped to match saveGrid's budget for the same added class-arm-wide phase (only spent when needsOverallRecompute fires)
+     );
+   }
+ 
+@@ -527,8 +580,8 @@ export class GradesService {
+     const schoolId = this.tenantContext.schoolId;
+     const { term } = await this.resolveTenantScopeSubjectOnly(schoolId, dto);
+ 
+-    const subjectLockKey = this.subjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+-    const classArmLockKey = this.classArmLockKey(schoolId, dto.classArmId, dto.termId);
++    const subjectLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
++    const classArmLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
+ 
+     return this.prisma.$transaction(
+       async (tx) => {
+@@ -662,8 +715,8 @@ export class GradesService {
+     const schoolId = this.tenantContext.schoolId;
+     const { term } = await this.resolveTenantScopeSubjectOnly(schoolId, dto);
+ 
+-    const subjectLockKey = this.subjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+-    const classArmLockKey = this.classArmLockKey(schoolId, dto.classArmId, dto.termId);
++    const subjectLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
++    const classArmLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
+ 
+     return this.prisma.$transaction(
+       async (tx) => {
+@@ -744,7 +797,7 @@ export class GradesService {
+       }
+     }
+ 
+-    const lockKey = this.subjectLockKey(schoolId, row.subjectId, row.classArmId, row.termId);
++    const lockKey = buildSubjectLockKey(schoolId, row.subjectId, row.classArmId, row.termId);
+ 
+     return this.prisma.$transaction(
+       async (tx) => {
+@@ -1343,14 +1396,6 @@ export class GradesService {
+     return incomplete;
+   }
+ 
+-  private subjectLockKey(schoolId: string, subjectId: string, classArmId: string, termId: string): string {
+-    return `grades:${schoolId}:${subjectId}:${classArmId}:${termId}`;
+-  }
+-
+-  private classArmLockKey(schoolId: string, classArmId: string, termId: string): string {
+-    return `grades:${schoolId}:${classArmId}:${termId}`;
+-  }
+-
+   // Structured, not just a count: the caller (a director/owner UI) needs
+   // to know exactly WHICH students are locked, not just how many.
+   // AllExceptionsFilter passes any extra fields on the exception's
+diff --git a/apps/api/src/grades/lock-keys.ts b/apps/api/src/grades/lock-keys.ts
+new file mode 100644
+index 0000000..cc483a8
+--- /dev/null
++++ b/apps/api/src/grades/lock-keys.ts
+@@ -0,0 +1,20 @@
++// Advisory-lock key builders shared between GradesService and TermsService
++// (SPEC_V0.5.md §2.3, v0.5 step 3) — extracted so the two services can never
++// compute even slightly different strings for the same lock, which would
++// silently break the serialization guarantee between them. Fixed acquisition
++// order across this codebase: term -> subject -> class-arm, never reversed.
++// saveGrid acquires all three (the third conditionally); close/unlock/relock
++// acquire ONLY the term lock; publish/unpublish/recompute/override never
++// touch the term lock at all. See grades.service.ts and terms.service.ts.
++
++export function termLockKey(schoolId: string, termId: string): string {
++  return `grades:term:${schoolId}:${termId}`;
++}
++
++export function subjectLockKey(schoolId: string, subjectId: string, classArmId: string, termId: string): string {
++  return `grades:${schoolId}:${subjectId}:${classArmId}:${termId}`;
++}
++
++export function classArmLockKey(schoolId: string, classArmId: string, termId: string): string {
++  return `grades:${schoolId}:${classArmId}:${termId}`;
++}
+diff --git a/apps/api/src/terms/dto/relock-term.dto.ts b/apps/api/src/terms/dto/relock-term.dto.ts
+new file mode 100644
+index 0000000..d7cb2f1
+--- /dev/null
++++ b/apps/api/src/terms/dto/relock-term.dto.ts
+@@ -0,0 +1,9 @@
++import { IsUUID } from "class-validator";
++
++export class RelockTermDto {
++  @IsUUID()
++  classArmId!: string;
++
++  @IsUUID()
++  subjectId!: string;
++}
+diff --git a/apps/api/src/terms/dto/unlock-term.dto.ts b/apps/api/src/terms/dto/unlock-term.dto.ts
+new file mode 100644
+index 0000000..7d5474e
+--- /dev/null
++++ b/apps/api/src/terms/dto/unlock-term.dto.ts
+@@ -0,0 +1,13 @@
++import { IsString, IsUUID, MinLength } from "class-validator";
++
++export class UnlockTermDto {
++  @IsUUID()
++  classArmId!: string;
++
++  @IsUUID()
++  subjectId!: string;
++
++  @IsString()
++  @MinLength(3)
++  reason!: string;
++}
+diff --git a/apps/api/src/terms/terms.controller.ts b/apps/api/src/terms/terms.controller.ts
+index 8a4ebe9..6c15a37 100644
+--- a/apps/api/src/terms/terms.controller.ts
++++ b/apps/api/src/terms/terms.controller.ts
+@@ -2,9 +2,13 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post
+ import { UserRole } from "@prisma/client";
+ import { Roles } from "../common/decorators/roles.decorator";
+ import { Audit } from "../common/decorators/audit.decorator";
++import { CurrentUser } from "../common/decorators/current-user.decorator";
++import type { AuthenticatedUser } from "../common/types/authenticated-user";
+ import { TermsService } from "./terms.service";
+ import { CreateTermDto } from "./dto/create-term.dto";
+ import { ListTermsQueryDto } from "./dto/list-terms-query.dto";
++import { UnlockTermDto } from "./dto/unlock-term.dto";
++import { RelockTermDto } from "./dto/relock-term.dto";
+ 
+ @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN)
+ @Controller("terms")
+@@ -28,4 +32,27 @@ export class TermsController {
+   activate(@Param("id", ParseUUIDPipe) id: string) {
+     return this.termsService.activate(id);
+   }
++
++  // SPEC_V0.5.md §2.3, v0.5 step 3 — SCHOOL_ADMIN + PROPRIETOR both, same
++  // tier as POST /grades/publish (not owner-only like unpublish).
++  @Audit("term", "close")
++  @Post(":id/close")
++  @HttpCode(HttpStatus.OK)
++  close(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
++    return this.termsService.close(id, user);
++  }
++
++  @Audit("termUnlock", "unlock")
++  @Post(":id/unlock")
++  @HttpCode(HttpStatus.OK)
++  unlock(@Param("id", ParseUUIDPipe) id: string, @Body() dto: UnlockTermDto, @CurrentUser() user: AuthenticatedUser) {
++    return this.termsService.unlock(id, dto, user);
++  }
++
++  @Audit("termUnlock", "relock")
++  @Post(":id/relock")
++  @HttpCode(HttpStatus.OK)
++  relock(@Param("id", ParseUUIDPipe) id: string, @Body() dto: RelockTermDto, @CurrentUser() user: AuthenticatedUser) {
++    return this.termsService.relock(id, dto, user);
++  }
+ }
+diff --git a/apps/api/src/terms/terms.service.ts b/apps/api/src/terms/terms.service.ts
+index 3c012ec..f4f30b3 100644
+--- a/apps/api/src/terms/terms.service.ts
++++ b/apps/api/src/terms/terms.service.ts
+@@ -1,11 +1,27 @@
+-import { Injectable, NotFoundException } from "@nestjs/common";
+-import type { Term } from "@prisma/client";
++import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
++import { ResultStatus, type Term, type TermUnlock } from "@prisma/client";
+ import { PrismaService } from "../prisma/prisma.service";
+ import { TenantContext } from "../common/tenant/tenant-context";
+ import { forSchool } from "../common/tenant/for-school";
+ import { paginate, Paginated } from "../common/pagination/paginate";
+ import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
++import { termLockKey } from "../grades/lock-keys";
++import type { AuthenticatedUser } from "../common/types/authenticated-user";
+ import { CreateTermDto } from "./dto/create-term.dto";
++import { UnlockTermDto } from "./dto/unlock-term.dto";
++import { RelockTermDto } from "./dto/relock-term.dto";
++
++export interface UnpublishedBreakdownRow {
++  classArmId: string;
++  subjectId: string;
++  draftCount: number;
++  pendingApprovalCount: number;
++}
++
++export interface CloseTermResponse extends Term {
++  unpublishedCount: number;
++  unpublished: UnpublishedBreakdownRow[];
++}
+ 
+ @Injectable()
+ export class TermsService {
+@@ -69,4 +85,137 @@ export class TermsService {
+     ]);
+     return activated;
+   }
++
++  // A deliberate principal/proprietor act (SPEC_V0.5.md §2.3) — flips the
++  // term read-only. Q4: warn-but-allow — a term can close with unpublished
++  // results left behind; this returns what's still unpublished (grouped by
++  // class arm + subject, ids only — step 5 already has its own classes/
++  // subjects lists to resolve names against) rather than blocking. Not
++  // idempotent — re-closing an already-closed term 409s rather than
++  // silently overwriting closed_at/closed_by, which would destroy the
++  // original close record (unlike publish()'s legitimate idempotent
++  // re-confirm, there's no "reconfirm a close" semantic).
++  async close(id: string, user: AuthenticatedUser): Promise<CloseTermResponse> {
++    const schoolId = this.tenantContext.schoolId;
++    const term = await this.prisma.term.findFirst({ where: forSchool(schoolId, { id }) });
++    if (!term) {
++      throw new NotFoundException("Term not found.");
++    }
++    if (term.closedAt !== null) {
++      throw new ConflictException("This term is already closed.");
++    }
++
++    const lockKey = termLockKey(schoolId, id);
++    return this.prisma.$transaction(
++      async (tx) => {
++        // Same term-level lock saveGrid() acquires first — serializes this
++        // close against a concurrent saveGrid so neither can read a stale
++        // closed_at (SPEC_V0.5.md §2.3, step 3).
++        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
++
++        const fresh = await tx.term.findUniqueOrThrow({ where: { id } });
++        if (fresh.closedAt !== null) {
++          throw new ConflictException("This term is already closed.");
++        }
++
++        const closed = await tx.term.update({ where: { id }, data: { closedAt: new Date(), closedBy: user.userId } });
++
++        const unpublishedRows = await tx.termSubjectResult.findMany({
++          where: { schoolId, termId: id, sessionId: term.sessionId, status: { not: ResultStatus.PUBLISHED } },
++        });
++        const grouped = new Map<string, UnpublishedBreakdownRow>();
++        for (const row of unpublishedRows) {
++          const key = `${row.classArmId}:${row.subjectId}`;
++          const bucket = grouped.get(key) ?? { classArmId: row.classArmId, subjectId: row.subjectId, draftCount: 0, pendingApprovalCount: 0 };
++          if (row.status === ResultStatus.DRAFT) {
++            bucket.draftCount++;
++          } else {
++            bucket.pendingApprovalCount++;
++          }
++          grouped.set(key, bucket);
++        }
++
++        return { ...closed, unpublishedCount: unpublishedRows.length, unpublished: [...grouped.values()] };
++      },
++      { timeout: 15000 },
++    );
++  }
++
++  // Principal/proprietor clearance to edit ONE class-arm+subject within an
++  // otherwise-closed term (SPEC_V0.5.md §2.3/Q3). "Currently unlocked" =
++  // the partial-unique row (relocked_at IS NULL) — an index lookup, never
++  // a scan, regardless of how many resolved (relocked) unlocks accumulate.
++  async unlock(id: string, dto: UnlockTermDto, user: AuthenticatedUser): Promise<TermUnlock> {
++    const schoolId = this.tenantContext.schoolId;
++    const [term, classArm, subject] = await Promise.all([
++      this.prisma.term.findFirst({ where: forSchool(schoolId, { id }) }),
++      this.prisma.classArm.findFirst({ where: forSchool(schoolId, { id: dto.classArmId }) }),
++      this.prisma.subject.findFirst({ where: forSchool(schoolId, { id: dto.subjectId, deletedAt: null }) }),
++    ]);
++    if (!term) throw new NotFoundException("Term not found.");
++    if (!classArm) throw new NotFoundException("Class arm not found.");
++    if (!subject) throw new NotFoundException("Subject not found.");
++
++    const lockKey = termLockKey(schoolId, id);
++    return this.prisma.$transaction(
++      async (tx) => {
++        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
++
++        const fresh = await tx.term.findUniqueOrThrow({ where: { id } });
++        if (fresh.closedAt === null) {
++          throw new ConflictException("This term is not closed — no unlock needed.");
++        }
++
++        const existingActive = await tx.termUnlock.findFirst({
++          where: { termId: id, classArmId: dto.classArmId, subjectId: dto.subjectId, relockedAt: null },
++        });
++        if (existingActive) {
++          throw new ConflictException("This class and subject are already unlocked for this term.");
++        }
++
++        return tx.termUnlock.create({
++          data: {
++            schoolId,
++            termId: id,
++            classArmId: dto.classArmId,
++            subjectId: dto.subjectId,
++            reason: dto.reason,
++            unlockedBy: user.userId,
++          },
++        });
++      },
++      { timeout: 10000 },
++    );
++  }
++
++  // Manual re-lock (SPEC_V0.5.md §2.3/Q3) — closes the currently-active
++  // unlock episode for this class-arm+subject; there is no auto-expiry.
++  async relock(id: string, dto: RelockTermDto, user: AuthenticatedUser): Promise<TermUnlock> {
++    const schoolId = this.tenantContext.schoolId;
++    const [term, classArm, subject] = await Promise.all([
++      this.prisma.term.findFirst({ where: forSchool(schoolId, { id }) }),
++      this.prisma.classArm.findFirst({ where: forSchool(schoolId, { id: dto.classArmId }) }),
++      this.prisma.subject.findFirst({ where: forSchool(schoolId, { id: dto.subjectId, deletedAt: null }) }),
++    ]);
++    if (!term) throw new NotFoundException("Term not found.");
++    if (!classArm) throw new NotFoundException("Class arm not found.");
++    if (!subject) throw new NotFoundException("Subject not found.");
++
++    const lockKey = termLockKey(schoolId, id);
++    return this.prisma.$transaction(
++      async (tx) => {
++        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
++
++        const active = await tx.termUnlock.findFirst({
++          where: { termId: id, classArmId: dto.classArmId, subjectId: dto.subjectId, relockedAt: null },
++        });
++        if (!active) {
++          throw new ConflictException("No active unlock to relock for this class and subject.");
++        }
++
++        return tx.termUnlock.update({ where: { id: active.id }, data: { relockedAt: new Date(), relockedBy: user.userId } });
++      },
++      { timeout: 10000 },
++    );
++  }
+ }
+diff --git a/apps/api/test/grades-publish.e2e-spec.ts b/apps/api/test/grades-publish.e2e-spec.ts
+index 4e1d074..7669eca 100644
+--- a/apps/api/test/grades-publish.e2e-spec.ts
++++ b/apps/api/test/grades-publish.e2e-spec.ts
+@@ -51,6 +51,15 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+   // arms above, kept separate so a blank-component candidate here can
+   // never leak into another suite's publish-success assertions.
+   let completenessArmId: string;
++  // Dedicated scratch arms for the gap-2-TWIN fix's own tests
++  // (SPEC_V0.5.md §3, v0.5 step 3 — POST /grades/recompute's version of the
++  // same staleness bug saveGrid was fixed for in v0.4/af94921), same
++  // isolation reasoning as gapTwoArmId/gapTwoConcurrencyArmId above but
++  // kept separate from them since these students get their subjectB rows
++  // via a direct Prisma write (simulating a data-repair scenario), not
++  // through saveGrid.
++  let gapTwoTwinArmId: string;
++  let gapTwoTwinConcurrencyArmId: string;
+   let ca1Id: string; // weight 20, max_score 20, requiresApproval false
+   let examId: string; // weight 60, max_score 100, requiresApproval true
+   let ca2Id: string; // weight 20, max_score 20, requiresApproval false
+@@ -147,6 +156,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+     completenessArmId = (
+       await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Completeness-${Date.now()}` } })
+     ).id;
++    gapTwoTwinArmId = (
++      await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Gap2Twin-${Date.now()}` } })
++    ).id;
++    gapTwoTwinConcurrencyArmId = (
++      await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Gap2TwinConc-${Date.now()}` } })
++    ).id;
+ 
+     const components = await prisma.assessmentComponent.findMany({
+       where: { schoolId: sunriseId, deletedAt: null },
+@@ -223,6 +238,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+     if (completenessArmId) {
+       await prisma.classArm.delete({ where: { id: completenessArmId } });
+     }
++    if (gapTwoTwinArmId) {
++      await prisma.classArm.delete({ where: { id: gapTwoTwinArmId } });
++    }
++    if (gapTwoTwinConcurrencyArmId) {
++      await prisma.classArm.delete({ where: { id: gapTwoTwinConcurrencyArmId } });
++    }
+     if (hillcrestScratchProprietorId) {
+       // Real login flow (loginAs) issued a refresh token for this user —
+       // must go before the user row itself (refresh_tokens.user_id FK).
+@@ -974,6 +995,172 @@ describe("Grades publish/unpublish/override (e2e)", () => {
+     });
+   });
+ 
++  // Gap-2-TWIN (SPEC_V0.5.md §3, fixed this step): POST /grades/recompute
++  // carries the identical staleness bug saveGrid was fixed for above (gap
++  // #2, af94921) — re-deriving a first-ever term_subject_result for a
++  // student whose overall is currently PUBLISHED left the overall stale.
++  // recompute() re-derives the WHOLE roster (not just an "affected"
++  // subset — there's no payload), so unlike saveGrid's version, EVERY
++  // roster student who never had a row for the subject being recomputed
++  // is a gap-2 candidate, not just whichever ones a specific save touched.
++  describe("POST /grades/recompute triggering an overall recompute (gap-2-TWIN fix)", () => {
++    it("stale-rank reproduction: recomputing a brand-new subject reverts every published-overall student in the roster, clearing their positions", async () => {
++      const subjectA = await createScratchSubject("E2E Gap2Twin SubjectA");
++      const [s0, s1, s2] = await createScratchStudents(3, "Gap2TwinStale", gapTwoTwinArmId);
++
++      // s0,s1,s2 each fully scored + published in subjectA (their only
++      // subject) -> each overall PUBLISHED, ranked 1/2/3 by score.
++      await scoreComponent(sunriseAdminToken, subjectA, ca1Id, [
++        { studentId: s0, rawScore: 20 },
++        { studentId: s1, rawScore: 15 },
++        { studentId: s2, rawScore: 10 },
++      ], gapTwoTwinArmId);
++      await scoreComponent(sunriseAdminToken, subjectA, examId, [
++        { studentId: s0, rawScore: 100 },
++        { studentId: s1, rawScore: 75 },
++        { studentId: s2, rawScore: 50 },
++      ], gapTwoTwinArmId);
++      await scoreComponent(sunriseAdminToken, subjectA, ca2Id, [
++        { studentId: s0, rawScore: 0 },
++        { studentId: s1, rawScore: 0 },
++        { studentId: s2, rawScore: 0 },
++      ], gapTwoTwinArmId); // completeness gate
++      const publishRes = await request(app.getHttpServer())
++        .post("/api/v1/grades/publish")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: gapTwoTwinArmId, subjectId: subjectA, termId: sunriseTermId });
++      expect(publishRes.status).toBe(200);
++
++      const [s0Before, s1Before, s2Before] = await Promise.all(
++        [s0, s1, s2].map((id) =>
++          prisma.termOverallResult.findUniqueOrThrow({
++            where: { studentId_termId_sessionId: { studentId: id, termId: sunriseTermId, sessionId: sunriseSessionId } },
++          }),
++        ),
++      );
++      expect(s0Before.status).toBe("PUBLISHED");
++      expect(s1Before.status).toBe("PUBLISHED");
++      expect(s2Before.status).toBe("PUBLISHED");
++
++      // subjectB: a student_scores row written DIRECTLY (simulating a
++      // data-repair scenario — recompute()'s own doc comment says
++      // "e.g. after a roster fix") for s1 only, BYPASSING saveGrid
++      // entirely — no term_subject_result row exists for subjectB yet,
++      // for ANY of the three students.
++      const subjectB = await createScratchSubject("E2E Gap2Twin SubjectB");
++      const admin = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "admin@sunrise.test" } });
++      await prisma.studentScore.create({
++        data: {
++          schoolId: sunriseId, studentId: s1, subjectId: subjectB, componentId: ca1Id,
++          termId: sunriseTermId, sessionId: sunriseSessionId, classArmId: gapTwoTwinArmId,
++          rawScore: 5, enteredBy: admin.id, enteredAt: new Date(),
++        },
++      });
++
++      // recompute() processes the WHOLE roster for subjectB — s0 and s2
++      // get an implicit blank DRAFT row (zero scores), s1 gets a real
++      // (but exam-less, still DRAFT) one. ALL THREE are first-ever-row
++      // candidates with a currently-PUBLISHED overall -> gap-2-twin fires
++      // for all three, not just s1.
++      const recomputeRes = await request(app.getHttpServer())
++        .post("/api/v1/grades/recompute")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: gapTwoTwinArmId, subjectId: subjectB, termId: sunriseTermId });
++      expect(recomputeRes.status).toBe(200);
++      expect(recomputeRes.body.recomputedCount).toBe(3);
++
++      const [s0After, s1After, s2After] = await Promise.all(
++        [s0, s1, s2].map((id) =>
++          prisma.termOverallResult.findUniqueOrThrow({
++            where: { studentId_termId_sessionId: { studentId: id, termId: sunriseTermId, sessionId: sunriseSessionId } },
++          }),
++        ),
++      );
++      // No stale PUBLISHED status or leaked position survives for anyone —
++      // subjectB is DRAFT for all three, so no one is fully published now.
++      for (const overall of [s0After, s1After, s2After]) {
++        expect(overall.status).toBe("PENDING_APPROVAL");
++        expect(overall.overallPosition).toBeNull();
++        expect(overall.subjectsCount).toBe(2);
++      }
++    });
++
++    it("concurrency: a recompute triggering the overall cascade and a publish on a different subject of the same arm don't deadlock, and both land in the SAME consistent final state", async () => {
++      const subjectA2 = await createScratchSubject("E2E Gap2Twin Conc SubjectA2");
++      const subjectB2 = await createScratchSubject("E2E Gap2Twin Conc SubjectB2");
++      const subjectC2 = await createScratchSubject("E2E Gap2Twin Conc SubjectC2");
++      const [sA, sB] = await createScratchStudents(2, "Gap2TwinConc", gapTwoTwinConcurrencyArmId);
++
++      // sA: fully scored + published in subjectA2 (only subject so far) ->
++      // overall PUBLISHED, position 1.
++      await scoreComponent(sunriseAdminToken, subjectA2, ca1Id, [{ studentId: sA, rawScore: 20 }], gapTwoTwinConcurrencyArmId);
++      await scoreComponent(sunriseAdminToken, subjectA2, examId, [{ studentId: sA, rawScore: 100 }], gapTwoTwinConcurrencyArmId);
++      await scoreComponent(sunriseAdminToken, subjectA2, ca2Id, [{ studentId: sA, rawScore: 0 }], gapTwoTwinConcurrencyArmId); // completeness gate
++      const publishA2 = await request(app.getHttpServer())
++        .post("/api/v1/grades/publish")
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: gapTwoTwinConcurrencyArmId, subjectId: subjectA2, termId: sunriseTermId });
++      expect(publishA2.status).toBe(200);
++
++      // sB: fully scored in subjectC2, left PENDING_APPROVAL — what the
++      // concurrent publish() call will publish.
++      await scoreComponent(sunriseAdminToken, subjectC2, ca1Id, [{ studentId: sB, rawScore: 20 }], gapTwoTwinConcurrencyArmId);
++      await scoreComponent(sunriseAdminToken, subjectC2, examId, [{ studentId: sB, rawScore: 100 }], gapTwoTwinConcurrencyArmId);
++      await scoreComponent(sunriseAdminToken, subjectC2, ca2Id, [{ studentId: sB, rawScore: 0 }], gapTwoTwinConcurrencyArmId); // completeness gate
++
++      // subjectB2: a direct student_scores write for sA only, bypassing
++      // saveGrid — no term_subject_result row for subjectB2 yet, for
++      // either student.
++      const admin = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "admin@sunrise.test" } });
++      await prisma.studentScore.create({
++        data: {
++          schoolId: sunriseId, studentId: sA, subjectId: subjectB2, componentId: ca1Id,
++          termId: sunriseTermId, sessionId: sunriseSessionId, classArmId: gapTwoTwinConcurrencyArmId,
++          rawScore: 5, enteredBy: admin.id, enteredAt: new Date(),
++        },
++      });
++
++      // Fire concurrently: recompute(subjectB2) — a gap-2-twin candidate
++      // for sA (published overall, first-ever subjectB2 row) — vs.
++      // publish(subjectC2) for sB. Different subjects -> no subject-lock
++      // contention; both want the class-arm lock (recompute conditionally,
++      // publish unconditionally) -> must serialize, never deadlock.
++      const [recomputeRes, publishRes] = await Promise.all([
++        request(app.getHttpServer())
++          .post("/api/v1/grades/recompute")
++          .set(auth(sunriseAdminToken))
++          .send({ classArmId: gapTwoTwinConcurrencyArmId, subjectId: subjectB2, termId: sunriseTermId }),
++        request(app.getHttpServer())
++          .post("/api/v1/grades/publish")
++          .set(auth(sunriseAdminToken))
++          .send({ classArmId: gapTwoTwinConcurrencyArmId, subjectId: subjectC2, termId: sunriseTermId }),
++      ]);
++      expect(recomputeRes.status).toBe(200);
++      expect(publishRes.status).toBe(200);
++
++      const [sAOverall, sBOverall] = await Promise.all(
++        [sA, sB].map((id) =>
++          prisma.termOverallResult.findUniqueOrThrow({
++            where: { studentId_termId_sessionId: { studentId: id, termId: sunriseTermId, sessionId: sunriseSessionId } },
++          }),
++        ),
++      );
++
++      // recompute() touches the WHOLE roster, so sB also gains a blank
++      // DRAFT subjectB2 row — regardless of which transaction's class-arm
++      // lock acquisition won the race, whichever cascade runs SECOND reads
++      // both subjects' current committed state, so there is exactly ONE
++      // valid final state here (not two, unlike the saveGrid-vs-publish
++      // race above) — no lost update either way.
++      expect(sAOverall.status).toBe("PENDING_APPROVAL"); // subjectA2 PUBLISHED + subjectB2 DRAFT
++      expect(sAOverall.overallPosition).toBeNull();
++      expect(sAOverall.subjectsCount).toBe(2);
++      expect(sBOverall.status).toBe("PENDING_APPROVAL"); // subjectB2 DRAFT + subjectC2 PUBLISHED
++      expect(sBOverall.overallPosition).toBeNull();
++      expect(sBOverall.subjectsCount).toBe(2);
++    });
++  });
++
+   describe("Concurrency", () => {
+     it("a publish and a saveGrid on the same grid, fired concurrently, don't corrupt each other", async () => {
+       const subjectId = await createScratchSubject("E2E Concurrency SaveVsPublish");
+diff --git a/apps/api/test/terms.e2e-spec.ts b/apps/api/test/terms.e2e-spec.ts
+new file mode 100644
+index 0000000..acf37a8
+--- /dev/null
++++ b/apps/api/test/terms.e2e-spec.ts
+@@ -0,0 +1,455 @@
++import { INestApplication } from "@nestjs/common";
++import request from "supertest";
++import { Gender } from "@prisma/client";
++import { createTestApp } from "./utils/create-test-app";
++import { loginAs } from "./utils/login";
++import { PrismaService } from "../src/prisma/prisma.service";
++
++// Term close is a one-way, whole-term action (no reopen endpoint) — every
++// scenario below needs its OWN fresh session+term bundle via
++// createScratchBundle(), never the school's real current session/term
++// (Sunrise's real First Term is scored/published data every other e2e
++// file depends on staying open; closing it here would permanently break
++// them). classArm/subject/students are all bundle-local too, so a close
++// in one test can never affect another test's bundle.
++describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5 step 3)", () => {
++  let app: INestApplication;
++  let prisma: PrismaService;
++
++  let sunriseAdminToken: string;
++  let sunriseProprietorToken: string;
++  let sunriseTeacherToken: string;
++  let hillcrestAdminToken: string;
++
++  let sunriseId: string;
++  let jss2LevelId: string;
++  let ca1Id: string;
++  let ca2Id: string;
++  let examId: string;
++
++  let hillcrestId: string;
++  let hillcrestArmId: string;
++  let hillcrestSubjectId: string;
++  let hillcrestTermId: string;
++
++  const createdSessionIds: string[] = [];
++  const createdTermIds: string[] = [];
++  const createdClassArmIds: string[] = [];
++  const createdSubjectIds: string[] = [];
++  const createdStudentIds: string[] = [];
++
++  const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
++
++  interface ScratchBundle {
++    sessionId: string;
++    termId: string;
++    classArmId: string;
++    subjectId: string;
++    studentIds: string[];
++  }
++
++  // One session + term + class arm + subject + roster, fully isolated from
++  // every other bundle and from the real seeded data. `subjectCount` lets
++  // the per-slice-unlock test share one class arm across two subjects.
++  async function createScratchBundle(prefix: string, studentCount = 3, subjectCount = 1): Promise<ScratchBundle & { subjectIds: string[] }> {
++    const stamp = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
++    const session = await prisma.academicSession.create({
++      data: { schoolId: sunriseId, name: `E2E-Terms-${stamp}`, startsOn: new Date("2027-01-01"), endsOn: new Date("2027-04-01"), isCurrent: false },
++    });
++    createdSessionIds.push(session.id);
++    const term = await prisma.term.create({
++      data: { schoolId: sunriseId, sessionId: session.id, name: "FIRST", startsOn: session.startsOn, endsOn: session.endsOn },
++    });
++    createdTermIds.push(term.id);
++    const classArm = await prisma.classArm.create({
++      data: { schoolId: sunriseId, classLevelId: jss2LevelId, name: `E2E-Terms-${stamp}` },
++    });
++    createdClassArmIds.push(classArm.id);
++
++    const subjectIds: string[] = [];
++    for (let s = 0; s < subjectCount; s++) {
++      const subject = await prisma.subject.create({
++        data: { schoolId: sunriseId, name: `E2E Terms ${stamp} ${s}`, code: `ET${s}${stamp.slice(-4)}`.slice(0, 10).toUpperCase() },
++      });
++      createdSubjectIds.push(subject.id);
++      subjectIds.push(subject.id);
++    }
++
++    const studentIds: string[] = [];
++    for (let i = 0; i < studentCount; i++) {
++      const student = await prisma.student.create({
++        data: {
++          schoolId: sunriseId,
++          admissionNumber: `E2E-TRM/${stamp}/${i}`,
++          firstName: "Terms",
++          lastName: `Student${i}`,
++          gender: i % 2 === 0 ? Gender.MALE : Gender.FEMALE,
++          dateOfBirth: new Date(Date.UTC(2012, 0, 1 + i)),
++          guardianName: "E2E Guardian",
++          guardianPhone: `+2348031${String(Date.now() + i).slice(-6)}`,
++        },
++      });
++      createdStudentIds.push(student.id);
++      await prisma.studentEnrollment.create({
++        data: { schoolId: sunriseId, studentId: student.id, classArmId: classArm.id, sessionId: session.id },
++      });
++      studentIds.push(student.id);
++    }
++
++    return { sessionId: session.id, termId: term.id, classArmId: classArm.id, subjectId: subjectIds[0], subjectIds, studentIds };
++  }
++
++  async function saveScore(termId: string, classArmId: string, subjectId: string, componentId: string, studentId: string, rawScore: number) {
++    return request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseAdminToken))
++      .send({ classArmId, subjectId, componentId, termId, scores: [{ studentId, rawScore }] });
++  }
++
++  beforeAll(async () => {
++    app = await createTestApp();
++    prisma = app.get(PrismaService);
++
++    sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
++    sunriseProprietorToken = await loginAs(app, "proprietor@sunrise.test", "sunrise");
++    sunriseTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
++    hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
++
++    const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
++    sunriseId = sunrise.id;
++    const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
++    jss2LevelId = jss2.id;
++
++    const components = await prisma.assessmentComponent.findMany({
++      where: { schoolId: sunriseId, deletedAt: null },
++      orderBy: { sortOrder: "asc" },
++    });
++    ca1Id = components[0].id;
++    ca2Id = components[1].id;
++    examId = components[2].id;
++
++    const hillcrest = await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } });
++    hillcrestId = hillcrest.id;
++    const hillcrestSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: hillcrestId, isCurrent: true } });
++    const hillcrestJss1 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: hillcrestId, name: "JSS 1" } });
++    hillcrestArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: hillcrestId, classLevelId: hillcrestJss1.id, name: "A" } })).id;
++    hillcrestSubjectId = (await prisma.subject.findFirstOrThrow({ where: { schoolId: hillcrestId, name: "Mathematics" } })).id;
++    hillcrestTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: hillcrestSession.id, name: "FIRST" } })).id;
++  });
++
++  afterAll(async () => {
++    await prisma.termUnlock.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.studentScore.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.termSubjectResult.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.termOverallResult.deleteMany({ where: { termId: { in: createdTermIds } } });
++    await prisma.studentEnrollment.deleteMany({ where: { studentId: { in: createdStudentIds } } });
++    await prisma.student.deleteMany({ where: { id: { in: createdStudentIds } } });
++    await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
++    await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
++    await prisma.classArm.deleteMany({ where: { id: { in: createdClassArmIds } } });
++    await prisma.term.deleteMany({ where: { id: { in: createdTermIds } } });
++    await prisma.academicSession.deleteMany({ where: { id: { in: createdSessionIds } } });
++    await app.close();
++  });
++
++  describe("POST /terms/:id/close", () => {
++    it("warn-but-allow (Q4): closes with unpublished results left behind, returning the grouped breakdown", async () => {
++      const bundle = await createScratchBundle("CloseWarn");
++      const [pending, draftOnly] = bundle.studentIds;
++      await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, pending, 15);
++      await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, examId, pending, 60); // -> PENDING_APPROVAL
++      await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, draftOnly, 10); // -> DRAFT only
++
++      const response = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/close`)
++        .set(auth(sunriseAdminToken));
++      expect(response.status).toBe(200);
++      expect(response.body.closedAt).not.toBeNull();
++      expect(response.body.unpublishedCount).toBe(2);
++      expect(response.body.unpublished).toEqual([
++        { classArmId: bundle.classArmId, subjectId: bundle.subjectId, draftCount: 1, pendingApprovalCount: 1 },
++      ]);
++
++      const persisted = await prisma.term.findUniqueOrThrow({ where: { id: bundle.termId } });
++      expect(persisted.closedAt).not.toBeNull();
++      expect(persisted.closedBy).not.toBeNull();
++    });
++
++    it("re-closing an already-closed term 409s, not idempotent", async () => {
++      const bundle = await createScratchBundle("CloseTwice");
++      const first = await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++      expect(first.status).toBe(200);
++      const closedAtFirst = first.body.closedAt;
++
++      const second = await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++      expect(second.status).toBe(409);
++      expect(second.body.message).toMatch(/already closed/i);
++
++      const persisted = await prisma.term.findUniqueOrThrow({ where: { id: bundle.termId } });
++      expect(persisted.closedAt?.toISOString()).toBe(closedAtFirst); // untouched by the rejected second attempt
++    });
++
++    it("403s a TEACHER", async () => {
++      const bundle = await createScratchBundle("CloseTeacher");
++      const response = await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseTeacherToken));
++      expect(response.status).toBe(403);
++    });
++
++    it("PROPRIETOR may also close (same tier as publish, not owner-only)", async () => {
++      const bundle = await createScratchBundle("CloseProprietor");
++      const response = await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseProprietorToken));
++      expect(response.status).toBe(200);
++    });
++
++    it("rejects unauthenticated requests", async () => {
++      const bundle = await createScratchBundle("CloseUnauth");
++      const response = await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`);
++      expect(response.status).toBe(401);
++    });
++
++    it("404s (not 403) cross-tenant, both directions", async () => {
++      const a = await request(app.getHttpServer()).post(`/api/v1/terms/${hillcrestTermId}/close`).set(auth(sunriseAdminToken));
++      expect(a.status).toBe(404);
++
++      const bundle = await createScratchBundle("CloseCrossTenant");
++      const b = await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(hillcrestAdminToken));
++      expect(b.status).toBe(404);
++    });
++  });
++
++  describe("Edit-gating: saveGrid vs a closed term", () => {
++    it("edit-open-ok: saveGrid succeeds normally on a never-closed term (baseline)", async () => {
++      const bundle = await createScratchBundle("EditOpen");
++      const response = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, bundle.studentIds[0], 12);
++      expect(response.status).toBe(200);
++    });
++
++    it("edit-closed-blocked: saveGrid 409s once the term is closed, with no active unlock", async () => {
++      const bundle = await createScratchBundle("EditClosed");
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++
++      const response = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, bundle.studentIds[0], 12);
++      expect(response.status).toBe(409);
++      expect(response.body.message).toMatch(/closed/i);
++      expect(response.body.message).toMatch(/unlock/i);
++
++      const persisted = await prisma.studentScore.findUnique({
++        where: {
++          studentId_subjectId_componentId_termId_sessionId: {
++            studentId: bundle.studentIds[0], subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId, sessionId: bundle.sessionId,
++          },
++        },
++      });
++      expect(persisted).toBeNull();
++    });
++
++    it("unlock -> edit-ok -> relock -> edit-blocked-again (the core round trip)", async () => {
++      const bundle = await createScratchBundle("RoundTrip");
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++
++      const blocked = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, bundle.studentIds[0], 12);
++      expect(blocked.status).toBe(409);
++
++      const unlockRes = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Parent requested a correction" });
++      expect(unlockRes.status).toBe(200);
++      expect(unlockRes.body.relockedAt).toBeNull();
++
++      const editedRes = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, bundle.studentIds[0], 12);
++      expect(editedRes.status).toBe(200);
++
++      const relockRes = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/relock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId });
++      expect(relockRes.status).toBe(200);
++      expect(relockRes.body.relockedAt).not.toBeNull();
++      expect(relockRes.body.id).toBe(unlockRes.body.id); // the SAME episode, resolved — not a new row
++
++      const blockedAgain = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca2Id, bundle.studentIds[0], 5);
++      expect(blockedAgain.status).toBe(409);
++    });
++
++    it("unlock is per-slice: a second subject on the same closed term stays blocked", async () => {
++      const bundle = await createScratchBundle("PerSlice", 2, 2);
++      const [subjectA, subjectB] = bundle.subjectIds;
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++
++      await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: subjectA, reason: "Correcting subject A only" });
++
++      const editA = await saveScore(bundle.termId, bundle.classArmId, subjectA, ca1Id, bundle.studentIds[0], 10);
++      expect(editA.status).toBe(200);
++
++      const editB = await saveScore(bundle.termId, bundle.classArmId, subjectB, ca1Id, bundle.studentIds[0], 10);
++      expect(editB.status).toBe(409);
++    });
++  });
++
++  describe("POST /terms/:id/unlock", () => {
++    it("403s a TEACHER", async () => {
++      const bundle = await createScratchBundle("UnlockTeacher");
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++      const response = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(sunriseTeacherToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Nope" });
++      expect(response.status).toBe(403);
++    });
++
++    it("404s (not 403) cross-tenant, both directions", async () => {
++      const bundle = await createScratchBundle("UnlockCrossTenant");
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++
++      const a = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${hillcrestTermId}/unlock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: hillcrestArmId, subjectId: hillcrestSubjectId, reason: "Cross tenant attempt" });
++      expect(a.status).toBe(404);
++
++      const b = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(hillcrestAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Cross tenant attempt" });
++      expect(b.status).toBe(404);
++    });
++
++    it("409s unlocking an OPEN term — nothing to clear", async () => {
++      const bundle = await createScratchBundle("UnlockOpen");
++      const response = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Term was never closed" });
++      expect(response.status).toBe(409);
++      expect(response.body.message).toMatch(/not closed/i);
++    });
++
++    it("409s unlocking an already-unlocked slice", async () => {
++      const bundle = await createScratchBundle("UnlockTwice");
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++      const first = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "First unlock" });
++      expect(first.status).toBe(200);
++
++      const second = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Second attempt" });
++      expect(second.status).toBe(409);
++      expect(second.body.message).toMatch(/already unlocked/i);
++    });
++
++    it("400s a reason shorter than the minimum", async () => {
++      const bundle = await createScratchBundle("UnlockShortReason");
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++      const response = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "no" });
++      expect(response.status).toBe(400);
++    });
++  });
++
++  describe("POST /terms/:id/relock", () => {
++    it("403s a TEACHER", async () => {
++      const bundle = await createScratchBundle("RelockTeacher");
++      const response = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/relock`)
++        .set(auth(sunriseTeacherToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId });
++      expect(response.status).toBe(403);
++    });
++
++    it("404s (not 403) cross-tenant, both directions", async () => {
++      const bundle = await createScratchBundle("RelockCrossTenant");
++      const a = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${hillcrestTermId}/relock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: hillcrestArmId, subjectId: hillcrestSubjectId });
++      expect(a.status).toBe(404);
++
++      const b = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/relock`)
++        .set(auth(hillcrestAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId });
++      expect(b.status).toBe(404);
++    });
++
++    it("409s relocking a slice with no active unlock", async () => {
++      const bundle = await createScratchBundle("RelockNothingActive");
++      const response = await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/relock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId });
++      expect(response.status).toBe(409);
++      expect(response.body.message).toMatch(/no active unlock/i);
++    });
++  });
++
++  describe("Concurrency", () => {
++    it("a close and a saveGrid, fired concurrently, don't corrupt each other — one of two consistent outcomes", async () => {
++      const bundle = await createScratchBundle("RaceClose");
++      const [student] = bundle.studentIds;
++
++      const [closeRes, saveRes] = await Promise.all([
++        request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken)),
++        saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, student, 14),
++      ]);
++
++      expect(closeRes.status).toBe(200); // close never depends on the save's outcome
++      expect([200, 409]).toContain(saveRes.status);
++
++      const persisted = await prisma.studentScore.findUnique({
++        where: {
++          studentId_subjectId_componentId_termId_sessionId: {
++            studentId: student, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId, sessionId: bundle.sessionId,
++          },
++        },
++      });
++      if (saveRes.status === 200) {
++        expect(Number(persisted?.rawScore)).toBe(14); // the save's read won the race, landed before the close
++      } else {
++        expect(persisted).toBeNull(); // the close's read won, save correctly rejected
++      }
++
++      const term = await prisma.term.findUniqueOrThrow({ where: { id: bundle.termId } });
++      expect(term.closedAt).not.toBeNull();
++    });
++
++    it("an unlock and a saveGrid, fired concurrently against an already-closed term — one of two consistent outcomes", async () => {
++      const bundle = await createScratchBundle("RaceUnlock");
++      const [student] = bundle.studentIds;
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++
++      const [unlockRes, saveRes] = await Promise.all([
++        request(app.getHttpServer())
++          .post(`/api/v1/terms/${bundle.termId}/unlock`)
++          .set(auth(sunriseAdminToken))
++          .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Racing the save" }),
++        saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, student, 9),
++      ]);
++
++      expect(unlockRes.status).toBe(200); // unlock never depends on the save's outcome
++      expect([200, 409]).toContain(saveRes.status);
++
++      const persisted = await prisma.studentScore.findUnique({
++        where: {
++          studentId_subjectId_componentId_termId_sessionId: {
++            studentId: student, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId, sessionId: bundle.sessionId,
++          },
++        },
++      });
++      if (saveRes.status === 200) {
++        expect(Number(persisted?.rawScore)).toBe(9); // the unlock committed first
++      } else {
++        expect(persisted).toBeNull(); // the save's blocked-read happened first, still correctly rejected
++      }
++    });
++  });
++});
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index 461f832..22d9986 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -2616,3 +2616,92 @@ tests all green on a freshly rebuilt, freshly seeded stack; typecheck +
+ lint clean; web Vitest and the new unit suite unaffected (no schema, no
+ web changes this step — API only, per the explicit scope). No migration —
+ `is_absent` and the CHECK already existed from step 1.
++
++## 2026-08-15 — v0.5 step 3: term lifecycle API (close/unlock/relock) + gap-2-twin fix
++
++**Endpoints**: `POST /terms/:id/close`, `POST /terms/:id/unlock`,
++`POST /terms/:id/relock` — all SCHOOL_ADMIN + PROPRIETOR, no owner-only
++split (same tier as `publish()`, not `unpublish()`). No "reopen the whole
++term" endpoint exists or was added — `Term.closedAt`'s own schema comment
++already ruled that out; editing a closed term is always per-slice via
++unlock, matching the schema's original design intent.
++
++**DELIBERATE DEFERRAL — recorded per explicit instruction**: SPEC_V0.5.md
++§2.3's prose describes a teacher editing scores "freely, anytime,
++including after publishing... re-publishes the corrected number" while a
++term is open. The current v0.4 `saveGrid` doesn't do this — a `PUBLISHED`
++row is unconditionally locked; `unpublish()` is required first, regardless
++of term state. This step does NOT resolve that gap. The new closed-term
++check is an OUTER gate that fires first (409, before the existing
++PUBLISHED-lock check); the PUBLISHED-lock itself is completely untouched.
++An active unlock grants "you may edit this slice despite the closed
++term," not "you may also bypass the separate publish safeguard." Whether
++v0.4's `saveGrid` should someday allow free post-publish editing within an
++open term (per the spec's prose) is a separate, future decision.
++
++**Race-safety — the actual point of this step's design**: a naive
++pre-transaction read of `term.closedAt` would leave a real window where a
++concurrent `close()` commits between the check and the write. Fixed with
++a new term-level advisory lock (`termLockKey`), acquired FIRST by
++`saveGrid` (every call, unconditionally) and by `close`/`unlock`/`relock`
++(their only lock) — whichever transaction gets there first fully commits
++before the other's read runs. Inside the lock, `saveGrid` re-fetches
++`closedAt` fresh, never the object from the pre-transaction
++`resolveTenantScopeWithComponent` call. Fixed acquisition order across the
++whole module, extended by one position: `term -> subject -> (conditional)
++class-arm`, never reversed — `publish`/`unpublish`/`recompute`/`override`
++never touch the term lock at all, so the existing no-deadlock argument
++(af94921) extends cleanly rather than needing to be re-proven from
++scratch. `termLockKey`/`subjectLockKey`/`classArmLockKey` extracted into
++one shared pure-function module (`grades/lock-keys.ts`) so
++`GradesService` and `TermsService` can never compute even slightly
++different strings for the same lock — a silent drift there would break
++the whole serialization guarantee. Mechanical refactor of the existing
++two key builders (identical strings) — proven by the full pre-existing
++e2e suite staying green through it, unchanged.
++
++**`recompute()` deliberately NOT gated by closed-term/unlock** — it only
++re-derives `term_subject_result` from `student_scores` rows that already
++passed the gate at write time; introduces no new data. Stays off the term
++lock entirely.
++
++**Unlock lifecycle**: "currently unlocked" = the partial-unique row
++(`relocked_at IS NULL`) — an index lookup on `term_unlocks_active_unique`,
++never a scan. Re-closing an already-closed term 409s (not idempotent like
++`publish()` — there's no "reconfirm a close" semantic, and silently
++overwriting `closed_at`/`closed_by` would destroy the original close
++record). Unlocking an already-unlocked slice, relocking with nothing
++active, or unlocking a term that isn't closed — all 409, checked before
++any write.
++
++**`close()` response (Q4 — warn-but-allow)**: returns the term plus
++`unpublishedCount` and a `{classArmId, subjectId, draftCount,
++pendingApprovalCount}[]` breakdown — ids only, no name joins (step 5
++already has its own classes/subjects lists to resolve names against).
++
++**Gap-2-twin fix**: `POST /grades/recompute` mirrors `saveGrid`'s af94921
++fix exactly — conditional class-arm lock always after the subject lock,
++only acquired when a real candidate exists (a student with no existing
++row for this subject AND a currently-PUBLISHED overall). One real
++difference from the original: `recompute()` re-derives the WHOLE roster
++(no payload to scope an "affected" subset), so every untouched roster
++student is a candidate, not just whichever ones a specific save touched —
++proven by a stale-rank reproduction where recomputing a brand-new subject
++reverts EVERY published-overall student in the roster at once, not just
++one. The concurrency proof (recompute racing a publish on a different
++subject of the same arm) converges to exactly ONE valid final state
++regardless of interleaving (not two, unlike the saveGrid-vs-publish race)
++— since `recompute()` touches the whole roster, both students end up with
++a claim on the class-arm lock's cascade, and whichever runs second reads
++both subjects' latest committed state.
++
++**Proof**: new `terms.e2e-spec.ts` (20 tests — close/unlock/relock RBAC +
++cross-tenant 404, warn-but-allow breakdown, re-close 409, the full
++unlock→edit→relock→blocked-again round trip, per-slice isolation, every
++409 case, close-vs-saveGrid and unlock-vs-saveGrid concurrency) plus 2 new
++gap-2-twin tests in `grades-publish.e2e-spec.ts`. Every scratch fixture is
++its own session+term+class-arm+subject+roster bundle (`createScratchBundle`)
++— term close is one-way with no reopen, so reusing the real seeded First
++Term (which every other e2e file depends on staying open) was never an
++option. Full suite green on a freshly rebuilt, freshly seeded stack;
++typecheck + lint clean. No migration — schema untouched, as scoped.

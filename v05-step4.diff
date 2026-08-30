@@ -1,0 +1,905 @@
+diff --git a/apps/api/src/grades/dto/write-remark.dto.ts b/apps/api/src/grades/dto/write-remark.dto.ts
+new file mode 100644
+index 0000000..cfa61de
+--- /dev/null
++++ b/apps/api/src/grades/dto/write-remark.dto.ts
+@@ -0,0 +1,19 @@
++import { IsString, IsUUID, MinLength, ValidateIf } from "class-validator";
++
++// Shared by PUT /students/:id/remarks/teacher and .../principal (SPEC_V0.5.md
++// §2.4/Q6) — same shape, different column written depending on the route.
++// remark is required-but-nullable, same reasoning as OverrideGradeDto:
++// omitting the key is a client error, not "leave it alone"; explicit null
++// clears the remark (and its who/when stamps).
++export class WriteRemarkDto {
++  @IsUUID()
++  termId!: string;
++
++  @IsUUID()
++  sessionId!: string;
++
++  @ValidateIf((o) => o.remark !== null)
++  @IsString()
++  @MinLength(1)
++  remark!: string | null;
++}
+diff --git a/apps/api/src/grades/grades.service.ts b/apps/api/src/grades/grades.service.ts
+index 971dedd..fb6cd03 100644
+--- a/apps/api/src/grades/grades.service.ts
++++ b/apps/api/src/grades/grades.service.ts
+@@ -26,6 +26,7 @@ import { OverrideGradeDto } from "./dto/override-grade.dto";
+ import { GetGradesReviewQueryDto } from "./dto/get-grades-review-query.dto";
+ import { GetClassArmResultsQueryDto } from "./dto/get-class-arm-results-query.dto";
+ import { GetStudentResultsQueryDto } from "./dto/get-student-results-query.dto";
++import { WriteRemarkDto } from "./dto/write-remark.dto";
+ 
+ export interface GradesGridRow {
+   studentId: string;
+@@ -235,6 +236,86 @@ interface TeacherAccess {
+   subjectIds: string[];
+ }
+ 
++// SPEC_V0.5.md §2.4, v0.5 step 4. A component with NO student_scores row at
++// all is `rawScore: null, isAbsent: false` — blank/not-entered, distinct
++// from an explicit `isAbsent: true` ("Abs" on the printed card). Only the
++// CURRENTLY ACTIVE assessment structure is represented (deletedAt: null) —
++// matches exactly what produced `totalScore` below; a soft-deleted
++// component's historical score is already excluded from every recompute.
++export interface ReportCardComponent {
++  componentId: string;
++  componentName: string;
++  weight: number;
++  maxScore: number;
++  requiresApproval: boolean;
++  rawScore: number | null;
++  isAbsent: boolean;
++}
++
++export interface ReportCardSubject {
++  subjectId: string;
++  subjectName: string;
++  components: ReportCardComponent[];
++  totalScore: number;
++  autoGrade: string | null;
++  overrideGrade: string | null;
++  finalGrade: string | null;
++  subjectPosition: number | null;
++  status: ResultStatus;
++}
++
++export interface ReportCardOverall {
++  averageScore: number;
++  averageGrade: string | null;
++  overallPosition: number | null;
++  status: ResultStatus;
++  subjectsCount: number;
++}
++
++interface RemarkAuthor {
++  firstName: string;
++  lastName: string;
++}
++
++export interface ReportCardRemarks {
++  teacherRemark: string | null;
++  teacherRemarkBy: RemarkAuthor | null;
++  teacherRemarkAt: Date | null;
++  principalRemark: string | null;
++  principalRemarkBy: RemarkAuthor | null;
++  principalRemarkAt: Date | null;
++}
++
++// A self-contained printable document (SPEC_V0.5.md §2.4) — student
++// identity and remark-author names are embedded directly, unlike
++// StudentResultsResponse above, whose caller already has student context.
++export interface ReportCardResponse {
++  studentId: string;
++  firstName: string;
++  lastName: string;
++  admissionNumber: string;
++  classArmId: string;
++  termId: string;
++  sessionId: string;
++  subjects: ReportCardSubject[];
++  overall: ReportCardOverall | null;
++  remarks: ReportCardRemarks;
++}
++
++export interface RemarkResponse {
++  id: string;
++  studentId: string;
++  termId: string;
++  sessionId: string;
++  classArmId: string;
++  teacherRemark: string | null;
++  teacherRemarkBy: string | null;
++  teacherRemarkAt: Date | null;
++  principalRemark: string | null;
++  principalRemarkBy: string | null;
++  principalRemarkAt: Date | null;
++}
++
+ @Injectable()
+ export class GradesService {
+   constructor(
+@@ -1143,6 +1224,201 @@ export class GradesService {
+     };
+   }
+ 
++  // Printable per-student term report card (SPEC_V0.5.md §2.4, v0.5 step 4)
++  // — a NEW, dedicated response shape, not an extension of
++  // StudentResultsResponse above: the two documents need genuinely
++  // different fields (this one needs the full per-component breakdown and
++  // has no use for class average; the Results tab is the reverse), and a
++  // printable document's needs should be free to evolve without leaking
++  // into the admin quick-view's contract. Reuses the exact same tenant/
++  // enrollment/TEACHER-access resolution as getStudentResults() above —
++  // same read rule (any relationship to the class arm), not the stricter
++  // class-teacher-only rule the remark WRITE endpoints below use.
++  //
++  // Six batched queries total, independent of subject/component count — no
++  // query inside a subject-iteration loop (SPEC_V0.4.md §5 discipline):
++  // student, term, enrollment, term_subject_results (+subject name),
++  // assessment_components (school-wide, shared across every subject),
++  // student_scores (one query for every component-score this term, grouped
++  // by subjectId in memory) — plus term_overall_result and term_remark.
++  async getReportCard(studentId: string, query: GetStudentResultsQueryDto, user: AuthenticatedUser): Promise<ReportCardResponse> {
++    const schoolId = this.tenantContext.schoolId;
++    const [student, term] = await Promise.all([
++      this.prisma.student.findFirst({ where: forSchool(schoolId, { id: studentId, deletedAt: null }) }),
++      this.prisma.term.findFirst({ where: forSchool(schoolId, { id: query.termId }) }),
++    ]);
++    if (!student) throw new NotFoundException("Student not found.");
++    if (!term) throw new NotFoundException("Term not found.");
++
++    const enrollment = await this.prisma.studentEnrollment.findFirst({
++      where: forSchool(schoolId, { studentId, sessionId: query.sessionId }),
++    });
++    if (!enrollment) throw new NotFoundException("Student has no enrollment for this session.");
++
++    if (user.role === UserRole.TEACHER) {
++      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, query.sessionId);
++      if (!access.isClassTeacher && access.subjectIds.length === 0) {
++        throw new ForbiddenException("You do not teach this student.");
++      }
++    }
++
++    const [subjectResults, components, scores, overall, remark] = await Promise.all([
++      this.prisma.termSubjectResult.findMany({
++        where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
++        include: { subject: { select: { id: true, name: true } } },
++      }),
++      this.prisma.assessmentComponent.findMany({ where: { schoolId, deletedAt: null }, orderBy: { sortOrder: "asc" } }),
++      this.prisma.studentScore.findMany({ where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId } }),
++      this.prisma.termOverallResult.findFirst({ where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId } }),
++      this.prisma.termRemark.findFirst({
++        where: { schoolId, studentId, termId: query.termId, sessionId: query.sessionId },
++        include: {
++          teacherRemarkByUser: { select: { firstName: true, lastName: true } },
++          principalRemarkByUser: { select: { firstName: true, lastName: true } },
++        },
++      }),
++    ]);
++
++    const scoresBySubject = new Map<string, typeof scores>();
++    for (const score of scores) {
++      const bucket = scoresBySubject.get(score.subjectId) ?? [];
++      bucket.push(score);
++      scoresBySubject.set(score.subjectId, bucket);
++    }
++
++    const subjects: ReportCardSubject[] = subjectResults
++      .map((r) => {
++        const scoreByComponent = new Map(scoresBySubject.get(r.subjectId)?.map((s) => [s.componentId, s]) ?? []);
++        return {
++          subjectId: r.subjectId,
++          subjectName: r.subject.name,
++          components: components.map((c) => {
++            const score = scoreByComponent.get(c.id);
++            return {
++              componentId: c.id,
++              componentName: c.name,
++              weight: c.weight,
++              maxScore: c.maxScore,
++              requiresApproval: c.requiresApproval,
++              rawScore: score?.rawScore === null || score?.rawScore === undefined ? null : Number(score.rawScore),
++              isAbsent: score?.isAbsent ?? false,
++            };
++          }),
++          totalScore: Number(r.totalScore),
++          autoGrade: r.autoGrade,
++          overrideGrade: r.overrideGrade,
++          finalGrade: r.finalGrade,
++          subjectPosition: r.subjectPosition,
++          status: r.status,
++        };
++      })
++      .sort((a, b) => a.subjectName.localeCompare(b.subjectName));
++
++    return {
++      studentId,
++      firstName: student.firstName,
++      lastName: student.lastName,
++      admissionNumber: student.admissionNumber,
++      classArmId: enrollment.classArmId,
++      termId: query.termId,
++      sessionId: query.sessionId,
++      subjects,
++      overall: overall
++        ? {
++            averageScore: Number(overall.averageScore),
++            averageGrade: overall.averageGrade,
++            overallPosition: overall.overallPosition,
++            status: overall.status,
++            subjectsCount: overall.subjectsCount,
++          }
++        : null,
++      remarks: {
++        teacherRemark: remark?.teacherRemark ?? null,
++        teacherRemarkBy: remark?.teacherRemarkByUser
++          ? { firstName: remark.teacherRemarkByUser.firstName, lastName: remark.teacherRemarkByUser.lastName }
++          : null,
++        teacherRemarkAt: remark?.teacherRemarkAt ?? null,
++        principalRemark: remark?.principalRemark ?? null,
++        principalRemarkBy: remark?.principalRemarkByUser
++          ? { firstName: remark.principalRemarkByUser.firstName, lastName: remark.principalRemarkByUser.lastName }
++          : null,
++        principalRemarkAt: remark?.principalRemarkAt ?? null,
++      },
++    };
++  }
++
++  // Both remark endpoints (SPEC_V0.5.md §2.4/Q6) share this resolution —
++  // student/term/enrollment 404s always before the class-teacher check
++  // (same ordering as getStudentResults/getReportCard above). Returns the
++  // enrollment so callers can read classArmId for the term_remarks row
++  // without a second query.
++  private async resolveRemarkTarget(studentId: string, dto: WriteRemarkDto) {
++    const schoolId = this.tenantContext.schoolId;
++    const [student, term] = await Promise.all([
++      this.prisma.student.findFirst({ where: forSchool(schoolId, { id: studentId, deletedAt: null }) }),
++      this.prisma.term.findFirst({ where: forSchool(schoolId, { id: dto.termId }) }),
++    ]);
++    if (!student) throw new NotFoundException("Student not found.");
++    if (!term) throw new NotFoundException("Term not found.");
++
++    const enrollment = await this.prisma.studentEnrollment.findFirst({
++      where: forSchool(schoolId, { studentId, sessionId: dto.sessionId }),
++    });
++    if (!enrollment) throw new NotFoundException("Student has no enrollment for this session.");
++
++    return { schoolId, enrollment };
++  }
++
++  // Class-teacher-only (SPEC_V0.5.md §2.4/Q6: "the class teacher writes the
++  // teacher remark") — deliberately STRICTER than getReportCard()'s read
++  // rule above, which allows any subject-teacher relationship. A
++  // subject-only teacher can view the card but not write this remark.
++  // SCHOOL_ADMIN/PROPRIETOR: no check, same "any tenant-scoped combo"
++  // pattern used throughout this service. Not gated by the step-3 closed-
++  // term/unlock mechanism — that gate is score-data-scoped; writing an
++  // end-of-term remark is part of closing out the term, not a score edit
++  // (docs/DECISIONS.md).
++  async writeTeacherRemark(studentId: string, dto: WriteRemarkDto, user: AuthenticatedUser): Promise<RemarkResponse> {
++    const { schoolId, enrollment } = await this.resolveRemarkTarget(studentId, dto);
++
++    if (user.role === UserRole.TEACHER) {
++      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, dto.sessionId);
++      if (!access.isClassTeacher) {
++        throw new ForbiddenException("Only this class's class teacher may write the teacher remark.");
++      }
++    }
++
++    const stamps =
++      dto.remark === null
++        ? { teacherRemark: null, teacherRemarkBy: null, teacherRemarkAt: null }
++        : { teacherRemark: dto.remark, teacherRemarkBy: user.userId, teacherRemarkAt: new Date() };
++
++    return this.prisma.termRemark.upsert({
++      where: { studentId_termId_sessionId: { studentId, termId: dto.termId, sessionId: dto.sessionId } },
++      update: stamps,
++      create: { schoolId, studentId, termId: dto.termId, sessionId: dto.sessionId, classArmId: enrollment.classArmId, ...stamps },
++    });
++  }
++
++  // SCHOOL_ADMIN/PROPRIETOR only — enforced categorically at the
++  // controller's @Roles(), TEACHER never reaches this method at all (same
++  // "no TEACHER path" pattern as getReview()). Not gated by closed-term/
++  // unlock, same reasoning as writeTeacherRemark() above.
++  async writePrincipalRemark(studentId: string, dto: WriteRemarkDto, user: AuthenticatedUser): Promise<RemarkResponse> {
++    const { schoolId, enrollment } = await this.resolveRemarkTarget(studentId, dto);
++
++    const stamps =
++      dto.remark === null
++        ? { principalRemark: null, principalRemarkBy: null, principalRemarkAt: null }
++        : { principalRemark: dto.remark, principalRemarkBy: user.userId, principalRemarkAt: new Date() };
++
++    return this.prisma.termRemark.upsert({
++      where: { studentId_termId_sessionId: { studentId, termId: dto.termId, sessionId: dto.sessionId } },
++      update: stamps,
++      create: { schoolId, studentId, termId: dto.termId, sessionId: dto.sessionId, classArmId: enrollment.classArmId, ...stamps },
++    });
++  }
++
+   // Re-derives term_subject_results for each given student from ALL of
+   // their current student_scores for (subjectId, termId, sessionId) —
+   // across every active component, not just whichever one triggered this
+diff --git a/apps/api/src/students/students.controller.ts b/apps/api/src/students/students.controller.ts
+index 6becf09..7b33469 100644
+--- a/apps/api/src/students/students.controller.ts
++++ b/apps/api/src/students/students.controller.ts
+@@ -21,6 +21,7 @@ import { CurrentUser } from "../common/decorators/current-user.decorator";
+ import type { AuthenticatedUser } from "../common/types/authenticated-user";
+ import { GradesService } from "../grades/grades.service";
+ import { GetStudentResultsQueryDto } from "../grades/dto/get-student-results-query.dto";
++import { WriteRemarkDto } from "../grades/dto/write-remark.dto";
+ import { StudentsService } from "./students.service";
+ import { StudentGuardiansService } from "./student-guardians.service";
+ import { CreateStudentDto } from "./dto/create-student.dto";
+@@ -68,6 +69,40 @@ export class StudentsController {
+     return this.gradesService.getStudentResults(id, query, user);
+   }
+ 
++  // Printable per-student term report card (SPEC_V0.5.md §2.4, v0.5 step
++  // 4) — a NEW, dedicated endpoint, not an extension of getResults() above
++  // (see GradesService.getReportCard()'s doc comment for why). Same TEACHER
++  // read rule as the Results tab (any relationship to the class arm) —
++  // stricter access is enforced on the remark WRITE routes below, not here.
++  @Get(":id/report-card")
++  getReportCard(
++    @Param("id", ParseUUIDPipe) id: string,
++    @Query() query: GetStudentResultsQueryDto,
++    @CurrentUser() user: AuthenticatedUser,
++  ) {
++    return this.gradesService.getReportCard(id, query, user);
++  }
++
++  // Class-teacher-only for TEACHER (enforced inside GradesService, since it
++  // depends on class-teacher-vs-subject-teacher data, not a fixed role) —
++  // SCHOOL_ADMIN/PROPRIETOR reach this route too, per the class-level
++  // @Roles() above, with no extra check.
++  @Audit("termRemark", "writeTeacherRemark")
++  @Put(":id/remarks/teacher")
++  writeTeacherRemark(@Param("id", ParseUUIDPipe) id: string, @Body() dto: WriteRemarkDto, @CurrentUser() user: AuthenticatedUser) {
++    return this.gradesService.writeTeacherRemark(id, dto, user);
++  }
++
++  // SCHOOL_ADMIN/PROPRIETOR only — overrides the class-level @Roles() above
++  // so TEACHER never reaches the handler at all (categorical 403, same "no
++  // TEACHER path" pattern as GET /grades/review).
++  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
++  @Audit("termRemark", "writePrincipalRemark")
++  @Put(":id/remarks/principal")
++  writePrincipalRemark(@Param("id", ParseUUIDPipe) id: string, @Body() dto: WriteRemarkDto, @CurrentUser() user: AuthenticatedUser) {
++    return this.gradesService.writePrincipalRemark(id, dto, user);
++  }
++
+   @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN)
+   @Audit("student", "create")
+   @Post()
+diff --git a/apps/api/test/report-card.e2e-spec.ts b/apps/api/test/report-card.e2e-spec.ts
+new file mode 100644
+index 0000000..d954881
+--- /dev/null
++++ b/apps/api/test/report-card.e2e-spec.ts
+@@ -0,0 +1,439 @@
++import { INestApplication } from "@nestjs/common";
++import request from "supertest";
++import { Gender } from "@prisma/client";
++import { createTestApp } from "./utils/create-test-app";
++import { loginAs } from "./utils/login";
++import { PrismaService } from "../src/prisma/prisma.service";
++
++describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () => {
++  let app: INestApplication;
++  let prisma: PrismaService;
++
++  let sunriseAdminToken: string;
++  let sunriseProprietorToken: string;
++  let teacherClassToken: string; // class-teacher of studentArmId
++  let teacherSubjectToken: string; // subject-teacher of subjectA only — not class-teacher
++  let teacherUnrelatedToken: string; // zero relationship
++  let hillcrestAdminToken: string;
++
++  let sunriseId: string;
++  let sunriseSessionId: string;
++  let sunriseTermId: string;
++  let studentArmId: string;
++  let targetStudentId: string; // main assembly proof: absent + blank + real score, across two subjects
++  let partialStudentId: string; // partial-term: one published, one not -> null overall position
++  let remarksStudentId: string; // dedicated, score-free, for remark round-trip tests
++  let ca1Id: string;
++  let ca2Id: string;
++  let examId: string;
++  let subjectA: string; // published for both target + partial
++  let subjectB: string; // target only, left DRAFT — the blank-component proof
++  let subjectC: string; // partial only, left PENDING_APPROVAL — the partial-term proof
++
++  let hillcrestId: string;
++  let hillcrestStudentId: string;
++  let hillcrestTermId: string;
++  let hillcrestSessionId: string;
++
++  const createdSubjectIds: string[] = [];
++  const createdStudentIds: string[] = [];
++  let studentArmCreated = false;
++
++  const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
++
++  async function createSubject(name: string): Promise<string> {
++    const subject = await prisma.subject.create({ data: { schoolId: sunriseId, name, code: name.slice(0, 6).toUpperCase() } });
++    createdSubjectIds.push(subject.id);
++    return subject.id;
++  }
++
++  async function score(subjectIdArg: string, componentId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
++    const response = await request(app.getHttpServer())
++      .put("/api/v1/grades/grid")
++      .set(auth(sunriseAdminToken))
++      .send({ classArmId: studentArmId, subjectId: subjectIdArg, componentId, termId: sunriseTermId, scores });
++    if (response.status !== 200) {
++      throw new Error(`score failed: ${response.status} ${JSON.stringify(response.body)}`);
++    }
++  }
++
++  async function enroll(prefix: string, index: number): Promise<string> {
++    const student = await prisma.student.create({
++      data: {
++        schoolId: sunriseId,
++        admissionNumber: `E2E-RC/${prefix}`,
++        firstName: prefix,
++        lastName: "Student",
++        gender: Gender.FEMALE,
++        dateOfBirth: new Date(Date.UTC(2012, 0, 1 + index)),
++        guardianName: "E2E Guardian",
++        guardianPhone: `+2348027${String(index).padStart(6, "0")}`,
++      },
++    });
++    await prisma.studentEnrollment.create({ data: { schoolId: sunriseId, studentId: student.id, classArmId: studentArmId, sessionId: sunriseSessionId } });
++    createdStudentIds.push(student.id);
++    return student.id;
++  }
++
++  beforeAll(async () => {
++    app = await createTestApp();
++    prisma = app.get(PrismaService);
++
++    sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
++    sunriseProprietorToken = await loginAs(app, "proprietor@sunrise.test", "sunrise");
++    teacherClassToken = await loginAs(app, "teacher2@sunrise.test", "sunrise");
++    teacherSubjectToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
++    teacherUnrelatedToken = await loginAs(app, "teacher3@sunrise.test", "sunrise");
++    hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
++
++    const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
++    sunriseId = sunrise.id;
++    const sunriseSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: sunriseId, isCurrent: true } });
++    sunriseSessionId = sunriseSession.id;
++    sunriseTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: sunriseSessionId, name: "FIRST" } })).id;
++
++    const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
++    ca1Id = components[0].id;
++    ca2Id = components[1].id;
++    examId = components[2].id;
++
++    const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
++    studentArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-ReportCard-${Date.now()}` } })).id;
++    studentArmCreated = true;
++
++    targetStudentId = await enroll("Target", 0);
++    partialStudentId = await enroll("Partial", 1);
++    remarksStudentId = await enroll("Remarks", 2);
++
++    const teacherClass = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher2@sunrise.test" } });
++    await prisma.classTeacherAssignment.create({
++      data: { schoolId: sunriseId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherClass.id },
++    });
++
++    subjectA = await createSubject("E2E RC SubjectA");
++    subjectB = await createSubject("E2E RC SubjectB");
++    subjectC = await createSubject("E2E RC SubjectC");
++    const teacherSubject = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
++    // Subject-only assignment on subjectA — NOT class-teacher. Proves the
++    // read/write split: this teacher can READ the report card (any
++    // relationship) but cannot write the teacher remark (class-teacher only).
++    await prisma.subjectTeacherAssignment.create({
++      data: { schoolId: sunriseId, subjectId: subjectA, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherSubject.id },
++    });
++
++    // subjectA: fully decided (score/absent) for both target and partial —
++    // publishable. target: CA1 18/20*20=18, CA2 ABSENT, Exam 55/100*60=33
++    // -> 51 (the exact hand-verified step-1 example). partial: CA1 15,
++    // CA2 0 (decided, contributes 0), Exam 50/100*60=30 -> 45.
++    await score(subjectA, ca1Id, [{ studentId: targetStudentId, rawScore: 18 }, { studentId: partialStudentId, rawScore: 15 }]);
++    await score(subjectA, ca2Id, [{ studentId: targetStudentId, isAbsent: true }, { studentId: partialStudentId, rawScore: 0 }]);
++    await score(subjectA, examId, [{ studentId: targetStudentId, rawScore: 55 }, { studentId: partialStudentId, rawScore: 50 }]);
++    const publishRes = await request(app.getHttpServer())
++      .post("/api/v1/grades/publish")
++      .set(auth(sunriseAdminToken))
++      .send({ classArmId: studentArmId, subjectId: subjectA, termId: sunriseTermId });
++    if (publishRes.status !== 200) {
++      throw new Error(`publish failed: ${publishRes.status} ${JSON.stringify(publishRes.body)}`);
++    }
++
++    // subjectB: target only, CA1 scored, CA2/Exam genuinely never touched
++    // (blank) -> DRAFT, never published. The blank-vs-absent proof.
++    await score(subjectB, ca1Id, [{ studentId: targetStudentId, rawScore: 10 }]);
++
++    // subjectC: partial only, CA1+Exam scored (reaches PENDING_APPROVAL via
++    // the decided approval component) but never published -> keeps
++    // partial's overall from being fully published (the partial-term proof).
++    await score(subjectC, ca1Id, [{ studentId: partialStudentId, rawScore: 12 }]);
++    await score(subjectC, examId, [{ studentId: partialStudentId, rawScore: 40 }]);
++
++    const hillcrest = await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } });
++    hillcrestId = hillcrest.id;
++    const hillcrestSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: hillcrestId, isCurrent: true } });
++    hillcrestSessionId = hillcrestSession.id;
++    hillcrestTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: hillcrestSessionId, name: "FIRST" } })).id;
++    hillcrestStudentId = (await prisma.student.findFirstOrThrow({ where: { schoolId: hillcrestId } })).id;
++  });
++
++  afterAll(async () => {
++    if (createdStudentIds.length > 0) {
++      await prisma.termRemark.deleteMany({ where: { studentId: { in: createdStudentIds } } });
++    }
++    if (createdSubjectIds.length > 0) {
++      await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
++      await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
++      await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
++      await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
++    }
++    if (createdStudentIds.length > 0) {
++      await prisma.termOverallResult.deleteMany({ where: { studentId: { in: createdStudentIds } } });
++      await prisma.studentEnrollment.deleteMany({ where: { studentId: { in: createdStudentIds } } });
++      await prisma.student.deleteMany({ where: { id: { in: createdStudentIds } } });
++    }
++    if (studentArmCreated) {
++      await prisma.classTeacherAssignment.deleteMany({ where: { classArmId: studentArmId } });
++      await prisma.classArm.delete({ where: { id: studentArmId } });
++    }
++    await app.close();
++  });
++
++  describe("GET /students/:id/report-card", () => {
++    it("assembles the per-component breakdown: a real score, an ABSENT component, and a BLANK component are all distinct", async () => {
++      const response = await request(app.getHttpServer())
++        .get(`/api/v1/students/${targetStudentId}/report-card`)
++        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
++        .set(auth(sunriseAdminToken));
++      expect(response.status).toBe(200);
++      expect(response.body.firstName).toBe("Target");
++      expect(response.body.admissionNumber).toBe("E2E-RC/Target");
++      expect(response.body.classArmId).toBe(studentArmId);
++
++      const subjA = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectA);
++      expect(subjA.status).toBe("PUBLISHED");
++      expect(subjA.totalScore).toBe(51); // hand-verified: 18 + 0 (absent) + 33
++      expect(subjA.finalGrade).toBe("C6"); // WAEC 50-54
++      expect(subjA.subjectPosition).toBe(1); // 51 beats partial's 45
++
++      const ca1Row = subjA.components.find((c: { componentId: string }) => c.componentId === ca1Id);
++      expect(ca1Row.rawScore).toBe(18);
++      expect(ca1Row.isAbsent).toBe(false);
++
++      const ca2Row = subjA.components.find((c: { componentId: string }) => c.componentId === ca2Id);
++      expect(ca2Row.rawScore).toBeNull();
++      expect(ca2Row.isAbsent).toBe(true); // "Abs" — explicit, not blank
++
++      const subjB = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectB);
++      expect(subjB.status).toBe("DRAFT");
++      const examRowB = subjB.components.find((c: { componentId: string }) => c.componentId === examId);
++      expect(examRowB.rawScore).toBeNull();
++      expect(examRowB.isAbsent).toBe(false); // blank — never touched, distinct from Abs
++    });
++
++    it("partial-term: a student with one published + one still-pending subject has a null overall position", async () => {
++      const response = await request(app.getHttpServer())
++        .get(`/api/v1/students/${partialStudentId}/report-card`)
++        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
++        .set(auth(sunriseAdminToken));
++      expect(response.status).toBe(200);
++      expect(response.body.subjects).toHaveLength(2);
++      expect(response.body.overall.status).toBe("PENDING_APPROVAL");
++      expect(response.body.overall.overallPosition).toBeNull();
++      expect(response.body.overall.subjectsCount).toBe(2);
++    });
++
++    it("TEACHER with any relationship to the class arm can read (same rule as the Results tab)", async () => {
++      const response = await request(app.getHttpServer())
++        .get(`/api/v1/students/${targetStudentId}/report-card`)
++        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
++        .set(auth(teacherSubjectToken));
++      expect(response.status).toBe(200);
++    });
++
++    it("TEACHER with zero relationship is 403'd", async () => {
++      const response = await request(app.getHttpServer())
++        .get(`/api/v1/students/${targetStudentId}/report-card`)
++        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
++        .set(auth(teacherUnrelatedToken));
++      expect(response.status).toBe(403);
++    });
++
++    it("rejects unauthenticated requests", async () => {
++      const response = await request(app.getHttpServer())
++        .get(`/api/v1/students/${targetStudentId}/report-card`)
++        .query({ termId: sunriseTermId, sessionId: sunriseSessionId });
++      expect(response.status).toBe(401);
++    });
++
++    it("404s (not 403) cross-tenant, both directions", async () => {
++      const a = await request(app.getHttpServer())
++        .get(`/api/v1/students/${hillcrestStudentId}/report-card`)
++        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
++        .set(auth(sunriseAdminToken));
++      expect(a.status).toBe(404);
++
++      const b = await request(app.getHttpServer())
++        .get(`/api/v1/students/${targetStudentId}/report-card`)
++        .query({ termId: hillcrestTermId, sessionId: hillcrestSessionId })
++        .set(auth(hillcrestAdminToken));
++      expect(b.status).toBe(404);
++    });
++  });
++
++  describe("PUT /students/:id/remarks/teacher", () => {
++    it("the class teacher can write it; a subject-only teacher (not class-teacher) is 403'd", async () => {
++      const blocked = await request(app.getHttpServer())
++        .put(`/api/v1/students/${remarksStudentId}/remarks/teacher`)
++        .set(auth(teacherSubjectToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Should not land" });
++      expect(blocked.status).toBe(403);
++
++      const allowed = await request(app.getHttpServer())
++        .put(`/api/v1/students/${remarksStudentId}/remarks/teacher`)
++        .set(auth(teacherClassToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Works hard, improving steadily." });
++      expect(allowed.status).toBe(200);
++      expect(allowed.body.teacherRemark).toBe("Works hard, improving steadily.");
++      expect(allowed.body.teacherRemarkBy).not.toBeNull();
++      expect(allowed.body.teacherRemarkAt).not.toBeNull();
++    });
++
++    it("SCHOOL_ADMIN/PROPRIETOR may also write it (no check, same as elsewhere in this service)", async () => {
++      const response = await request(app.getHttpServer())
++        .put(`/api/v1/students/${targetStudentId}/remarks/teacher`)
++        .set(auth(sunriseAdminToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Admin-entered remark." });
++      expect(response.status).toBe(200);
++    });
++
++    it("rejects unauthenticated requests", async () => {
++      const response = await request(app.getHttpServer())
++        .put(`/api/v1/students/${remarksStudentId}/remarks/teacher`)
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Nope" });
++      expect(response.status).toBe(401);
++    });
++
++    it("400s when the remark key is omitted entirely (required-but-nullable)", async () => {
++      const response = await request(app.getHttpServer())
++        .put(`/api/v1/students/${remarksStudentId}/remarks/teacher`)
++        .set(auth(sunriseAdminToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId });
++      expect(response.status).toBe(400);
++    });
++
++    it("404s (not 403) cross-tenant, both directions", async () => {
++      const a = await request(app.getHttpServer())
++        .put(`/api/v1/students/${hillcrestStudentId}/remarks/teacher`)
++        .set(auth(sunriseAdminToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Cross tenant" });
++      expect(a.status).toBe(404);
++
++      const b = await request(app.getHttpServer())
++        .put(`/api/v1/students/${remarksStudentId}/remarks/teacher`)
++        .set(auth(hillcrestAdminToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Cross tenant" });
++      expect(b.status).toBe(404);
++    });
++  });
++
++  describe("PUT /students/:id/remarks/principal", () => {
++    it("SCHOOL_ADMIN/PROPRIETOR may write it; a TEACHER is 403'd categorically — even the real class teacher", async () => {
++      const blocked = await request(app.getHttpServer())
++        .put(`/api/v1/students/${remarksStudentId}/remarks/principal`)
++        .set(auth(teacherClassToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Should not land" });
++      expect(blocked.status).toBe(403);
++
++      const allowed = await request(app.getHttpServer())
++        .put(`/api/v1/students/${remarksStudentId}/remarks/principal`)
++        .set(auth(sunriseProprietorToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "A pleasure to have in school." });
++      expect(allowed.status).toBe(200);
++      expect(allowed.body.principalRemark).toBe("A pleasure to have in school.");
++      expect(allowed.body.principalRemarkBy).not.toBeNull();
++    });
++
++    it("rejects unauthenticated requests", async () => {
++      const response = await request(app.getHttpServer())
++        .put(`/api/v1/students/${remarksStudentId}/remarks/principal`)
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Nope" });
++      expect(response.status).toBe(401);
++    });
++
++    it("404s (not 403) cross-tenant, both directions", async () => {
++      const a = await request(app.getHttpServer())
++        .put(`/api/v1/students/${hillcrestStudentId}/remarks/principal`)
++        .set(auth(sunriseAdminToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Cross tenant" });
++      expect(a.status).toBe(404);
++
++      const b = await request(app.getHttpServer())
++        .put(`/api/v1/students/${remarksStudentId}/remarks/principal`)
++        .set(auth(hillcrestAdminToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Cross tenant" });
++      expect(b.status).toBe(404);
++    });
++  });
++
++  describe("Remark upsert semantics", () => {
++    it("round-trips into the report card, and clearing (remark: null) nulls the stamps too", async () => {
++      const student = await enroll("RoundTrip", 10);
++
++      const setRes = await request(app.getHttpServer())
++        .put(`/api/v1/students/${student}/remarks/teacher`)
++        .set(auth(teacherClassToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Initial remark." });
++      expect(setRes.status).toBe(200);
++
++      const cardAfterSet = await request(app.getHttpServer())
++        .get(`/api/v1/students/${student}/report-card`)
++        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
++        .set(auth(sunriseAdminToken));
++      expect(cardAfterSet.body.remarks.teacherRemark).toBe("Initial remark.");
++      expect(cardAfterSet.body.remarks.teacherRemarkBy).toEqual({ firstName: "Ngozi", lastName: "Chukwuma" });
++      expect(cardAfterSet.body.remarks.teacherRemarkAt).not.toBeNull();
++
++      const clearRes = await request(app.getHttpServer())
++        .put(`/api/v1/students/${student}/remarks/teacher`)
++        .set(auth(teacherClassToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: null });
++      expect(clearRes.status).toBe(200);
++      expect(clearRes.body.teacherRemark).toBeNull();
++      expect(clearRes.body.teacherRemarkBy).toBeNull();
++      expect(clearRes.body.teacherRemarkAt).toBeNull();
++
++      const cardAfterClear = await request(app.getHttpServer())
++        .get(`/api/v1/students/${student}/report-card`)
++        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
++        .set(auth(sunriseAdminToken));
++      expect(cardAfterClear.body.remarks.teacherRemark).toBeNull();
++      expect(cardAfterClear.body.remarks.teacherRemarkBy).toBeNull();
++    });
++
++    it("clearing one remark leaves the OTHER remark and its stamps completely untouched — both directions", async () => {
++      const student = await enroll("OneSided", 11);
++
++      await request(app.getHttpServer())
++        .put(`/api/v1/students/${student}/remarks/teacher`)
++        .set(auth(teacherClassToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Teacher's note." });
++      const principalSet = await request(app.getHttpServer())
++        .put(`/api/v1/students/${student}/remarks/principal`)
++        .set(auth(sunriseAdminToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Principal's note." });
++      const principalSnapshot = {
++        principalRemark: principalSet.body.principalRemark,
++        principalRemarkBy: principalSet.body.principalRemarkBy,
++        principalRemarkAt: principalSet.body.principalRemarkAt,
++      };
++
++      // Clear the TEACHER side only.
++      const afterTeacherClear = await request(app.getHttpServer())
++        .put(`/api/v1/students/${student}/remarks/teacher`)
++        .set(auth(teacherClassToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: null });
++      expect(afterTeacherClear.body.teacherRemark).toBeNull();
++      expect(afterTeacherClear.body.principalRemark).toBe(principalSnapshot.principalRemark);
++      expect(afterTeacherClear.body.principalRemarkBy).toBe(principalSnapshot.principalRemarkBy);
++      expect(afterTeacherClear.body.principalRemarkAt).toBe(principalSnapshot.principalRemarkAt);
++
++      // Re-set the teacher remark, snapshot it, then clear the PRINCIPAL side only.
++      const teacherReSet = await request(app.getHttpServer())
++        .put(`/api/v1/students/${student}/remarks/teacher`)
++        .set(auth(teacherClassToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: "Teacher's note, take two." });
++      const teacherSnapshot = {
++        teacherRemark: teacherReSet.body.teacherRemark,
++        teacherRemarkBy: teacherReSet.body.teacherRemarkBy,
++        teacherRemarkAt: teacherReSet.body.teacherRemarkAt,
++      };
++
++      const afterPrincipalClear = await request(app.getHttpServer())
++        .put(`/api/v1/students/${student}/remarks/principal`)
++        .set(auth(sunriseAdminToken))
++        .send({ termId: sunriseTermId, sessionId: sunriseSessionId, remark: null });
++      expect(afterPrincipalClear.body.principalRemark).toBeNull();
++      expect(afterPrincipalClear.body.teacherRemark).toBe(teacherSnapshot.teacherRemark);
++      expect(afterPrincipalClear.body.teacherRemarkBy).toBe(teacherSnapshot.teacherRemarkBy);
++      expect(afterPrincipalClear.body.teacherRemarkAt).toBe(teacherSnapshot.teacherRemarkAt);
++    });
++  });
++});
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index 22d9986..d95e870 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -2705,3 +2705,76 @@ its own session+term+class-arm+subject+roster bundle (`createScratchBundle`)
+ Term (which every other e2e file depends on staying open) was never an
+ option. Full suite green on a freshly rebuilt, freshly seeded stack;
+ typecheck + lint clean. No migration — schema untouched, as scoped.
++
++## 2026-08-16 — v0.5 step 4: report-card read endpoint + remarks API
++
++**New endpoint, not an extension of the Results tab**: `GET
++/students/:id/report-card` is a genuinely separate response shape from
++`StudentResultsResponse`, not an additive field bolted onto it. The two
++documents need different fields — the report card needs the full
++per-component (`ReportCardComponent[]`) breakdown for every subject and
++has no use for class average; the Results tab is the reverse (class
++average, no components). Coupling them would force every future
++report-card-only field (print/header metadata, step 6) to leak into the
++admin quick-view's contract, or vice versa. Reuses the exact same
++tenant/enrollment/TEACHER-access resolution as `getStudentResults()`
++(same loose read rule: any relationship to the class arm) and the same
++six-batched-query discipline — new shape, not new computation.
++
++**Blank vs Abs, made legible in the payload**: a component with no
++`student_scores` row at all is `rawScore: null, isAbsent: false`; an
++explicit absence is `rawScore: null, isAbsent: true`. Only the currently
++active assessment structure (`deletedAt: null`) is represented — matches
++exactly what produced the `totalScore` shown alongside it.
++
++**Remarks — the write split is enforced two different ways, deliberately**:
++- Teacher remark (`PUT .../remarks/teacher`): TEACHER role reaches the
++  handler, but the service additionally requires
++  `resolveTeacherAccess(...).isClassTeacher === true` — a runtime check,
++  because "is this teacher the class teacher" is data-dependent, not a
++  fixed role. This is STRICTER than the report card's own read rule (any
++  subject-teacher relationship suffices to read; only the class teacher
++  may write this remark) — a subject-only teacher can view a student's
++  card but gets 403 writing the class remark. SCHOOL_ADMIN/PROPRIETOR:
++  no check, same "any tenant-scoped combo" pattern used throughout
++  GradesService.
++- Principal remark (`PUT .../remarks/principal`): SCHOOL_ADMIN/PROPRIETOR
++  only, enforced at the ROUTE via `@Roles()` — TEACHER never reaches the
++  handler at all, categorically, regardless of whether they happen to be
++  the real class teacher (same "no TEACHER path" shape as `GET
++  /grades/review`). A route-level gate was chosen over a runtime branch
++  here because the rule is a fixed role split, not data-dependent — no
++  reason to pay a service-layer check for something `RolesGuard` already
++  settles.
++
++**Remarks are NOT gated by the step-3 closed-term/unlock mechanism.**
++That gate is scored-data-scoped (`saveGrid`'s write path specifically);
++writing an end-of-term remark is part of the act of closing out a term,
++not a score edit, and gating it the same way would make it impossible to
++write a remark on a term that's already been closed — exactly when a
++teacher/principal is most likely to be writing one. Deliberate, not an
++oversight.
++
++**Upsert semantics**: one shared `WriteRemarkDto` (`termId`, `sessionId`,
++`remark: string | null`) for both routes, same required-but-nullable
++shape as `OverrideGradeDto` — omitting the key is a 400 (client must be
++explicit), `null` clears the remark AND nulls its who/when stamps (not
++just the text), a non-empty string sets both. Plain `termRemark.upsert`
++on the `(studentId, termId, sessionId)` unique — no advisory lock, unlike
++`saveGrid`: a single-row upsert has no multi-row invariant to protect,
++matching `TermsService`'s plain-Prisma-call style rather than
++`GradesService`'s heavier lock-guarded transactions. Each route touches
++ONLY its own side's three columns (teacher fields or principal fields),
++proven not to disturb the other side by a dedicated bidirectional e2e
++test — set both, clear teacher only (principal untouched), re-set
++teacher, clear principal only (teacher untouched).
++
++**Proof**: new `report-card.e2e-spec.ts` (16 tests) — per-component
++assembly with a real score / blank / absent all distinct in the same
++response, partial-term null overall position, the full RBAC matrix on
++all three routes (including the two "stricter than you'd expect" 403s:
++subject-only teacher writing the teacher remark, and the real class
++teacher writing the principal remark), cross-tenant 404 on all three,
++upsert round-trip + clear + one-sided-isolation. Full suite green (294
++tests) on the existing stack; typecheck + lint clean. No migration —
++schema untouched, as scoped. No web changes — API only, step 6's job.

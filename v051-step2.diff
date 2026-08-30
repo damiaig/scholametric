@@ -1,0 +1,662 @@
+diff --git a/apps/api/src/class-arms/class-arms.controller.ts b/apps/api/src/class-arms/class-arms.controller.ts
+index c261aaf..01b4a7e 100644
+--- a/apps/api/src/class-arms/class-arms.controller.ts
++++ b/apps/api/src/class-arms/class-arms.controller.ts
+@@ -30,8 +30,8 @@ export class ClassArmsController {
+   // above (SPEC_V0.2.md §2 — this is the Classes tab's arm-detail page).
+   @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN, UserRole.TEACHER)
+   @Get(":id")
+-  findOne(@Param("id", ParseUUIDPipe) id: string, @Query() query: PaginationQueryDto) {
+-    return this.classArmsService.findOne(id, query.page, query.pageSize);
++  findOne(@Param("id", ParseUUIDPipe) id: string, @Query() query: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
++    return this.classArmsService.findOne(id, query.page, query.pageSize, user);
+   }
+ 
+   // Grades overview (SPEC_V0.4.md §2/§4 step 5) — TEACHER readable too,
+diff --git a/apps/api/src/class-arms/class-arms.service.ts b/apps/api/src/class-arms/class-arms.service.ts
+index e6da495..5f242b2 100644
+--- a/apps/api/src/class-arms/class-arms.service.ts
++++ b/apps/api/src/class-arms/class-arms.service.ts
+@@ -1,11 +1,13 @@
+-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
++import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+ import { ClassArm, ClassTeacherAssignment, UserRole } from "@prisma/client";
+ import { PrismaService } from "../prisma/prisma.service";
+ import { TenantContext } from "../common/tenant/tenant-context";
+ import { forSchool } from "../common/tenant/for-school";
+ import { paginate, Paginated } from "../common/pagination/paginate";
+ import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
++import type { AuthenticatedUser } from "../common/types/authenticated-user";
+ import { getAssignedSubjectMap, type AssignedSubjectEntry } from "../grades/subject-assignment.util";
++import { resolveTeacherAccess } from "../grades/teacher-access.util";
+ import { CreateClassArmDto } from "./dto/create-class-arm.dto";
+ import { UpdateClassArmDto } from "./dto/update-class-arm.dto";
+ 
+@@ -105,7 +107,16 @@ export class ClassArmsService {
+   // error here — it just means nothing to show yet (empty students page,
+   // null class teacher), same "no session = empty, not broken" convention
+   // as ClassesService/DashboardService.
+-  async findOne(id: string, page: number, pageSize: number): Promise<ClassArmDetail> {
++  //
++  // SPEC_V0.5.1.md §2.4/v0.5.1 step 2: SCHOOL_ADMIN/PROPRIETOR unchanged.
++  // TEACHER must be the class-teacher or hold a subject assignment in this
++  // arm this session — same resolveTeacherAccess rule GET /classes and
++  // grade reads use — or this 403s with the exact wording
++  // getClassArmResults() already uses for the same situation, before any
++  // roster/subject data is fetched. A missing current session means no
++  // assignment can possibly exist, so this naturally 403s a TEACHER too
++  // (no special-casing needed).
++  async findOne(id: string, page: number, pageSize: number, user: AuthenticatedUser): Promise<ClassArmDetail> {
+     const schoolId = this.tenantContext.schoolId;
+     const arm = await this.prisma.classArm.findFirst({
+       where: forSchool(schoolId, { id }),
+@@ -117,6 +128,18 @@ export class ClassArmsService {
+ 
+     const session = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
+ 
++    if (user.role === UserRole.TEACHER) {
++      const access = await resolveTeacherAccess(this.prisma, {
++        schoolId,
++        teacherUserId: user.userId,
++        classArmId: id,
++        sessionId: session?.id ?? "",
++      });
++      if (!access.isClassTeacher && access.subjectIds.length === 0) {
++        throw new ForbiddenException("You are not assigned to this class.");
++      }
++    }
++
+     const [classTeacherAssignment, assignedSubjects, enrollments, enrollmentTotal] = await Promise.all([
+       session
+         ? this.prisma.classTeacherAssignment.findFirst({
+diff --git a/apps/api/src/classes/classes.controller.ts b/apps/api/src/classes/classes.controller.ts
+index c91875f..134241e 100644
+--- a/apps/api/src/classes/classes.controller.ts
++++ b/apps/api/src/classes/classes.controller.ts
+@@ -1,6 +1,8 @@
+ import { Controller, Get } from "@nestjs/common";
+ import { UserRole } from "@prisma/client";
+ import { Roles } from "../common/decorators/roles.decorator";
++import { CurrentUser } from "../common/decorators/current-user.decorator";
++import type { AuthenticatedUser } from "../common/types/authenticated-user";
+ import { ClassesService } from "./classes.service";
+ 
+ @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN, UserRole.TEACHER)
+@@ -9,7 +11,7 @@ export class ClassesController {
+   constructor(private readonly classesService: ClassesService) {}
+ 
+   @Get()
+-  findAll() {
+-    return this.classesService.findAll();
++  findAll(@CurrentUser() user: AuthenticatedUser) {
++    return this.classesService.findAll(user);
+   }
+ }
+diff --git a/apps/api/src/classes/classes.service.ts b/apps/api/src/classes/classes.service.ts
+index 7cc934b..f4d6345 100644
+--- a/apps/api/src/classes/classes.service.ts
++++ b/apps/api/src/classes/classes.service.ts
+@@ -1,6 +1,10 @@
+ import { Injectable } from "@nestjs/common";
++import { UserRole } from "@prisma/client";
+ import { PrismaService } from "../prisma/prisma.service";
+ import { TenantContext } from "../common/tenant/tenant-context";
++import { forSchool } from "../common/tenant/for-school";
++import type { AuthenticatedUser } from "../common/types/authenticated-user";
++import { resolveTeacherArmIds } from "../grades/teacher-access.util";
+ 
+ interface ClassesRow {
+   levelId: string;
+@@ -42,7 +46,17 @@ export class ClassesService {
+   // enrollmentCount 0 and classTeacher null (the CTE returns no rows, so
+   // every session-scoped join condition compares against NULL and never
+   // matches — not a special case in the SQL).
+-  async findAll(): Promise<ClassesLevelSummary[]> {
++  //
++  // SPEC_V0.5.1.md §2.4/v0.5.1 step 2: SCHOOL_ADMIN/PROPRIETOR fall
++  // through unchanged (same query, same response, as before this step —
++  // an early return, not a scope parameter threaded through the query
++  // above). TEACHER gets the tree filtered to arms they're the class-
++  // teacher of or hold a subject assignment in this session — the exact
++  // same relationship resolveTeacherAccess uses for grade-read access
++  // (resolveTeacherArmIds is its "list every arm" counterpart), so this
++  // can't drift from the grade-access rule. Levels left with zero visible
++  // arms after filtering are dropped, not shown empty.
++  async findAll(user: AuthenticatedUser): Promise<ClassesLevelSummary[]> {
+     const schoolId = this.tenantContext.schoolId;
+ 
+     const rows = await this.prisma.$queryRaw<ClassesRow[]>`
+@@ -87,6 +101,19 @@ export class ClassesService {
+       });
+     }
+ 
+-    return [...levelsById.values()].sort((a, b) => a.rank - b.rank);
++    const levels = [...levelsById.values()].sort((a, b) => a.rank - b.rank);
++
++    if (user.role !== UserRole.TEACHER) {
++      return levels;
++    }
++
++    const currentSession = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
++    const armIds = currentSession
++      ? await resolveTeacherArmIds(this.prisma, { schoolId, teacherUserId: user.userId, sessionId: currentSession.id })
++      : new Set<string>();
++
++    return levels
++      .map((level) => ({ ...level, arms: level.arms.filter((arm) => armIds.has(arm.id)) }))
++      .filter((level) => level.arms.length > 0);
+   }
+ }
+diff --git a/apps/api/src/grades/grades.service.ts b/apps/api/src/grades/grades.service.ts
+index 836fea6..9b234b6 100644
+--- a/apps/api/src/grades/grades.service.ts
++++ b/apps/api/src/grades/grades.service.ts
+@@ -18,6 +18,7 @@ import {
+ } from "../grades/grade-computation";
+ import { termLockKey, subjectLockKey as buildSubjectLockKey, classArmLockKey as buildClassArmLockKey } from "./lock-keys";
+ import { getAssignedSubjectMap } from "./subject-assignment.util";
++import { resolveTeacherAccess } from "./teacher-access.util";
+ import { GetGradesGridQueryDto } from "./dto/get-grades-grid-query.dto";
+ import { SaveGradesGridDto } from "./dto/save-grades-grid.dto";
+ import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
+@@ -249,11 +250,6 @@ export interface StudentResultsResponse {
+   overall: StudentResultOverall | null;
+ }
+ 
+-interface TeacherAccess {
+-  isClassTeacher: boolean;
+-  subjectIds: string[];
+-}
+-
+ // SPEC_V0.5.md §2.4, v0.5 step 4. A component with NO student_scores row at
+ // all is `rawScore: null, isAbsent: false` — blank/not-entered, distinct
+ // from an explicit `isAbsent: true` ("Abs" on the printed card). Only the
+@@ -994,7 +990,7 @@ export class GradesService {
+     let visibleSubjectIds: Set<string> | null = null; // null = no filter (admin/owner/class-teacher)
+     let includeOverall = true;
+     if (user.role === UserRole.TEACHER) {
+-      const access = await this.resolveTeacherAccess(schoolId, user.userId, classArmId, term.sessionId);
++      const access = await resolveTeacherAccess(this.prisma, { schoolId, teacherUserId: user.userId, classArmId, sessionId: term.sessionId });
+       if (!access.isClassTeacher && access.subjectIds.length === 0) {
+         throw new ForbiddenException("You are not assigned to this class.");
+       }
+@@ -1201,7 +1197,7 @@ export class GradesService {
+     if (!enrollment) throw new NotFoundException("Student has no enrollment for this session.");
+ 
+     if (user.role === UserRole.TEACHER) {
+-      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, query.sessionId);
++      const access = await resolveTeacherAccess(this.prisma, { schoolId, teacherUserId: user.userId, classArmId: enrollment.classArmId, sessionId: query.sessionId });
+       if (!access.isClassTeacher && access.subjectIds.length === 0) {
+         throw new ForbiddenException("You do not teach this student.");
+       }
+@@ -1302,7 +1298,7 @@ export class GradesService {
+     if (!enrollment) throw new NotFoundException("Student has no enrollment for this session.");
+ 
+     if (user.role === UserRole.TEACHER) {
+-      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, query.sessionId);
++      const access = await resolveTeacherAccess(this.prisma, { schoolId, teacherUserId: user.userId, classArmId: enrollment.classArmId, sessionId: query.sessionId });
+       if (!access.isClassTeacher && access.subjectIds.length === 0) {
+         throw new ForbiddenException("You do not teach this student.");
+       }
+@@ -1430,7 +1426,7 @@ export class GradesService {
+     const { schoolId, enrollment } = await this.resolveRemarkTarget(studentId, dto);
+ 
+     if (user.role === UserRole.TEACHER) {
+-      const access = await this.resolveTeacherAccess(schoolId, user.userId, enrollment.classArmId, dto.sessionId);
++      const access = await resolveTeacherAccess(this.prisma, { schoolId, teacherUserId: user.userId, classArmId: enrollment.classArmId, sessionId: dto.sessionId });
+       if (!access.isClassTeacher) {
+         throw new ForbiddenException("Only this class's class teacher may write the teacher remark.");
+       }
+@@ -1843,24 +1839,4 @@ export class GradesService {
+     return { term };
+   }
+ 
+-  // The one unifying "what can this teacher see in this class arm" rule,
+-  // shared by getClassArmResults() and getStudentResults() — each consumes
+-  // it differently (row-filter vs. plain allow/deny), but there is exactly
+-  // one definition of "class-teacher sees everything, subject-teacher sees
+-  // their lane" in this codebase, not two slightly different ones.
+-  private async resolveTeacherAccess(
+-    schoolId: string,
+-    teacherUserId: string,
+-    classArmId: string,
+-    sessionId: string,
+-  ): Promise<TeacherAccess> {
+-    const [classTeacher, subjectAssignments] = await Promise.all([
+-      this.prisma.classTeacherAssignment.findFirst({ where: forSchool(schoolId, { classArmId, sessionId, teacherUserId }) }),
+-      this.prisma.subjectTeacherAssignment.findMany({
+-        where: forSchool(schoolId, { classArmId, sessionId, teacherUserId }),
+-        select: { subjectId: true },
+-      }),
+-    ]);
+-    return { isClassTeacher: Boolean(classTeacher), subjectIds: subjectAssignments.map((a) => a.subjectId) };
+-  }
+ }
+diff --git a/apps/api/src/grades/teacher-access.util.ts b/apps/api/src/grades/teacher-access.util.ts
+new file mode 100644
+index 0000000..e3eeb22
+--- /dev/null
++++ b/apps/api/src/grades/teacher-access.util.ts
+@@ -0,0 +1,50 @@
++import { PrismaService } from "../prisma/prisma.service";
++import { forSchool } from "../common/tenant/for-school";
++
++export interface TeacherAccess {
++  isClassTeacher: boolean;
++  subjectIds: string[];
++}
++
++// The one unifying "what can this teacher see in this class arm" rule —
++// class-teacher sees everything, subject-teacher sees their lane, no
++// relationship sees nothing. Originally private to GradesService
++// (getClassArmResults/getStudentResults/getReportCard); extracted here in
++// SPEC_V0.5.1.md §2.4/v0.5.1 step 2 so ClassesService/ClassArmsService can
++// use the EXACT same definition of "a teacher's classes" for visibility
++// scoping — one rule, not two that could drift.
++export async function resolveTeacherAccess(
++  prisma: PrismaService,
++  params: { schoolId: string; teacherUserId: string; classArmId: string; sessionId: string },
++): Promise<TeacherAccess> {
++  const [classTeacher, subjectAssignments] = await Promise.all([
++    prisma.classTeacherAssignment.findFirst({
++      where: forSchool(params.schoolId, { classArmId: params.classArmId, sessionId: params.sessionId, teacherUserId: params.teacherUserId }),
++    }),
++    prisma.subjectTeacherAssignment.findMany({
++      where: forSchool(params.schoolId, { classArmId: params.classArmId, sessionId: params.sessionId, teacherUserId: params.teacherUserId }),
++      select: { subjectId: true },
++    }),
++  ]);
++  return { isClassTeacher: Boolean(classTeacher), subjectIds: subjectAssignments.map((a) => a.subjectId) };
++}
++
++// The "list every class arm this teacher touches" counterpart, for the
++// Classes list — same two tables, same relationship definition as
++// resolveTeacherAccess above, just not narrowed to one arm.
++export async function resolveTeacherArmIds(
++  prisma: PrismaService,
++  params: { schoolId: string; teacherUserId: string; sessionId: string },
++): Promise<Set<string>> {
++  const [classTeacherOf, subjectTeacherIn] = await Promise.all([
++    prisma.classTeacherAssignment.findMany({
++      where: forSchool(params.schoolId, { sessionId: params.sessionId, teacherUserId: params.teacherUserId }),
++      select: { classArmId: true },
++    }),
++    prisma.subjectTeacherAssignment.findMany({
++      where: forSchool(params.schoolId, { sessionId: params.sessionId, teacherUserId: params.teacherUserId }),
++      select: { classArmId: true },
++    }),
++  ]);
++  return new Set([...classTeacherOf.map((c) => c.classArmId), ...subjectTeacherIn.map((s) => s.classArmId)]);
++}
+diff --git a/apps/api/test/teacher-visibility.e2e-spec.ts b/apps/api/test/teacher-visibility.e2e-spec.ts
+new file mode 100644
+index 0000000..9789ef3
+--- /dev/null
++++ b/apps/api/test/teacher-visibility.e2e-spec.ts
+@@ -0,0 +1,173 @@
++import { INestApplication } from "@nestjs/common";
++import request from "supertest";
++import bcrypt from "bcrypt";
++import { UserRole } from "@prisma/client";
++import { createTestApp } from "./utils/create-test-app";
++import { loginAs, SEED_PASSWORD } from "./utils/login";
++import { PrismaService } from "../src/prisma/prisma.service";
++
++// SPEC_V0.5.1.md §2.4, v0.5.1 step 2: a TEACHER's Classes list and class-arm
++// detail are scoped to classes they're the class-teacher of OR hold a
++// subject assignment in — admin/proprietor see everything, unchanged.
++//
++// A dedicated, freshly-created teacher (not any of the seeded ones) backs
++// every test here: every seeded Sunrise teacher already gets cycled into a
++// class-teacher assignment across ALL real arms by prisma/seed.ts's
++// seedClassTeacherAssignments (round-robins every teacher over every arm),
++// so none of them are safe "this teacher sees nothing" fixtures against the
++// real data — a fresh teacher with zero assignments anywhere is the only
++// way to assert an EXACT, uncontaminated set.
++describe("Teacher visibility scoping (e2e) — SPEC_V0.5.1.md §2.4, v0.5.1 step 2", () => {
++  let app: INestApplication;
++  let prisma: PrismaService;
++
++  let sunriseAdminToken: string;
++  let hillcrestAdminToken: string;
++  let scratchTeacherToken: string;
++  let scratchTeacherId: string;
++
++  let sunriseId: string;
++  let sunriseSessionId: string;
++  let jss2LevelId: string;
++
++  let classTeacherArmId: string; // scratchTeacher is the class-teacher here
++  let subjectTeacherArmId: string; // scratchTeacher holds a subject assignment here only
++  let unrelatedArmId: string; // scratchTeacher has zero relationship here
++  let scratchSubjectId: string;
++
++  const createdArmIds: string[] = [];
++  const createdSubjectIds: string[] = [];
++
++  const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
++
++  beforeAll(async () => {
++    app = await createTestApp();
++    prisma = app.get(PrismaService);
++
++    sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
++    hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
++
++    const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
++    sunriseId = sunrise.id;
++    const sunriseSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: sunriseId, isCurrent: true } });
++    sunriseSessionId = sunriseSession.id;
++    const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
++    jss2LevelId = jss2.id;
++
++    const passwordHash = await bcrypt.hash(SEED_PASSWORD, 4); // low cost — test-only
++    const scratchTeacher = await prisma.user.create({
++      data: {
++        schoolId: sunriseId,
++        email: "e2e.scratch.teacher@sunrise.test",
++        passwordHash,
++        firstName: "E2E",
++        lastName: "ScratchTeacher",
++        role: UserRole.TEACHER,
++      },
++    });
++    scratchTeacherId = scratchTeacher.id;
++    scratchTeacherToken = await loginAs(app, "e2e.scratch.teacher@sunrise.test", "sunrise");
++
++    classTeacherArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2LevelId, name: `E2E-TV-CT-${Date.now()}` } })).id;
++    createdArmIds.push(classTeacherArmId);
++    subjectTeacherArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2LevelId, name: `E2E-TV-ST-${Date.now()}` } })).id;
++    createdArmIds.push(subjectTeacherArmId);
++    unrelatedArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2LevelId, name: `E2E-TV-UN-${Date.now()}` } })).id;
++    createdArmIds.push(unrelatedArmId);
++
++    const scratchSubject = await prisma.subject.create({ data: { schoolId: sunriseId, name: `E2E TV Subject ${Date.now()}`, code: `E2ETV${Date.now()}`.slice(0, 10).toUpperCase() } });
++    scratchSubjectId = scratchSubject.id;
++    createdSubjectIds.push(scratchSubjectId);
++  });
++
++  afterAll(async () => {
++    await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
++    await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
++    await prisma.classTeacherAssignment.deleteMany({ where: { classArmId: { in: createdArmIds } } });
++    await prisma.classArm.deleteMany({ where: { id: { in: createdArmIds } } });
++    // refresh_tokens FKs to users (loginAs created one for the scratch teacher).
++    await prisma.refreshToken.deleteMany({ where: { userId: scratchTeacherId } });
++    await prisma.user.delete({ where: { id: scratchTeacherId } });
++    await app.close();
++  });
++
++  it("a teacher with zero assignments anywhere gets an empty Classes list", async () => {
++    const response = await request(app.getHttpServer()).get("/api/v1/classes").set(auth(scratchTeacherToken));
++    expect(response.status).toBe(200);
++    expect(response.body).toEqual([]);
++  });
++
++  it("once assigned, GET /classes returns exactly the class-teacher arm and the subject-teacher arm, never the unrelated arm", async () => {
++    await prisma.classTeacherAssignment.create({
++      data: { schoolId: sunriseId, classArmId: classTeacherArmId, sessionId: sunriseSessionId, teacherUserId: scratchTeacherId },
++    });
++    await prisma.subjectTeacherAssignment.create({
++      data: { schoolId: sunriseId, subjectId: scratchSubjectId, classArmId: subjectTeacherArmId, sessionId: sunriseSessionId, teacherUserId: scratchTeacherId },
++    });
++
++    const response = await request(app.getHttpServer()).get("/api/v1/classes").set(auth(scratchTeacherToken));
++    expect(response.status).toBe(200);
++
++    const visibleArmIds = (response.body as { arms: { id: string }[] }[]).flatMap((level) => level.arms.map((arm) => arm.id));
++    expect(visibleArmIds).toContain(classTeacherArmId);
++    expect(visibleArmIds).toContain(subjectTeacherArmId);
++    expect(visibleArmIds).not.toContain(unrelatedArmId);
++
++    // Every level shown has at least one visible arm — no empty-arms
++    // levels leak through for a scoped teacher view.
++    for (const level of response.body as { arms: unknown[] }[]) {
++      expect(level.arms.length).toBeGreaterThan(0);
++    }
++  });
++
++  it("GET /class-arms/:id succeeds with the full roster for both the class-teacher arm and the subject-teacher arm", async () => {
++    const classTeacherDetail = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${classTeacherArmId}`)
++      .set(auth(scratchTeacherToken));
++    expect(classTeacherDetail.status).toBe(200);
++    expect(classTeacherDetail.body.classTeacher?.userId).toBe(scratchTeacherId);
++
++    const subjectTeacherDetail = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${subjectTeacherArmId}`)
++      .set(auth(scratchTeacherToken));
++    expect(subjectTeacherDetail.status).toBe(200);
++    expect(subjectTeacherDetail.body.subjectTeachers.some((s: { teacherUserId: string }) => s.teacherUserId === scratchTeacherId)).toBe(true);
++  });
++
++  it("GET /class-arms/:id 403s for an arm the teacher has no relationship to, with the exact existing message", async () => {
++    const response = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${unrelatedArmId}`)
++      .set(auth(scratchTeacherToken));
++    expect(response.status).toBe(403);
++    expect(response.body.message).toBe("You are not assigned to this class.");
++  });
++
++  it("SCHOOL_ADMIN/PROPRIETOR are unaffected — GET /classes and GET /class-arms/:id see everything, including the unrelated arm", async () => {
++    const classesResponse = await request(app.getHttpServer()).get("/api/v1/classes").set(auth(sunriseAdminToken));
++    expect(classesResponse.status).toBe(200);
++    const visibleArmIds = (classesResponse.body as { arms: { id: string }[] }[]).flatMap((level) => level.arms.map((arm) => arm.id));
++    expect(visibleArmIds).toContain(classTeacherArmId);
++    expect(visibleArmIds).toContain(subjectTeacherArmId);
++    expect(visibleArmIds).toContain(unrelatedArmId);
++
++    const detailResponse = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${unrelatedArmId}`)
++      .set(auth(sunriseAdminToken));
++    expect(detailResponse.status).toBe(200);
++  });
++
++  it("404s (not 403) cross-tenant, both directions", async () => {
++    const classArmDetail = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${classTeacherArmId}`)
++      .set(auth(hillcrestAdminToken));
++    expect(classArmDetail.status).toBe(404);
++
++    const hillcrest = await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } });
++    const hillcrestJss1 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: hillcrest.id, name: "JSS 1" } });
++    const hillcrestArm = await prisma.classArm.findFirstOrThrow({ where: { schoolId: hillcrest.id, classLevelId: hillcrestJss1.id, name: "A" } });
++    const crossTenantAsSunriseAdmin = await request(app.getHttpServer())
++      .get(`/api/v1/class-arms/${hillcrestArm.id}`)
++      .set(auth(sunriseAdminToken));
++    expect(crossTenantAsSunriseAdmin.status).toBe(404);
++  });
++});
+diff --git a/apps/web/src/features/classes/ClassArmDetailPage.test.tsx b/apps/web/src/features/classes/ClassArmDetailPage.test.tsx
+index 1667a06..7f29935 100644
+--- a/apps/web/src/features/classes/ClassArmDetailPage.test.tsx
++++ b/apps/web/src/features/classes/ClassArmDetailPage.test.tsx
+@@ -87,4 +87,35 @@ describe("ClassArmDetailPage", () => {
+     expect(screen.queryByRole("button", { name: /Change|Assign/ })).not.toBeInTheDocument();
+     expect(screen.queryByRole("button", { name: /Add subject teacher/ })).not.toBeInTheDocument();
+   });
++
++  // SPEC_V0.5.1.md §2.4/v0.5.1 step 2: a teacher opening a class they don't
++  // teach now gets a 403 from the backend — the page's existing generic
++  // error branch (used for every other failed load in this app) already
++  // surfaces it as a readable sentence, not a crash or blank page.
++  it("TEACHER: a class they don't teach shows the backend's 403 message, not a crash", async () => {
++    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path.includes("/auth/me")) return { ...SCHOOL_ADMIN_USER, role: "TEACHER" };
++      if (path.includes("/class-arms/arm-1")) {
++        const { ApiError } = await import("../../lib/api-client");
++        throw new ApiError(403, {
++          statusCode: 403,
++          message: "You are not assigned to this class.",
++          error: "Forbidden",
++          path: "/api/v1/class-arms/arm-1",
++          timestamp: new Date().toISOString(),
++        });
++      }
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
++
++    renderWithProviders(
++      <Routes>
++        <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
++      </Routes>,
++      { route: "/classes/arms/arm-1" },
++    );
++
++    expect(await screen.findByText("You are not assigned to this class.")).toBeInTheDocument();
++  });
+ });
+diff --git a/apps/web/src/features/classes/ClassesPage.test.tsx b/apps/web/src/features/classes/ClassesPage.test.tsx
+index 0acc107..a8c86c4 100644
+--- a/apps/web/src/features/classes/ClassesPage.test.tsx
++++ b/apps/web/src/features/classes/ClassesPage.test.tsx
+@@ -106,6 +106,29 @@ describe("ClassesPage — Classes tab", () => {
+     expect(screen.queryByRole("button", { name: /Add level/ })).not.toBeInTheDocument();
+     expect(screen.queryByRole("button", { name: /Add arm/ })).not.toBeInTheDocument();
+   });
++
++  // SPEC_V0.5.1.md §2.4/v0.5.1 step 2: GET /classes itself is what scopes a
++  // TEACHER's response server-side (ClassesService.findAll) — this proves
++  // the page renders exactly whatever it's given, with no client-side
++  // re-expansion of a scoped payload back toward "show everything."
++  it("TEACHER: renders only the classes the (already server-scoped) response includes", async () => {
++    const TEACHER_SCOPED_CLASSES: ClassLevelOverview[] = [
++      { id: "lvl-1", name: "JSS 1", rank: 1, arms: [{ id: "arm-1", name: "A", enrollmentCount: 25, classTeacher: { userId: "t-1", firstName: "Bola", lastName: "Ogundare" } }] },
++    ];
++    mockedApiRequest.mockImplementation(async (path: string) => {
++      if (path.includes("/auth/me")) return { ...SCHOOL_ADMIN_USER, role: "TEACHER" };
++      if (path === "/api/v1/classes") return TEACHER_SCOPED_CLASSES;
++      throw new Error(`unexpected apiRequest call: ${path}`);
++    });
++
++    renderWithProviders(<ClassesPage />);
++
++    expect(await screen.findByText("JSS 1 A")).toBeInTheDocument();
++    // JSS 1 B and JSS 2 (present in the full admin fixture CLASSES above)
++    // never appear — the response this teacher got simply doesn't include them.
++    expect(screen.queryByText("JSS 1 B")).not.toBeInTheDocument();
++    expect(screen.queryByText("JSS 2")).not.toBeInTheDocument();
++  });
+ });
+ 
+ describe("ClassesPage — Subjects tab", () => {
+diff --git a/docs/API.md b/docs/API.md
+index 5940205..c548a9e 100644
+--- a/docs/API.md
++++ b/docs/API.md
+@@ -370,6 +370,12 @@ so the arm page's remove action can target
+ `DELETE /subject-assignments/:id` directly — mirrors the same fix already
+ made to `GET /teachers/:userId`'s `subjectsTaught` in step 5.
+ 
++**Response `403`** (SPEC_V0.5.1.md §2.4, v0.5.1 step 2): a `TEACHER` who is
++neither the class-teacher of this arm nor holds any subject assignment in
++it this session — `"You are not assigned to this class."`, same rule and
++same wording `GET /class-arms/:id/results` already used for this exact
++situation. `SCHOOL_ADMIN`/`PROPRIETOR` unaffected, any arm in their school.
++
+ ### `GET /class-arms/:id/results?termId=` (v0.4 step 5, SPEC_V0.4.md §2)
+ 
+ Grades overview — same role list as the plain `:id` GET above
+@@ -880,9 +886,14 @@ scale with the number of levels/arms/students (SPEC_V0.2.md §5).
+ ]
+ ```
+ 
+----
+-
+-## Audit logs (v0.2 step 3, SPEC_V0.2.md §2)
++**`TEACHER` scoping** (SPEC_V0.5.1.md §2.4, v0.5.1 step 2): the SQL above
++is unchanged and still runs for every role — `SCHOOL_ADMIN`/`PROPRIETOR`
++get its result as-is. For `TEACHER`, the arm list is then filtered in
++application code to arms they're the class-teacher of or hold a subject
++assignment in this session (same relationship `GET /class-arms/:id`'s
++`403` and grade-read access use — one shared helper, can't drift). Levels
++left with zero visible arms after filtering are dropped, not returned
++empty. A teacher with no assignments at all this session gets `[]`.
+ 
+ `PROPRIETOR`/`SCHOOL_ADMIN` only. Pays the v0.1 debt (the student History
+ tab's placeholder note).
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index 0a010f4..2f99400 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -3173,3 +3173,79 @@ updated Vitest cases (`ScoreEntryGridPage` admin picker scoping — 3 new;
+ green on a fresh `docker compose down -v` → migrate → seed database;
+ `docker compose up -d --build` boots the full stack from scratch
+ (api + web images rebuilt, `/health` returns `{"status":"ok","db":true,"redis":true}`).
++
++## 2026-08-19 — v0.5.1 step 2: teacher visibility scoping (SPEC_V0.5.1.md §2.4)
++
++**Rule**: a `TEACHER`'s Classes list (`GET /classes`) and class-arm detail
++(`GET /class-arms/:id`) are scoped to arms they're the class-teacher of or
++hold a subject assignment in this session — Q3's approved definition.
++`SCHOOL_ADMIN`/`PROPRIETOR` unchanged, both endpoints. This is visibility
++only: grade access (`getClassArmResults`/`getStudentResults`/
++`getReportCard`/grid entry) already enforced the identical relationship
++before this step and none of it changed.
++
++**Single-sourced, not a second definition**: `resolveTeacherAccess`
++(previously private to `GradesService`) is extracted to
++`apps/api/src/grades/teacher-access.util.ts` verbatim — same signature
++shape (now a params object instead of positional args), same behavior,
++same four call sites inside `GradesService` unaffected. Alongside it,
++`resolveTeacherArmIds` — the "list every arm this teacher touches" form
++`GET /classes` needs — is built on the exact same two queries
++(`classTeacherAssignment`/`subjectTeacherAssignment`, just not narrowed to
++one arm), so "a teacher's classes" for visibility and "a teacher's access"
++for grades can't drift into two different rules over time.
++
++**Branch, not a scope parameter**: both `ClassesService.findAll()` and
++`ClassArmsService.findOne()` take the exact same query path for
++`SCHOOL_ADMIN`/`PROPRIETOR` as before this step — the `TEACHER` case is an
++early branch, not a filter threaded through the shared query. Confirmed
++via the existing `GET /classes` "constant query count, not N+1" e2e test,
++which asserts on the admin token and is unaffected (no extra queries run
++on that path at all).
++
++**Class-arm detail 403, not 404** (Flag 1): a `TEACHER` requesting an arm
++they don't teach gets `403 "You are not assigned to this class."` —
++verbatim reuse of `getClassArmResults()`'s existing message for the
++identical situation, not a new one. Matches the standing convention in
++this codebase: `403` for a same-tenant relationship gap, `404` reserved
++for cross-tenant/nonexistent. A missing current session also naturally
++`403`s a teacher (no session means no assignment can exist) rather than
++needing a special case. The Classes list has no equivalent "which
++resource" question — a teacher with zero assignments gets `200 []`, same
++pattern as `ScoreEntryGridPage`'s existing empty-assignments state.
++
++**`GET /students`/Global Search deliberately left untouched** (Flag 3):
++2.4's own wording ("Classes list and student visibility... within those
++classes they teach") reads as the class-arm roster, not the general
++student directory — and `GET /students/:id`'s non-scoping is already
++documented (`docs/API.md`) as a deliberate v0.1 decision, not a gap.
++**Flagged for Dami, not decided here**: `GET /students` is what Global
++Search hits directly (`use-global-student-search.ts`) — a teacher can
++currently find and open any student in the school from the sidebar search
++box, same as before this step. Whether that should narrow to a teacher's
++own students too is a product call his re-pass (which was specifically
++about opening a class and seeing its roster) didn't ask for — surfacing it
++here rather than silently scoping or silently leaving it.
++
++**Test hygiene**: every seeded Sunrise teacher already gets round-robined
++into a class-teacher assignment across ALL real arms by
++`seedClassTeacherAssignments` — none of them are safe "sees nothing"
++fixtures against live seed data. The new spec creates one dedicated
++teacher user with zero assignments anywhere (mirrors the scratch-
++proprietor pattern from `grades-publish.e2e-spec.ts`), then builds three
++scratch arms (class-teacher/subject-teacher/unrelated) to get an exact,
++uncontaminated assertion.
++
++**Proof**: new `teacher-visibility.e2e-spec.ts` (6 tests: empty list for a
++zero-assignment teacher; `GET /classes` returns exactly the class-teacher
+++ subject-teacher arms, never the unrelated one, and never an empty-arms
++level; `GET /class-arms/:id` 200s with full roster for both; 403s for the
++unrelated arm with the exact message; admin/proprietor see all three arms
++unfiltered; cross-tenant 404 both directions). Plus 2 new web Vitest cases
++(`ClassesPage` renders only a teacher-scoped mock response's arms;
++`ClassArmDetailPage` surfaces the 403 as a readable sentence, not a
++crash). Full `pnpm run ci` (typecheck + lint + 28 e2e suites/308 tests +
++29 web Vitest files/160 tests + unit) green on a fresh
++`docker compose down -v` → migrate → seed database (no new migration —
++this step is queries/logic only); `docker compose up -d --build` boots
++the full stack from scratch, `/health` reports `db: true, redis: true`.

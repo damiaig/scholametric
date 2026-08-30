@@ -1,0 +1,1946 @@
+diff --git a/apps/api/src/grades/grades.service.ts b/apps/api/src/grades/grades.service.ts
+index fb6cd03..2d840ff 100644
+--- a/apps/api/src/grades/grades.service.ts
++++ b/apps/api/src/grades/grades.service.ts
+@@ -54,6 +54,16 @@ export interface GradesGridResponse {
+   termId: string;
+   maxScore: number;
+   requiresApproval: boolean;
++  // SPEC_V0.5.md §2.3, v0.5 step 5 — lets the grid render locked/read-only
++  // FROM LOAD, not reactively on a saveGrid 409. termClosed=false always
++  // implies locked=false. unlockReason is populated only when
++  // termClosed && !locked (an active unlock exists for this exact
++  // class-arm+subject) — same lock-state resolution saveGrid enforces
++  // (resolveSliceLockState), so the two can never drift on what "locked"
++  // means.
++  termClosed: boolean;
++  locked: boolean;
++  unlockReason: string | null;
+   rows: GradesGridRow[];
+ }
+ 
+@@ -328,8 +338,8 @@ export class GradesService {
+     const { term, component } = await this.resolveTenantScopeWithComponent(schoolId, query);
+     await this.assertTeacherAssignment(schoolId, user, query.subjectId, query.classArmId, term.sessionId);
+ 
+-    const students = await this.getRoster(schoolId, query.classArmId, term.sessionId);
+-    const [scores, subjectResults] = await Promise.all([
++    const [students, scores, subjectResults, lockState] = await Promise.all([
++      this.getRoster(schoolId, query.classArmId, term.sessionId),
+       this.prisma.studentScore.findMany({
+         where: {
+           schoolId,
+@@ -342,6 +352,12 @@ export class GradesService {
+       this.prisma.termSubjectResult.findMany({
+         where: { schoolId, subjectId: query.subjectId, termId: query.termId, sessionId: term.sessionId },
+       }),
++      this.resolveSliceLockState(this.prisma, {
++        termId: query.termId,
++        classArmId: query.classArmId,
++        subjectId: query.subjectId,
++        closedAt: term.closedAt,
++      }),
+     ]);
+     const rawByStudent = new Map(scores.map((s) => [s.studentId, s.rawScore === null ? null : Number(s.rawScore)]));
+     const absentByStudent = new Map(scores.map((s) => [s.studentId, s.isAbsent]));
+@@ -354,6 +370,9 @@ export class GradesService {
+       termId: query.termId,
+       maxScore: component.maxScore,
+       requiresApproval: component.requiresApproval,
++      termClosed: term.closedAt !== null,
++      locked: lockState.locked,
++      unlockReason: lockState.unlockReason,
+       rows: students.map((s) => ({
+         studentId: s.id,
+         firstName: s.firstName,
+@@ -415,15 +434,23 @@ export class GradesService {
+         // doesn't relax it — an unlock grants "may edit this slice," not
+         // "may also bypass the separate publish safeguard" (docs/DECISIONS.md).
+         const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
+-        if (freshTerm.closedAt !== null) {
+-          const activeUnlock = await tx.termUnlock.findFirst({
+-            where: { termId: dto.termId, classArmId: dto.classArmId, subjectId: dto.subjectId, relockedAt: null },
++        const { locked } = await this.resolveSliceLockState(tx, {
++          termId: dto.termId,
++          classArmId: dto.classArmId,
++          subjectId: dto.subjectId,
++          closedAt: freshTerm.closedAt,
++        });
++        if (locked) {
++          // Structured, same precedent as publishedLockException below — the
++          // grid renders this state from load (GradesGridResponse.locked),
++          // so reaching this 409 in practice means a race (the term closed
++          // or was relocked while this save was already in flight); the
++          // frontend's save queue uses termLocked to transition affected
++          // cells the same way it already does for lockedStudentIds.
++          throw new ConflictException({
++            message: "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
++            termLocked: true,
+           });
+-          if (!activeUnlock) {
+-            throw new ConflictException(
+-              "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
+-            );
+-          }
+         }
+ 
+         // Serializes concurrent grid saves for the same subject+class+term
+@@ -1672,6 +1699,27 @@ export class GradesService {
+     return incomplete;
+   }
+ 
++  // Shared by getGrid() (so the web can render locked-from-load) and
++  // saveGrid() (the actual enforcement) — SPEC_V0.5.md §2.3, v0.5 step 5.
++  // The two can never drift on what "locked" means, since they call the
++  // exact same term_unlocks lookup. Accepts the caller's already-fetched
++  // `closedAt` rather than re-fetching Term itself — getGrid() has it from
++  // resolveTenantScopeWithComponent, saveGrid() has it from its own fresh
++  // in-lock read (which must stay fresh — see saveGrid()'s own comment on
++  // why that read can't be replaced by the pre-transaction `term` object).
++  private async resolveSliceLockState(
++    tx: Prisma.TransactionClient | PrismaService,
++    params: { termId: string; classArmId: string; subjectId: string; closedAt: Date | null },
++  ): Promise<{ locked: boolean; unlockReason: string | null }> {
++    if (params.closedAt === null) {
++      return { locked: false, unlockReason: null };
++    }
++    const activeUnlock = await tx.termUnlock.findFirst({
++      where: { termId: params.termId, classArmId: params.classArmId, subjectId: params.subjectId, relockedAt: null },
++    });
++    return { locked: !activeUnlock, unlockReason: activeUnlock?.reason ?? null };
++  }
++
+   // Structured, not just a count: the caller (a director/owner UI) needs
+   // to know exactly WHICH students are locked, not just how many.
+   // AllExceptionsFilter passes any extra fields on the exception's
+diff --git a/apps/api/test/terms.e2e-spec.ts b/apps/api/test/terms.e2e-spec.ts
+index acf37a8..dff808d 100644
+--- a/apps/api/test/terms.e2e-spec.ts
++++ b/apps/api/test/terms.e2e-spec.ts
+@@ -232,6 +232,10 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
+       expect(response.status).toBe(409);
+       expect(response.body.message).toMatch(/closed/i);
+       expect(response.body.message).toMatch(/unlock/i);
++      // Structured, same precedent as lockedStudentIds — lets the save
++      // queue's 409 handler route this to the same locked-cell treatment
++      // GET /grades/grid already renders from load (below).
++      expect(response.body.termLocked).toBe(true);
+ 
+       const persisted = await prisma.studentScore.findUnique({
+         where: {
+@@ -290,6 +294,79 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
+     });
+   });
+ 
++  // SPEC_V0.5.md §2.3, v0.5 step 5 — the web renders locked/read-only FROM
++  // LOAD, not reactively on a saveGrid 409, so GET /grades/grid itself must
++  // carry the slice's lock state. Same three-way proof style as v0.4's
++  // status field (open/closed/unlocked), same resolveSliceLockState logic
++  // saveGrid enforces above.
++  describe("GET /grades/grid — locked indicator", () => {
++    it("open term: termClosed=false, locked=false, unlockReason=null", async () => {
++      const bundle = await createScratchBundle("GridIndicatorOpen");
++      const response = await request(app.getHttpServer())
++        .get("/api/v1/grades/grid")
++        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId })
++        .set(auth(sunriseAdminToken));
++      expect(response.status).toBe(200);
++      expect(response.body.termClosed).toBe(false);
++      expect(response.body.locked).toBe(false);
++      expect(response.body.unlockReason).toBeNull();
++    });
++
++    it("closed term, no active unlock: termClosed=true, locked=true", async () => {
++      const bundle = await createScratchBundle("GridIndicatorClosed");
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++
++      const response = await request(app.getHttpServer())
++        .get("/api/v1/grades/grid")
++        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId })
++        .set(auth(sunriseAdminToken));
++      expect(response.status).toBe(200);
++      expect(response.body.termClosed).toBe(true);
++      expect(response.body.locked).toBe(true);
++      expect(response.body.unlockReason).toBeNull();
++    });
++
++    it("closed term WITH an active unlock for this exact slice: termClosed=true, locked=false, unlockReason present", async () => {
++      const bundle = await createScratchBundle("GridIndicatorUnlocked");
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++      await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Parent requested a correction" });
++
++      const response = await request(app.getHttpServer())
++        .get("/api/v1/grades/grid")
++        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId })
++        .set(auth(sunriseAdminToken));
++      expect(response.status).toBe(200);
++      expect(response.body.termClosed).toBe(true);
++      expect(response.body.locked).toBe(false);
++      expect(response.body.unlockReason).toBe("Parent requested a correction");
++    });
++
++    it("unlock is per-slice here too: a second subject on the same closed term still reads locked=true", async () => {
++      const bundle = await createScratchBundle("GridIndicatorPerSlice", 1, 2);
++      const [subjectA, subjectB] = bundle.subjectIds;
++      await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
++      await request(app.getHttpServer())
++        .post(`/api/v1/terms/${bundle.termId}/unlock`)
++        .set(auth(sunriseAdminToken))
++        .send({ classArmId: bundle.classArmId, subjectId: subjectA, reason: "Correcting subject A only" });
++
++      const gridA = await request(app.getHttpServer())
++        .get("/api/v1/grades/grid")
++        .query({ classArmId: bundle.classArmId, subjectId: subjectA, componentId: ca1Id, termId: bundle.termId })
++        .set(auth(sunriseAdminToken));
++      expect(gridA.body.locked).toBe(false);
++
++      const gridB = await request(app.getHttpServer())
++        .get("/api/v1/grades/grid")
++        .query({ classArmId: bundle.classArmId, subjectId: subjectB, componentId: ca1Id, termId: bundle.termId })
++        .set(auth(sunriseAdminToken));
++      expect(gridB.body.locked).toBe(true);
++    });
++  });
++
+   describe("POST /terms/:id/unlock", () => {
+     it("403s a TEACHER", async () => {
+       const bundle = await createScratchBundle("UnlockTeacher");
+diff --git a/apps/web/src/features/grades/PublishConfirmDialog.tsx b/apps/web/src/features/grades/PublishConfirmDialog.tsx
+index 5c415bf..0d5b291 100644
+--- a/apps/web/src/features/grades/PublishConfirmDialog.tsx
++++ b/apps/web/src/features/grades/PublishConfirmDialog.tsx
+@@ -1,6 +1,7 @@
+ import { ConfirmDialog } from "../../components/ConfirmDialog";
+-import { getErrorMessage } from "../../lib/api-client";
++import { ApiError, getErrorMessage } from "../../lib/api-client";
+ import { usePublishGrades } from "./use-publish-grades";
++import { useAssessmentComponents } from "../settings/use-assessment-components";
+ import type { GradesReviewSubject } from "@scholametric/shared";
+ 
+ interface PublishConfirmDialogProps {
+@@ -17,12 +18,20 @@ interface PublishConfirmDialogProps {
+ // positions become final."
+ export function PublishConfirmDialog({ classArmName, termLabel, subject, classArmId, termId, onClose }: PublishConfirmDialogProps) {
+   const publishGrades = usePublishGrades();
++  // Only fetched to LABEL a completeness-gate 409 below, not for the
++  // happy path — canPublish already keeps that path from being clickable
++  // in the common case (SPEC_V0.5.md §2.2/step 2), so this is a rare-race
++  // fallback, not the primary defense.
++  const components = useAssessmentComponents();
+ 
+   function handleConfirm() {
+     if (!subject) return;
+     publishGrades.mutate({ classArmId, subjectId: subject.subjectId, termId }, { onSuccess: () => onClose() });
+   }
+ 
++  const incompleteEntries =
++    publishGrades.error instanceof ApiError && publishGrades.error.status === 409 ? publishGrades.error.body?.incompleteEntries : undefined;
++
+   return (
+     <ConfirmDialog
+       open={subject !== null}
+@@ -37,11 +46,37 @@ export function PublishConfirmDialog({ classArmName, termLabel, subject, classAr
+       confirmLabel="Publish"
+       isConfirming={publishGrades.isPending}
+     >
+-      {publishGrades.isError && (
++      {publishGrades.isError && !incompleteEntries?.length && (
+         <p role="alert" className="text-sm text-danger">
+           {getErrorMessage(publishGrades.error)}
+         </p>
+       )}
++      {incompleteEntries && incompleteEntries.length > 0 && (
++        <div role="alert" className="flex flex-col gap-1 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-text">
++          <p className="font-medium text-danger">Some students still have a blank component — open the grid to resolve:</p>
++          <ul className="list-inside list-disc">
++            {groupByComponent(incompleteEntries).map(({ componentId, studentCount }) => (
++              <li key={componentId}>
++                {componentNameFor(components.data, componentId)}: {studentCount} student{studentCount === 1 ? "" : "s"}
++              </li>
++            ))}
++          </ul>
++        </div>
++      )}
+     </ConfirmDialog>
+   );
+ }
++
++function groupByComponent(entries: { studentId: string; componentId: string }[]): { componentId: string; studentCount: number }[] {
++  const byComponent = new Map<string, Set<string>>();
++  for (const entry of entries) {
++    const students = byComponent.get(entry.componentId) ?? new Set<string>();
++    students.add(entry.studentId);
++    byComponent.set(entry.componentId, students);
++  }
++  return [...byComponent.entries()].map(([componentId, students]) => ({ componentId, studentCount: students.size }));
++}
++
++function componentNameFor(components: { id: string; name: string }[] | undefined, componentId: string): string {
++  return components?.find((c) => c.id === componentId)?.name ?? "A component";
++}
+diff --git a/apps/web/src/features/grades/ReviewPublishPage.test.tsx b/apps/web/src/features/grades/ReviewPublishPage.test.tsx
+index 8ad8bad..a049ff3 100644
+--- a/apps/web/src/features/grades/ReviewPublishPage.test.tsx
++++ b/apps/web/src/features/grades/ReviewPublishPage.test.tsx
+@@ -1,10 +1,10 @@
+ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+-import { screen, cleanup, within } from "@testing-library/react";
++import { screen, cleanup, within, waitFor } from "@testing-library/react";
+ import userEvent from "@testing-library/user-event";
+-import type { GradesReviewResponse, Paginated, Term, AcademicSession } from "@scholametric/shared";
++import type { AssessmentComponent, GradesReviewResponse, Paginated, Term, AcademicSession } from "@scholametric/shared";
+ import { renderWithProviders } from "../../test/render-with-providers";
+ import { authStore } from "../../lib/auth-store";
+-import { apiRequest } from "../../lib/api-client";
++import { apiRequest, ApiError } from "../../lib/api-client";
+ import { ReviewPublishPage } from "./ReviewPublishPage";
+ 
+ vi.mock("../../lib/api-client", async (importOriginal) => {
+@@ -34,7 +34,7 @@ const SESSIONS: Paginated<AcademicSession> = {
+   pageSize: 50,
+ };
+ const TERMS: Paginated<Term> = {
+-  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, createdAt: "t", updatedAt: "t" }],
++  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, closedAt: null, closedBy: null, createdAt: "t", updatedAt: "t" }],
+   total: 1,
+   page: 1,
+   pageSize: 20,
+@@ -62,6 +62,10 @@ function mockCommon(role: "SCHOOL_ADMIN" | "PROPRIETOR", review: GradesReviewRes
+     if (path === "/api/v1/classes") return CLASSES;
+     if (path === "/api/v1/sessions") return SESSIONS;
+     if (path === "/api/v1/terms") return TERMS;
++    // PublishConfirmDialog is always mounted (gated internally, not by
++    // conditional render) and fetches this to label a completeness-gate
++    // 409 — fires regardless of whether the dialog is open.
++    if (path === "/api/v1/assessment-components") return [];
+     if (path === "/api/v1/grades/review") {
+       const query = (options as { query?: Record<string, string> })?.query;
+       expect(query?.classArmId).toBe("arm1");
+@@ -140,4 +144,46 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
+     const dialog = await screen.findByRole("dialog");
+     expect(within(dialog).getByText(/recomputes overall positions for the whole class/)).toBeInTheDocument();
+   });
++
++  it("publish 409s with incompleteEntries (the completeness-gate race): shows blocking components grouped, not a generic toast", async () => {
++    const components: AssessmentComponent[] = [
++      { id: "ca1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, deletedAt: null, createdAt: "t", updatedAt: "t" },
++      { id: "examId", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 3, deletedAt: null, createdAt: "t", updatedAt: "t" },
++    ];
++    mockedApiRequest.mockImplementation(async (path, options) => {
++      const method = (options as { method?: string })?.method;
++      if (path === "/api/v1/auth/me") return currentUser("SCHOOL_ADMIN");
++      if (path === "/api/v1/classes") return CLASSES;
++      if (path === "/api/v1/sessions") return SESSIONS;
++      if (path === "/api/v1/terms") return TERMS;
++      if (path === "/api/v1/assessment-components") return components;
++      if (path === "/api/v1/grades/review") return REVIEW_CAN_PUBLISH;
++      if (path === "/api/v1/grades/publish" && method === "POST") {
++        throw new ApiError(409, {
++          statusCode: 409,
++          message: "Cannot publish: 2 student(s) have at least one component that's neither scored nor marked absent.",
++          error: "Conflict",
++          path: "",
++          timestamp: "",
++          incompleteEntries: [
++            { studentId: "st1", componentId: "ca1" },
++            { studentId: "st2", componentId: "examId" },
++            { studentId: "st3", componentId: "examId" },
++          ],
++        });
++      }
++      throw new Error(`unexpected call: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });
++
++    await screen.findByText("Mathematics");
++    await user.click(screen.getByRole("button", { name: "Publish" }));
++    const dialog = await screen.findByRole("dialog");
++    await user.click(within(dialog).getByRole("button", { name: "Publish" }));
++
++    await waitFor(() => expect(within(dialog).getByText(/Some students still have a blank component/)).toBeInTheDocument());
++    expect(within(dialog).getByText(/CA 1: 1 student/)).toBeInTheDocument();
++    expect(within(dialog).getByText(/Exam: 2 students/)).toBeInTheDocument();
++  });
+ });
+diff --git a/apps/web/src/features/grades/ReviewPublishPage.tsx b/apps/web/src/features/grades/ReviewPublishPage.tsx
+index bd69db4..e5705ff 100644
+--- a/apps/web/src/features/grades/ReviewPublishPage.tsx
++++ b/apps/web/src/features/grades/ReviewPublishPage.tsx
+@@ -149,7 +149,11 @@ export function ReviewPublishPage() {
+                   type="button"
+                   size="sm"
+                   disabled={!subject.canPublish}
+-                  title={subject.canPublish ? undefined : "Nothing eligible to publish yet — no scores are pending approval."}
++                  title={
++                    subject.canPublish
++                      ? undefined
++                      : "Nothing eligible to publish yet — either no scores are pending approval, or some students still have a blank component."
++                  }
+                   onClick={() => setPublishTarget(subject)}
+                 >
+                   Publish
+diff --git a/apps/web/src/features/grades/ScoreEntryGrid.test.tsx b/apps/web/src/features/grades/ScoreEntryGrid.test.tsx
+index 2b82dcf..26e9181 100644
+--- a/apps/web/src/features/grades/ScoreEntryGrid.test.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGrid.test.tsx
+@@ -1,5 +1,5 @@
+ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+-import { screen, waitFor, cleanup, act, fireEvent } from "@testing-library/react";
++import { screen, waitFor, cleanup, act, fireEvent, within } from "@testing-library/react";
+ import userEvent from "@testing-library/user-event";
+ import type { GradesGridResponse, SaveGradesGridResponse } from "@scholametric/shared";
+ import { renderWithProviders } from "../../test/render-with-providers";
+@@ -23,14 +23,17 @@ const GRID: GradesGridResponse = {
+   termId: "term1",
+   maxScore: 20,
+   requiresApproval: false,
++  termClosed: false,
++  locked: false,
++  unlockReason: null,
+   rows: [
+-    { studentId: "s1", firstName: "Ada", lastName: "Bello", admissionNumber: "SUN/0001", rawScore: null, status: "DRAFT" },
+-    { studentId: "s2", firstName: "Bola", lastName: "Coker", admissionNumber: "SUN/0002", rawScore: null, status: "DRAFT" },
+-    { studentId: "s3", firstName: "Chidi", lastName: "Danjuma", admissionNumber: "SUN/0003", rawScore: null, status: "PUBLISHED" },
++    { studentId: "s1", firstName: "Ada", lastName: "Bello", admissionNumber: "SUN/0001", rawScore: null, isAbsent: false, status: "DRAFT" },
++    { studentId: "s2", firstName: "Bola", lastName: "Coker", admissionNumber: "SUN/0002", rawScore: null, isAbsent: false, status: "DRAFT" },
++    { studentId: "s3", firstName: "Chidi", lastName: "Danjuma", admissionNumber: "SUN/0003", rawScore: null, isAbsent: false, status: "PUBLISHED" },
+   ],
+ };
+ 
+-function savedResponse(scores: { studentId: string; rawScore: number | null }[]): SaveGradesGridResponse {
++function savedResponse(scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[]): SaveGradesGridResponse {
+   return {
+     classArmId: "arm1",
+     subjectId: "sub1",
+@@ -40,6 +43,7 @@ function savedResponse(scores: { studentId: string; rawScore: number | null }[])
+     rows: scores.map((s) => ({
+       studentId: s.studentId,
+       rawScore: s.rawScore,
++      isAbsent: s.isAbsent ?? false,
+       totalScore: s.rawScore ?? 0,
+       autoGrade: null,
+       finalGrade: null,
+@@ -68,7 +72,7 @@ describe("ScoreEntryGrid", () => {
+       if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return GRID;
+       throw new Error("unexpected call");
+     });
+-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
++    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+ 
+     expect(await screen.findByLabelText("Score for Ada Bello")).toBeInTheDocument();
+     expect(screen.getByLabelText("Score for Chidi Danjuma")).toBeDisabled();
+@@ -85,7 +89,7 @@ describe("ScoreEntryGrid", () => {
+       throw new Error("unexpected call");
+     });
+     const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000 }} />);
++    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000 }} />);
+ 
+     await user.type(await screen.findByLabelText("Score for Ada Bello"), "12");
+     await user.type(screen.getByLabelText("Score for Bola Coker"), "18");
+@@ -95,8 +99,8 @@ describe("ScoreEntryGrid", () => {
+     const body = (options as { body: { scores: { studentId: string; rawScore: number | null }[] } }).body;
+     expect(body.scores).toEqual(
+       expect.arrayContaining([
+-        { studentId: "s1", rawScore: 12 },
+-        { studentId: "s2", rawScore: 18 },
++        { studentId: "s1", rawScore: 12, isAbsent: false },
++        { studentId: "s2", rawScore: 18, isAbsent: false },
+       ]),
+     );
+     expect(body.scores).toHaveLength(2);
+@@ -114,7 +118,7 @@ describe("ScoreEntryGrid", () => {
+     });
+     const user = userEvent.setup();
+     // debounce longer than the whole test, so only the max-wait ceiling can trigger a flush.
+-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 100000, maxWaitMs: 100 }} />);
++    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 100000, maxWaitMs: 100 }} />);
+ 
+     await user.type(await screen.findByLabelText("Score for Ada Bello"), "5");
+     await waitFor(() => expect(putCalls().length).toBeGreaterThanOrEqual(1), { timeout: 2000 });
+@@ -133,7 +137,7 @@ describe("ScoreEntryGrid", () => {
+       throw new Error("unexpected call");
+     });
+     const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
++    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+ 
+     await user.type(await screen.findByLabelText("Score for Ada Bello"), "9");
+     await waitFor(() => expect(screen.getByLabelText("Saving")).toBeInTheDocument());
+@@ -161,7 +165,7 @@ describe("ScoreEntryGrid", () => {
+       throw new Error("unexpected call");
+     });
+     const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
++    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
+ 
+     const input = await screen.findByLabelText("Score for Ada Bello");
+     await user.type(input, "10");
+@@ -203,7 +207,7 @@ describe("ScoreEntryGrid", () => {
+         throw new Error("unexpected call");
+       });
+ 
+-      renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 100, maxWaitMs: 300 }} />);
++      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 100, maxWaitMs: 300 }} />);
+       await act(async () => {
+         await vi.advanceTimersByTimeAsync(0);
+       });
+@@ -241,7 +245,7 @@ describe("ScoreEntryGrid", () => {
+       });
+ 
+       expect(seenBatches.length).toBe(2);
+-      expect(seenBatches[1]).toEqual([{ studentId: "s2", rawScore: 14 }]);
++      expect(seenBatches[1]).toEqual([{ studentId: "s2", rawScore: 14, isAbsent: false }]);
+       expect(screen.getAllByLabelText("Saved")).toHaveLength(2);
+     } finally {
+       vi.useRealTimers();
+@@ -269,7 +273,7 @@ describe("ScoreEntryGrid", () => {
+       throw new Error("unexpected call");
+     });
+     const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000, errorRetryMs: 50 }} />);
++    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000, errorRetryMs: 50 }} />);
+ 
+     // s2 gets an out-of-range value the client-side check won't catch here
+     // because we're asserting the SERVER-rejection recovery path directly.
+@@ -302,7 +306,7 @@ describe("ScoreEntryGrid", () => {
+       throw new Error("unexpected call");
+     });
+     const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000 }} />);
++    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 150, maxWaitMs: 5000 }} />);
+ 
+     await user.type(await screen.findByLabelText("Score for Ada Bello"), "10");
+     await user.type(screen.getByLabelText("Score for Bola Coker"), "14");
+@@ -321,7 +325,7 @@ describe("ScoreEntryGrid", () => {
+       return savedResponse([]);
+     });
+     const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 5000, maxWaitMs: 5000 }} />);
++    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 5000, maxWaitMs: 5000 }} />);
+ 
+     const first = await screen.findByLabelText("Score for Ada Bello");
+     const second = screen.getByLabelText("Score for Bola Coker");
+@@ -343,11 +347,183 @@ describe("ScoreEntryGrid", () => {
+       return savedResponse([]);
+     });
+     const user = userEvent.setup();
+-    renderWithProviders(<ScoreEntryGrid params={PARAMS} saveQueueTiming={{ debounceMs: 5000, maxWaitMs: 5000 }} />);
++    renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 5000, maxWaitMs: 5000 }} />);
+ 
+     const first = await screen.findByLabelText("Score for Ada Bello");
+     first.focus();
+     await user.tab();
+     expect(screen.getByLabelText("Score for Bola Coker")).toHaveFocus();
+   });
++
++  describe("absent (SPEC_V0.5.md §2.1)", () => {
++    it("pressing A in a focused cell marks it absent — distinct from blank and from 0, and saves isAbsent", async () => {
++      mockedApiRequest.mockImplementation(async (path, options) => {
++        const method = (options as { method?: string })?.method;
++        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
++        if (path === "/api/v1/grades/grid" && method === "PUT") {
++          const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[] } };
++          return savedResponse(body.body.scores);
++        }
++        throw new Error("unexpected call");
++      });
++      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
++
++      const input = await screen.findByLabelText("Score for Ada Bello");
++      input.focus();
++      fireEvent.keyDown(input, { key: "a" });
++
++      expect(input).toHaveValue("Abs");
++      expect(input).toBeDisabled();
++      await waitFor(() =>
++        expect(putCalls().some(([, options]) => {
++          const scores = (options as unknown as { body: { scores: { studentId: string; isAbsent?: boolean }[] } }).body.scores;
++          return scores.some((s) => s.studentId === "s1" && s.isAbsent === true);
++        })).toBe(true),
++      );
++    });
++
++    it("clicking the Abs chip toggles absent the same way as the keyboard shortcut, and pressing A again clears it back to blank (not 0)", async () => {
++      mockedApiRequest.mockImplementation(async (path, options) => {
++        const method = (options as { method?: string })?.method;
++        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
++        if (path === "/api/v1/grades/grid" && method === "PUT") {
++          const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[] } };
++          return savedResponse(body.body.scores);
++        }
++        throw new Error("unexpected call");
++      });
++      const user = userEvent.setup();
++      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
++
++      const input = await screen.findByLabelText("Score for Bola Coker");
++      const chip = screen.getByLabelText("Mark Bola Coker absent (or press A)");
++      await user.click(chip);
++      expect(input).toHaveValue("Abs");
++      expect(chip).toHaveAttribute("aria-pressed", "true");
++      // Let the toggle-on save settle before toggling off — otherwise this
++      // test ends with a pending debounce timer still armed, which fires
++      // during a LATER test against a since-reconfigured mock.
++      await waitFor(() => expect(putCalls().some(([, o]) => (o as unknown as { body: { scores: { studentId: string }[] } }).body.scores.some((s) => s.studentId === "s2"))).toBe(true));
++
++      await user.click(chip);
++      expect(input).not.toHaveValue("Abs");
++      expect(input).toHaveValue("");
++      expect(chip).toHaveAttribute("aria-pressed", "false");
++      expect(input).not.toBeDisabled();
++      await waitFor(() => expect(putCalls().length).toBeGreaterThanOrEqual(2));
++    });
++
++    it("typing a real score after a prior absent mark clears absent (mutual exclusion)", async () => {
++      mockedApiRequest.mockImplementation(async (path, options) => {
++        const method = (options as { method?: string })?.method;
++        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
++        if (path === "/api/v1/grades/grid" && method === "PUT") {
++          const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[] } };
++          return savedResponse(body.body.scores);
++        }
++        throw new Error("unexpected call");
++      });
++      const user = userEvent.setup();
++      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
++
++      const input = await screen.findByLabelText("Score for Ada Bello");
++      input.focus();
++      fireEvent.keyDown(input, { key: "a" });
++      expect(input).toHaveValue("Abs");
++
++      // Toggle absent back off first (matches the component's own
++      // mutual-exclusion design — typing is disabled while Abs is shown).
++      fireEvent.keyDown(input, { key: "a" });
++      await user.type(input, "14");
++      expect(input).toHaveValue("14");
++      expect(input).not.toBeDisabled();
++      await waitFor(() => expect(putCalls().length).toBeGreaterThanOrEqual(1));
++    });
++
++    it("a locked (PUBLISHED) cell ignores the A shortcut entirely", async () => {
++      mockedApiRequest.mockImplementation(async (path, options) => {
++        if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return GRID;
++        throw new Error("unexpected call");
++      });
++      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
++
++      const input = await screen.findByLabelText("Score for Chidi Danjuma");
++      expect(input).toBeDisabled();
++      // A disabled input can't receive keyboard events via userEvent at
++      // all — the guard under test is really the chip, which stays
++      // disabled and non-interactive for a locked row.
++      const chip = screen.getByLabelText("Mark Chidi Danjuma absent (or press A)");
++      expect(chip).toBeDisabled();
++    });
++  });
++
++  describe("term-closed lock (SPEC_V0.5.md §2.3)", () => {
++    const CLOSED_LOCKED_GRID: GradesGridResponse = { ...GRID, termClosed: true, locked: true, unlockReason: null };
++    const CLOSED_UNLOCKED_GRID: GradesGridResponse = {
++      ...GRID,
++      termClosed: true,
++      locked: false,
++      unlockReason: "Parent requested a correction",
++    };
++
++    it("renders locked from load (every row disabled) with the ask-to-unlock message — TEACHER sees no Unlock control", async () => {
++      mockedApiRequest.mockImplementation(async (path, options) => {
++        if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return CLOSED_LOCKED_GRID;
++        throw new Error("unexpected call");
++      });
++      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} />);
++
++      expect(await screen.findByText(/This term is closed for this class and subject/)).toBeInTheDocument();
++      expect(screen.getByLabelText("Score for Ada Bello")).toBeDisabled();
++      expect(screen.getByLabelText("Score for Bola Coker")).toBeDisabled();
++      expect(screen.queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument();
++    });
++
++    it("SCHOOL_ADMIN/PROPRIETOR sees the Unlock control on a locked term, requires a reason, and unlocking makes the grid editable again", async () => {
++      let unlocked = false;
++      mockedApiRequest.mockImplementation(async (path, options) => {
++        const method = (options as { method?: string })?.method;
++        if (path === "/api/v1/grades/grid" && method !== "PUT") return unlocked ? CLOSED_UNLOCKED_GRID : CLOSED_LOCKED_GRID;
++        if (path === "/api/v1/terms/term1/unlock" && method === "POST") {
++          unlocked = true;
++          return { id: "unlock1", schoolId: "s1", termId: "term1", classArmId: "arm1", subjectId: "sub1", reason: "Parent requested a correction", unlockedBy: "u1", unlockedAt: "t", relockedBy: null, relockedAt: null, createdAt: "t", updatedAt: "t" };
++        }
++        throw new Error("unexpected call");
++      });
++      const user = userEvent.setup();
++      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={true} />);
++
++      await screen.findByText(/This term is closed for this class and subject/);
++      await user.click(screen.getByRole("button", { name: "Unlock" }));
++
++      const dialog = await screen.findByRole("dialog");
++      // Reason required (min 3 chars, matching backend validation) — confirm disabled until then.
++      expect(within(dialog).getByRole("button", { name: "Unlock" })).toBeDisabled();
++      const reasonInput = within(dialog).getByLabelText("Reason");
++      await user.type(reasonInput, "Parent requested a correction");
++      expect(reasonInput).toHaveValue("Parent requested a correction");
++      await waitFor(() => expect(within(dialog).getByRole("button", { name: "Unlock" })).not.toBeDisabled());
++      await user.click(within(dialog).getByRole("button", { name: "Unlock" }));
++
++      await waitFor(() => expect(screen.getByText(/Unlocked for editing/)).toBeInTheDocument());
++      expect(screen.getByText(/Parent requested a correction/)).toBeInTheDocument();
++      await waitFor(() => expect(screen.getByLabelText("Score for Ada Bello")).not.toBeDisabled());
++    });
++
++    it("SCHOOL_ADMIN/PROPRIETOR sees Relock on an unlocked slice; TEACHER sees the reason but no Relock control", async () => {
++      mockedApiRequest.mockImplementation(async (path, options) => {
++        if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return CLOSED_UNLOCKED_GRID;
++        throw new Error("unexpected call");
++      });
++      const { unmount } = renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} />);
++      expect(await screen.findByText(/Unlocked for editing/)).toBeInTheDocument();
++      expect(screen.getByText(/Parent requested a correction/)).toBeInTheDocument();
++      expect(screen.queryByRole("button", { name: "Relock" })).not.toBeInTheDocument();
++      expect(screen.getByLabelText("Score for Ada Bello")).not.toBeDisabled();
++      unmount();
++
++      renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={true} />);
++      expect(await screen.findByRole("button", { name: "Relock" })).toBeInTheDocument();
++    });
++  });
+ });
+diff --git a/apps/web/src/features/grades/ScoreEntryGrid.tsx b/apps/web/src/features/grades/ScoreEntryGrid.tsx
+index ba46421..4f39ff4 100644
+--- a/apps/web/src/features/grades/ScoreEntryGrid.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGrid.tsx
+@@ -6,11 +6,14 @@ import { getErrorMessage } from "../../lib/api-client";
+ import { useGradesGrid, type GradesGridParams } from "./use-grades-grid";
+ import { useScoreEntrySaveQueue, type CellState, type ScoreEntrySaveQueueTiming } from "./use-score-entry-save-queue";
+ import { ScoreEntryRow } from "./ScoreEntryRow";
++import { TermLockBanner } from "./TermLockBanner";
+ 
+-const DEFAULT_CELL: CellState = { value: null, serverValue: null, status: "idle" };
++const DEFAULT_CELL: CellState = { value: null, isAbsent: false, serverValue: null, serverIsAbsent: false, status: "idle" };
+ 
+ interface ScoreEntryGridProps {
+   params: GradesGridParams;
++  /** SCHOOL_ADMIN/PROPRIETOR — shows Unlock/Relock on a closed term (SPEC_V0.5.md §2.3); hidden, not disabled, for anyone else. */
++  canManageTermLock: boolean;
+   /** Test-only: overrides the save queue's debounce/max-wait/retry timing. */
+   saveQueueTiming?: ScoreEntrySaveQueueTiming;
+ }
+@@ -20,7 +23,7 @@ interface ScoreEntryGridProps {
+ // (see docs/DECISIONS.md): a flat list of ~100 single-input rows is well
+ // within what React handles natively, and virtualizing would break native
+ // Tab traversal across rows that aren't mounted.
+-export function ScoreEntryGrid({ params, saveQueueTiming }: ScoreEntryGridProps) {
++export function ScoreEntryGrid({ params, canManageTermLock, saveQueueTiming }: ScoreEntryGridProps) {
+   const gridQuery = useGradesGrid(params);
+   const queue = useScoreEntrySaveQueue(params, gridQuery.data, saveQueueTiming);
+   const inputRefs = useRef(new Map<string, HTMLInputElement>());
+@@ -69,10 +72,23 @@ export function ScoreEntryGrid({ params, saveQueueTiming }: ScoreEntryGridProps)
+     );
+   }
+ 
+-  const enteredCount = roster.filter((row) => (queue.cells.get(row.studentId) ?? DEFAULT_CELL).value !== null).length;
++  const enteredCount = roster.filter((row) => {
++    const cell = queue.cells.get(row.studentId) ?? DEFAULT_CELL;
++    return cell.value !== null || cell.isAbsent;
++  }).length;
+ 
+   return (
+     <div className="flex flex-col gap-3">
++      <TermLockBanner
++        termId={params.termId}
++        classArmId={params.classArmId}
++        subjectId={params.subjectId}
++        termClosed={gridQuery.data.termClosed}
++        locked={gridQuery.data.locked}
++        unlockReason={gridQuery.data.unlockReason}
++        canManage={canManageTermLock}
++      />
++
+       <div className="flex items-center justify-between">
+         <p className="text-sm text-muted">
+           {enteredCount} of {roster.length} entered · out of {gridQuery.data.maxScore}
+@@ -91,8 +107,10 @@ export function ScoreEntryGrid({ params, saveQueueTiming }: ScoreEntryGridProps)
+             cellState={queue.cells.get(row.studentId) ?? DEFAULT_CELL}
+             maxScore={gridQuery.data.maxScore}
+             onEdit={queue.onCellEdit}
++            onToggleAbsent={queue.onToggleAbsent}
+             onNavigate={handleNavigate}
+             registerInput={registerInput}
++            termLocked={gridQuery.data.locked}
+           />
+         ))}
+       </div>
+diff --git a/apps/web/src/features/grades/ScoreEntryGridPage.tsx b/apps/web/src/features/grades/ScoreEntryGridPage.tsx
+index bc5eab4..b68a78d 100644
+--- a/apps/web/src/features/grades/ScoreEntryGridPage.tsx
++++ b/apps/web/src/features/grades/ScoreEntryGridPage.tsx
+@@ -189,6 +189,7 @@ export function ScoreEntryGridPage() {
+       {ready ? (
+         <ScoreEntryGrid
+           params={{ classArmId, subjectId, componentId, termId: effectiveTermId }}
++          canManageTermLock={isConfirmedAdmin}
+         />
+       ) : (
+         <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
+diff --git a/apps/web/src/features/grades/ScoreEntryRow.tsx b/apps/web/src/features/grades/ScoreEntryRow.tsx
+index 1f23b43..fe5f60b 100644
+--- a/apps/web/src/features/grades/ScoreEntryRow.tsx
++++ b/apps/web/src/features/grades/ScoreEntryRow.tsx
+@@ -1,5 +1,5 @@
+ import { memo, useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
+-import { AlertTriangle, Check, Circle, Lock } from "lucide-react";
++import { AlertTriangle, Check, Circle, Lock, UserX } from "lucide-react";
+ import { validateGridScore } from "@scholametric/shared";
+ import { Input } from "../../components/ui/input";
+ import { Spinner } from "../../components/ui/spinner";
+@@ -19,8 +19,14 @@ interface ScoreEntryRowProps {
+   cellState: CellState;
+   maxScore: number;
+   onEdit: (studentId: string, value: number | null) => void;
++  onToggleAbsent: (studentId: string) => void;
+   onNavigate: (studentId: string, direction: "next" | "prev") => void;
+   registerInput: (studentId: string, el: HTMLInputElement | null) => void;
++  // Grid-wide (SPEC_V0.5.md §2.3), read LIVE from the grid query on every
++  // render — unlike cellState.status === "locked" (PUBLISHED, sticky from
++  // hydrate), this must track an unlock/relock immediately without a
++  // remount. See use-score-entry-save-queue.ts's HYDRATE comment.
++  termLocked: boolean;
+ }
+ 
+ function formatValue(value: number | null): string {
+@@ -37,8 +43,10 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
+   cellState,
+   maxScore,
+   onEdit,
++  onToggleAbsent,
+   onNavigate,
+   registerInput,
++  termLocked,
+ }: ScoreEntryRowProps) {
+   const inputRef = useRef<HTMLInputElement | null>(null);
+   const [text, setText] = useState(() => formatValue(cellState.value));
+@@ -55,8 +63,10 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
+     }
+   }, [cellState.value]);
+ 
+-  const isLocked = cellState.status === "locked";
+-  const validation = text.trim() === "" ? { isValid: true } : validateGridScore(Number(text), maxScore);
++  const isLocked = cellState.status === "locked" || termLocked;
++  const isAbsent = cellState.isAbsent;
++  const isDisabled = isLocked || isAbsent;
++  const validation = isAbsent || text.trim() === "" ? { isValid: true } : validateGridScore(Number(text), maxScore);
+ 
+   function handleChange(event: ChangeEvent<HTMLInputElement>) {
+     const raw = event.target.value;
+@@ -83,6 +93,16 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
+     } else if (event.key === "ArrowUp") {
+       event.preventDefault();
+       onNavigate(student.studentId, "prev");
++    } else if (event.key === "a" || event.key === "A") {
++      // Keyboard-first absent toggle (SPEC_V0.5.md §2.1) — a letter key is
++      // otherwise inert here (inputMode="decimal", COMPLETE_NUMBER is
++      // digits-only), so this can't collide with numeric entry.
++      event.preventDefault();
++      if (!isLocked) {
++        setText("");
++        lastPropagated.current = null;
++        onToggleAbsent(student.studentId);
++      }
+     }
+   }
+ 
+@@ -91,6 +111,7 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
+       className={cn(
+         "flex flex-col gap-2 border-b border-muted/10 p-3 last:border-0 sm:flex-row sm:items-center sm:gap-4",
+         isLocked && "bg-muted/5",
++        isAbsent && !isLocked && "bg-muted/10",
+       )}
+     >
+       <div className="flex min-w-0 items-center gap-3 sm:w-64 sm:shrink-0">
+@@ -103,7 +124,7 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
+         </div>
+       </div>
+ 
+-      <div className="flex items-center gap-2 sm:w-36">
++      <div className="flex items-center gap-2 sm:w-40">
+         <Input
+           ref={(el) => {
+             inputRef.current = el;
+@@ -112,12 +133,36 @@ export const ScoreEntryRow = memo(function ScoreEntryRow({
+           type="text"
+           inputMode="decimal"
+           aria-label={`Score for ${student.firstName} ${student.lastName}`}
+-          value={text}
+-          disabled={isLocked}
++          value={isAbsent ? "Abs" : text}
++          disabled={isDisabled}
+           onChange={handleChange}
+           onKeyDown={handleKeyDown}
+-          className={cn("w-24", !validation.isValid && "border-danger focus-visible:ring-danger")}
++          className={cn(
++            "w-24",
++            isAbsent && "text-center font-medium text-muted",
++            !validation.isValid && "border-danger focus-visible:ring-danger",
++          )}
+         />
++        <button
++          type="button"
++          tabIndex={-1}
++          disabled={isLocked}
++          onClick={() => {
++            setText("");
++            lastPropagated.current = null;
++            onToggleAbsent(student.studentId);
++          }}
++          aria-label={`Mark ${student.firstName} ${student.lastName} absent (or press A)`}
++          aria-pressed={isAbsent}
++          title="Mark absent (or press A while focused)"
++          className={cn(
++            "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-muted transition-colors",
++            isAbsent ? "border-muted bg-muted/20 text-text" : "border-muted/30 hover:bg-background",
++            isLocked && "cursor-not-allowed opacity-50",
++          )}
++        >
++          <UserX className="h-3.5 w-3.5" aria-hidden="true" />
++        </button>
+         <StatusGlyph status={cellState.status} />
+       </div>
+ 
+@@ -145,7 +190,7 @@ function StatusGlyph({ status }: { status: CellState["status"] }) {
+     case "error":
+       return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-danger" aria-label="Couldn't save, retrying" />;
+     case "locked":
+-      return <Lock className="h-3.5 w-3.5 shrink-0 text-muted" aria-label="Published, locked" />;
++      return <Lock className="h-3.5 w-3.5 shrink-0 text-muted" aria-label="Locked" />;
+     default:
+       return <span className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />;
+   }
+diff --git a/apps/web/src/features/grades/TermLockBanner.tsx b/apps/web/src/features/grades/TermLockBanner.tsx
+new file mode 100644
+index 0000000..c8fc764
+--- /dev/null
++++ b/apps/web/src/features/grades/TermLockBanner.tsx
+@@ -0,0 +1,132 @@
++import { useCallback, useState } from "react";
++import { Lock, Unlock } from "lucide-react";
++import { Button } from "../../components/ui/button";
++import { ConfirmDialog } from "../../components/ConfirmDialog";
++import { Label } from "../../components/ui/label";
++import { Input } from "../../components/ui/input";
++import { getErrorMessage } from "../../lib/api-client";
++import { useUnlockTerm, useRelockTerm } from "../settings/use-terms";
++
++interface TermLockBannerProps {
++  termId: string;
++  classArmId: string;
++  subjectId: string;
++  termClosed: boolean;
++  locked: boolean;
++  unlockReason: string | null;
++  /** SCHOOL_ADMIN/PROPRIETOR — Unlock/Relock controls are HIDDEN, not disabled, for anyone else (TEACHER). */
++  canManage: boolean;
++}
++
++// SPEC_V0.5.md §2.3, v0.5 step 5 — renders directly from GET /grades/grid's
++// termClosed/locked/unlockReason (load-time, never reactive on a 409).
++// Lives right on the grid the need arises on, not a separate settings
++// screen — classArmId/subjectId/termId are already in context here.
++export function TermLockBanner({ termId, classArmId, subjectId, termClosed, locked, unlockReason, canManage }: TermLockBannerProps) {
++  const [unlockOpen, setUnlockOpen] = useState(false);
++  const [relockOpen, setRelockOpen] = useState(false);
++  const [reason, setReason] = useState("");
++  const unlockTerm = useUnlockTerm();
++  const relockTerm = useRelockTerm();
++
++  // Dialog's own focus-restore effect depends on [open, onClose] — an
++  // inline arrow here would be a new reference on every keystroke into
++  // the reason field below (any state change re-renders this component),
++  // re-firing that effect and stealing focus back via its cleanup
++  // (previouslyFocused?.focus()) after the FIRST character typed. Stable
++  // identity via useCallback is required, not just tidiness.
++  const closeUnlock = useCallback(() => {
++    setUnlockOpen(false);
++    setReason("");
++  }, []);
++  const closeRelock = useCallback(() => setRelockOpen(false), []);
++
++  if (!termClosed) return null;
++
++  if (locked) {
++    return (
++      <div className="flex flex-col gap-3 rounded-lg border border-muted/30 bg-muted/5 p-4 sm:flex-row sm:items-center sm:justify-between">
++        <div className="flex items-center gap-2">
++          <Lock className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
++          <p className="text-sm text-text">
++            This term is closed for this class and subject. Ask your principal/proprietor to unlock before editing.
++          </p>
++        </div>
++        {canManage && (
++          <Button type="button" size="sm" variant="outline" onClick={() => setUnlockOpen(true)}>
++            Unlock
++          </Button>
++        )}
++
++        <ConfirmDialog
++          open={unlockOpen}
++          onClose={closeUnlock}
++          onConfirm={() =>
++            unlockTerm.mutate(
++              { termId, input: { classArmId, subjectId, reason } },
++              {
++                onSuccess: () => {
++                  setUnlockOpen(false);
++                  setReason("");
++                },
++              },
++            )
++          }
++          title="Unlock this class and subject"
++          description="Scores can be edited again for this exact class and subject until it's relocked — every edit is still recorded as usual."
++          confirmLabel="Unlock"
++          isConfirming={unlockTerm.isPending}
++          confirmDisabled={reason.trim().length < 3}
++        >
++          <div className="flex flex-col gap-1.5">
++            <Label htmlFor="unlock-reason">Reason</Label>
++            <Input
++              id="unlock-reason"
++              value={reason}
++              onChange={(event) => setReason(event.target.value)}
++              placeholder="e.g. Parent requested a correction"
++              autoComplete="off"
++            />
++          </div>
++          {unlockTerm.isError && (
++            <p role="alert" className="text-sm text-danger">
++              {getErrorMessage(unlockTerm.error)}
++            </p>
++          )}
++        </ConfirmDialog>
++      </div>
++    );
++  }
++
++  return (
++    <div className="flex flex-col gap-3 rounded-lg border border-warning/30 bg-warning/5 p-4 sm:flex-row sm:items-center sm:justify-between">
++      <div className="flex items-center gap-2">
++        <Unlock className="h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
++        <p className="text-sm text-text">
++          Unlocked for editing — reason: <span className="italic">"{unlockReason}"</span>
++        </p>
++      </div>
++      {canManage && (
++        <Button type="button" size="sm" variant="outline" onClick={() => setRelockOpen(true)}>
++          Relock
++        </Button>
++      )}
++
++      <ConfirmDialog
++        open={relockOpen}
++        onClose={closeRelock}
++        onConfirm={() => relockTerm.mutate({ termId, input: { classArmId, subjectId } }, { onSuccess: () => setRelockOpen(false) })}
++        title="Relock this class and subject"
++        description="Scores can no longer be edited for this class and subject until unlocked again."
++        confirmLabel="Relock"
++        isConfirming={relockTerm.isPending}
++      >
++        {relockTerm.isError && (
++          <p role="alert" className="text-sm text-danger">
++            {getErrorMessage(relockTerm.error)}
++          </p>
++        )}
++      </ConfirmDialog>
++    </div>
++  );
++}
+diff --git a/apps/web/src/features/grades/use-score-entry-save-queue.ts b/apps/web/src/features/grades/use-score-entry-save-queue.ts
+index cb31850..7fc22be 100644
+--- a/apps/web/src/features/grades/use-score-entry-save-queue.ts
++++ b/apps/web/src/features/grades/use-score-entry-save-queue.ts
+@@ -8,22 +8,35 @@ export type CellStatus = "idle" | "pending" | "saving" | "saved" | "error" | "lo
+ 
+ export interface CellState {
+   value: number | null;
++  // SPEC_V0.5.md §2.1 — orthogonal to the save-lifecycle status above, not
++  // a seventh status: mirrors the backend's own rawScore/isAbsent mutual
++  // exclusion (a cell can be "pending" AND isAbsent). null value + false =
++  // blank/not-entered; null value + true = "Abs".
++  isAbsent: boolean;
+   serverValue: number | null;
++  serverIsAbsent: boolean;
+   status: CellStatus;
+   error?: string;
+ }
+ 
++interface SentValue {
++  value: number | null;
++  isAbsent: boolean;
++}
++
+ type Action =
+-  | { type: "HYDRATE"; rows: { studentId: string; rawScore: number | null; locked: boolean }[] }
+-  | { type: "EDIT"; studentId: string; value: number | null }
++  | { type: "HYDRATE"; rows: { studentId: string; rawScore: number | null; isAbsent: boolean; locked: boolean }[] }
++  | { type: "EDIT"; studentId: string; value: number | null; isAbsent: boolean }
+   | { type: "FLUSH_START"; studentIds: string[] }
+-  | { type: "FLUSH_SUCCESS"; sent: Map<string, number | null>; results: Map<string, number | null> }
+-  | { type: "FLUSH_ERROR"; sent: Map<string, number | null>; message: string }
++  | { type: "FLUSH_SUCCESS"; sent: Map<string, SentValue>; results: Map<string, SentValue> }
++  | { type: "FLUSH_ERROR"; sent: Map<string, SentValue>; message: string }
+   | { type: "REQUEUE"; studentIds: string[] }
+-  | { type: "LOCK"; studentIds: string[] };
++  | { type: "LOCK"; studentIds: string[]; message?: string };
+ 
+ type State = Map<string, CellState>;
+ 
++const PUBLISHED_LOCK_MESSAGE = "Published — ask an admin to unpublish before editing.";
++
+ function reducer(state: State, action: Action): State {
+   switch (action.type) {
+     case "HYDRATE": {
+@@ -31,7 +44,9 @@ function reducer(state: State, action: Action): State {
+       for (const row of action.rows) {
+         next.set(row.studentId, {
+           value: row.rawScore,
++          isAbsent: row.isAbsent,
+           serverValue: row.rawScore,
++          serverIsAbsent: row.isAbsent,
+           status: row.locked ? "locked" : "idle",
+         });
+       }
+@@ -41,10 +56,11 @@ function reducer(state: State, action: Action): State {
+       const current = state.get(action.studentId);
+       if (!current || current.status === "locked") return state;
+       const next = new Map(state);
+-      const isDirty = action.value !== current.serverValue;
++      const isDirty = action.value !== current.serverValue || action.isAbsent !== current.serverIsAbsent;
+       next.set(action.studentId, {
+         ...current,
+         value: action.value,
++        isAbsent: action.isAbsent,
+         status: isDirty ? "pending" : "idle",
+         error: undefined,
+       });
+@@ -62,9 +78,10 @@ function reducer(state: State, action: Action): State {
+       const next = new Map(state);
+       for (const [id, sentValue] of action.sent) {
+         const current = next.get(id);
+-        if (!current || current.value !== sentValue) continue; // clobber guard: re-edited mid-flight, ignore
+-        const confirmed = action.results.has(id) ? action.results.get(id)! : sentValue;
+-        next.set(id, { ...current, status: "saved", serverValue: confirmed });
++        // clobber guard: re-edited mid-flight, ignore this stale response
++        if (!current || current.value !== sentValue.value || current.isAbsent !== sentValue.isAbsent) continue;
++        const confirmed = action.results.get(id) ?? sentValue;
++        next.set(id, { ...current, status: "saved", serverValue: confirmed.value, serverIsAbsent: confirmed.isAbsent });
+       }
+       return next;
+     }
+@@ -72,7 +89,7 @@ function reducer(state: State, action: Action): State {
+       const next = new Map(state);
+       for (const [id, sentValue] of action.sent) {
+         const current = next.get(id);
+-        if (!current || current.value !== sentValue) continue; // already re-edited; next flush sends the new value
++        if (!current || current.value !== sentValue.value || current.isAbsent !== sentValue.isAbsent) continue; // already re-edited; next flush sends the new value
+         next.set(id, { ...current, status: "error", error: action.message });
+       }
+       return next;
+@@ -93,7 +110,7 @@ function reducer(state: State, action: Action): State {
+           next.set(id, {
+             ...current,
+             status: "locked",
+-            error: "Published — ask an admin to unpublish before editing.",
++            error: action.message ?? PUBLISHED_LOCK_MESSAGE,
+           });
+         }
+       }
+@@ -142,7 +159,22 @@ export function useScoreEntrySaveQueue(
+     hydratedKeyRef.current = key;
+     dispatch({
+       type: "HYDRATE",
+-      rows: grid.rows.map((row) => ({ studentId: row.studentId, rawScore: row.rawScore, locked: row.status === "PUBLISHED" })),
++      // Deliberately NOT folding grid.locked (term-wide) in here —
++      // HYDRATE only runs ONCE per params key (see the guard above, by
++      // design, to protect in-progress edits from a later cache update),
++      // so anything baked in at hydrate time would go stale the moment
++      // an unlock/relock changes grid.locked without a full remount.
++      // Term-wide lock is instead read LIVE from gridQuery.data on every
++      // render (see ScoreEntryGrid) — PUBLISHED-lock is legitimately
++      // "sticky" per student (updated reactively only via the save
++      // queue's own 409 handling), term-lock is grid-wide and must track
++      // the current query data exactly.
++      rows: grid.rows.map((row) => ({
++        studentId: row.studentId,
++        rawScore: row.rawScore,
++        isAbsent: row.isAbsent,
++        locked: row.status === "PUBLISHED",
++      })),
+     });
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [grid, params.classArmId, params.subjectId, params.componentId, params.termId]);
+@@ -163,7 +195,12 @@ export function useScoreEntrySaveQueue(
+   const sendBatch = useCallback(
+     async (studentIds: string[]): Promise<void> => {
+       if (studentIds.length === 0) return;
+-      const sent = new Map(studentIds.map((id) => [id, stateRef.current.get(id)?.value ?? null]));
++      const sent = new Map<string, SentValue>(
++        studentIds.map((id) => {
++          const cell = stateRef.current.get(id);
++          return [id, { value: cell?.value ?? null, isAbsent: cell?.isAbsent ?? false }];
++        }),
++      );
+       dispatch({ type: "FLUSH_START", studentIds });
+ 
+       try {
+@@ -174,21 +211,42 @@ export function useScoreEntrySaveQueue(
+             subjectId: paramsRef.current.subjectId,
+             componentId: paramsRef.current.componentId,
+             termId: paramsRef.current.termId,
+-            scores: studentIds.map((id) => ({ studentId: id, rawScore: sent.get(id) ?? null })),
++            scores: studentIds.map((id) => {
++              const value = sent.get(id)!;
++              return { studentId: id, rawScore: value.value, isAbsent: value.isAbsent };
++            }),
+           },
+         });
+-        const results = new Map(response.rows.map((row) => [row.studentId, row.rawScore]));
++        const results = new Map<string, SentValue>(
++          response.rows.map((row) => [row.studentId, { value: row.rawScore, isAbsent: row.isAbsent }]),
++        );
+         dispatch({ type: "FLUSH_SUCCESS", sent, results });
+         queryClient.setQueryData<GradesGridResponse>(gradesGridQueryKey(paramsRef.current), (old) => {
+           if (!old) return old;
+           return {
+             ...old,
+-            rows: old.rows.map((row) =>
+-              results.has(row.studentId) ? { ...row, rawScore: results.get(row.studentId) ?? null } : row,
+-            ),
++            rows: old.rows.map((row) => {
++              const result = results.get(row.studentId);
++              return result ? { ...row, rawScore: result.value, isAbsent: result.isAbsent } : row;
++            }),
+           };
+         });
+       } catch (error) {
++        if (error instanceof ApiError && error.status === 409 && error.body?.termLocked) {
++          // Whole-slice lock (SPEC_V0.5.md §2.3) — every requested student
++          // in this batch is affected, not just specific ones (unlike the
++          // published-lock case below, term_unlocks isn't per-student). In
++          // practice this is a race: GET /grades/grid already renders
++          // locked-from-load, so reaching this means the term closed or
++          // was relocked while this save was already in flight.
++          dispatch({
++            type: "LOCK",
++            studentIds,
++            message: "This term was just closed. Ask your principal/proprietor to unlock this class and subject before editing.",
++          });
++          return;
++        }
++
+         if (error instanceof ApiError && error.status === 409 && error.body?.lockedStudentIds) {
+           const locked = error.body.lockedStudentIds.filter((id) => studentIds.includes(id));
+           const remaining = studentIds.filter((id) => !locked.includes(id));
+@@ -277,7 +335,21 @@ export function useScoreEntrySaveQueue(
+ 
+   const onCellEdit = useCallback(
+     (studentId: string, value: number | null) => {
+-      dispatch({ type: "EDIT", studentId, value });
++      dispatch({ type: "EDIT", studentId, value, isAbsent: false });
++      scheduleFlush();
++    },
++    [scheduleFlush],
++  );
++
++  // Keyboard-first absent toggle (SPEC_V0.5.md §2.1) — pressing "A" in a
++  // focused cell, or clicking the row's Abs chip. Turning absent ON clears
++  // any typed value (mutual exclusion, same as the backend's CHECK);
++  // turning it OFF returns to a blank, editable cell, not to 0.
++  const onToggleAbsent = useCallback(
++    (studentId: string) => {
++      const current = stateRef.current.get(studentId);
++      if (!current || current.status === "locked") return;
++      dispatch({ type: "EDIT", studentId, value: null, isAbsent: !current.isAbsent });
+       scheduleFlush();
+     },
+     [scheduleFlush],
+@@ -314,6 +386,7 @@ export function useScoreEntrySaveQueue(
+   return {
+     cells: state,
+     onCellEdit,
++    onToggleAbsent,
+     flushNow: attemptFlush,
+     isDirty,
+   };
+diff --git a/apps/web/src/features/settings/CloseTermDialog.tsx b/apps/web/src/features/settings/CloseTermDialog.tsx
+new file mode 100644
+index 0000000..274ade8
+--- /dev/null
++++ b/apps/web/src/features/settings/CloseTermDialog.tsx
+@@ -0,0 +1,95 @@
++import { useState } from "react";
++import type { CloseTermResponse, Term } from "@scholametric/shared";
++import { ConfirmDialog } from "../../components/ConfirmDialog";
++import { Dialog } from "../../components/ui/dialog";
++import { Button } from "../../components/ui/button";
++import { getErrorMessage } from "../../lib/api-client";
++import { useCloseTerm } from "./use-terms";
++
++const TERM_LABELS: Record<string, string> = { FIRST: "First term", SECOND: "Second term", THIRD: "Third term" };
++
++interface CloseTermDialogProps {
++  term: Term | null;
++  onClose: () => void;
++}
++
++// SPEC_V0.5.md §2.3/Q4, v0.5 step 5 — warn-but-allow. The breakdown of
++// what's still unpublished only exists as the close endpoint's OWN
++// response (there's no separate preview call — closing is a one-way
++// action), so this is a two-phase dialog: confirm first, then — without
++// closing — swap to a result view showing what the response returned.
++export function CloseTermDialog({ term, onClose }: CloseTermDialogProps) {
++  const closeTerm = useCloseTerm();
++  const [result, setResult] = useState<CloseTermResponse | null>(null);
++
++  function handleClose() {
++    setResult(null);
++    closeTerm.reset();
++    onClose();
++  }
++
++  if (result) {
++    return (
++      <Dialog open onClose={handleClose} title="Term closed">
++        <div className="flex flex-col gap-4 p-6">
++          <div>
++            <h2 className="text-lg font-semibold text-text">Term closed</h2>
++            <p className="mt-1 text-sm text-muted">
++              {TERM_LABELS[result.name] ?? result.name} is now read-only. Teachers need a principal/proprietor unlock to
++              edit a specific class and subject.
++            </p>
++          </div>
++
++          {result.unpublishedCount > 0 ? (
++            <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-sm text-text">
++              <p>
++                {result.unpublishedCount} result{result.unpublishedCount === 1 ? "" : "s"} across{" "}
++                {result.unpublished.length} class/subject pair{result.unpublished.length === 1 ? "" : "s"}{" "}
++                {result.unpublished.length === 1 ? "is" : "are"} still unpublished.
++              </p>
++              <p className="mt-1 text-xs text-muted">See Review &amp; Publish for exactly which classes and subjects.</p>
++            </div>
++          ) : (
++            <p className="text-sm text-success">Everything was already published — nothing left pending.</p>
++          )}
++
++          <div className="mt-2 flex justify-end">
++            <Button type="button" onClick={handleClose}>
++              Done
++            </Button>
++          </div>
++        </div>
++      </Dialog>
++    );
++  }
++
++  return (
++    <ConfirmDialog
++      open={term !== null}
++      onClose={onClose}
++      onConfirm={() => {
++        if (!term) return;
++        closeTerm.mutate(term.id, { onSuccess: (data) => setResult(data) });
++      }}
++      title="Close term"
++      description={
++        term ? (
++          <>
++            This makes <span className="font-semibold text-text">{TERM_LABELS[term.name] ?? term.name}</span> read-only for
++            teachers. Anything not yet published stays unpublished — you'll see exactly what's still pending once you
++            confirm. A principal/proprietor can unlock a specific class and subject afterward if an edit is needed.
++          </>
++        ) : undefined
++      }
++      confirmLabel="Close term"
++      confirmTone="danger"
++      isConfirming={closeTerm.isPending}
++    >
++      {closeTerm.isError && (
++        <p role="alert" className="text-sm text-danger">
++          {getErrorMessage(closeTerm.error)}
++        </p>
++      )}
++    </ConfirmDialog>
++  );
++}
+diff --git a/apps/web/src/features/settings/TermsSection.test.tsx b/apps/web/src/features/settings/TermsSection.test.tsx
+new file mode 100644
+index 0000000..47e696d
+--- /dev/null
++++ b/apps/web/src/features/settings/TermsSection.test.tsx
+@@ -0,0 +1,131 @@
++import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
++import { screen, cleanup, within, waitFor } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import type { AcademicSession, CloseTermResponse, Paginated, Term } from "@scholametric/shared";
++import { renderWithProviders } from "../../test/render-with-providers";
++import { authStore } from "../../lib/auth-store";
++import { apiRequest } from "../../lib/api-client";
++import { TermsSection } from "./TermsSection";
++
++vi.mock("../../lib/api-client", async (importOriginal) => {
++  const actual = await importOriginal<typeof import("../../lib/api-client")>();
++  return { ...actual, apiRequest: vi.fn() };
++});
++
++const mockedApiRequest = vi.mocked(apiRequest);
++
++function paginated<T>(items: T[]): Paginated<T> {
++  return { items, total: items.length, page: 1, pageSize: 20 };
++}
++
++const SESSION: AcademicSession = {
++  id: "sess1",
++  schoolId: "s1",
++  name: "2026/2027",
++  startsOn: "2026-09-01",
++  endsOn: "2027-07-31",
++  isCurrent: true,
++  createdAt: "t",
++  updatedAt: "t",
++};
++
++const OPEN_TERM: Term = {
++  id: "term1",
++  schoolId: "s1",
++  sessionId: "sess1",
++  name: "FIRST",
++  startsOn: "2026-09-01",
++  endsOn: "2026-12-12",
++  isCurrent: true,
++  closedAt: null,
++  closedBy: null,
++  createdAt: "t",
++  updatedAt: "t",
++};
++
++const CLOSED_TERM: Term = { ...OPEN_TERM, id: "term2", name: "SECOND", isCurrent: false, closedAt: "2027-01-20T09:00:00Z", closedBy: "u1" };
++
++beforeEach(() => {
++  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
++});
++
++afterEach(() => {
++  cleanup();
++  vi.restoreAllMocks();
++  authStore.clear();
++});
++
++// SPEC_V0.5.md §2.3/Q4, v0.5 step 5 — the Close action lives alongside the
++// existing per-term Activate action on the same table row.
++describe("TermsSection — close term", () => {
++  it("closes a term, showing the warn-but-allow unpublished summary from the response (not a separate preview)", async () => {
++    mockedApiRequest.mockImplementation(async (path, options) => {
++      const method = (options as { method?: string })?.method;
++      if (path === "/api/v1/terms" && method !== "POST") return paginated([OPEN_TERM]);
++      if (path === "/api/v1/terms/term1/close" && method === "POST") {
++        const result: CloseTermResponse = {
++          ...OPEN_TERM,
++          closedAt: "2027-01-20T09:00:00Z",
++          closedBy: "u1",
++          unpublishedCount: 3,
++          unpublished: [{ classArmId: "arm1", subjectId: "sub1", draftCount: 1, pendingApprovalCount: 2 }],
++        };
++        return result;
++      }
++      throw new Error(`unexpected call: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderWithProviders(<TermsSection session={SESSION} />);
++
++    const table = await screen.findByRole("table");
++    const row = within(table).getByText("First term").closest("tr");
++    expect(row).not.toBeNull();
++    await user.click(within(row as HTMLElement).getByRole("button", { name: "Close" }));
++
++    const confirmDialog = await screen.findByRole("dialog", { name: "Close term" });
++    expect(within(confirmDialog).getByText(/read-only for teachers/)).toBeInTheDocument();
++    await user.click(within(confirmDialog).getByRole("button", { name: "Close term" }));
++
++    await waitFor(() => expect(screen.getByRole("dialog", { name: "Term closed" })).toBeInTheDocument());
++    const resultDialog = screen.getByRole("dialog", { name: "Term closed" });
++    expect(within(resultDialog).getByText(/3 results across 1 class\/subject pair/)).toBeInTheDocument();
++
++    await user.click(within(resultDialog).getByRole("button", { name: "Done" }));
++    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
++  });
++
++  it("everything already published: the result view says so, not a blank/zero breakdown", async () => {
++    mockedApiRequest.mockImplementation(async (path, options) => {
++      const method = (options as { method?: string })?.method;
++      if (path === "/api/v1/terms" && method !== "POST") return paginated([OPEN_TERM]);
++      if (path === "/api/v1/terms/term1/close" && method === "POST") {
++        const result: CloseTermResponse = { ...OPEN_TERM, closedAt: "t2", closedBy: "u1", unpublishedCount: 0, unpublished: [] };
++        return result;
++      }
++      throw new Error(`unexpected call: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderWithProviders(<TermsSection session={SESSION} />);
++
++    const table = await screen.findByRole("table");
++    const row = within(table).getByText("First term").closest("tr");
++    await user.click(within(row as HTMLElement).getByRole("button", { name: "Close" }));
++    const confirmDialog = await screen.findByRole("dialog", { name: "Close term" });
++    await user.click(within(confirmDialog).getByRole("button", { name: "Close term" }));
++
++    await waitFor(() => expect(screen.getByText(/Everything was already published/)).toBeInTheDocument());
++  });
++
++  it("an already-closed term shows a Closed badge and no Close action", async () => {
++    mockedApiRequest.mockImplementation(async (path, options) => {
++      if (path === "/api/v1/terms" && (options as { method?: string })?.method !== "POST") return paginated([CLOSED_TERM]);
++      throw new Error(`unexpected call: ${path}`);
++    });
++    renderWithProviders(<TermsSection session={SESSION} />);
++
++    const table = await screen.findByRole("table");
++    const row = within(table).getByText("Second term").closest("tr") as HTMLElement;
++    expect(within(row).getByText("Closed")).toBeInTheDocument();
++    expect(within(row).queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
++  });
++});
+diff --git a/apps/web/src/features/settings/TermsSection.tsx b/apps/web/src/features/settings/TermsSection.tsx
+index e383ebb..c575f25 100644
+--- a/apps/web/src/features/settings/TermsSection.tsx
++++ b/apps/web/src/features/settings/TermsSection.tsx
+@@ -1,5 +1,5 @@
+ import { useState } from "react";
+-import { PlayCircle } from "lucide-react";
++import { PlayCircle, Lock } from "lucide-react";
+ import type { AcademicSession, Term } from "@scholametric/shared";
+ import { DataTable, type DataTableColumn } from "../../components/DataTable";
+ import { Button } from "../../components/ui/button";
+@@ -9,6 +9,7 @@ import { formatDate } from "../../lib/format-date";
+ import { getErrorMessage } from "../../lib/api-client";
+ import { useTerms, useActivateTerm } from "./use-terms";
+ import { CreateTermDialog } from "./CreateTermDialog";
++import { CloseTermDialog } from "./CloseTermDialog";
+ 
+ const TERM_LABELS: Record<string, string> = { FIRST: "First term", SECOND: "Second term", THIRD: "Third term" };
+ 
+@@ -22,12 +23,18 @@ export function TermsSection({ session }: TermsSectionProps) {
+   const activateTerm = useActivateTerm();
+   const [createOpen, setCreateOpen] = useState(false);
+   const [activating, setActivating] = useState<Term | null>(null);
++  const [closing, setClosing] = useState<Term | null>(null);
+ 
+   function openActivate(event: React.MouseEvent, term: Term) {
+     event.stopPropagation();
+     setActivating(term);
+   }
+ 
++  function openClose(event: React.MouseEvent, term: Term) {
++    event.stopPropagation();
++    setClosing(term);
++  }
++
+   const columns: DataTableColumn<Term>[] = [
+     { key: "name", header: "Term", cell: (row) => TERM_LABELS[row.name] ?? row.name },
+     { key: "startsOn", header: "Starts", cell: (row) => formatDate(row.startsOn) },
+@@ -35,17 +42,30 @@ export function TermsSection({ session }: TermsSectionProps) {
+     {
+       key: "status",
+       header: "Status",
+-      cell: (row) => (row.isCurrent ? <StatusBadge label="Current" tone="success" /> : null),
++      cell: (row) => (
++        <div className="flex items-center gap-1.5">
++          {row.isCurrent && <StatusBadge label="Current" tone="success" />}
++          {row.closedAt && <StatusBadge label="Closed" tone="neutral" />}
++        </div>
++      ),
+     },
+     {
+       key: "actions",
+       header: "",
+-      cell: (row) =>
+-        !row.isCurrent ? (
+-          <Button type="button" variant="outline" size="sm" onClick={(event) => openActivate(event, row)}>
+-            <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" /> Activate
+-          </Button>
+-        ) : null,
++      cell: (row) => (
++        <div className="flex items-center gap-2">
++          {!row.isCurrent && (
++            <Button type="button" variant="outline" size="sm" onClick={(event) => openActivate(event, row)}>
++              <PlayCircle className="mr-2 h-4 w-4" aria-hidden="true" /> Activate
++            </Button>
++          )}
++          {!row.closedAt && (
++            <Button type="button" variant="outline" size="sm" onClick={(event) => openClose(event, row)}>
++              <Lock className="mr-2 h-4 w-4" aria-hidden="true" /> Close
++            </Button>
++          )}
++        </div>
++      ),
+     },
+   ];
+ 
+@@ -82,27 +102,32 @@ export function TermsSection({ session }: TermsSectionProps) {
+           <div className="flex flex-col gap-1">
+             <div className="flex items-center justify-between">
+               <p className="font-medium text-text">{TERM_LABELS[row.name] ?? row.name}</p>
+-              {row.isCurrent && <StatusBadge label="Current" tone="success" />}
++              <div className="flex items-center gap-1.5">
++                {row.isCurrent && <StatusBadge label="Current" tone="success" />}
++                {row.closedAt && <StatusBadge label="Closed" tone="neutral" />}
++              </div>
+             </div>
+             <p className="text-sm text-muted">
+               {formatDate(row.startsOn)} – {formatDate(row.endsOn)}
+             </p>
+-            {!row.isCurrent && (
+-              <Button
+-                type="button"
+-                variant="outline"
+-                size="sm"
+-                className="mt-1 self-start"
+-                onClick={(event) => openActivate(event, row)}
+-              >
+-                Activate
+-              </Button>
+-            )}
++            <div className="mt-1 flex gap-2">
++              {!row.isCurrent && (
++                <Button type="button" variant="outline" size="sm" onClick={(event) => openActivate(event, row)}>
++                  Activate
++                </Button>
++              )}
++              {!row.closedAt && (
++                <Button type="button" variant="outline" size="sm" onClick={(event) => openClose(event, row)}>
++                  Close
++                </Button>
++              )}
++            </div>
+           </div>
+         )}
+       />
+ 
+       <CreateTermDialog sessionId={session.id} open={createOpen} onClose={() => setCreateOpen(false)} />
++      <CloseTermDialog term={closing} onClose={() => setClosing(null)} />
+ 
+       <ConfirmDialog
+         open={activating !== null}
+diff --git a/apps/web/src/features/settings/use-terms.ts b/apps/web/src/features/settings/use-terms.ts
+index f2fbbe9..0a5ec1f 100644
+--- a/apps/web/src/features/settings/use-terms.ts
++++ b/apps/web/src/features/settings/use-terms.ts
+@@ -1,5 +1,5 @@
+ import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+-import type { CreateTermInput, Paginated, Term } from "@scholametric/shared";
++import type { CloseTermResponse, CreateTermInput, Paginated, RelockTermInput, Term, TermUnlock, UnlockTermInput } from "@scholametric/shared";
+ import { apiRequest } from "../../lib/api-client";
+ 
+ // GET /terms is admin-only server-side — see useSessions' matching comment.
+@@ -33,3 +33,42 @@ export function useActivateTerm() {
+     },
+   });
+ }
++
++// SPEC_V0.5.md §2.3, v0.5 step 5. Warn-but-allow (Q4) — the response
++// itself carries what's still unpublished, not a separate preview call.
++export function useCloseTerm() {
++  const queryClient = useQueryClient();
++  return useMutation({
++    mutationFn: (id: string) => apiRequest<CloseTermResponse>(`/api/v1/terms/${id}/close`, { method: "POST" }),
++    onSuccess: (data) => {
++      queryClient.invalidateQueries({ queryKey: ["terms", data.sessionId] });
++      // Broad, not keyed to one params tuple — any currently-open score-
++      // entry grid needs to re-fetch and pick up its new locked state,
++      // and this mutation doesn't know which grids (if any) are open.
++      queryClient.invalidateQueries({ queryKey: ["grades", "grid"] });
++      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
++    },
++  });
++}
++
++export function useUnlockTerm() {
++  const queryClient = useQueryClient();
++  return useMutation({
++    mutationFn: ({ termId, input }: { termId: string; input: UnlockTermInput }) =>
++      apiRequest<TermUnlock>(`/api/v1/terms/${termId}/unlock`, { method: "POST", body: input }),
++    onSuccess: () => {
++      queryClient.invalidateQueries({ queryKey: ["grades", "grid"] });
++    },
++  });
++}
++
++export function useRelockTerm() {
++  const queryClient = useQueryClient();
++  return useMutation({
++    mutationFn: ({ termId, input }: { termId: string; input: RelockTermInput }) =>
++      apiRequest<TermUnlock>(`/api/v1/terms/${termId}/relock`, { method: "POST", body: input }),
++    onSuccess: () => {
++      queryClient.invalidateQueries({ queryKey: ["grades", "grid"] });
++    },
++  });
++}
+diff --git a/apps/web/src/features/students/StudentResultsTab.test.tsx b/apps/web/src/features/students/StudentResultsTab.test.tsx
+index eb20c9c..12e20dd 100644
+--- a/apps/web/src/features/students/StudentResultsTab.test.tsx
++++ b/apps/web/src/features/students/StudentResultsTab.test.tsx
+@@ -33,7 +33,7 @@ const SESSIONS: Paginated<AcademicSession> = {
+   pageSize: 50,
+ };
+ const TERMS: Paginated<Term> = {
+-  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, createdAt: "t", updatedAt: "t" }],
++  items: [{ id: "term1", schoolId: "s1", sessionId: "sess1", name: "FIRST", startsOn: "2026-09-01", endsOn: "2026-12-15", isCurrent: true, closedAt: null, closedBy: null, createdAt: "t", updatedAt: "t" }],
+   total: 1,
+   page: 1,
+   pageSize: 20,
+diff --git a/docs/DECISIONS.md b/docs/DECISIONS.md
+index d95e870..ff87950 100644
+--- a/docs/DECISIONS.md
++++ b/docs/DECISIONS.md
+@@ -2778,3 +2778,99 @@ teacher writing the principal remark), cross-tenant 404 on all three,
+ upsert round-trip + clear + one-sided-isolation. Full suite green (294
+ tests) on the existing stack; typecheck + lint clean. No migration —
+ schema untouched, as scoped. No web changes — API only, step 6's job.
++
++## 2026-08-17 — v0.5 step 5: web — absent in the grid + completeness-gate UI + term close/unlock UI
++
++**Closed-term grid indicator — render-from-load, a real (small) API
++change.** `GET /grades/grid` gains `termClosed`/`locked`/`unlockReason`,
++computed by a new `resolveSliceLockState` helper shared with `saveGrid`'s
++existing check (refactored to call it too) so the two can never drift on
++what "locked" means — same principle as step 3's `termLockKey` extraction.
++Proven at the source with a 4-case API e2e (open / closed-no-unlock /
++closed-with-unlock / per-slice isolation), same discipline as v0.4's
++status field. `saveGrid`'s closed-term 409 also gained a structured
++`termLocked: true` body field, mirroring `lockedStudentIds` — the save
++queue only ever reaches this in a genuine race (grid loaded open, then
++closed/relocked mid-edit), since the grid already renders locked-from-load.
++
++**Absent is a flag orthogonal to the six cell-lifecycle states, not a
++seventh.** `CellState` gained `isAbsent`/`serverIsAbsent`, mirroring the
++backend's own `rawScore`/`isAbsent` mutual exclusion. Keyboard-first: `A`
++while focused toggles it (a letter key was already inert in the
++`inputMode="decimal"` field, so no collision), clearing any typed value;
++a compact chip (`tabIndex={-1}`, click/discovery only, not a new Tab stop)
++mirrors the same toggle for mouse users. Renders as a disabled input
++showing fixed "Abs" text, `bg-muted/10`/`UserX` icon — deliberately a
++different icon from the `Lock` used for published/term-locked cells, so
++"not currently typeable" never looks like one single state.
++
++**Term-wide lock is read LIVE from the grid query on every render, NOT
++baked into cellState at hydrate time — this was a real bug caught by a
++test, not a design guess.** `HYDRATE` only fires once per params key (by
++design, to protect in-progress edits from an unrelated cache update); an
++initial implementation folded `grid.locked` into each row's hydrate-time
++`locked` flag, which meant a successful unlock (a cache invalidation +
++refetch with the SAME params key) never re-hydrated and the grid stayed
++visually locked forever. Fixed by keeping `HYDRATE`'s per-row `locked`
++exactly as before (PUBLISHED only — legitimately sticky, updated
++reactively only via the save queue's own 409 handling) and passing
++`termLocked` as a separate LIVE prop from `ScoreEntryGrid` straight off
++`gridQuery.data.locked` into every `ScoreEntryRow`.
++
++**A real, pre-existing focus-stealing bug in `Dialog`, found and fixed
++while building the Unlock reason input.** `Dialog`'s internal effect
++depends on `[open, onClose]` and its cleanup calls
++`previouslyFocused?.focus()`. Every existing `ConfirmDialog` caller passes
++an inline `onClose` arrow function — harmless everywhere else, since none
++of them have a text field a user types into while the parent re-renders.
++`TermLockBanner`'s reason `<Input>` is the first one that does: each
++keystroke re-renders the parent (controlled input), an inline `onClose`
++is a new reference every time, the effect re-fires, and its cleanup
++yanks focus back to whatever was focused before the dialog opened — after
++exactly one character. Fixed narrowly in `TermLockBanner` (`useCallback`
++for `onClose`, not touching the shared `Dialog`/`ConfirmDialog`
++primitives) rather than reworking the shared components' effect
++dependencies, per "extend, never rewrite" — but this same fragility is
++latent in every other `ConfirmDialog` usage in this app; noted here for
++whoever next adds a text field inside one.
++
++**Completeness-gate UI is a defensive fallback, not the primary
++mechanism — `canPublish` already disables the button correctly (step 2).**
++The only realistic way to hit `incompleteEntries` in the UI is the same
++kind of race as the term-lock 409: review data was fetched showing
++`canPublish: true`, then something changed before the click landed.
++`PublishConfirmDialog`'s error area branches on `error.body?.incompleteEntries`
++and groups by `componentId` (via the already-available assessment
++components list) into counts — "CA 1: 1 student, Exam: 2 students" — not
++per-student names, deliberately: a roster-with-names join would add a new
++fetch dependency to `ReviewPublishPage` for what's a rare-path fallback;
++component-level grouping is enough to say WHERE to go look. The Publish
++button's disabled tooltip was widened to a single honest combined
++message instead of adding a new `canPublish`-reason field to
++`GradesReviewSubject` — deliberately the smaller API surface for a
++cosmetic distinction.
++
++**Term close/unlock/relock UI, placement**: Close lives on the existing
++`TermsSection` (Settings → Academic), next to Activate — a two-phase
++`ConfirmDialog` → result `Dialog` (not a single dialog swapping its own
++footer), since the unpublished breakdown only exists as the close
++endpoint's own response, not a separate preview call; the result view
++shows counts only (no class/subject names — `TermsSection` doesn't have
++that data loaded, and joining it in would be scope creep for a summary
++whose job is "go check Review & Publish for detail"). Unlock/Relock live
++directly on the score-entry grid (`TermLockBanner`), not a separate
++screen — classArmId/subjectId/termId are already in context there, and
++that's where the need to unlock actually arises. Both hidden (not
++disabled) for TEACHER, per the standing pattern (`canManage` prop, same
++shape as `ReviewPublishPage`'s `canUnpublish`).
++
++**Proof**: 11 new Vitest tests (absent toggle/render/mutual-exclusion/
++locked-ignores-A in `ScoreEntryGrid.test.tsx`, the term-lock banner's
++three visibility states, the completeness-gate fallback in
++`ReviewPublishPage.test.tsx`, the two-phase close dialog in a new
++`TermsSection.test.tsx`) — 137 total, up from 126. 4 new API e2e for the
++grid indicator — 298 backend e2e unaffected otherwise. Full `pnpm run ci`
++green on a freshly rebuilt, freshly seeded stack; typecheck + lint clean
++across the monorepo; a chromium-cli live-stack walk covering the full
++mark-absent → completeness-gate → close-as-principal →
++teacher-sees-locked → unlock → edit → relock → blocked-again sequence.
+diff --git a/packages/shared/src/academic.ts b/packages/shared/src/academic.ts
+index d68bbce..c049953 100644
+--- a/packages/shared/src/academic.ts
++++ b/packages/shared/src/academic.ts
+@@ -22,10 +22,59 @@ export interface Term {
+   startsOn: string;
+   endsOn: string;
+   isCurrent: boolean;
++  // SPEC_V0.5.md §2.3 (v0.5 step 1/3) — null = open. Set by a deliberate
++  // principal/proprietor close action; there is no "reopen the whole
++  // term" concept — editing a closed term happens per class-arm+subject
++  // via TermUnlock below.
++  closedAt: string | null;
++  closedBy: string | null;
+   createdAt: string;
+   updatedAt: string;
+ }
+ 
++// SPEC_V0.5.md §2.3/Q3 (v0.5 step 3) — one row per unlock/relock episode,
++// not a flag. "Currently active" = relockedAt === null.
++export interface TermUnlock {
++  id: string;
++  schoolId: string;
++  termId: string;
++  classArmId: string;
++  subjectId: string;
++  reason: string;
++  unlockedBy: string;
++  unlockedAt: string;
++  relockedBy: string | null;
++  relockedAt: string | null;
++  createdAt: string;
++  updatedAt: string;
++}
++
++export interface UnpublishedBreakdownRow {
++  classArmId: string;
++  subjectId: string;
++  draftCount: number;
++  pendingApprovalCount: number;
++}
++
++// POST /terms/:id/close's response (Q4 — warn-but-allow): the term row
++// plus what's still unpublished, grouped. Ids only, no name joins — the
++// caller already has its own classes/subjects lists to resolve names.
++export interface CloseTermResponse extends Term {
++  unpublishedCount: number;
++  unpublished: UnpublishedBreakdownRow[];
++}
++
++export interface UnlockTermInput {
++  classArmId: string;
++  subjectId: string;
++  reason: string;
++}
++
++export interface RelockTermInput {
++  classArmId: string;
++  subjectId: string;
++}
++
+ // ClassLevel/ClassArm are already exported from ./students (the trimmed
+ // shape used by Student.currentEnrollment) — reused here rather than
+ // redeclared to avoid an ambiguous-export collision.
+diff --git a/packages/shared/src/api-error.ts b/packages/shared/src/api-error.ts
+index b306193..0af02ba 100644
+--- a/packages/shared/src/api-error.ts
++++ b/packages/shared/src/api-error.ts
+@@ -1,3 +1,5 @@
++import type { IncompleteEntry } from "./grades";
++
+ /** Matches the API's global exception filter envelope (apps/api/src/common/filters). */
+ export interface ApiErrorBody {
+   statusCode: number;
+@@ -10,4 +12,11 @@ export interface ApiErrorBody {
+   // 409 published-lock is the only current source, naming exactly which
+   // students are locked so a caller doesn't have to guess.
+   lockedStudentIds?: string[];
++  // publish()'s completeness-gate 409 (SPEC_V0.5.md §2.2, v0.5 step 2) —
++  // a rare race case in practice, since canPublish already disables the
++  // Publish button in the common case (v0.5 step 5).
++  incompleteEntries?: IncompleteEntry[];
++  // saveGrid's closed-term 409 (SPEC_V0.5.md §2.3, v0.5 step 3/5) — also a
++  // race case, since GET /grades/grid already renders locked-from-load.
++  termLocked?: boolean;
+ }
+diff --git a/packages/shared/src/grades.ts b/packages/shared/src/grades.ts
+index 2f5d710..6b75e3f 100644
+--- a/packages/shared/src/grades.ts
++++ b/packages/shared/src/grades.ts
+@@ -11,6 +11,9 @@ export interface GradesGridRow {
+   lastName: string;
+   admissionNumber: string;
+   rawScore: number | null;
++  // SPEC_V0.5.md §2.1 — mutually exclusive with rawScore (never both set).
++  // null+false = blank/not-entered; null+true = "Abs".
++  isAbsent: boolean;
+   // Subject-level status (not component-level) — a PUBLISHED row is
+   // read-only regardless of which component this grid is viewing. Can be
+   // genuinely mixed within one grid (staggered scoring/publishing).
+@@ -24,12 +27,21 @@ export interface GradesGridResponse {
+   termId: string;
+   maxScore: number;
+   requiresApproval: boolean;
++  // SPEC_V0.5.md §2.3, v0.5 step 5 — lets the grid render locked/read-only
++  // FROM LOAD, not reactively on a saveGrid 409. termClosed=false always
++  // implies locked=false. unlockReason is populated only when
++  // termClosed && !locked (an active unlock exists for this exact
++  // class-arm+subject).
++  termClosed: boolean;
++  locked: boolean;
++  unlockReason: string | null;
+   rows: GradesGridRow[];
+ }
+ 
+ export interface SavedGridRow {
+   studentId: string;
+   rawScore: number | null;
++  isAbsent: boolean;
+   totalScore: number;
+   autoGrade: string | null;
+   finalGrade: string | null;
+@@ -48,6 +60,16 @@ export interface SaveGradesGridResponse {
+ export interface GridScoreItem {
+   studentId: string;
+   rawScore: number | null;
++  isAbsent?: boolean;
++}
++
++// The publish() 409's own structured field (SPEC_V0.5.md §2.2, v0.5 step
++// 2) — parallel to ApiErrorBody.lockedStudentIds but a different meaning:
++// locked = already published, blocking further writes; incomplete = not
++// yet publishable (a candidate has a blank component).
++export interface IncompleteEntry {
++  studentId: string;
++  componentId: string;
+ }
+ 
+ // Mirrors GradesService.publish()/unpublish()/override() (v0.4 step 3 —
