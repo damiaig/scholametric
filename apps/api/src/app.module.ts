@@ -22,9 +22,9 @@ import { SubjectsModule } from "./subjects/subjects.module";
 import { ClassesModule } from "./classes/classes.module";
 import { AuditLogsModule } from "./audit-logs/audit-logs.module";
 import { MeModule } from "./me/me.module";
-import { AssessmentComponentsModule } from "./assessment-components/assessment-components.module";
 import { GradeBoundariesModule } from "./grade-boundaries/grade-boundaries.module";
 import { GradesModule } from "./grades/grades.module";
+import { ExamsModule } from "./exams/exams.module";
 import { PortalAccountsModule } from "./portal-accounts/portal-accounts.module";
 import { TenantModule } from "./common/tenant/tenant.module";
 import { AppThrottlerGuard } from "./common/guards/app-throttler.guard";
@@ -62,9 +62,9 @@ import { AuditInterceptor } from "./common/interceptors/audit.interceptor";
     ClassesModule,
     AuditLogsModule,
     MeModule,
-    AssessmentComponentsModule,
     GradeBoundariesModule,
     GradesModule,
+    ExamsModule,
     PortalAccountsModule,
   ],
   providers: [

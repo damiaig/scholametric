@@ -25,9 +25,6 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
   let sunriseTermId: string;
   let studentArmId: string;
   let studentArmCreated = false;
-  let ca1Id: string;
-  let ca2Id: string;
-  let examId: string;
 
   let subjectX: string; // published for both A and B, different scores -> distinct positions
   let subjectY: string; // A only, left DRAFT -> keeps A's overall from completing
@@ -57,7 +54,18 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     return subject.id;
   }
 
-  async function score(subjectId: string, componentId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
+  // v0.7 step 1 (SPEC_V0.7.md §2/§5): evaluations replace the fixed
+  // CA1/CA2/Exam components — created directly via Prisma (no
+  // create-evaluation HTTP endpoint yet, Step 2).
+  async function createEvaluation(subjectId: string, name: string): Promise<string> {
+    const subjectTeacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
+    const evaluation = await prisma.evaluation.create({
+      data: { schoolId: sunriseId, classArmId: studentArmId, subjectId, sessionId: sunriseSessionId, termId: sunriseTermId, name, description: name, createdBy: subjectTeacher.id },
+    });
+    return evaluation.id;
+  }
+
+  async function score(subjectId: string, evaluationId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
     const subjectTeacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
     await prisma.subjectTeacherAssignment.upsert({
       where: { subjectId_classArmId_sessionId: { subjectId, classArmId: studentArmId, sessionId: sunriseSessionId } },
@@ -65,9 +73,9 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       create: { schoolId: sunriseId, subjectId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: subjectTeacher.id },
     });
     const response = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send({ classArmId: studentArmId, subjectId, componentId, termId: sunriseTermId, scores });
+      .send({ classArmId: studentArmId, subjectId, evaluationId, termId: sunriseTermId, scores });
     if (response.status !== 200) {
       throw new Error(`score failed: ${response.status} ${JSON.stringify(response.body)}`);
     }
@@ -135,11 +143,6 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     sunriseSessionId = session.id;
     sunriseTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: sunriseSessionId, name: "FIRST" } })).id;
 
-    const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
-    ca1Id = components[0].id;
-    ca2Id = components[1].id;
-    examId = components[2].id;
-
     const jss3 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 3" } });
     studentArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss3.id, name: `E2E-MeStudent-${Date.now()}` } })).id;
     studentArmCreated = true;
@@ -151,20 +154,29 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     subjectX = await createSunriseSubject("E2E MeStudent SubjectX");
     subjectY = await createSunriseSubject("E2E MeStudent SubjectY");
 
-    // subjectX: both A and B scored + published — A higher (position 1),
-    // B lower (position 2). One absent component on A, exercising the same
-    // "Abs vs blank vs real score" distinction report-card.e2e-spec.ts
-    // already proves for staff — proving it survives the STUDENT filter too.
-    await score(subjectX, ca1Id, [{ studentId: studentAId, rawScore: 18 }, { studentId: studentBId, rawScore: 12 }]);
-    await score(subjectX, ca2Id, [{ studentId: studentAId, isAbsent: true }, { studentId: studentBId, rawScore: 10 }]);
-    await score(subjectX, examId, [{ studentId: studentAId, rawScore: 55 }, { studentId: studentBId, rawScore: 40 }]);
+    // subjectX: both A and B scored (all 3 evaluations decided, one
+    // absence each — completeness gate) + published — A higher (51,
+    // position 1), B lower (46, position 2). One ABSENT evaluation each,
+    // exercising the same "Abs vs blank vs real score" distinction
+    // report-card.e2e-spec.ts already proves for staff — proving it
+    // survives the STUDENT filter too.
+    const [xEval1, xEval2, xEval3] = await Promise.all([
+      createEvaluation(subjectX, "CA 1"),
+      createEvaluation(subjectX, "CA 2"),
+      createEvaluation(subjectX, "CA 3"),
+    ]);
+    await score(subjectX, xEval1, [{ studentId: studentAId, rawScore: 18 }, { studentId: studentBId, rawScore: 12 }]);
+    await score(subjectX, xEval2, [{ studentId: studentAId, isAbsent: true }, { studentId: studentBId, isAbsent: true }]);
+    await score(subjectX, xEval3, [{ studentId: studentAId, rawScore: 84 }, { studentId: studentBId, rawScore: 80 }]);
+    // A: (18+84)/2=51 (eval2 absent, excluded). B: (12+80)/2=46.
     await publish(subjectX);
 
-    // subjectY: A only, CA1 scored, CA2/Exam never touched -> DRAFT,
-    // never published. This is what keeps A's OVERALL from ever reaching
-    // PUBLISHED (computeOverallStatus requires EVERY subject published) —
-    // the exact coupling verified in grade-computation.ts before building.
-    await score(subjectY, ca1Id, [{ studentId: studentAId, rawScore: 10 }]);
+    // subjectY: A only, one evaluation scored -> DRAFT, never published.
+    // This is what keeps A's OVERALL from ever reaching PUBLISHED
+    // (computeOverallStatus requires EVERY subject published) — the exact
+    // coupling verified in grade-computation.ts before building.
+    const yEval1 = await createEvaluation(subjectY, "CA 1");
+    await score(subjectY, yEval1, [{ studentId: studentAId, rawScore: 10 }]);
 
     // B has ONLY subjectX, which is published -> computeOverallStatus sees
     // a single PUBLISHED status -> B's overall reaches PUBLISHED too, via
@@ -211,7 +223,9 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } }); // before students — FK
     await prisma.termRemark.deleteMany({ where: { studentId: { in: createdStudentIds } } });
     if (createdSubjectIds.length > 0) {
-      await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+      const evaluations = await prisma.evaluation.findMany({ where: { subjectId: { in: createdSubjectIds } }, select: { id: true } });
+      await prisma.evaluationScore.deleteMany({ where: { evaluationId: { in: evaluations.map((e) => e.id) } } });
+      await prisma.evaluation.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
@@ -239,12 +253,13 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       const subj = response.body.subjects[0];
       expect(subj.subjectId).toBe(subjectX);
       expect(subj.status).toBe("PUBLISHED");
-      expect(subj.totalScore).toBe(51); // 18 + 0 (absent) + 33 (55*0.6)
+      expect(subj.totalScore).toBe(51); // (18 + 84) / 2 — eval2's absence excluded, not averaged as 0
       expect(subj.subjectPosition).toBe(1); // A (51) beats B's total below
 
-      const ca2Row = subj.components.find((c: { componentId: string }) => c.componentId === ca2Id);
-      expect(ca2Row.isAbsent).toBe(true);
-      expect(ca2Row.rawScore).toBeNull();
+      // v0.7 step 1 (SPEC_V0.7.md §4, deferred to step 4): the per-evaluation
+      // breakdown is frozen at [] for now — totalScore/status/position above
+      // are the real proof that the absence was excluded correctly.
+      expect(subj.components).toEqual([]);
     });
 
     it("a DRAFT subject for the SAME student is ABSENT from subjects[], not a hidden/flagged row", async () => {

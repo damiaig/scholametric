@@ -1,6 +1,6 @@
 import { IsUUID } from "class-validator";
 
-export class GetGradesGridQueryDto {
+export class GetEvaluationScoresQueryDto {
   @IsUUID()
   classArmId!: string;
 
@@ -8,7 +8,7 @@ export class GetGradesGridQueryDto {
   subjectId!: string;
 
   @IsUUID()
-  componentId!: string;
+  evaluationId!: string;
 
   @IsUUID()
   termId!: string;

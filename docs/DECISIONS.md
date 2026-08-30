@@ -4190,3 +4190,129 @@ calls, no navigation) and the wrong-current-password path now asserts the
 user stays on the change-password screen with the error visible. Full
 frontend Vitest suite green (36 files/202 tests). Combined with fix 1,
 full `pnpm run ci` green — see below.
+
+## 2026-08-30 — v0.7 step 1: evaluations + exams data model, schema cutover, and the retired PENDING_APPROVAL tier
+
+**Schema cutover, no migration path.** `assessment_components`/
+`student_scores` are dropped entirely (destructive — no pilot-school data
+existed to preserve). `Evaluation`/`EvaluationScore` (Track A) replace
+them; `total_score` is now a plain average of decided evaluation scores
+(`computeEvaluationAverage`), native /100, no weights, no per-row
+`max_score`. `term_subject_results`/`term_overall_results` are otherwise
+UNCHANGED in shape — only their input source changed — so `me.service.ts`
+and every v0.6 portal read path needed zero code changes.
+
+**Exams are a second, fully independent track**, never contributing to
+the evaluation average: `Exam`/`ExamScore` feed their own parallel cache
+tables (`term_subject_exam_results`, `term_exam_results`,
+`year_exam_results`), never `term_subject_results`. Proven directly by
+`exams-engine.e2e-spec.ts`'s cross-track independence test: scoring an
+exam for a student leaves their `term_subject_results.total_score`
+byte-for-byte unchanged.
+
+**No more `PENDING_APPROVAL` at the subject level.** v0.4's
+`computeSubjectStatus` flipped a row to `PENDING_APPROVAL` once an
+approval-required component (Exam) was scored. Evaluations have no such
+concept — a row is `DRAFT` until `POST /grades/publish`/`POST
+/exams/publish` declares it final, full stop. `term_overall_results.status`
+can still read `PENDING_APPROVAL` (a real, unretired value) — that's
+`computeOverallStatus`'s cross-subject read on a mix of a student's
+`DRAFT`/`PUBLISHED` subjects, unrelated to the retired per-subject tier.
+Real trap this caused during the build: a subject reverting from
+`PUBLISHED` to `DRAFT` (via unpublish) no longer passes through an
+intermediate "still decided" state, so a student with exactly ONE
+subject reverts to overall `DRAFT`, not `PENDING_APPROVAL` — that
+distinction only appears once a student has 2+ subjects in a mixed
+state. Two test assertions were written wrong on the first pass and
+caught only by actually running the suite (not by re-reading the code):
+`grades-publish.e2e-spec.ts`'s solo-subject-unpublish case (correctly
+`DRAFT`) and `class-arm-results.e2e-spec.ts`'s two-subject mixed case
+(correctly `PENDING_APPROVAL`) — easy to flip by pattern-matching the
+wrong precedent.
+
+**Completeness gate widened, deliberately** (confirmed): since every
+not-yet-published subject row is now a publish CANDIDATE (no
+`PENDING_APPROVAL` pre-filter to narrow the set), a subject with any
+partially-scored, never-published row will block that subject's ENTIRE
+publish call once any evaluation is genuinely blank — stricter than v0.4,
+where a student who'd only touched non-approval components sat outside
+publish's reach entirely. Accepted as the correct v0.7 behavior, not
+worked around.
+
+**Override is now PROPRIETOR-only, full stop** (a real behavior change,
+confirmed, not a bug): the old `PENDING_APPROVAL` tier let `SCHOOL_ADMIN`
+override a not-yet-published result. With that tier gone, `override()`
+409s on `DRAFT` and 403s on `PUBLISHED` for anyone but `PROPRIETOR` — so
+`SCHOOL_ADMIN` can never reach a state where override succeeds. Existing
+override tests for "allowed while PENDING_APPROVAL by SCHOOL_ADMIN" were
+removed (no longer reachable); the PUBLISHED-then-unpublish-nulls-the-
+override regression test was rewritten against the new reachable path.
+
+**Closed-term protection had to be wired in deliberately** (confirmed
+risk, verified): `EvaluationScore`/`ExamScore` don't inherit
+`resolveSliceLockState`/`TermUnlock` gating automatically just by
+existing — both tracks' save paths explicitly acquire the term lock
+first, and both go through the same shared `resolveSliceLockState`
+(extracted into `grade-shared.util.ts` so the two tracks can't drift).
+`termLockKey` stays one shared key across both tracks (closing a term
+blocks editing either); subject/class-arm lock keys use distinct
+`grades:...`/`exams:...` namespaces so the two tracks never contend with
+each other. Proven directly: `terms.e2e-spec.ts`'s round-trip test
+(evaluation track) and `exams-engine.e2e-spec.ts`'s own closed-term test
+(exam track) each show blocked → principal unlock → allowed → relock →
+blocked again.
+
+**Three rankings, one already free.** (a) class ranking on evaluation
+term average — `term_overall_results.overall_position`, completely
+unchanged mechanism, now fed by evaluations instead of components — zero
+new code. (b) `term_exam_results.exam_position` — new per-term,
+cross-subject exam aggregate, ranked only among students whose exam
+track is fully published across every subject they have a row for that
+term (same all-or-nothing rule as (a)'s own overall). (c)
+`year_exam_results.year_exam_position` — new per-session, whole-year
+aggregate across all three terms' `term_exam_results`, purely derived
+(no manual publish of its own), recomputed progressively as each term
+publishes; a student has no row at all until they have ≥1 published
+term this session, not a `DRAFT` placeholder. Proven by
+`exam-rankings.e2e-spec.ts`, including a lead flip: a student who trailed
+after term 1 alone takes the year lead once term 2 also publishes.
+
+**`prisma migrate dev --create-only` failed non-interactively** ("the
+environment is non-interactive, which is not supported") — the first
+time this repo's migration history hit that specific failure (every
+prior migration ran it successfully). Worked around with `prisma migrate
+diff --from-url <dev-db> --to-schema-datamodel ./prisma/schema.prisma
+--script`, then hand-placed the result into a manually-created migration
+folder. Same known false-positive as every prior migration in this
+repo's history: the diff proposed dropping the hand-added
+`students_first_name_trgm_idx`/`students_last_name_trgm_idx` gin_trgm_ops
+indexes (untracked by schema.prisma's DSL) — removed from the final
+`migration.sql`, verified both indexes survived via direct `psql` query
+post-migration.
+
+**Frontend left untouched, deliberately** (confirmed via explicit
+question, not assumed): `AssessmentStructurePanel`/
+`use-assessment-components.ts` are NOT removed — they now call
+now-410/404'd endpoints and will show error states until Step 2 lands
+authoring UI. `packages/shared`'s `ReportCardComponent[]` type is
+satisfied trivially by the backend now always returning `components: []`
+(deferred to Step 4) — zero frontend/shared-type changes needed for this
+step.
+
+**Retired `test/grades-grid.e2e-spec.ts`, replaced by
+`evaluations-engine.e2e-spec.ts`** rather than deleting outright — the
+retired endpoint's coverage (roster validation, RBAC, published-lock,
+absent handling, DB CHECK canary, audit logging, ~100-student timing)
+carried forward near-verbatim against `/grades/evaluation-scores`, since
+Step 1's confirmed requirement to prove closed-term protection via a
+REAL HTTP endpoint (not a Prisma-direct fixture write) meant a real
+score-write endpoint had to exist anyway, ahead of Step 2's full
+authoring surface.
+
+**Proof**: `pnpm run typecheck`/`pnpm run lint` clean across all three
+workspaces. `pnpm test` (isolated `scholametric_test` DB, never dev) —
+35 suites, 380 tests, all green, including 4 new files
+(`evaluations-engine`, `exams-engine`, `exams-publish`,
+`exam-rankings`). Dev DB re-verified byte-for-byte unaffected after the
+run (`SUN/2026/0001` row and `evaluations`/`term_subject_results` row
+counts identical before/after).

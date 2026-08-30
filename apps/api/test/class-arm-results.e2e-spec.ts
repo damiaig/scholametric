@@ -30,9 +30,6 @@ describe("GET /class-arms/:id/results (e2e)", () => {
   let sunriseTermId: string;
   let resultsArmId: string;
   let partialArmId: string;
-  let ca1Id: string;
-  let ca2Id: string;
-  let examId: string;
   const [s0, s1] = [0, 1];
   let resultsStudentIds: string[];
 
@@ -86,8 +83,23 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     return subject.id;
   }
 
-  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
-  // subject_teacher_assignment for admin too — upsert one (using
+  // v0.7 step 1 (SPEC_V0.7.md §2/§5): evaluations replace the fixed
+  // CA1/CA2/Exam components — plain CA evaluations created directly via
+  // Prisma (no create-evaluation HTTP endpoint yet, Step 2).
+  async function createEvaluations(subjectId: string, classArmId: string, count = 2): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const name = `CA ${i + 1}`;
+      const evaluation = await prisma.evaluation.create({
+        data: { schoolId: sunriseId, classArmId, subjectId, sessionId: sunriseSessionId, termId: sunriseTermId, name, description: name, createdBy: teacherClassId },
+      });
+      ids.push(evaluation.id);
+    }
+    return ids;
+  }
+
+  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/evaluation-scores now 404s
+  // without a subject_teacher_assignment for admin too — upsert one (using
   // teacherClass, who already has full class-teacher access, so this
   // never changes what any relationship-based test below expects) for
   // whatever (subject, arm) pair this particular call targets. Tests that
@@ -96,7 +108,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
   async function score(
     token: string,
     subjectId: string,
-    componentId: string,
+    evaluationId: string,
     scores: { studentId: string; rawScore: number }[],
     classArmId: string,
   ) {
@@ -106,9 +118,9 @@ describe("GET /class-arms/:id/results (e2e)", () => {
       create: { schoolId: sunriseId, subjectId, classArmId, sessionId: sunriseSessionId, teacherUserId: teacherClassId },
     });
     const response = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(token))
-      .send({ classArmId, subjectId, componentId, termId: sunriseTermId, scores });
+      .send({ classArmId, subjectId, evaluationId, termId: sunriseTermId, scores });
     if (response.status !== 200) {
       throw new Error(`score failed: ${response.status} ${JSON.stringify(response.body)}`);
     }
@@ -130,11 +142,6 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     sunriseSessionId = sunriseSession.id;
     sunriseTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: sunriseSessionId, name: "FIRST" } })).id;
 
-    const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
-    ca1Id = components[0].id;
-    ca2Id = components[1].id;
-    examId = components[2].id;
-
     resultsArmId = await createArm("Results");
     resultsStudentIds = await enrollStudents(4, "CAR", resultsArmId);
 
@@ -150,12 +157,14 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     });
     // The teacher-lane subject IS scored — asserted against in the
     // filtering test below.
-    await score(sunriseAdminToken, teacherSubjectSubjectId, ca1Id, [{ studentId: resultsStudentIds[s0], rawScore: 15 }], resultsArmId);
+    const [teacherLaneEval] = await createEvaluations(teacherSubjectSubjectId, resultsArmId, 1);
+    await score(sunriseAdminToken, teacherSubjectSubjectId, teacherLaneEval, [{ studentId: resultsStudentIds[s0], rawScore: 15 }], resultsArmId);
 
     // A second subject, NOT assigned to teacherSubjectToken — proves the
     // filter excludes it, not just includes the assigned one.
     const otherSubjectId = await createSubject("E2E CAR OtherLane");
-    await score(sunriseAdminToken, otherSubjectId, ca1Id, [{ studentId: resultsStudentIds[s0], rawScore: 10 }], resultsArmId);
+    const [otherLaneEval] = await createEvaluations(otherSubjectId, resultsArmId, 1);
+    await score(sunriseAdminToken, otherSubjectId, otherLaneEval, [{ studentId: resultsStudentIds[s0], rawScore: 10 }], resultsArmId);
 
     partialArmId = await createArm("Partial");
     await enrollStudents(2, "CARPartial", partialArmId);
@@ -170,7 +179,9 @@ describe("GET /class-arms/:id/results (e2e)", () => {
 
   afterAll(async () => {
     if (createdSubjectIds.length > 0) {
-      await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+      const evaluations = await prisma.evaluation.findMany({ where: { subjectId: { in: createdSubjectIds } }, select: { id: true } });
+      await prisma.evaluationScore.deleteMany({ where: { evaluationId: { in: evaluations.map((e) => e.id) } } });
+      await prisma.evaluation.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
@@ -189,16 +200,15 @@ describe("GET /class-arms/:id/results (e2e)", () => {
 
   it("ADMIN sees the full shape: all subjects, per-subject class average as a hand-verified letter grade, overall present", async () => {
     const subjectId = await createSubject("E2E CAR HandVerified");
-    // s0 total = 20 (CA1 20/20 *20 weight = 20). s1 total = 10 (CA1 10/20*20=10).
-    // s2, s3 untouched -> excluded from the average denominator.
-    await score(sunriseAdminToken, subjectId, ca1Id, [
-      { studentId: resultsStudentIds[s0], rawScore: 20 },
+    const [eval1, eval2] = await createEvaluations(subjectId, resultsArmId);
+    // s0: eval1=52, eval2=60 -> total (52+60)/2=56 (C5, 55-59).
+    await score(sunriseAdminToken, subjectId, eval1, [
+      { studentId: resultsStudentIds[s0], rawScore: 52 },
       { studentId: resultsStudentIds[s1], rawScore: 10 },
     ], resultsArmId);
-    // Also add an exam score to s0 so a mixed CA+exam total is exercised:
-    // s0: CA1 20/20*20=20, Exam 60/100*60=36 -> total 56 (C5, 55-59).
-    await score(sunriseAdminToken, subjectId, examId, [{ studentId: resultsStudentIds[s0], rawScore: 60 }], resultsArmId);
-    // s1 stays CA1-only: total 10 (F9).
+    await score(sunriseAdminToken, subjectId, eval2, [{ studentId: resultsStudentIds[s0], rawScore: 60 }], resultsArmId);
+    // s1 stays eval1-only: total 10 (F9) — eval2 excluded (not entered, not
+    // absent, silently contributes nothing — computeEvaluationAverage).
     // average = (56 + 10) / 2 = 33 -> F9 (0-39), hand-verified against the
     // seeded WAEC scale (prisma/seed.ts's WAEC_GRADE_BOUNDARIES).
 
@@ -262,61 +272,87 @@ describe("GET /class-arms/:id/results (e2e)", () => {
   it("partial-term: null subjectPosition/overallPosition exactly where unpublished, real values where published", async () => {
     const students = await prisma.studentEnrollment.findMany({ where: { classArmId: partialArmId }, select: { studentId: true } });
     const [p0, p1] = students.map((e) => e.studentId);
-    const subjectId = await createSubject("E2E CAR PartialTerm");
-    await score(sunriseAdminToken, subjectId, ca1Id, [
+
+    // v0.7 step 1 (confirmed): EVERY not-yet-published subject row is a
+    // publish() candidate now (no more PENDING_APPROVAL tier to filter on)
+    // — so a genuinely incomplete row would block the WHOLE subject's
+    // publish, not just sit aside untouched. To keep p0/p1 in mixed
+    // published/unpublished states within ONE class arm, this uses TWO
+    // subjects instead: one fully scored (both students complete) and
+    // published, one only partially scored and left untouched.
+    const publishedSubjectId = await createSubject("E2E CAR PartialTermPublished");
+    const [pubEval1, pubEval2] = await createEvaluations(publishedSubjectId, partialArmId);
+    await score(sunriseAdminToken, publishedSubjectId, pubEval1, [
       { studentId: p0, rawScore: 20 },
       { studentId: p1, rawScore: 10 },
     ], partialArmId);
-    await score(sunriseAdminToken, subjectId, examId, [{ studentId: p0, rawScore: 100 }], partialArmId);
-    await score(sunriseAdminToken, subjectId, ca2Id, [{ studentId: p0, rawScore: 0 }], partialArmId); // completeness gate
-    // p0: PENDING_APPROVAL (exam scored). p1: DRAFT (no exam yet).
+    await score(sunriseAdminToken, publishedSubjectId, pubEval2, [
+      { studentId: p0, rawScore: 20 },
+      { studentId: p1, rawScore: 10 },
+    ], partialArmId);
+    // p0 total 20, p1 total 10 — both complete, both eligible.
+
+    const unpublishedSubjectId = await createSubject("E2E CAR PartialTermUnpublished");
+    const [unpubEval1] = await createEvaluations(unpublishedSubjectId, partialArmId, 2);
+    await score(sunriseAdminToken, unpublishedSubjectId, unpubEval1, [
+      { studentId: p0, rawScore: 5 },
+      { studentId: p1, rawScore: 5 },
+    ], partialArmId);
+    // Only 1 of 2 evaluations scored -> DRAFT, incomplete, never published.
 
     const beforePublish = await request(app.getHttpServer())
       .get(`/api/v1/class-arms/${partialArmId}/results`)
       .query({ termId: sunriseTermId })
       .set(auth(sunriseAdminToken));
-    const subjectBefore = beforePublish.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
-    for (const row of subjectBefore.results) {
+    const publishedSubjectBefore = beforePublish.body.subjects.find((s: { subjectId: string }) => s.subjectId === publishedSubjectId);
+    const unpublishedSubjectBefore = beforePublish.body.subjects.find((s: { subjectId: string }) => s.subjectId === unpublishedSubjectId);
+    for (const row of [...publishedSubjectBefore.results, ...unpublishedSubjectBefore.results]) {
       expect(row.subjectPosition).toBeNull();
     }
     // term_overall_results rows only exist once publish()/unpublish() has
-    // run at least once for this arm+term (saveGrid never touches them) —
-    // before any publish, this is legitimately an empty array, not rows
-    // stuck at a null position.
+    // run at least once for this arm+term (saveEvaluationScores never
+    // touches them) — before any publish, this is legitimately an empty
+    // array, not rows stuck at a null position.
     expect(beforePublish.body.overall).toEqual([]);
 
     const publishRes = await request(app.getHttpServer())
       .post("/api/v1/grades/publish")
       .set(auth(sunriseAdminToken))
-      .send({ classArmId: partialArmId, subjectId, termId: sunriseTermId });
+      .send({ classArmId: partialArmId, subjectId: publishedSubjectId, termId: sunriseTermId });
     expect(publishRes.status).toBe(200);
-    expect(publishRes.body.publishedCount).toBe(1); // only p0 was pending
+    expect(publishRes.body.publishedCount).toBe(2); // both p0 and p1 were complete
 
     const afterPublish = await request(app.getHttpServer())
       .get(`/api/v1/class-arms/${partialArmId}/results`)
       .query({ termId: sunriseTermId })
       .set(auth(sunriseAdminToken));
-    const subjectAfter = afterPublish.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
-    const p0Row = subjectAfter.results.find((r: { studentId: string }) => r.studentId === p0);
-    const p1Row = subjectAfter.results.find((r: { studentId: string }) => r.studentId === p1);
-    expect(p0Row.subjectPosition).toBe(1);
-    expect(p0Row.status).toBe("PUBLISHED");
-    expect(p1Row.subjectPosition).toBeNull(); // still DRAFT — never published
-    expect(p1Row.status).toBe("DRAFT");
-    // p0 has touched exactly ONE subject in this arm, and it's now fully
-    // published — subjects_count counts EXISTING rows, not a curriculum
-    // size (same rule already proven in grades-publish.e2e-spec.ts's
-    // "Overall cascade" suite), so p0's overall is legitimately COMPLETE
-    // and gets a real position, not stuck null. p1 never touched the exam
-    // component at all, so has no term_overall_result row yet.
+    const publishedSubjectAfter = afterPublish.body.subjects.find((s: { subjectId: string }) => s.subjectId === publishedSubjectId);
+    const unpublishedSubjectAfter = afterPublish.body.subjects.find((s: { subjectId: string }) => s.subjectId === unpublishedSubjectId);
+
+    const p0PublishedRow = publishedSubjectAfter.results.find((r: { studentId: string }) => r.studentId === p0);
+    const p1PublishedRow = publishedSubjectAfter.results.find((r: { studentId: string }) => r.studentId === p1);
+    expect(p0PublishedRow.subjectPosition).toBe(1); // 20 > 10
+    expect(p0PublishedRow.status).toBe("PUBLISHED");
+    expect(p1PublishedRow.subjectPosition).toBe(2);
+    expect(p1PublishedRow.status).toBe("PUBLISHED");
+
+    const p0UnpubRow = unpublishedSubjectAfter.results.find((r: { studentId: string }) => r.studentId === p0);
+    const p1UnpubRow = unpublishedSubjectAfter.results.find((r: { studentId: string }) => r.studentId === p1);
+    expect(p0UnpubRow.subjectPosition).toBeNull(); // still DRAFT — never published
+    expect(p0UnpubRow.status).toBe("DRAFT");
+    expect(p1UnpubRow.subjectPosition).toBeNull();
+    expect(p1UnpubRow.status).toBe("DRAFT");
+
+    // p0/p1 both have a row in the still-DRAFT unpublished subject too, so
+    // gap #2's rule (overall PUBLISHED only once EVERY touched subject is
+    // PUBLISHED) keeps their overall from ever reaching PUBLISHED — mixed
+    // PUBLISHED+DRAFT subjects read as PENDING_APPROVAL (computeOverallStatus),
+    // with no leaked position, even though the OTHER subject already published.
     const p0Overall = afterPublish.body.overall.find((o: { studentId: string }) => o.studentId === p0);
-    expect(p0Overall.status).toBe("PUBLISHED");
-    expect(p0Overall.overallPosition).toBe(1);
-    // p1 has a term_subject_result (DRAFT — no exam score yet), so the
-    // publish cascade's whole-arm overall recompute does produce a row for
-    // them too, correctly stuck at DRAFT with no leaked position.
     const p1Overall = afterPublish.body.overall.find((o: { studentId: string }) => o.studentId === p1);
-    expect(p1Overall.status).toBe("DRAFT");
+    expect(p0Overall.status).toBe("PENDING_APPROVAL");
+    expect(p0Overall.overallPosition).toBeNull();
+    expect(p1Overall.status).toBe("PENDING_APPROVAL");
     expect(p1Overall.overallPosition).toBeNull();
   });
 

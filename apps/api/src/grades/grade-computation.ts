@@ -1,27 +1,11 @@
-// Pure computation for SPEC_V0.4.md §1's "Computation rules". Deliberately
-// dependency-free (no Prisma types, no NestJS DI) so both the future
-// grades service (step 2) and prisma/seed.ts (which uses a bare
-// PrismaClient, no DI container) can call it directly.
+// Pure computation for SPEC_V0.4.md §1's "Computation rules", carried
+// forward and rewritten for v0.7 step 1 (SPEC_V0.7.md §2/§5) — evaluations
+// replace the fixed CA1/CA2/Exam weighted model entirely; exams compute
+// separately (grades.service.ts / exams.service.ts). Deliberately
+// dependency-free (no Prisma types, no NestJS DI) so both services and
+// prisma/seed.ts (a bare PrismaClient, no DI container) can call it directly.
 
 export type ResultStatus = "DRAFT" | "PENDING_APPROVAL" | "PUBLISHED";
-
-export interface ComponentInput {
-  id: string;
-  weight: number;
-  maxScore: number;
-  requiresApproval: boolean;
-}
-
-export interface ComponentScoreInput {
-  componentId: string;
-  rawScore: number | null;
-  // SPEC_V0.5.md §2.1 — a third state, distinct from both "not entered"
-  // (rawScore null, isAbsent false) and a real 0 (rawScore set). A row
-  // with rawScore set AND isAbsent true is uninterpretable and never
-  // reaches here — enforced by student_scores' CHECK constraint and (from
-  // v0.5 step 2) the score-entry DTO.
-  isAbsent: boolean;
-}
 
 export interface GradeBoundaryInput {
   grade: string;
@@ -29,52 +13,41 @@ export interface GradeBoundaryInput {
   maxScore: number;
 }
 
-/**
- * Subject total = Σ over components of (rawScore / component.maxScore ×
- * component.weight), 0–100. A component with no score yet contributes 0 —
- * NOT a rescale to the entered weight's own 100% (SPEC_V0.4.md §1
- * resolution: avoids a class average that visibly drops once Exam scores
- * land, which would look like a bug). A component the student was marked
- * ABSENT for is excluded the same way — SPEC_V0.5.md §2.1: honestly lower
- * over the components actually sat, not a 0 and not rescaled.
- */
-export function computeSubjectTotal(components: ComponentInput[], scores: ComponentScoreInput[]): number {
-  const scoreByComponent = new Map(scores.map((s) => [s.componentId, s]));
-  let total = 0;
-  for (const component of components) {
-    const score = scoreByComponent.get(component.id);
-    if (!score || score.isAbsent || score.rawScore === null || score.rawScore === undefined) continue;
-    total += (score.rawScore / component.maxScore) * component.weight;
-  }
-  return Math.round(total * 100) / 100;
+export interface DecidableScoreInput {
+  rawScore: number | null;
+  // A third, explicit state distinct from both "not entered" (rawScore
+  // null, isAbsent false) and a real 0 (rawScore set) — SPEC_V0.5.md §2.1,
+  // carried forward unchanged into both v0.7 tracks. A row with rawScore
+  // set AND isAbsent true is uninterpretable and never reaches here —
+  // enforced by the evaluation_scores/exam_scores CHECK constraints and
+  // the score-entry DTOs.
+  isAbsent: boolean;
 }
 
 /**
- * DRAFT until an approval-required (exam-type) component has been decided
- * for this student — scored OR marked absent, both are a decided outcome,
- * unlike not-yet-entered (SPEC_V0.5.md §2.1: absent is not "stuck in
- * DRAFT"). Then PENDING_APPROVAL. Never returns PUBLISHED — that only
- * happens via an explicit publish action, not score-triggered recompute.
+ * Simple mean of decided (non-absent, non-null) scores, each already
+ * native /100 (SPEC_V0.7.md Q1 — no weighting, no rescaling). An absent
+ * score is excluded from BOTH the numerator and the denominator — the
+ * same "honest average over what was actually sat" rule v0.5 established
+ * for the old weighted model, just without a weight to multiply by. 0 if
+ * nothing is decided yet (mirrors the old model's "no score contributes 0"
+ * resolution — never null, since totalScore/averageScore columns are
+ * NOT NULL).
  */
-export function computeSubjectStatus(
-  components: ComponentInput[],
-  scores: ComponentScoreInput[],
-): "DRAFT" | "PENDING_APPROVAL" {
-  const scoreByComponent = new Map(scores.map((s) => [s.componentId, s]));
-  const anyApprovalRequiredDecided = components
-    .filter((c) => c.requiresApproval)
-    .some((c) => {
-      const score = scoreByComponent.get(c.id);
-      if (!score) return false;
-      return score.isAbsent || (score.rawScore !== null && score.rawScore !== undefined);
-    });
-  return anyApprovalRequiredDecided ? "PENDING_APPROVAL" : "DRAFT";
+export function computeEvaluationAverage(scores: DecidableScoreInput[]): number {
+  const decided = scores.filter((s) => !s.isAbsent && s.rawScore !== null && s.rawScore !== undefined);
+  if (decided.length === 0) return 0;
+  const sum = decided.reduce((total, s) => total + s.rawScore!, 0);
+  return Math.round((sum / decided.length) * 100) / 100;
 }
 
 /**
  * A term_overall_result's status derives from its subject results: PUBLISHED
  * only once every subject is published; PENDING_APPROVAL if there's any
- * activity short of that; DRAFT if nothing has started.
+ * activity short of that; DRAFT if nothing has started. Unchanged from
+ * v0.4 — still meaningful at the cross-subject level even though the
+ * per-subject level no longer auto-transitions through PENDING_APPROVAL
+ * (confirmed: publishing itself is what declares a subject final now).
  */
 export function computeOverallStatus(subjectStatuses: ResultStatus[]): ResultStatus {
   if (subjectStatuses.length === 0) return "DRAFT";
@@ -98,14 +71,14 @@ export function resolveFinalGrade(autoGrade: string | null, overrideGrade: strin
   return overrideGrade ?? autoGrade;
 }
 
-/** Simple unweighted mean of a student's subject totals (SPEC_V0.4.md §6). */
+/** Simple unweighted mean of a student's subject totals (SPEC_V0.4.md §6). Reused unchanged for the year-exam-average-of-term-averages cascade (SPEC_V0.7.md Q6). */
 export function computeOverallAverage(subjectTotals: number[]): number {
   if (subjectTotals.length === 0) return 0;
   const sum = subjectTotals.reduce((a, b) => a + b, 0);
   return Math.round((sum / subjectTotals.length) * 100) / 100;
 }
 
-/** Standard competition ranking ("1,2,2,4"): ties share a position, the next rank skips. */
+/** Standard competition ranking ("1,2,2,4"): ties share a position, the next rank skips. Reused unchanged for all three v0.7 ranking tracks (Q6). */
 export function computeStandardCompetitionRanking<T>(
   items: T[],
   scoreOf: (item: T) => number,

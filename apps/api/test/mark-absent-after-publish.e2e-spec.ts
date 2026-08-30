@@ -6,7 +6,7 @@ import { loginAs } from "./utils/login";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 // SPEC_V0.5.1.md §2.5, v0.5.1 step 4: SCHOOL_ADMIN/PROPRIETOR may now pass
-// PUT /grades/grid's PUBLISHED-student gate (the same reviewed write path
+// PUT /grades/evaluation-scores' PUBLISHED-student gate (the same reviewed write path
 // grades-grid.e2e-spec.ts already covers for the normal, non-published
 // case) — TEACHER still 409s there unconditionally. Every scenario gets its
 // own scratch session+term+class-arm+subject+students bundle in the REAL
@@ -22,9 +22,6 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
 
   let sunriseId: string;
   let jss2LevelId: string;
-  let ca1Id: string;
-  let ca2Id: string;
-  let examId: string;
   let teacherUserId: string;
 
   const createdSessionIds: string[] = [];
@@ -40,7 +37,22 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     termId: string;
     classArmId: string;
     subjectId: string;
+    evaluationIds: string[]; // [eval1, eval2, eval3]
     studentIds: string[]; // [high, mid, low]
+  }
+
+  // v0.7 step 1 (SPEC_V0.7.md §2/§5): evaluations replace the fixed
+  // CA1/CA2/Exam components — created directly via Prisma (no
+  // create-evaluation HTTP endpoint yet, Step 2).
+  async function createEvaluationsFor(subjectId: string, classArmId: string, sessionId: string, termId: string): Promise<string[]> {
+    const ids: string[] = [];
+    for (const name of ["CA 1", "CA 2", "CA 3"]) {
+      const evaluation = await prisma.evaluation.create({
+        data: { schoolId: sunriseId, classArmId, subjectId, sessionId, termId, name, description: name, createdBy: teacherUserId },
+      });
+      ids.push(evaluation.id);
+    }
+    return ids;
   }
 
   async function createScratchBundle(prefix: string): Promise<ScratchBundle> {
@@ -67,6 +79,7 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     await prisma.subjectTeacherAssignment.create({
       data: { schoolId: sunriseId, subjectId: subject.id, classArmId: classArm.id, sessionId: session.id, teacherUserId },
     });
+    const evaluationIds = await createEvaluationsFor(subject.id, classArm.id, session.id, term.id);
 
     const studentIds: string[] = [];
     for (let i = 0; i < 3; i++) {
@@ -89,32 +102,37 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
       studentIds.push(student.id);
     }
 
-    return { sessionId: session.id, termId: term.id, classArmId: classArm.id, subjectId: subject.id, studentIds };
+    return { sessionId: session.id, termId: term.id, classArmId: classArm.id, subjectId: subject.id, evaluationIds, studentIds };
   }
 
-  function gridBody(bundle: ScratchBundle, componentId: string, studentId: string, extra: { rawScore?: number | null; isAbsent?: boolean }) {
+  function scoreBody(bundle: ScratchBundle, evaluationId: string, studentId: string, extra: { rawScore?: number | null; isAbsent?: boolean }) {
     return {
       classArmId: bundle.classArmId,
       subjectId: bundle.subjectId,
-      componentId,
+      evaluationId,
       termId: bundle.termId,
       scores: [{ studentId, ...extra }],
     };
   }
 
-  async function scoreAll(token: string, bundle: ScratchBundle, scores: { ca1: number; ca2: number; exam: number }[]) {
+  // Native /100 average across 3 plain evaluations (SPEC_V0.7.md Q1) — no
+  // weights. high: 30,30,90 -> avg 50 (top). mid: 40,40,40 -> avg 40. low:
+  // 20,20,20 -> avg 20. Marking high's 3rd evaluation absent drops their
+  // average to (30+30)/2=30 — below mid's 40, a genuine cohort re-rank,
+  // same shape as the original weighted-exam proof.
+  async function scoreAll(token: string, bundle: ScratchBundle, scores: { ca1: number; ca2: number; ca3: number }[]) {
     for (let i = 0; i < bundle.studentIds.length; i++) {
       const studentId = bundle.studentIds[i];
-      const { ca1, ca2, exam } = scores[i];
-      for (const [componentId, rawScore] of [
-        [ca1Id, ca1],
-        [ca2Id, ca2],
-        [examId, exam],
+      const { ca1, ca2, ca3 } = scores[i];
+      for (const [evaluationId, rawScore] of [
+        [bundle.evaluationIds[0], ca1],
+        [bundle.evaluationIds[1], ca2],
+        [bundle.evaluationIds[2], ca3],
       ] as const) {
         const res = await request(app.getHttpServer())
-          .put("/api/v1/grades/grid")
+          .put("/api/v1/grades/evaluation-scores")
           .set(auth(token))
-          .send(gridBody(bundle, componentId, studentId, { rawScore }));
+          .send(scoreBody(bundle, evaluationId, studentId, { rawScore }));
         if (res.status !== 200) throw new Error(`score failed: ${res.status} ${JSON.stringify(res.body)}`);
       }
     }
@@ -154,17 +172,14 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
     jss2LevelId = jss2.id;
 
-    const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
-    ca1Id = components[0].id; // weight 20, max 20
-    ca2Id = components[1].id; // weight 20, max 20
-    examId = components[2].id; // weight 60, max 100
-
     teacherUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
   });
 
   afterAll(async () => {
     await prisma.termUnlock.deleteMany({ where: { termId: { in: createdTermIds } } });
-    await prisma.studentScore.deleteMany({ where: { termId: { in: createdTermIds } } });
+    const evaluations = await prisma.evaluation.findMany({ where: { termId: { in: createdTermIds } }, select: { id: true } });
+    await prisma.evaluationScore.deleteMany({ where: { evaluationId: { in: evaluations.map((e) => e.id) } } });
+    await prisma.evaluation.deleteMany({ where: { termId: { in: createdTermIds } } });
     await prisma.termSubjectResult.deleteMany({ where: { termId: { in: createdTermIds } } });
     await prisma.termOverallResult.deleteMany({ where: { termId: { in: createdTermIds } } });
     await prisma.auditLog.deleteMany({ where: { entityId: { in: createdClassArmIds } } });
@@ -182,11 +197,11 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     const bundle = await createScratchBundle("MarkAbsent");
     const [high, mid, low] = bundle.studentIds;
 
-    // high: 20+20+60(=100 raw ->60 weighted) = 100. mid: 15+15+39=69. low: 10+10+15=35.
+    // high: (30+30+90)/3=50. mid: (40+40+40)/3=40. low: (20+20+20)/3=20.
     await scoreAll(sunriseAdminToken, bundle, [
-      { ca1: 20, ca2: 20, exam: 100 },
-      { ca1: 15, ca2: 15, exam: 65 },
-      { ca1: 10, ca2: 10, exam: 25 },
+      { ca1: 30, ca2: 30, ca3: 90 },
+      { ca1: 40, ca2: 40, ca3: 40 },
+      { ca1: 20, ca2: 20, ca3: 20 },
     ]);
     await publishSubject(bundle);
 
@@ -194,7 +209,7 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     const beforeMid = await resultFor(bundle, mid);
     const beforeLow = await resultFor(bundle, low);
     expect(beforeHigh.status).toBe("PUBLISHED");
-    expect(Number(beforeHigh.totalScore)).toBe(100);
+    expect(Number(beforeHigh.totalScore)).toBe(50);
     expect(beforeHigh.subjectPosition).toBe(1);
     expect(beforeMid.subjectPosition).toBe(2);
     expect(beforeLow.subjectPosition).toBe(3);
@@ -202,12 +217,12 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     expect(beforeOverallHigh.status).toBe("PUBLISHED");
     expect(beforeOverallHigh.overallPosition).toBe(1);
 
-    // Mark `high` absent on the Exam component — their new total (40) now
-    // falls BELOW mid's (69), a genuine cohort re-rank, not just their own.
+    // Mark `high` absent on their 3rd evaluation — their new average (30)
+    // now falls BELOW mid's (40), a genuine cohort re-rank, not just their own.
     const markAbsent = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send(gridBody(bundle, examId, high, { isAbsent: true }));
+      .send(scoreBody(bundle, bundle.evaluationIds[2], high, { isAbsent: true }));
     expect(markAbsent.status).toBe(200);
 
     const afterHigh = await resultFor(bundle, high);
@@ -217,9 +232,9 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     // Stays published, not reverted — the core assertion of this step.
     expect(afterHigh.status).toBe("PUBLISHED");
     expect(afterHigh.publishedAt?.getTime()).toBe(beforeHigh.publishedAt?.getTime()); // preserved, not refreshed
-    expect(Number(afterHigh.totalScore)).toBe(40); // 20 + 20 + 0(absent, excluded)
+    expect(Number(afterHigh.totalScore)).toBe(30); // (30 + 30) / 2 — 3rd evaluation absent, excluded
 
-    // Whole-cohort re-rank: mid (69) now leads, high (40) drops to 2nd, low (35) stays last.
+    // Whole-cohort re-rank: mid (40) now leads, high (30) drops to 2nd, low (20) stays last.
     expect(afterMid.subjectPosition).toBe(1);
     expect(afterHigh.subjectPosition).toBe(2);
     expect(afterLow.subjectPosition).toBe(3);
@@ -236,15 +251,15 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     // The CHECK constraint's own shape: a decided absence is null+true,
     // never both set (this step's write path didn't touch the upsert
     // logic itself, but proves the bypass still respects it).
-    const score = await prisma.studentScore.findUniqueOrThrow({
-      where: { studentId_subjectId_componentId_termId_sessionId: { studentId: high, subjectId: bundle.subjectId, componentId: examId, termId: bundle.termId, sessionId: bundle.sessionId } },
+    const score = await prisma.evaluationScore.findUniqueOrThrow({
+      where: { evaluationId_studentId: { evaluationId: bundle.evaluationIds[2], studentId: high } },
     });
     expect(score.rawScore).toBeNull();
     expect(score.isAbsent).toBe(true);
 
     // Audited, with the sensitive bypass explicitly traceable.
     const auditRow = await prisma.auditLog.findFirstOrThrow({
-      where: { schoolId: sunriseId, action: "grades.saveGrid", entityId: bundle.classArmId },
+      where: { schoolId: sunriseId, action: "grades.saveEvaluationScores", entityId: bundle.classArmId },
       orderBy: { createdAt: "desc" },
     });
     expect((auditRow.metadata as { publishedBypassStudentIds: string[] }).publishedBypassStudentIds).toEqual([high]);
@@ -255,38 +270,38 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     const [high, mid] = bundle.studentIds;
 
     await scoreAll(sunriseAdminToken, bundle, [
-      { ca1: 20, ca2: 20, exam: 100 },
-      { ca1: 15, ca2: 15, exam: 65 },
-      { ca1: 10, ca2: 10, exam: 25 },
+      { ca1: 30, ca2: 30, ca3: 90 },
+      { ca1: 40, ca2: 40, ca3: 40 },
+      { ca1: 20, ca2: 20, ca3: 20 },
     ]);
     await publishSubject(bundle);
 
     await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send(gridBody(bundle, examId, high, { isAbsent: true }));
+      .send(scoreBody(bundle, bundle.evaluationIds[2], high, { isAbsent: true }));
     const mid1 = await resultFor(bundle, mid);
     expect(mid1.subjectPosition).toBe(1); // re-ranked as in the previous test
 
-    // Correct back: the exam score WAS 100 (a data-entry mistake calling it
-    // absent) — restore it.
+    // Correct back: the 3rd evaluation score WAS 90 (a data-entry mistake
+    // calling it absent) — restore it.
     const restore = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send(gridBody(bundle, examId, high, { rawScore: 100 }));
+      .send(scoreBody(bundle, bundle.evaluationIds[2], high, { rawScore: 90 }));
     expect(restore.status).toBe(200);
 
     const afterHigh = await resultFor(bundle, high);
     const afterMid = await resultFor(bundle, mid);
     expect(afterHigh.status).toBe("PUBLISHED");
-    expect(Number(afterHigh.totalScore)).toBe(100);
+    expect(Number(afterHigh.totalScore)).toBe(50);
     expect(afterHigh.subjectPosition).toBe(1);
     expect(afterMid.subjectPosition).toBe(2);
 
-    const score = await prisma.studentScore.findUniqueOrThrow({
-      where: { studentId_subjectId_componentId_termId_sessionId: { studentId: high, subjectId: bundle.subjectId, componentId: examId, termId: bundle.termId, sessionId: bundle.sessionId } },
+    const score = await prisma.evaluationScore.findUniqueOrThrow({
+      where: { evaluationId_studentId: { evaluationId: bundle.evaluationIds[2], studentId: high } },
     });
-    expect(Number(score.rawScore)).toBe(100);
+    expect(Number(score.rawScore)).toBe(90);
     expect(score.isAbsent).toBe(false);
   });
 
@@ -294,37 +309,37 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     const bundle = await createScratchBundle("TeacherBlocked");
     const [high] = bundle.studentIds;
     await scoreAll(sunriseAdminToken, bundle, [
-      { ca1: 20, ca2: 20, exam: 100 },
-      { ca1: 15, ca2: 15, exam: 65 },
-      { ca1: 10, ca2: 10, exam: 25 },
+      { ca1: 30, ca2: 30, ca3: 90 },
+      { ca1: 40, ca2: 40, ca3: 40 },
+      { ca1: 20, ca2: 20, ca3: 20 },
     ]);
     await publishSubject(bundle);
 
     const markAbsent = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseTeacherToken))
-      .send(gridBody(bundle, examId, high, { isAbsent: true }));
+      .send(scoreBody(bundle, bundle.evaluationIds[2], high, { isAbsent: true }));
     expect(markAbsent.status).toBe(409);
     expect(markAbsent.body.lockedStudentIds).toEqual([high]);
 
     const restore = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseTeacherToken))
-      .send(gridBody(bundle, examId, high, { rawScore: 50 }));
+      .send(scoreBody(bundle, bundle.evaluationIds[2], high, { rawScore: 50 }));
     expect(restore.status).toBe(409);
     expect(restore.body.lockedStudentIds).toEqual([high]);
 
     const unchanged = await resultFor(bundle, high);
-    expect(Number(unchanged.totalScore)).toBe(100);
+    expect(Number(unchanged.totalScore)).toBe(50);
   });
 
   it("a CLOSED term still blocks the admin correction pending unlock — the published-bypass never leaks into the closed-term gate", async () => {
     const bundle = await createScratchBundle("ClosedTerm");
     const [high] = bundle.studentIds;
     await scoreAll(sunriseAdminToken, bundle, [
-      { ca1: 20, ca2: 20, exam: 100 },
-      { ca1: 15, ca2: 15, exam: 65 },
-      { ca1: 10, ca2: 10, exam: 25 },
+      { ca1: 30, ca2: 30, ca3: 90 },
+      { ca1: 40, ca2: 40, ca3: 40 },
+      { ca1: 20, ca2: 20, ca3: 20 },
     ]);
     await publishSubject(bundle);
 
@@ -332,14 +347,14 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     expect(closeRes.status).toBe(200);
 
     const markAbsent = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send(gridBody(bundle, examId, high, { isAbsent: true }));
+      .send(scoreBody(bundle, bundle.evaluationIds[2], high, { isAbsent: true }));
     expect(markAbsent.status).toBe(409);
     expect(markAbsent.body.termLocked).toBe(true);
 
     const unchanged = await resultFor(bundle, high);
-    expect(Number(unchanged.totalScore)).toBe(100);
+    expect(Number(unchanged.totalScore)).toBe(50);
     expect(unchanged.status).toBe("PUBLISHED");
 
     // Unlocking this exact class+subject re-opens the SAME admin correction.
@@ -350,12 +365,12 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     expect(unlockRes.status).toBe(200);
 
     const markAbsentAfterUnlock = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send(gridBody(bundle, examId, high, { isAbsent: true }));
+      .send(scoreBody(bundle, bundle.evaluationIds[2], high, { isAbsent: true }));
     expect(markAbsentAfterUnlock.status).toBe(200);
     const afterUnlock = await resultFor(bundle, high);
-    expect(Number(afterUnlock.totalScore)).toBe(40);
+    expect(Number(afterUnlock.totalScore)).toBe(30);
     expect(afterUnlock.status).toBe("PUBLISHED");
   });
 
@@ -363,17 +378,12 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     const bundle = await createScratchBundle("CheckCanary");
     const [high] = bundle.studentIds;
     await expect(
-      prisma.studentScore.upsert({
-        where: { studentId_subjectId_componentId_termId_sessionId: { studentId: high, subjectId: bundle.subjectId, componentId: examId, termId: bundle.termId, sessionId: bundle.sessionId } },
+      prisma.evaluationScore.upsert({
+        where: { evaluationId_studentId: { evaluationId: bundle.evaluationIds[2], studentId: high } },
         update: { rawScore: 50, isAbsent: true },
         create: {
-          schoolId: sunriseId,
+          evaluationId: bundle.evaluationIds[2],
           studentId: high,
-          subjectId: bundle.subjectId,
-          componentId: examId,
-          termId: bundle.termId,
-          sessionId: bundle.sessionId,
-          classArmId: bundle.classArmId,
           rawScore: 50,
           isAbsent: true,
           enteredBy: teacherUserId,
@@ -389,37 +399,34 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
 
     // subjectA (the bundle's own subject): scored + published, then corrected concurrently below.
     await scoreAll(sunriseAdminToken, bundle, [
-      { ca1: 20, ca2: 20, exam: 100 },
-      { ca1: 15, ca2: 15, exam: 65 },
-      { ca1: 10, ca2: 10, exam: 25 },
+      { ca1: 30, ca2: 30, ca3: 90 },
+      { ca1: 40, ca2: 40, ca3: 40 },
+      { ca1: 20, ca2: 20, ca3: 20 },
     ]);
     await publishSubject(bundle);
 
     // subjectB: a second subject on the SAME class arm, scored but left
-    // PENDING_APPROVAL — published concurrently with subjectA's correction.
+    // DRAFT — published concurrently with subjectA's correction.
     const subjectB = await prisma.subject.create({ data: { schoolId: sunriseId, name: `E2E MAP ConcB ${Date.now()}`, code: `MAPB${Date.now()}`.slice(0, 10).toUpperCase() } });
     createdSubjectIds.push(subjectB.id);
     await prisma.subjectTeacherAssignment.create({
       data: { schoolId: sunriseId, subjectId: subjectB.id, classArmId: bundle.classArmId, sessionId: bundle.sessionId, teacherUserId },
     });
+    const subjectBEvaluationIds = await createEvaluationsFor(subjectB.id, bundle.classArmId, bundle.sessionId, bundle.termId);
     for (const studentId of [high, mid, low]) {
-      for (const [componentId, rawScore] of [
-        [ca1Id, 20],
-        [ca2Id, 20],
-        [examId, 60],
-      ] as const) {
+      for (const evaluationId of subjectBEvaluationIds) {
         await request(app.getHttpServer())
-          .put("/api/v1/grades/grid")
+          .put("/api/v1/grades/evaluation-scores")
           .set(auth(sunriseAdminToken))
-          .send({ classArmId: bundle.classArmId, subjectId: subjectB.id, componentId, termId: bundle.termId, scores: [{ studentId, rawScore }] });
+          .send({ classArmId: bundle.classArmId, subjectId: subjectB.id, evaluationId, termId: bundle.termId, scores: [{ studentId, rawScore: 60 }] });
       }
     }
 
     const [correctionRes, publishBRes] = await Promise.all([
       request(app.getHttpServer())
-        .put("/api/v1/grades/grid")
+        .put("/api/v1/grades/evaluation-scores")
         .set(auth(sunriseAdminToken))
-        .send(gridBody(bundle, examId, high, { isAbsent: true })),
+        .send(scoreBody(bundle, bundle.evaluationIds[2], high, { isAbsent: true })),
       request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(sunriseAdminToken))
@@ -431,7 +438,7 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
 
     const afterHigh = await resultFor(bundle, high);
     expect(afterHigh.status).toBe("PUBLISHED");
-    expect(Number(afterHigh.totalScore)).toBe(40);
+    expect(Number(afterHigh.totalScore)).toBe(30);
 
     const subjectBHigh = await prisma.termSubjectResult.findUniqueOrThrow({
       where: { studentId_subjectId_termId_sessionId: { studentId: high, subjectId: subjectB.id, termId: bundle.termId, sessionId: bundle.sessionId } },
@@ -449,16 +456,16 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     const bundle = await createScratchBundle("CrossTenant");
     const [high] = bundle.studentIds;
     await scoreAll(sunriseAdminToken, bundle, [
-      { ca1: 20, ca2: 20, exam: 100 },
-      { ca1: 15, ca2: 15, exam: 65 },
-      { ca1: 10, ca2: 10, exam: 25 },
+      { ca1: 30, ca2: 30, ca3: 90 },
+      { ca1: 40, ca2: 40, ca3: 40 },
+      { ca1: 20, ca2: 20, ca3: 20 },
     ]);
     await publishSubject(bundle);
 
     const response = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(hillcrestAdminToken))
-      .send(gridBody(bundle, examId, high, { isAbsent: true }));
+      .send(scoreBody(bundle, bundle.evaluationIds[2], high, { isAbsent: true }));
     expect(response.status).toBe(404);
   });
 });

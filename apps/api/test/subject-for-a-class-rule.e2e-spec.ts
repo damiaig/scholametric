@@ -25,7 +25,6 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
 
   let sunriseId: string;
   let jss2LevelId: string;
-  let ca1Id: string;
   let teacherUserId: string;
   let currentSessionId: string;
 
@@ -42,6 +41,7 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
     termId: string;
     classArmId: string;
     subjectId: string;
+    evaluationId: string;
     studentIds: string[];
   }
 
@@ -63,6 +63,14 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
       data: { schoolId: sunriseId, name: `E2E SFC ${stamp}`, code: `SFC${stamp.slice(-6)}`.slice(0, 10).toUpperCase() },
     });
     createdSubjectIds.push(subject.id);
+    // v0.7 step 1 (SPEC_V0.7.md §2/§5): an evaluation replaces the fixed
+    // CA1 component — created directly via Prisma (no create-evaluation
+    // HTTP endpoint yet, Step 2), independent of whether a teacher is
+    // assigned (assertTeacherAssignment runs AFTER tenant-scope
+    // resolution, so the evaluation must exist regardless).
+    const evaluation = await prisma.evaluation.create({
+      data: { schoolId: sunriseId, classArmId: classArm.id, subjectId: subject.id, sessionId: session.id, termId: term.id, name: "CA 1", description: "CA 1", createdBy: teacherUserId },
+    });
 
     const studentIds: string[] = [];
     for (let i = 0; i < studentCount; i++) {
@@ -85,7 +93,7 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
       studentIds.push(student.id);
     }
 
-    return { sessionId: session.id, termId: term.id, classArmId: classArm.id, subjectId: subject.id, studentIds };
+    return { sessionId: session.id, termId: term.id, classArmId: classArm.id, subjectId: subject.id, evaluationId: evaluation.id, studentIds };
   }
 
   // Assignments are session-scoped, and the real POST /subject-assignments
@@ -113,7 +121,7 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
   }
 
   function gridQuery(bundle: ScratchBundle) {
-    return { classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId };
+    return { classArmId: bundle.classArmId, subjectId: bundle.subjectId, evaluationId: bundle.evaluationId, termId: bundle.termId };
   }
 
   beforeAll(async () => {
@@ -130,12 +138,6 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
     const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
     jss2LevelId = jss2.id;
 
-    const ca1 = await prisma.assessmentComponent.findFirstOrThrow({
-      where: { schoolId: sunriseId, deletedAt: null },
-      orderBy: { sortOrder: "asc" },
-    });
-    ca1Id = ca1.id;
-
     const teacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
     teacherUserId = teacher.id;
 
@@ -145,7 +147,9 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
 
   afterAll(async () => {
     await prisma.termUnlock.deleteMany({ where: { termId: { in: createdTermIds } } });
-    await prisma.studentScore.deleteMany({ where: { termId: { in: createdTermIds } } });
+    const evaluations = await prisma.evaluation.findMany({ where: { termId: { in: createdTermIds } }, select: { id: true } });
+    await prisma.evaluationScore.deleteMany({ where: { evaluationId: { in: evaluations.map((e) => e.id) } } });
+    await prisma.evaluation.deleteMany({ where: { termId: { in: createdTermIds } } });
     await prisma.termSubjectResult.deleteMany({ where: { termId: { in: createdTermIds } } });
     await prisma.termOverallResult.deleteMany({ where: { termId: { in: createdTermIds } } });
     await prisma.studentEnrollment.deleteMany({ where: { studentId: { in: createdStudentIds } } });
@@ -167,27 +171,27 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
     const bundle = await createScratchBundle("Reject");
 
     const adminGet = await request(app.getHttpServer())
-      .get("/api/v1/grades/grid")
+      .get("/api/v1/grades/evaluation-scores")
       .query(gridQuery(bundle))
       .set(auth(sunriseAdminToken));
     expect(adminGet.status).toBe(404);
     expect(adminGet.body.message).toMatch(/no teacher is assigned/i);
 
     const proprietorGet = await request(app.getHttpServer())
-      .get("/api/v1/grades/grid")
+      .get("/api/v1/grades/evaluation-scores")
       .query(gridQuery(bundle))
       .set(auth(sunriseProprietorToken));
     expect(proprietorGet.status).toBe(404);
 
     const adminSave = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
       .send({ ...gridQuery(bundle), scores: [{ studentId: bundle.studentIds[0], rawScore: 15 }] });
     expect(adminSave.status).toBe(404);
     expect(adminSave.body.message).toMatch(/no teacher is assigned/i);
 
     const teacherGet = await request(app.getHttpServer())
-      .get("/api/v1/grades/grid")
+      .get("/api/v1/grades/evaluation-scores")
       .query(gridQuery(bundle))
       .set(auth(sunriseTeacherToken));
     expect(teacherGet.status).toBe(403);
@@ -213,19 +217,19 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
     await assignTeacher(bundle);
 
     const adminGet = await request(app.getHttpServer())
-      .get("/api/v1/grades/grid")
+      .get("/api/v1/grades/evaluation-scores")
       .query(gridQuery(bundle))
       .set(auth(sunriseAdminToken));
     expect(adminGet.status).toBe(200);
 
     const proprietorSave = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseProprietorToken))
       .send({ ...gridQuery(bundle), scores: [{ studentId: bundle.studentIds[0], rawScore: 12 }] });
     expect(proprietorSave.status).toBe(200);
 
     const teacherGet = await request(app.getHttpServer())
-      .get("/api/v1/grades/grid")
+      .get("/api/v1/grades/evaluation-scores")
       .query(gridQuery(bundle))
       .set(auth(sunriseTeacherToken));
     expect(teacherGet.status).toBe(200);
@@ -237,7 +241,7 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
     const [studentId] = bundle.studentIds;
 
     const save = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
       .send({ ...gridQuery(bundle), scores: [{ studentId, rawScore: 15 }] });
     expect(save.status).toBe(200);
@@ -253,7 +257,7 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
     // Hidden from entry's grid write path (class-arm-detail's own
     // current-session-scoped proof lives in the previous test)...
     const gridAfterRemoval = await request(app.getHttpServer())
-      .get("/api/v1/grades/grid")
+      .get("/api/v1/grades/evaluation-scores")
       .query(gridQuery(bundle))
       .set(auth(sunriseAdminToken));
     expect(gridAfterRemoval.status).toBe(404);
@@ -306,7 +310,7 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
     expect(reassignedSubject.needsTeacherAssignment).toBe(false);
 
     const gridAfterReassign = await request(app.getHttpServer())
-      .get("/api/v1/grades/grid")
+      .get("/api/v1/grades/evaluation-scores")
       .query(gridQuery(bundle))
       .set(auth(sunriseAdminToken));
     expect(gridAfterReassign.status).toBe(200);
@@ -322,7 +326,7 @@ describe("Subject-for-a-class rule (e2e) — SPEC_V0.5.1.md §2.1/§2.2, v0.5.1 
     expect(detail.status).toBe(404);
 
     const grid = await request(app.getHttpServer())
-      .get("/api/v1/grades/grid")
+      .get("/api/v1/grades/evaluation-scores")
       .query(gridQuery(bundle))
       .set(auth(hillcrestAdminToken));
     expect(grid.status).toBe(404);

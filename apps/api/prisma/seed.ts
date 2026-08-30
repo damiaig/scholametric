@@ -1,13 +1,12 @@
 import { PrismaClient, SchoolType, UserRole, TermName, Gender, JobTitle, GuardianRelationship } from "@prisma/client";
 import bcrypt from "bcrypt";
 import {
-  computeSubjectTotal,
-  computeSubjectStatus,
+  computeEvaluationAverage,
   computeOverallStatus,
   computeOverallAverage,
   computeStandardCompetitionRanking,
   resolveGradeBand,
-  type ComponentInput,
+  type DecidableScoreInput,
   type GradeBoundaryInput,
   type ResultStatus,
 } from "../src/grades/grade-computation";
@@ -279,19 +278,15 @@ async function seedSubjectTeacherAssignments(
   }
 }
 
-// SPEC_V0.3.md §3 / SPEC_V0.4.md §3: assessment components CA 1 (20, out of
-// 20, no approval), CA 2 (20, out of 20, no approval), Exam (60, out of 100,
-// approval-required) — weights summing to 100 — and the WAEC 9-point grade
-// boundaries, for both schools. Upserted on each school's natural unique
-// keys (schoolId+name, schoolId+grade), so idempotent across reseeds; the
-// update branch is non-empty (unlike most other seed upserts here) so a
-// pre-v0.4 dev database gets max_score/requires_approval backfilled too.
-const ASSESSMENT_COMPONENTS: { name: string; weight: number; maxScore: number; requiresApproval: boolean; sortOrder: number }[] = [
-  { name: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, sortOrder: 1 },
-  { name: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, sortOrder: 2 },
-  { name: "Exam", weight: 60, maxScore: 100, requiresApproval: true, sortOrder: 3 },
-];
-
+// SPEC_V0.3.md §3 / SPEC_V0.4.md §3: the WAEC 9-point grade boundaries, for
+// both schools. Upserted on each school's natural unique key (schoolId+grade),
+// so idempotent across reseeds.
+//
+// v0.7 step 1 (SPEC_V0.7.md §2/§5): the fixed CA1/CA2/Exam assessment
+// components this function used to also seed are gone — AssessmentComponent
+// is a dropped table (evaluations replace it entirely, see Evaluation /
+// EvaluationScore below). Grade boundaries are independent of the scoring
+// model and stay as-is.
 const WAEC_GRADE_BOUNDARIES: { grade: string; minScore: number; maxScore: number; remark: string; sortOrder: number }[] = [
   { grade: "A1", minScore: 75, maxScore: 100, remark: "Excellent", sortOrder: 1 },
   { grade: "B2", minScore: 70, maxScore: 74, remark: "Very Good", sortOrder: 2 },
@@ -304,28 +299,7 @@ const WAEC_GRADE_BOUNDARIES: { grade: string; minScore: number; maxScore: number
   { grade: "F9", minScore: 0, maxScore: 39, remark: "Fail", sortOrder: 9 },
 ];
 
-async function seedAssessmentStructure(schoolId: string) {
-  // Not an upsert on schoolId_name: that compound unique no longer exists
-  // in the Prisma client — it's now a hand-written partial index (WHERE
-  // deleted_at IS NULL) that Prisma's DSL/client can't target directly.
-  for (const component of ASSESSMENT_COMPONENTS) {
-    const existing = await prisma.assessmentComponent.findFirst({
-      where: { schoolId, name: component.name, deletedAt: null },
-    });
-    if (existing) {
-      await prisma.assessmentComponent.update({
-        where: { id: existing.id },
-        data: {
-          weight: component.weight,
-          maxScore: component.maxScore,
-          requiresApproval: component.requiresApproval,
-          sortOrder: component.sortOrder,
-        },
-      });
-    } else {
-      await prisma.assessmentComponent.create({ data: { schoolId, ...component } });
-    }
-  }
+async function seedGradingScale(schoolId: string) {
   for (const boundary of WAEC_GRADE_BOUNDARIES) {
     await prisma.gradeBoundary.upsert({
       where: { schoolId_grade: { schoolId, grade: boundary.grade } },
@@ -337,10 +311,7 @@ async function seedAssessmentStructure(schoolId: string) {
   // removes a boundary outside it (e.g. a "Simple A-F" preset applied via
   // PUT /grade-boundaries during manual/UI testing), which leaves two grade
   // scales coexisting with overlapping ranges — an ambiguous grade-band
-  // lookup for any score both cover. Same self-healing idea as
-  // assessment_components' soft-delete-on-replace, applied here as a plain
-  // delete since grade_boundaries carries no historical references to
-  // preserve.
+  // lookup for any score both cover.
   await prisma.gradeBoundary.deleteMany({
     where: { schoolId, grade: { notIn: WAEC_GRADE_BOUNDARIES.map((b) => b.grade) } },
   });
@@ -642,11 +613,20 @@ function deterministicScore(studentIndex: number, componentIndex: number, subjec
   return Math.round(percent * maxScore);
 }
 
-// Seeds CA1/CA2/Exam raw scores for every enrolled student in a class arm
+// SPEC_V0.7.md §2/§5: three demo continuous-assessment evaluations per
+// subject — plain, equally-weighted, native /100 (Q1) — replacing the old
+// fixed CA1/CA2/Exam weighted model. Named distinctly from the separate
+// Exam track (Track B) so demo data never conflates the two.
+const CONTINUOUS_EVALUATIONS: { name: string }[] = [{ name: "CA 1" }, { name: "CA 2" }, { name: "CA 3" }];
+
+// Seeds three CA evaluations (creating them if they don't already exist)
+// and their EvaluationScore rows for every enrolled student in a class arm
 // for one subject, then computes and stores each student's
 // term_subject_result. `publish` simulates the director/owner publish
 // action (SPEC_V0.4.md §2 POST /grades/publish) — there's no HTTP surface
-// yet, so the seed writes the resulting state directly.
+// for the recompute/publish cascade yet, so the seed writes the resulting
+// state directly (score entry itself does go through the real endpoint
+// pattern's data shape via EvaluationScore, per SPEC_V0.7.md step 1).
 async function seedSubjectGrades(params: {
   schoolId: string;
   sessionId: string;
@@ -654,15 +634,15 @@ async function seedSubjectGrades(params: {
   classArmId: string;
   subjectId: string;
   subjectIndex: number;
-  components: ComponentInput[];
   boundaries: GradeBoundaryInput[];
   enteredByUserId: string;
   publish: boolean;
   // SPEC_V0.5.md §2.1 — indices are positions in this call's own
   // studentId-ordered enrollment list (below), not SUNRISE_STUDENTS array
-  // positions. Marks that student ABSENT for that component instead of
-  // giving them a deterministic score.
-  absentStudentComponents?: Array<{ studentIndex: number; componentId: string }>;
+  // positions; evaluationIndex is a position in CONTINUOUS_EVALUATIONS.
+  // Marks that student ABSENT for that evaluation instead of giving them a
+  // deterministic score.
+  absentStudentEvaluations?: Array<{ studentIndex: number; evaluationIndex: number }>;
 }): Promise<string[]> {
   const {
     schoolId,
@@ -671,65 +651,71 @@ async function seedSubjectGrades(params: {
     classArmId,
     subjectId,
     subjectIndex,
-    components,
     boundaries,
     enteredByUserId,
     publish,
-    absentStudentComponents = [],
+    absentStudentEvaluations = [],
   } = params;
+
+  const evaluationIds: string[] = [];
+  for (const evaluationDef of CONTINUOUS_EVALUATIONS) {
+    const existing = await prisma.evaluation.findFirst({
+      where: { schoolId, classArmId, subjectId, termId, name: evaluationDef.name, deletedAt: null },
+    });
+    const evaluation =
+      existing ??
+      (await prisma.evaluation.create({
+        data: {
+          schoolId,
+          classArmId,
+          subjectId,
+          sessionId,
+          termId,
+          name: evaluationDef.name,
+          description: `Continuous assessment: ${evaluationDef.name}`,
+          createdBy: enteredByUserId,
+        },
+      }));
+    evaluationIds.push(evaluation.id);
+  }
 
   const enrollments = await prisma.studentEnrollment.findMany({
     where: { schoolId, classArmId, sessionId },
     orderBy: { studentId: "asc" },
   });
   const studentIds = enrollments.map((e) => e.studentId);
-  const absentSet = new Set(absentStudentComponents.map((a) => `${a.studentIndex}:${a.componentId}`));
+  const absentSet = new Set(absentStudentEvaluations.map((a) => `${a.studentIndex}:${a.evaluationIndex}`));
 
   for (let i = 0; i < studentIds.length; i++) {
     const studentId = studentIds[i];
-    for (let c = 0; c < components.length; c++) {
-      const component = components[c];
-      const isAbsent = absentSet.has(`${i}:${component.id}`);
-      const rawScore = isAbsent ? null : deterministicScore(i, c, subjectIndex, component.maxScore);
-      await prisma.studentScore.upsert({
-        where: {
-          studentId_subjectId_componentId_termId_sessionId: {
-            studentId,
-            subjectId,
-            componentId: component.id,
-            termId,
-            sessionId,
-          },
-        },
+    for (let e = 0; e < evaluationIds.length; e++) {
+      const isAbsent = absentSet.has(`${i}:${e}`);
+      const rawScore = isAbsent ? null : deterministicScore(i, e, subjectIndex, 100);
+      await prisma.evaluationScore.upsert({
+        where: { evaluationId_studentId: { evaluationId: evaluationIds[e], studentId } },
         update: { rawScore, isAbsent, enteredBy: enteredByUserId, enteredAt: new Date() },
-        create: {
-          schoolId,
-          studentId,
-          subjectId,
-          componentId: component.id,
-          sessionId,
-          termId,
-          classArmId,
-          rawScore,
-          isAbsent,
-          enteredBy: enteredByUserId,
-          enteredAt: new Date(),
-        },
+        create: { evaluationId: evaluationIds[e], studentId, rawScore, isAbsent, enteredBy: enteredByUserId, enteredAt: new Date() },
       });
     }
   }
 
+  const allScores = await prisma.evaluationScore.findMany({
+    where: { evaluationId: { in: evaluationIds }, studentId: { in: studentIds } },
+  });
+  const scoresByStudent = new Map<string, typeof allScores>();
+  for (const score of allScores) {
+    const arr = scoresByStudent.get(score.studentId) ?? [];
+    arr.push(score);
+    scoresByStudent.set(score.studentId, arr);
+  }
+
   const totals = new Map<string, number>();
-  const draftOrPending = new Map<string, "DRAFT" | "PENDING_APPROVAL">();
   for (const studentId of studentIds) {
-    const scores = await prisma.studentScore.findMany({ where: { studentId, subjectId, termId, sessionId } });
-    const scoreInputs = scores.map((s) => ({
-      componentId: s.componentId,
+    const scoreInputs: DecidableScoreInput[] = (scoresByStudent.get(studentId) ?? []).map((s) => ({
       rawScore: s.rawScore === null ? null : Number(s.rawScore),
       isAbsent: s.isAbsent,
     }));
-    totals.set(studentId, computeSubjectTotal(components, scoreInputs));
-    draftOrPending.set(studentId, computeSubjectStatus(components, scoreInputs));
+    totals.set(studentId, computeEvaluationAverage(scoreInputs));
   }
 
   let positions: Map<string, number> | null = null;
@@ -741,7 +727,7 @@ async function seedSubjectGrades(params: {
   for (const studentId of studentIds) {
     const total = totals.get(studentId)!;
     const autoGrade = resolveGradeBand(total, boundaries);
-    const status: ResultStatus = publish ? "PUBLISHED" : draftOrPending.get(studentId)!;
+    const status: ResultStatus = publish ? "PUBLISHED" : "DRAFT";
     const data = {
       schoolId,
       classArmId,
@@ -943,23 +929,19 @@ async function main() {
   );
 
   await seedSecondGuardian(sunrise.id, "SUN/2026/0001");
-  await seedAssessmentStructure(sunrise.id);
+  await seedGradingScale(sunrise.id);
 
-  const sunriseComponents = await prisma.assessmentComponent.findMany({
-    where: { schoolId: sunrise.id, deletedAt: null },
-    orderBy: { sortOrder: "asc" },
-  });
   const sunriseBoundaries = await prisma.gradeBoundary.findMany({
     where: { schoolId: sunrise.id },
     orderBy: { sortOrder: "asc" },
   });
   const sunriseFirstTermId = sunriseAcademics.termIds[TermName.FIRST];
 
-  // SPEC_V0.4.md §3: realistic First Term scores for Mathematics + English
-  // across JSS 1 A and the ~100-student JSS 2 A. JSS 1 A Mathematics is left
-  // PENDING_APPROVAL (exam scored, not yet published) and English PUBLISHED
-  // — both states demoable from seed, per spec. JSS 2 A publishes both, so
-  // its overall results and positions are also exercised end to end.
+  // SPEC_V0.4.md §3 / SPEC_V0.7.md §2: realistic First Term scores for
+  // Mathematics + English across JSS 1 A and the ~100-student JSS 2 A. JSS 1
+  // A Mathematics is left DRAFT (not yet published) and English PUBLISHED —
+  // both states demoable from seed, per spec. JSS 2 A publishes both, so its
+  // overall results and positions are also exercised end to end.
   for (const armKey of ["JSS 1-A", "JSS 2-A"]) {
     const classArmId = sunriseAcademics.arms[armKey];
     const publishMath = armKey !== "JSS 1-A";
@@ -971,7 +953,6 @@ async function main() {
       classArmId,
       subjectId: sunriseSubjectIds["Mathematics"],
       subjectIndex: 0,
-      components: sunriseComponents,
       boundaries: sunriseBoundaries,
       enteredByUserId: sunriseTeacherUserIds[0],
       publish: publishMath,
@@ -983,7 +964,6 @@ async function main() {
       classArmId,
       subjectId: sunriseSubjectIds["English Language"],
       subjectIndex: 1,
-      components: sunriseComponents,
       boundaries: sunriseBoundaries,
       enteredByUserId: sunriseTeacherUserIds[1],
       publish: true,
@@ -1003,11 +983,10 @@ async function main() {
   // touching First Term's already-reviewed v0.4 baseline (docs/DECISIONS.md).
   // JSS 2 A Mathematics (the ~100-student bulk arm, term-scoped so First
   // Term's data is untouched): 3 students marked absent across 3 different
-  // components incl. one absent-exam, then the term closed by the
-  // principal, then one fully-resolved unlock -> edit -> relock round trip.
+  // evaluations, then the term closed by the principal, then one
+  // fully-resolved unlock -> edit -> relock round trip.
   const sunriseSecondTermId = sunriseAcademics.termIds[TermName.SECOND];
   const jss2AArmId = sunriseAcademics.arms["JSS 2-A"];
-  const [ca1Component, ca2Component, examComponent] = sunriseComponents;
 
   const secondTermMathStudentIds = await seedSubjectGrades({
     schoolId: sunrise.id,
@@ -1016,15 +995,25 @@ async function main() {
     classArmId: jss2AArmId,
     subjectId: sunriseSubjectIds["Mathematics"],
     subjectIndex: 0,
-    components: sunriseComponents,
     boundaries: sunriseBoundaries,
     enteredByUserId: sunriseTeacherUserIds[0],
     publish: true,
-    absentStudentComponents: [
-      { studentIndex: 3, componentId: ca1Component.id },
-      { studentIndex: 47, componentId: ca2Component.id },
-      { studentIndex: 91, componentId: examComponent.id },
+    absentStudentEvaluations: [
+      { studentIndex: 3, evaluationIndex: 0 },
+      { studentIndex: 47, evaluationIndex: 1 },
+      { studentIndex: 91, evaluationIndex: 2 },
     ],
+  });
+
+  const jss2ASecondTermMathCa1 = await prisma.evaluation.findFirstOrThrow({
+    where: {
+      schoolId: sunrise.id,
+      classArmId: jss2AArmId,
+      subjectId: sunriseSubjectIds["Mathematics"],
+      termId: sunriseSecondTermId,
+      name: "CA 1",
+      deletedAt: null,
+    },
   });
 
   // Principal closes Second Term (SPEC_V0.5.md §2.3) — read-only from here;
@@ -1039,40 +1028,38 @@ async function main() {
   // A fully-resolved unlock -> edit -> relock round trip for JSS 2 A
   // Mathematics, demoable from seed for step 3's term-lifecycle UI. The
   // "edit" corrects one student's CA 1 score directly (no HTTP surface yet
-  // — same seed-writes-state-directly pattern as seedSubjectGrades /
-  // seedOverallResults) and its term_subject_result total is recomputed to
-  // match, mirroring "an edit recomputes total/grade/position and
-  // re-publishes the corrected number" (SPEC_V0.5.md §2.3).
+  // for the recompute cascade — same seed-writes-state-directly pattern as
+  // seedSubjectGrades / seedOverallResults) and its term_subject_result
+  // total is recomputed to match, mirroring "an edit recomputes
+  // total/grade/position and re-publishes the corrected number"
+  // (SPEC_V0.5.md §2.3).
   const unlockedAt = new Date("2027-01-20T09:00:00Z");
   const relockedAt = new Date("2027-01-20T09:20:00Z");
   const correctedStudentId = secondTermMathStudentIds[10];
-  const correctedScoreWhere = {
-    studentId_subjectId_componentId_termId_sessionId: {
-      studentId: correctedStudentId,
-      subjectId: sunriseSubjectIds["Mathematics"],
-      componentId: ca1Component.id,
-      termId: sunriseSecondTermId,
-      sessionId: sunriseAcademics.sessionId,
-    },
-  };
-  await prisma.studentScore.update({
-    where: correctedScoreWhere,
+  await prisma.evaluationScore.update({
+    where: { evaluationId_studentId: { evaluationId: jss2ASecondTermMathCa1.id, studentId: correctedStudentId } },
     data: { rawScore: 19, isAbsent: false, enteredBy: sunriseTeacherUserIds[0], enteredAt: unlockedAt },
   });
-  const correctedScores = await prisma.studentScore.findMany({
-    where: {
-      studentId: correctedStudentId,
-      subjectId: sunriseSubjectIds["Mathematics"],
-      termId: sunriseSecondTermId,
-      sessionId: sunriseAcademics.sessionId,
-    },
+  const secondTermMathEvaluationIds = (
+    await prisma.evaluation.findMany({
+      where: {
+        schoolId: sunrise.id,
+        classArmId: jss2AArmId,
+        subjectId: sunriseSubjectIds["Mathematics"],
+        termId: sunriseSecondTermId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    })
+  ).map((e) => e.id);
+  const correctedScores = await prisma.evaluationScore.findMany({
+    where: { evaluationId: { in: secondTermMathEvaluationIds }, studentId: correctedStudentId },
   });
-  const correctedScoreInputs = correctedScores.map((s) => ({
-    componentId: s.componentId,
+  const correctedScoreInputs: DecidableScoreInput[] = correctedScores.map((s) => ({
     rawScore: s.rawScore === null ? null : Number(s.rawScore),
     isAbsent: s.isAbsent,
   }));
-  const correctedTotal = computeSubjectTotal(sunriseComponents, correctedScoreInputs);
+  const correctedTotal = computeEvaluationAverage(correctedScoreInputs);
   const correctedGrade = resolveGradeBand(correctedTotal, sunriseBoundaries);
   await prisma.termSubjectResult.update({
     where: {
@@ -1194,14 +1181,10 @@ async function main() {
     [hillcrestTeacherUserIds[0]],
   );
 
-  await seedAssessmentStructure(hillcrest.id);
+  await seedGradingScale(hillcrest.id);
 
   // SPEC_V0.4.md §3: a smaller slice — one subject, one class — so
   // cross-tenant grade tests have real data to assert 404 against.
-  const hillcrestComponents = await prisma.assessmentComponent.findMany({
-    where: { schoolId: hillcrest.id, deletedAt: null },
-    orderBy: { sortOrder: "asc" },
-  });
   const hillcrestBoundaries = await prisma.gradeBoundary.findMany({
     where: { schoolId: hillcrest.id },
     orderBy: { sortOrder: "asc" },
@@ -1216,7 +1199,6 @@ async function main() {
     classArmId: hillcrestJss1AArmId,
     subjectId: hillcrestSubjectIds["Mathematics"],
     subjectIndex: 0,
-    components: hillcrestComponents,
     boundaries: hillcrestBoundaries,
     enteredByUserId: hillcrestTeacherUserIds[0],
     publish: true,

@@ -24,9 +24,6 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
   let sunriseTermId: string;
   let studentArmId: string;
   let studentArmCreated = false;
-  let ca1Id: string;
-  let ca2Id: string;
-  let examId: string;
 
   let subjectX: string; // published for both A and B, different scores -> distinct positions
   let subjectY: string; // A only, left DRAFT -> keeps A's overall from completing
@@ -60,7 +57,18 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
     return subject.id;
   }
 
-  async function score(subjectId: string, componentId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
+  // v0.7 step 1 (SPEC_V0.7.md §2/§5): evaluations replace the fixed
+  // CA1/CA2/Exam components — created directly via Prisma (no
+  // create-evaluation HTTP endpoint yet, Step 2).
+  async function createEvaluation(subjectId: string, name: string): Promise<string> {
+    const subjectTeacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
+    const evaluation = await prisma.evaluation.create({
+      data: { schoolId: sunriseId, classArmId: studentArmId, subjectId, sessionId: sunriseSessionId, termId: sunriseTermId, name, description: name, createdBy: subjectTeacher.id },
+    });
+    return evaluation.id;
+  }
+
+  async function score(subjectId: string, evaluationId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
     const subjectTeacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
     await prisma.subjectTeacherAssignment.upsert({
       where: { subjectId_classArmId_sessionId: { subjectId, classArmId: studentArmId, sessionId: sunriseSessionId } },
@@ -68,9 +76,9 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
       create: { schoolId: sunriseId, subjectId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: subjectTeacher.id },
     });
     const response = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send({ classArmId: studentArmId, subjectId, componentId, termId: sunriseTermId, scores });
+      .send({ classArmId: studentArmId, subjectId, evaluationId, termId: sunriseTermId, scores });
     if (response.status !== 200) {
       throw new Error(`score failed: ${response.status} ${JSON.stringify(response.body)}`);
     }
@@ -157,11 +165,6 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
     sunriseSessionId = session.id;
     sunriseTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: sunriseSessionId, name: "FIRST" } })).id;
 
-    const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
-    ca1Id = components[0].id;
-    ca2Id = components[1].id;
-    examId = components[2].id;
-
     const jss3 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 3" } });
     studentArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss3.id, name: `E2E-MeParent-${Date.now()}` } })).id;
     studentArmCreated = true;
@@ -174,16 +177,24 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
     subjectX = await createSunriseSubject("E2E MeParent SubjectX");
     subjectY = await createSunriseSubject("E2E MeParent SubjectY");
 
-    // subjectX: A and B scored + published — same shape as Step 3's own
-    // proof, now reached via the PARENT route instead of a STUDENT token.
-    await score(subjectX, ca1Id, [{ studentId: studentAId, rawScore: 18 }, { studentId: studentBId, rawScore: 12 }]);
-    await score(subjectX, ca2Id, [{ studentId: studentAId, isAbsent: true }, { studentId: studentBId, rawScore: 10 }]);
-    await score(subjectX, examId, [{ studentId: studentAId, rawScore: 55 }, { studentId: studentBId, rawScore: 40 }]);
+    // subjectX: A and B scored (all 3 evaluations decided, one absence each
+    // — completeness gate) + published — same shape as Step 3's own proof,
+    // now reached via the PARENT route instead of a STUDENT token.
+    const [xEval1, xEval2, xEval3] = await Promise.all([
+      createEvaluation(subjectX, "CA 1"),
+      createEvaluation(subjectX, "CA 2"),
+      createEvaluation(subjectX, "CA 3"),
+    ]);
+    await score(subjectX, xEval1, [{ studentId: studentAId, rawScore: 18 }, { studentId: studentBId, rawScore: 12 }]);
+    await score(subjectX, xEval2, [{ studentId: studentAId, isAbsent: true }, { studentId: studentBId, isAbsent: true }]);
+    await score(subjectX, xEval3, [{ studentId: studentAId, rawScore: 84 }, { studentId: studentBId, rawScore: 80 }]);
+    // A: (18+84)/2=51. B: (12+80)/2=46.
     await publish(subjectX);
 
-    // subjectY: A only, CA1 scored, CA2/Exam never touched -> DRAFT, never
-    // published. Keeps A's overall from ever reaching PUBLISHED.
-    await score(subjectY, ca1Id, [{ studentId: studentAId, rawScore: 10 }]);
+    // subjectY: A only, one evaluation scored -> DRAFT, never published.
+    // Keeps A's overall from ever reaching PUBLISHED.
+    const yEval1 = await createEvaluation(subjectY, "CA 1");
+    await score(subjectY, yEval1, [{ studentId: studentAId, rawScore: 10 }]);
 
     // B has ONLY subjectX (published) -> B's overall reaches PUBLISHED too
     // (publish()'s own class-arm-wide recompute, no extra call needed).
@@ -241,7 +252,9 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
     await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } }); // before students/guardians — FK
     await prisma.termRemark.deleteMany({ where: { studentId: { in: createdStudentIds } } });
     if (createdSubjectIds.length > 0) {
-      await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+      const evaluations = await prisma.evaluation.findMany({ where: { subjectId: { in: createdSubjectIds } }, select: { id: true } });
+      await prisma.evaluationScore.deleteMany({ where: { evaluationId: { in: evaluations.map((e) => e.id) } } });
+      await prisma.evaluation.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
@@ -298,7 +311,7 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
       expect(subjectIds).not.toContain(subjectY); // DRAFT — never published
 
       const subjX = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectX);
-      expect(subjX.totalScore).toBe(51); // 18 + 0 (absent) + 33
+      expect(subjX.totalScore).toBe(51); // (18 + 84) / 2 — the absent evaluation excluded, not averaged as 0
       expect(subjX.subjectPosition).toBe(1);
       expect(response.body.overall).toBeNull(); // subjectY still DRAFT -> overall never published
     });

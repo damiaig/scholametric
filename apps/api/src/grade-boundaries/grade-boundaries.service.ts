@@ -25,9 +25,8 @@ export class GradeBoundariesService {
     return { waec9Point: WAEC_9_POINT_PRESET, simpleAToF: SIMPLE_A_TO_F_PRESET };
   }
 
-  // Full-set atomic replace, same "validate the whole set, then hard
-  // delete-and-recreate in one transaction" shape as
-  // AssessmentComponentsService.replaceAll — see that file's comment.
+  // Full-set atomic replace: validate the whole set, then hard
+  // delete-and-recreate in one transaction.
   async replaceAll(items: GradeBoundaryItemDto[], actorUserId: string): Promise<GradeBoundary[]> {
     const schoolId = this.tenantContext.schoolId;
     this.validate(items);

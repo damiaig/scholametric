@@ -60,9 +60,6 @@ describe("Grades publish/unpublish/override (e2e)", () => {
   // through saveGrid.
   let gapTwoTwinArmId: string;
   let gapTwoTwinConcurrencyArmId: string;
-  let ca1Id: string; // weight 20, max_score 20, requiresApproval false
-  let examId: string; // weight 60, max_score 100, requiresApproval true
-  let ca2Id: string; // weight 20, max_score 20, requiresApproval false
   let teacherUserId: string;
 
   // Real, cross-tenant fixtures for the "attempt and reject" 404 tests —
@@ -111,12 +108,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     return subject.id;
   }
 
-  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
-  // subject_teacher_assignment for (subjectId, classArmId, session) —
-  // upserting one here, keyed off whatever pair this particular call
-  // actually targets, means every existing call site in this file keeps
-  // working without having to hand-track which of the several scratch
-  // arms each scratch subject was scored against.
+  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/evaluation-scores now 404s
+  // without a subject_teacher_assignment for (subjectId, classArmId,
+  // session) — upserting one here, keyed off whatever pair this particular
+  // call actually targets, means every existing call site in this file
+  // keeps working without having to hand-track which of the several
+  // scratch arms each scratch subject was scored against.
   async function ensureAssignment(subjectId: string, classArmId: string) {
     await prisma.subjectTeacherAssignment.upsert({
       where: { subjectId_classArmId_sessionId: { subjectId, classArmId, sessionId: sunriseSessionId } },
@@ -125,22 +122,57 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     });
   }
 
-  async function scoreComponent(
+  // v0.7 step 1 (SPEC_V0.7.md §2/§5): evaluations replace the fixed
+  // CA1/CA2/Exam components — created directly via Prisma (no
+  // create-evaluation HTTP endpoint yet, Step 2). Every subject in this
+  // file gets its own fresh set, scoped to whichever class arm it's used
+  // in.
+  async function createEvaluationsForSubject(subjectId: string, classArmId: string, count = 3): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const name = `CA ${i + 1}`;
+      const evaluation = await prisma.evaluation.create({
+        data: { schoolId: sunriseId, classArmId, subjectId, sessionId: sunriseSessionId, termId: sunriseTermId, name, description: name, createdBy: teacherUserId },
+      });
+      ids.push(evaluation.id);
+    }
+    return ids;
+  }
+
+  async function scoreEvaluation(
     token: string,
     subjectId: string,
-    componentId: string,
-    scores: { studentId: string; rawScore: number }[],
+    evaluationId: string,
+    scores: { studentId: string; rawScore?: number | null; isAbsent?: boolean }[],
     classArmId: string = scratchArmId,
   ) {
     await ensureAssignment(subjectId, classArmId);
     const response = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(token))
-      .send({ classArmId, subjectId, componentId, termId: sunriseTermId, scores });
+      .send({ classArmId, subjectId, evaluationId, termId: sunriseTermId, scores });
     if (response.status !== 200) {
-      throw new Error(`scoreComponent failed: ${response.status} ${JSON.stringify(response.body)}`);
+      throw new Error(`scoreEvaluation failed: ${response.status} ${JSON.stringify(response.body)}`);
     }
     return response;
+  }
+
+  // Scores every evaluation in `evaluationIds` at the SAME value for each
+  // student — since computeEvaluationAverage is a plain average, this
+  // makes that value the student's final total directly (native /100, no
+  // weights — SPEC_V0.7.md Q1), while still fully satisfying the
+  // completeness gate (every evaluation genuinely decided). The simplest
+  // way to hand-verify a target total in this new model.
+  async function scoreTotal(
+    token: string,
+    subjectId: string,
+    evaluationIds: string[],
+    entries: { studentId: string; total: number }[],
+    classArmId: string = scratchArmId,
+  ) {
+    for (const evaluationId of evaluationIds) {
+      await scoreEvaluation(token, subjectId, evaluationId, entries.map((e) => ({ studentId: e.studentId, rawScore: e.total })), classArmId);
+    }
   }
 
   beforeAll(async () => {
@@ -178,14 +210,6 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     gapTwoTwinConcurrencyArmId = (
       await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Gap2TwinConc-${Date.now()}` } })
     ).id;
-
-    const components = await prisma.assessmentComponent.findMany({
-      where: { schoolId: sunriseId, deletedAt: null },
-      orderBy: { sortOrder: "asc" },
-    });
-    ca1Id = components[0].id;
-    ca2Id = components[1].id;
-    examId = components[2].id;
 
     teacherUserId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
 
@@ -235,7 +259,9 @@ describe("Grades publish/unpublish/override (e2e)", () => {
 
   afterAll(async () => {
     if (createdSubjectIds.length > 0) {
-      await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+      const evaluations = await prisma.evaluation.findMany({ where: { subjectId: { in: createdSubjectIds } }, select: { id: true } });
+      await prisma.evaluationScore.deleteMany({ where: { evaluationId: { in: evaluations.map((e) => e.id) } } });
+      await prisma.evaluation.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
@@ -276,27 +302,15 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("happy path with a deliberate tie: shares a position, next rank skips", async () => {
       const subjectId = await createScratchSubject("E2E Publish Tie");
       const [s0, s1, s2] = await createScratchStudents(3, "Tie");
+      const evaluationIds = await createEvaluationsForSubject(subjectId, scratchArmId);
 
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [
-        { studentId: s0, rawScore: 20 },
-        { studentId: s1, rawScore: 20 },
-        { studentId: s2, rawScore: 5 },
+      // s0, s1: 80 (tied). s2: 20. Every evaluation decided for everyone —
+      // satisfies the completeness gate (SPEC_V0.5.md §2.2) trivially.
+      await scoreTotal(sunriseAdminToken, subjectId, evaluationIds, [
+        { studentId: s0, total: 80 },
+        { studentId: s1, total: 80 },
+        { studentId: s2, total: 20 },
       ]);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [
-        { studentId: s0, rawScore: 100 },
-        { studentId: s1, rawScore: 100 },
-        { studentId: s2, rawScore: 25 },
-      ]);
-      // CA2 left at 0 for everyone — a real, decided score (not a blank),
-      // contributes nothing to the total (0/20*20=0), so it satisfies the
-      // completeness gate (SPEC_V0.5.md §2.2) without perturbing any of
-      // this test's hand-verified totals below.
-      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [
-        { studentId: s0, rawScore: 0 },
-        { studentId: s1, rawScore: 0 },
-        { studentId: s2, rawScore: 0 },
-      ]);
-      // s0, s1: 20 + 60 = 80 (tied). s2: 5 + 15 = 20.
 
       const response = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
@@ -348,9 +362,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("re-publishing an already-fully-published subject is an idempotent 200 (publishedCount: 0)", async () => {
       const subjectId = await createScratchSubject("E2E Publish Idempotent");
       const [s0] = await createScratchStudents(1, "Idem");
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 20 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 100 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 0 }]); // completeness gate — see the Tie test above
+      const evaluationIds = await createEvaluationsForSubject(subjectId, scratchArmId);
+      await scoreTotal(sunriseAdminToken, subjectId, evaluationIds, [{ studentId: s0, total: 100 }]);
       const first = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(sunriseAdminToken))
@@ -379,7 +392,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("rejects unauthenticated requests", async () => {
       const response = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
-        .send({ classArmId: scratchArmId, subjectId: ca1Id, termId: sunriseTermId });
+        .send({ classArmId: scratchArmId, subjectId: sunriseId, termId: sunriseTermId });
       expect(response.status).toBe(401);
     });
 
@@ -393,18 +406,17 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const b = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(hillcrestAdminToken))
-        .send({ classArmId: scratchArmId, subjectId: ca1Id, termId: sunriseTermId });
+        .send({ classArmId: scratchArmId, subjectId: sunriseId, termId: sunriseTermId });
       expect(b.status).toBe(404);
     });
   });
 
   describe("POST /grades/unpublish", () => {
-    it("happy path (PROPRIETOR): reverts to PENDING_APPROVAL, clears position and published_at", async () => {
+    it("happy path (PROPRIETOR): reverts to DRAFT, clears position and published_at", async () => {
       const subjectId = await createScratchSubject("E2E Unpublish Happy");
       const [s0] = await createScratchStudents(1, "Unpub");
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 20 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 100 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 0 }]); // completeness gate
+      const evaluationIds = await createEvaluationsForSubject(subjectId, scratchArmId);
+      await scoreTotal(sunriseAdminToken, subjectId, evaluationIds, [{ studentId: s0, total: 80 }]);
 
       const publishRes = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
@@ -429,7 +441,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const reverted = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: s0, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
       });
-      expect(reverted.status).toBe("PENDING_APPROVAL");
+      expect(reverted.status).toBe("DRAFT");
       expect(reverted.subjectPosition).toBeNull();
       expect(reverted.publishedAt).toBeNull();
       expect(Number(reverted.totalScore)).toBe(80); // unaffected — unpublish doesn't touch scores
@@ -461,40 +473,18 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const b = await request(app.getHttpServer())
         .post("/api/v1/grades/unpublish")
         .set(auth(hillcrestProprietorToken))
-        .send({ classArmId: scratchArmId, subjectId: ca1Id, termId: sunriseTermId });
+        .send({ classArmId: scratchArmId, subjectId: sunriseId, termId: sunriseTermId });
       expect(b.status).toBe(404);
     });
   });
 
   describe("PUT /grades/override", () => {
-    it("allowed while PENDING_APPROVAL by SCHOOL_ADMIN", async () => {
-      const subjectId = await createScratchSubject("E2E Override Pending");
-      const [s0] = await createScratchStudents(1, "OvrPending");
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 60 }]);
-      // total = 15 + 36 = 51 -> C6 (50-54)
-
-      const row = await prisma.termSubjectResult.findUniqueOrThrow({
-        where: { studentId_subjectId_termId_sessionId: { studentId: s0, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
-      });
-      expect(row.status).toBe("PENDING_APPROVAL");
-      expect(row.autoGrade).toBe("C6");
-
-      const response = await request(app.getHttpServer())
-        .put("/api/v1/grades/override")
-        .set(auth(sunriseAdminToken))
-        .send({ termSubjectResultId: row.id, overrideGrade: "A1" });
-      expect(response.status).toBe(200);
-      expect(response.body.overrideGrade).toBe("A1");
-      expect(response.body.autoGrade).toBe("C6");
-      expect(response.body.finalGrade).toBe("A1");
-    });
-
     it("409s while DRAFT — total isn't final yet", async () => {
       const subjectId = await createScratchSubject("E2E Override Draft");
       const [s0] = await createScratchStudents(1, "OvrDraft");
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }]);
-      // No exam score -> DRAFT.
+      const [eval1] = await createEvaluationsForSubject(subjectId, scratchArmId, 1);
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval1, [{ studentId: s0, rawScore: 15 }]);
+      // Never published -> DRAFT.
 
       const row = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: s0, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
@@ -506,27 +496,41 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         .set(auth(sunriseAdminToken))
         .send({ termSubjectResultId: row.id, overrideGrade: "A1" });
       expect(response.status).toBe(409);
-      expect(response.body.message).toMatch(/isn't final/i);
+      expect(response.body.message).toMatch(/hasn't been published/i);
     });
 
-    it("regression: PENDING_APPROVAL -> DRAFT (exam score cleared) nulls a stored override, not just leaves it stale", async () => {
+    // v0.7 step 1 (confirmed): no more PENDING_APPROVAL hop for a subject
+    // row — override is now available ONLY once published, and only to
+    // PROPRIETOR (SCHOOL_ADMIN can no longer override at all, unlike v0.4's
+    // PENDING_APPROVAL loophole). This regression is the new-model
+    // equivalent: PUBLISHED -> DRAFT (via unpublish) nulls a stored
+    // override, not just leaves it stale.
+    it("regression: unpublish (PUBLISHED -> DRAFT) nulls a stored override, not just leaves it stale", async () => {
       const subjectId = await createScratchSubject("E2E Override Regression");
       const [s0] = await createScratchStudents(1, "OvrRegress");
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 60 }]);
+      const evaluationIds = await createEvaluationsForSubject(subjectId, scratchArmId);
+      await scoreTotal(sunriseAdminToken, subjectId, evaluationIds, [{ studentId: s0, total: 51 }]);
+      const publishRes = await request(app.getHttpServer())
+        .post("/api/v1/grades/publish")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: scratchArmId, subjectId, termId: sunriseTermId });
+      expect(publishRes.status).toBe(200);
 
-      const pending = await prisma.termSubjectResult.findUniqueOrThrow({
+      const published = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: s0, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
       });
       const overrideRes = await request(app.getHttpServer())
         .put("/api/v1/grades/override")
-        .set(auth(sunriseAdminToken))
-        .send({ termSubjectResultId: pending.id, overrideGrade: "A1" });
+        .set(auth(sunriseProprietorToken))
+        .send({ termSubjectResultId: published.id, overrideGrade: "A1" });
       expect(overrideRes.status).toBe(200);
       expect(overrideRes.body.overrideGrade).toBe("A1");
 
-      // Clear the approval-required (exam) score -> reverts to DRAFT.
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: null as unknown as number }]);
+      const unpublishRes = await request(app.getHttpServer())
+        .post("/api/v1/grades/unpublish")
+        .set(auth(sunriseProprietorToken))
+        .send({ classArmId: scratchArmId, subjectId, termId: sunriseTermId });
+      expect(unpublishRes.status).toBe(200);
 
       const reverted = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: s0, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
@@ -539,9 +543,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("on a PUBLISHED result: SCHOOL_ADMIN 403s, PROPRIETOR 200s and position is unchanged", async () => {
       const subjectId = await createScratchSubject("E2E Override Published");
       const [s0] = await createScratchStudents(1, "OvrPublished");
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 60 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 0 }]); // completeness gate
+      const evaluationIds = await createEvaluationsForSubject(subjectId, scratchArmId);
+      await scoreTotal(sunriseAdminToken, subjectId, evaluationIds, [{ studentId: s0, total: 51 }]);
       const publishRes = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(sunriseAdminToken))
@@ -582,8 +585,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("rejects an overrideGrade not in the school's grading scale", async () => {
       const subjectId = await createScratchSubject("E2E Override InvalidGrade");
       const [s0] = await createScratchStudents(1, "OvrInvalid");
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 60 }]);
+      const [eval1] = await createEvaluationsForSubject(subjectId, scratchArmId, 1);
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval1, [{ studentId: s0, rawScore: 15 }]);
       const row = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: s0, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
       });
@@ -631,50 +634,28 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const extraSubjectId = await createScratchSubject("E2E Overall Extra");
       const [p, t, q, r] = await createScratchStudents(4, "Overall", overallArmId);
 
-      // T, Q, R all take the shared subject.
-      await scoreComponent(
+      // T, Q, R all take the shared subject. T: 60. Q: 40. R: 48.
+      const sharedEvaluationIds = await createEvaluationsForSubject(sharedSubjectId, overallArmId);
+      await scoreTotal(
         sunriseAdminToken,
         sharedSubjectId,
-        ca1Id,
+        sharedEvaluationIds,
         [
-          { studentId: t, rawScore: 15 },
-          { studentId: q, rawScore: 10 },
-          { studentId: r, rawScore: 12 },
+          { studentId: t, total: 60 },
+          { studentId: q, total: 40 },
+          { studentId: r, total: 48 },
         ],
         overallArmId,
       );
-      await scoreComponent(
-        sunriseAdminToken,
-        sharedSubjectId,
-        examId,
-        [
-          { studentId: t, rawScore: 75 },
-          { studentId: q, rawScore: 50 },
-          { studentId: r, rawScore: 60 },
-        ],
-        overallArmId,
-      );
-      await scoreComponent(
-        sunriseAdminToken,
-        sharedSubjectId,
-        ca2Id,
-        [
-          { studentId: t, rawScore: 0 },
-          { studentId: q, rawScore: 0 },
-          { studentId: r, rawScore: 0 },
-        ],
-        overallArmId,
-      ); // completeness gate — 0 contributes nothing, totals below unaffected
-      // T: 15+45=60. Q: 10+30=40. R: 12+36=48.
 
       // R ALSO has a second subject, scored but never published — this is
       // what keeps R's overall genuinely incomplete (not just "R only
       // takes 1 subject", which — per term_overall_results.subjects_count
       // being a count of EXISTING rows, not a curriculum size — would
       // legitimately read as "complete" with only 1 subject).
-      await scoreComponent(sunriseAdminToken, extraSubjectId, ca1Id, [{ studentId: r, rawScore: 10 }], overallArmId);
-      await scoreComponent(sunriseAdminToken, extraSubjectId, examId, [{ studentId: r, rawScore: 40 }], overallArmId);
-      // R's extra subject: 10+24=34, left PENDING_APPROVAL (never published).
+      const extraEvaluationIds = await createEvaluationsForSubject(extraSubjectId, overallArmId);
+      await scoreTotal(sunriseAdminToken, extraSubjectId, extraEvaluationIds, [{ studentId: r, total: 34 }], overallArmId);
+      // R's extra subject: 34, left DRAFT (never published).
 
       const sharedPublish = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
@@ -683,11 +664,9 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       expect(sharedPublish.status).toBe(200);
       expect(sharedPublish.body.publishedCount).toBe(3);
 
-      // P takes only the solo subject.
-      await scoreComponent(sunriseAdminToken, soloSubjectId, ca1Id, [{ studentId: p, rawScore: 20 }], overallArmId);
-      await scoreComponent(sunriseAdminToken, soloSubjectId, examId, [{ studentId: p, rawScore: 100 }], overallArmId);
-      await scoreComponent(sunriseAdminToken, soloSubjectId, ca2Id, [{ studentId: p, rawScore: 0 }], overallArmId); // completeness gate
-      // P: 20+60=80.
+      // P takes only the solo subject. P: 80.
+      const soloEvaluationIds = await createEvaluationsForSubject(soloSubjectId, overallArmId);
+      await scoreTotal(sunriseAdminToken, soloSubjectId, soloEvaluationIds, [{ studentId: p, total: 80 }], overallArmId);
       const soloPublish = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(sunriseAdminToken))
@@ -738,7 +717,13 @@ describe("Grades publish/unpublish/override (e2e)", () => {
           }),
         ),
       );
-      expect(pAfter.status).toBe("PENDING_APPROVAL");
+      // v0.7 step 1 (confirmed): no more PENDING_APPROVAL hop for a
+      // subject row — unpublish reverts P's SOLE subject straight to
+      // DRAFT (not a decided-but-unpublished intermediate), so with only
+      // one subject touched, P's overall is DRAFT too (computeOverallStatus
+      // only reaches PENDING_APPROVAL when at least one subject is
+      // PUBLISHED among a mix — a single DRAFT subject alone is just DRAFT).
+      expect(pAfter.status).toBe("DRAFT");
       expect(pAfter.overallPosition).toBeNull();
       expect(tAfter.status).toBe("PUBLISHED");
       expect(tAfter.overallPosition).toBe(1); // was 2, shifted up
@@ -752,31 +737,32 @@ describe("Grades publish/unpublish/override (e2e)", () => {
   // student's term_overall_result is currently PUBLISHED, must revert the
   // overall to PENDING_APPROVAL and re-rank the shrunken published
   // cohort — not leave a stale PUBLISHED status/position behind.
-  // Completeness gate (SPEC_V0.5.md §2.2, v0.5 step 2): publish() now
-  // rejects (409) a subject with a PENDING_APPROVAL candidate that has a
-  // blank component — no row, or a row with neither a score nor an
+  // Completeness gate (SPEC_V0.5.md §2.2, v0.5 step 2, carried into v0.7
+  // step 1): publish() rejects (409) a subject with a DRAFT candidate that
+  // has a blank evaluation — no row, or a row with neither a score nor an
   // absent mark. Scoped to publish CANDIDATES only (docs/DECISIONS.md —
   // the spec's literal "every student in the roster" is read as "every
   // student being published in THIS call", preserving v0.4's staggered/
   // repeatable publish rather than requiring 100% roster completeness
   // before anyone can publish).
   describe("Completeness gate (SPEC_V0.5.md §2.2)", () => {
-    it("blocks the ENTIRE publish call atomically when even one candidate has a blank component — naming exactly that student+component, leaving a genuinely complete classmate un-transitioned", async () => {
+    it("blocks the ENTIRE publish call atomically when even one candidate has a blank evaluation — naming exactly that student+evaluation, leaving a genuinely complete classmate un-transitioned", async () => {
       const subjectId = await createScratchSubject("E2E Completeness Blocks");
       const [complete, incomplete] = await createScratchStudents(2, "CompleteGate", completenessArmId);
+      const [eval1, eval2, eval3] = await createEvaluationsForSubject(subjectId, completenessArmId);
 
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval1, [
         { studentId: complete, rawScore: 15 },
         { studentId: incomplete, rawScore: 10 },
       ], completenessArmId);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval2, [
         { studentId: complete, rawScore: 60 },
         { studentId: incomplete, rawScore: 50 },
       ], completenessArmId);
-      // `complete` also gets CA2 — `incomplete` deliberately does not:
-      // never entered, never marked absent. Both reach PENDING_APPROVAL
-      // (Exam decided), but only `incomplete` is blank on CA2.
-      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: complete, rawScore: 5 }], completenessArmId);
+      // `complete` also gets eval3 — `incomplete` deliberately does not:
+      // never entered, never marked absent. Both are DRAFT (unpublished),
+      // but only `incomplete` is blank on eval3.
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval3, [{ studentId: complete, rawScore: 5 }], completenessArmId);
 
       const response = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
@@ -784,40 +770,41 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         .send({ classArmId: completenessArmId, subjectId, termId: sunriseTermId });
       expect(response.status).toBe(409);
       expect(response.body.message).toMatch(/1 student/i);
-      expect(response.body.incompleteEntries).toEqual([{ studentId: incomplete, componentId: ca2Id }]);
+      expect(response.body.incompleteEntries).toEqual([{ studentId: incomplete, evaluationId: eval3 }]);
 
       // Atomic — `complete`, who was perfectly eligible, must NOT have
       // been transitioned just because a batch-mate was blank.
       const completeRow = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: complete, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
       });
-      expect(completeRow.status).toBe("PENDING_APPROVAL");
+      expect(completeRow.status).toBe("DRAFT");
       expect(completeRow.publishedAt).toBeNull();
     });
 
     it("resolving the blank with a real score unblocks publish for both students", async () => {
       const subjectId = await createScratchSubject("E2E Completeness Resolve");
       const [s0, s1] = await createScratchStudents(2, "CompleteResolve", completenessArmId);
+      const [eval1, eval2, eval3] = await createEvaluationsForSubject(subjectId, completenessArmId);
 
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval1, [
         { studentId: s0, rawScore: 15 },
         { studentId: s1, rawScore: 10 },
       ], completenessArmId);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval2, [
         { studentId: s0, rawScore: 60 },
         { studentId: s1, rawScore: 50 },
       ], completenessArmId);
-      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 5 }], completenessArmId);
-      // s1's CA2 still blank.
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval3, [{ studentId: s0, rawScore: 5 }], completenessArmId);
+      // s1's eval3 still blank.
 
       const blocked = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(sunriseAdminToken))
         .send({ classArmId: completenessArmId, subjectId, termId: sunriseTermId });
       expect(blocked.status).toBe(409);
-      expect(blocked.body.incompleteEntries).toEqual([{ studentId: s1, componentId: ca2Id }]);
+      expect(blocked.body.incompleteEntries).toEqual([{ studentId: s1, evaluationId: eval3 }]);
 
-      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s1, rawScore: 8 }], completenessArmId);
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval3, [{ studentId: s1, rawScore: 8 }], completenessArmId);
 
       const allowed = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
@@ -827,17 +814,18 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       expect(allowed.body.publishedCount).toBe(2);
     });
 
-    it("an all-absent-on-one-component roster still publishes — absent is a decided outcome, not blank", async () => {
+    it("an all-absent-on-one-evaluation roster still publishes — absent is a decided outcome, not blank", async () => {
       const subjectId = await createScratchSubject("E2E Completeness Absent");
       const [s0] = await createScratchStudents(1, "CompleteAbsent", completenessArmId);
+      const [eval1, eval2, eval3] = await createEvaluationsForSubject(subjectId, completenessArmId);
 
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }], completenessArmId);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 60 }], completenessArmId);
-      // CA2 marked ABSENT, not scored — a decided outcome, satisfies the gate.
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval1, [{ studentId: s0, rawScore: 15 }], completenessArmId);
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval2, [{ studentId: s0, rawScore: 87 }], completenessArmId);
+      // eval3 marked ABSENT, not scored — a decided outcome, satisfies the gate.
       const absentRes = await request(app.getHttpServer())
-        .put("/api/v1/grades/grid")
+        .put("/api/v1/grades/evaluation-scores")
         .set(auth(sunriseAdminToken))
-        .send({ classArmId: completenessArmId, subjectId, componentId: ca2Id, termId: sunriseTermId, scores: [{ studentId: s0, isAbsent: true }] });
+        .send({ classArmId: completenessArmId, subjectId, evaluationId: eval3, termId: sunriseTermId, scores: [{ studentId: s0, isAbsent: true }] });
       expect(absentRes.status).toBe(200);
 
       const response = await request(app.getHttpServer())
@@ -846,7 +834,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         .send({ classArmId: completenessArmId, subjectId, termId: sunriseTermId });
       expect(response.status).toBe(200);
       expect(response.body.publishedCount).toBe(1);
-      // Total excludes the absent CA2 entirely: 15 (CA1) + 36 (Exam) = 51 — NOT a 0, NOT rescaled.
+      // Total excludes the absent eval3 entirely: (15 + 87) / 2 = 51 — NOT a 0, NOT rescaled.
       expect(response.body.subjectPositions[0].totalScore).toBe(51);
     });
   });
@@ -855,23 +843,20 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("stale-rank reproduction: a brand-new subject for a published-overall student reverts their overall and re-ranks the rest of the cohort", async () => {
       const subjectA = await createScratchSubject("E2E Gap2 SubjectA");
       const [s0, s1, s2] = await createScratchStudents(3, "Gap2Stale", gapTwoArmId);
+      const evaluationIds = await createEvaluationsForSubject(subjectA, gapTwoArmId);
 
-      // s0: 20 + 60 = 80 (rank 1). s1: 15 + 45 = 60 (rank 2). s2: 10 + 30 = 40 (rank 3).
-      await scoreComponent(sunriseAdminToken, subjectA, ca1Id, [
-        { studentId: s0, rawScore: 20 },
-        { studentId: s1, rawScore: 15 },
-        { studentId: s2, rawScore: 10 },
-      ], gapTwoArmId);
-      await scoreComponent(sunriseAdminToken, subjectA, examId, [
-        { studentId: s0, rawScore: 100 },
-        { studentId: s1, rawScore: 75 },
-        { studentId: s2, rawScore: 50 },
-      ], gapTwoArmId);
-      await scoreComponent(sunriseAdminToken, subjectA, ca2Id, [
-        { studentId: s0, rawScore: 0 },
-        { studentId: s1, rawScore: 0 },
-        { studentId: s2, rawScore: 0 },
-      ], gapTwoArmId); // completeness gate — 0 contributes nothing
+      // s0: 80 (rank 1). s1: 60 (rank 2). s2: 40 (rank 3).
+      await scoreTotal(
+        sunriseAdminToken,
+        subjectA,
+        evaluationIds,
+        [
+          { studentId: s0, total: 80 },
+          { studentId: s1, total: 60 },
+          { studentId: s2, total: 40 },
+        ],
+        gapTwoArmId,
+      );
 
       const publishRes = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
@@ -900,7 +885,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       // subject B — no existing term_subject_result row for it, and s1's
       // overall is currently PUBLISHED: exactly the gap-#2 trigger.
       const subjectB = await createScratchSubject("E2E Gap2 SubjectB");
-      const saveRes = await scoreComponent(sunriseAdminToken, subjectB, ca1Id, [{ studentId: s1, rawScore: 5 }], gapTwoArmId);
+      const [subjectBEval] = await createEvaluationsForSubject(subjectB, gapTwoArmId, 1);
+      const saveRes = await scoreEvaluation(sunriseAdminToken, subjectB, subjectBEval, [{ studentId: s1, rawScore: 5 }], gapTwoArmId);
       expect(saveRes.status).toBe(200);
 
       const [s0After, s1After, s2After] = await Promise.all(
@@ -911,7 +897,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         ),
       );
 
-      // s1: reverted — subject B is DRAFT (no exam score yet), so overall
+      // s1: reverted — subject B is DRAFT (never published), so overall
       // is no longer fully published. subjectsCount grows to 2. No leaked
       // position.
       expect(s1After.status).toBe("PENDING_APPROVAL");
@@ -930,11 +916,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("hot-path no-op: saveGrid creating OR editing a row never touches term_overall_results unless a real gap-#2 candidate exists", async () => {
       const subjectId = await createScratchSubject("E2E Gap2 HotPath");
       const [s0] = await createScratchStudents(1, "Gap2HotPath", gapTwoArmId);
+      const [evaluationId] = await createEvaluationsForSubject(subjectId, gapTwoArmId, 1);
 
       // First save: CREATES the row. s0 has no term_overall_result at all
       // yet (never published anything) — "no overall row" must read as
       // not-published, not throw, and not spuriously create one.
-      const createRes = await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 10 }], gapTwoArmId);
+      const createRes = await scoreEvaluation(sunriseAdminToken, subjectId, evaluationId, [{ studentId: s0, rawScore: 10 }], gapTwoArmId);
       expect(createRes.status).toBe(200);
       const afterCreate = await prisma.termOverallResult.findUnique({
         where: { studentId_termId_sessionId: { studentId: s0, termId: sunriseTermId, sessionId: sunriseSessionId } },
@@ -944,7 +931,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       // Second save: EDITS the same (existing) row. The perf-critical
       // assertion — this must stay a zero-extra-query, zero-extra-lock
       // no-op, proven behaviorally: still no term_overall_result row.
-      const editRes = await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }], gapTwoArmId);
+      const editRes = await scoreEvaluation(sunriseAdminToken, subjectId, evaluationId, [{ studentId: s0, rawScore: 15 }], gapTwoArmId);
       expect(editRes.status).toBe(200);
       const afterEdit = await prisma.termOverallResult.findUnique({
         where: { studentId_termId_sessionId: { studentId: s0, termId: sunriseTermId, sessionId: sunriseSessionId } },
@@ -960,33 +947,31 @@ describe("Grades publish/unpublish/override (e2e)", () => {
 
       // sA: fully scored + published in subject A2 (their only subject so
       // far) -> overall PUBLISHED, position 1 (sole ranked student).
-      await scoreComponent(sunriseAdminToken, subjectA2, ca1Id, [{ studentId: sA, rawScore: 20 }], gapTwoConcurrencyArmId);
-      await scoreComponent(sunriseAdminToken, subjectA2, examId, [{ studentId: sA, rawScore: 100 }], gapTwoConcurrencyArmId);
-      await scoreComponent(sunriseAdminToken, subjectA2, ca2Id, [{ studentId: sA, rawScore: 0 }], gapTwoConcurrencyArmId); // completeness gate
+      const a2Evals = await createEvaluationsForSubject(subjectA2, gapTwoConcurrencyArmId);
+      await scoreTotal(sunriseAdminToken, subjectA2, a2Evals, [{ studentId: sA, total: 100 }], gapTwoConcurrencyArmId);
       const publishA2 = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(sunriseAdminToken))
         .send({ classArmId: gapTwoConcurrencyArmId, subjectId: subjectA2, termId: sunriseTermId });
       expect(publishA2.status).toBe(200);
 
-      // sB: fully scored in subject C2, left PENDING_APPROVAL (not
-      // published yet) — this is what the concurrent publish() call will
-      // publish.
-      await scoreComponent(sunriseAdminToken, subjectC2, ca1Id, [{ studentId: sB, rawScore: 20 }], gapTwoConcurrencyArmId);
-      await scoreComponent(sunriseAdminToken, subjectC2, examId, [{ studentId: sB, rawScore: 100 }], gapTwoConcurrencyArmId);
-      await scoreComponent(sunriseAdminToken, subjectC2, ca2Id, [{ studentId: sB, rawScore: 0 }], gapTwoConcurrencyArmId); // completeness gate
+      // sB: fully scored in subject C2, left DRAFT (not published yet) —
+      // this is what the concurrent publish() call will publish.
+      const c2Evals = await createEvaluationsForSubject(subjectC2, gapTwoConcurrencyArmId);
+      await scoreTotal(sunriseAdminToken, subjectC2, c2Evals, [{ studentId: sB, total: 100 }], gapTwoConcurrencyArmId);
 
       // Fire concurrently: sA's first-ever score in subject B2 (triggers
       // the gap-#2 recompute — sA's overall is currently PUBLISHED) vs.
       // publishing subject C2 for sB. Different subjects -> no subject-lock
       // contention; both want the class-arm lock -> must serialize, never
       // deadlock.
-      await ensureAssignment(subjectB2, gapTwoConcurrencyArmId); // subjectB2's first-ever write, via a raw PUT below (not scoreComponent)
+      const [subjectB2Eval] = await createEvaluationsForSubject(subjectB2, gapTwoConcurrencyArmId, 1);
+      await ensureAssignment(subjectB2, gapTwoConcurrencyArmId); // subjectB2's first-ever write, via a raw PUT below (not scoreEvaluation)
       const [saveRes, publishRes] = await Promise.all([
         request(app.getHttpServer())
-          .put("/api/v1/grades/grid")
+          .put("/api/v1/grades/evaluation-scores")
           .set(auth(sunriseAdminToken))
-          .send({ classArmId: gapTwoConcurrencyArmId, subjectId: subjectB2, componentId: ca1Id, termId: sunriseTermId, scores: [{ studentId: sA, rawScore: 5 }] }),
+          .send({ classArmId: gapTwoConcurrencyArmId, subjectId: subjectB2, evaluationId: subjectB2Eval, termId: sunriseTermId, scores: [{ studentId: sA, rawScore: 5 }] }),
         request(app.getHttpServer())
           .post("/api/v1/grades/publish")
           .set(auth(sunriseAdminToken))
@@ -1004,8 +989,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       );
 
       // No lost update, regardless of which transaction's class-arm-lock
-      // acquisition won the race: sA reverted (subject B2 is DRAFT — no
-      // exam score), sB published and now the sole ranked student.
+      // acquisition won the race: sA reverted (subject B2 is DRAFT — never
+      // published), sB published and now the sole ranked student.
       expect(sAOverall.status).toBe("PENDING_APPROVAL");
       expect(sAOverall.overallPosition).toBeNull();
       expect(sAOverall.subjectsCount).toBe(2);
@@ -1027,24 +1012,21 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("stale-rank reproduction: recomputing a brand-new subject reverts every published-overall student in the roster, clearing their positions", async () => {
       const subjectA = await createScratchSubject("E2E Gap2Twin SubjectA");
       const [s0, s1, s2] = await createScratchStudents(3, "Gap2TwinStale", gapTwoTwinArmId);
+      const evaluationIds = await createEvaluationsForSubject(subjectA, gapTwoTwinArmId);
 
       // s0,s1,s2 each fully scored + published in subjectA (their only
       // subject) -> each overall PUBLISHED, ranked 1/2/3 by score.
-      await scoreComponent(sunriseAdminToken, subjectA, ca1Id, [
-        { studentId: s0, rawScore: 20 },
-        { studentId: s1, rawScore: 15 },
-        { studentId: s2, rawScore: 10 },
-      ], gapTwoTwinArmId);
-      await scoreComponent(sunriseAdminToken, subjectA, examId, [
-        { studentId: s0, rawScore: 100 },
-        { studentId: s1, rawScore: 75 },
-        { studentId: s2, rawScore: 50 },
-      ], gapTwoTwinArmId);
-      await scoreComponent(sunriseAdminToken, subjectA, ca2Id, [
-        { studentId: s0, rawScore: 0 },
-        { studentId: s1, rawScore: 0 },
-        { studentId: s2, rawScore: 0 },
-      ], gapTwoTwinArmId); // completeness gate
+      await scoreTotal(
+        sunriseAdminToken,
+        subjectA,
+        evaluationIds,
+        [
+          { studentId: s0, total: 80 },
+          { studentId: s1, total: 60 },
+          { studentId: s2, total: 40 },
+        ],
+        gapTwoTwinArmId,
+      );
       const publishRes = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(sunriseAdminToken))
@@ -1062,26 +1044,23 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       expect(s1Before.status).toBe("PUBLISHED");
       expect(s2Before.status).toBe("PUBLISHED");
 
-      // subjectB: a student_scores row written DIRECTLY (simulating a
+      // subjectB: an evaluation_scores row written DIRECTLY (simulating a
       // data-repair scenario — recompute()'s own doc comment says
-      // "e.g. after a roster fix") for s1 only, BYPASSING saveGrid
-      // entirely — no term_subject_result row exists for subjectB yet,
-      // for ANY of the three students.
+      // "e.g. after a roster fix") for s1 only, BYPASSING the HTTP save
+      // endpoint entirely — no term_subject_result row exists for
+      // subjectB yet, for ANY of the three students.
       const subjectB = await createScratchSubject("E2E Gap2Twin SubjectB");
+      const [subjectBEval] = await createEvaluationsForSubject(subjectB, gapTwoTwinArmId, 1);
       const admin = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "admin@sunrise.test" } });
-      await prisma.studentScore.create({
-        data: {
-          schoolId: sunriseId, studentId: s1, subjectId: subjectB, componentId: ca1Id,
-          termId: sunriseTermId, sessionId: sunriseSessionId, classArmId: gapTwoTwinArmId,
-          rawScore: 5, enteredBy: admin.id, enteredAt: new Date(),
-        },
+      await prisma.evaluationScore.create({
+        data: { evaluationId: subjectBEval, studentId: s1, rawScore: 5, enteredBy: admin.id, enteredAt: new Date() },
       });
 
       // recompute() processes the WHOLE roster for subjectB — s0 and s2
       // get an implicit blank DRAFT row (zero scores), s1 gets a real
-      // (but exam-less, still DRAFT) one. ALL THREE are first-ever-row
-      // candidates with a currently-PUBLISHED overall -> gap-2-twin fires
-      // for all three, not just s1.
+      // (but still DRAFT) one. ALL THREE are first-ever-row candidates
+      // with a currently-PUBLISHED overall -> gap-2-twin fires for all
+      // three, not just s1.
       const recomputeRes = await request(app.getHttpServer())
         .post("/api/v1/grades/recompute")
         .set(auth(sunriseAdminToken))
@@ -1113,31 +1092,26 @@ describe("Grades publish/unpublish/override (e2e)", () => {
 
       // sA: fully scored + published in subjectA2 (only subject so far) ->
       // overall PUBLISHED, position 1.
-      await scoreComponent(sunriseAdminToken, subjectA2, ca1Id, [{ studentId: sA, rawScore: 20 }], gapTwoTwinConcurrencyArmId);
-      await scoreComponent(sunriseAdminToken, subjectA2, examId, [{ studentId: sA, rawScore: 100 }], gapTwoTwinConcurrencyArmId);
-      await scoreComponent(sunriseAdminToken, subjectA2, ca2Id, [{ studentId: sA, rawScore: 0 }], gapTwoTwinConcurrencyArmId); // completeness gate
+      const a2Evals = await createEvaluationsForSubject(subjectA2, gapTwoTwinConcurrencyArmId);
+      await scoreTotal(sunriseAdminToken, subjectA2, a2Evals, [{ studentId: sA, total: 100 }], gapTwoTwinConcurrencyArmId);
       const publishA2 = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(sunriseAdminToken))
         .send({ classArmId: gapTwoTwinConcurrencyArmId, subjectId: subjectA2, termId: sunriseTermId });
       expect(publishA2.status).toBe(200);
 
-      // sB: fully scored in subjectC2, left PENDING_APPROVAL — what the
-      // concurrent publish() call will publish.
-      await scoreComponent(sunriseAdminToken, subjectC2, ca1Id, [{ studentId: sB, rawScore: 20 }], gapTwoTwinConcurrencyArmId);
-      await scoreComponent(sunriseAdminToken, subjectC2, examId, [{ studentId: sB, rawScore: 100 }], gapTwoTwinConcurrencyArmId);
-      await scoreComponent(sunriseAdminToken, subjectC2, ca2Id, [{ studentId: sB, rawScore: 0 }], gapTwoTwinConcurrencyArmId); // completeness gate
+      // sB: fully scored in subjectC2, left DRAFT — what the concurrent
+      // publish() call will publish.
+      const c2Evals = await createEvaluationsForSubject(subjectC2, gapTwoTwinConcurrencyArmId);
+      await scoreTotal(sunriseAdminToken, subjectC2, c2Evals, [{ studentId: sB, total: 100 }], gapTwoTwinConcurrencyArmId);
 
-      // subjectB2: a direct student_scores write for sA only, bypassing
-      // saveGrid — no term_subject_result row for subjectB2 yet, for
-      // either student.
+      // subjectB2: a direct evaluation_scores write for sA only, bypassing
+      // the HTTP save endpoint — no term_subject_result row for subjectB2
+      // yet, for either student.
+      const [subjectB2Eval] = await createEvaluationsForSubject(subjectB2, gapTwoTwinConcurrencyArmId, 1);
       const admin = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "admin@sunrise.test" } });
-      await prisma.studentScore.create({
-        data: {
-          schoolId: sunriseId, studentId: sA, subjectId: subjectB2, componentId: ca1Id,
-          termId: sunriseTermId, sessionId: sunriseSessionId, classArmId: gapTwoTwinConcurrencyArmId,
-          rawScore: 5, enteredBy: admin.id, enteredAt: new Date(),
-        },
+      await prisma.evaluationScore.create({
+        data: { evaluationId: subjectB2Eval, studentId: sA, rawScore: 5, enteredBy: admin.id, enteredAt: new Date() },
       });
 
       // Fire concurrently: recompute(subjectB2) — a gap-2-twin candidate
@@ -1185,15 +1159,15 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("a publish and a saveGrid on the same grid, fired concurrently, don't corrupt each other", async () => {
       const subjectId = await createScratchSubject("E2E Concurrency SaveVsPublish");
       const [s0] = await createScratchStudents(1, "ConcSave");
-      await scoreComponent(sunriseAdminToken, subjectId, ca1Id, [{ studentId: s0, rawScore: 15 }]);
-      await scoreComponent(sunriseAdminToken, subjectId, examId, [{ studentId: s0, rawScore: 60 }]);
-      // CA2 pre-seeded at 0 (not left blank) so the completeness gate is
+      const [eval1, eval2] = await createEvaluationsForSubject(subjectId, scratchArmId, 2);
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval1, [{ studentId: s0, rawScore: 60 }]);
+      // eval2 pre-seeded at 0 (not left blank) so the completeness gate is
       // already satisfied going into the race below — the race is about
-      // whether the CONCURRENT EDIT (0 -> 10) lands before or after
+      // whether the CONCURRENT EDIT (0 -> 20) lands before or after
       // publish(), same property as before, just no longer conflated with
       // "is this student publishable at all" (SPEC_V0.5.md §2.2).
-      await scoreComponent(sunriseAdminToken, subjectId, ca2Id, [{ studentId: s0, rawScore: 0 }]);
-      // PENDING_APPROVAL, total 51.
+      await scoreEvaluation(sunriseAdminToken, subjectId, eval2, [{ studentId: s0, rawScore: 0 }]);
+      // DRAFT, total (60+0)/2=30.
 
       const [publishRes, saveRes] = await Promise.all([
         request(app.getHttpServer())
@@ -1201,17 +1175,17 @@ describe("Grades publish/unpublish/override (e2e)", () => {
           .set(auth(sunriseAdminToken))
           .send({ classArmId: scratchArmId, subjectId, termId: sunriseTermId }),
         request(app.getHttpServer())
-          .put("/api/v1/grades/grid")
+          .put("/api/v1/grades/evaluation-scores")
           .set(auth(sunriseAdminToken))
-          .send({ classArmId: scratchArmId, subjectId, componentId: ca2Id, termId: sunriseTermId, scores: [{ studentId: s0, rawScore: 10 }] }),
+          .send({ classArmId: scratchArmId, subjectId, evaluationId: eval2, termId: sunriseTermId, scores: [{ studentId: s0, rawScore: 20 }] }),
       ]);
 
       // Whichever transaction's advisory lock wins, the outcome must be
       // ONE of two internally-consistent states, never a torn value:
-      // either the save landed first (total includes CA2, still
-      // PENDING_APPROVAL when publish ran, so publish succeeds with the
-      // higher total) or publish landed first (CA2 write then 409s
-      // against the now-PUBLISHED row, total excludes CA2).
+      // either the save landed first (total includes the edit, still
+      // DRAFT when publish ran, so publish succeeds with the higher
+      // total) or publish landed first (the edit then 409s against the
+      // now-PUBLISHED row, total excludes it).
       expect(publishRes.status).toBe(200);
       expect([200, 409]).toContain(saveRes.status);
 
@@ -1220,20 +1194,20 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       });
       expect(final.status).toBe("PUBLISHED");
       if (saveRes.status === 200) {
-        expect(Number(final.totalScore)).toBe(61); // 15 + 10 + 36
+        expect(Number(final.totalScore)).toBe(40); // (60 + 20) / 2
       } else {
-        expect(Number(final.totalScore)).toBe(51); // CA2 write was rejected
+        expect(Number(final.totalScore)).toBe(30); // the edit was rejected
       }
-      const ca2Score = await prisma.studentScore.findUnique({
-        where: { studentId_subjectId_componentId_termId_sessionId: { studentId: s0, subjectId, componentId: ca2Id, termId: sunriseTermId, sessionId: sunriseSessionId } },
+      const eval2Score = await prisma.evaluationScore.findUnique({
+        where: { evaluationId_studentId: { evaluationId: eval2, studentId: s0 } },
       });
       // Consistency check: the stored raw score always agrees with which
-      // path the total reflects. CA2 always has a row (pre-seeded at 0
+      // path the total reflects. eval2 always has a row (pre-seeded at 0
       // above) — the question is only whether the concurrent edit landed.
       if (saveRes.status === 200) {
-        expect(Number(ca2Score?.rawScore)).toBe(10);
+        expect(Number(eval2Score?.rawScore)).toBe(20);
       } else {
-        expect(Number(ca2Score?.rawScore)).toBe(0);
+        expect(Number(eval2Score?.rawScore)).toBe(0);
       }
     });
 
@@ -1241,14 +1215,12 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const subjectC = await createScratchSubject("E2E Concurrency C");
       const subjectD = await createScratchSubject("E2E Concurrency D");
       const [s0] = await createScratchStudents(1, "ConcPublish", overallArmId);
+      const cEvals = await createEvaluationsForSubject(subjectC, overallArmId);
+      const dEvals = await createEvaluationsForSubject(subjectD, overallArmId);
 
-      await scoreComponent(sunriseAdminToken, subjectC, ca1Id, [{ studentId: s0, rawScore: 20 }], overallArmId);
-      await scoreComponent(sunriseAdminToken, subjectC, examId, [{ studentId: s0, rawScore: 100 }], overallArmId);
-      await scoreComponent(sunriseAdminToken, subjectD, ca1Id, [{ studentId: s0, rawScore: 10 }], overallArmId);
-      await scoreComponent(sunriseAdminToken, subjectD, examId, [{ studentId: s0, rawScore: 50 }], overallArmId);
-      await scoreComponent(sunriseAdminToken, subjectC, ca2Id, [{ studentId: s0, rawScore: 0 }], overallArmId); // completeness gate
-      await scoreComponent(sunriseAdminToken, subjectD, ca2Id, [{ studentId: s0, rawScore: 0 }], overallArmId); // completeness gate
-      // C: 80. D: 40. Both PENDING_APPROVAL.
+      await scoreTotal(sunriseAdminToken, subjectC, cEvals, [{ studentId: s0, total: 80 }], overallArmId);
+      await scoreTotal(sunriseAdminToken, subjectD, dEvals, [{ studentId: s0, total: 40 }], overallArmId);
+      // C: 80. D: 40. Both DRAFT (never published).
 
       const [resC, resD] = await Promise.all([
         request(app.getHttpServer())
@@ -1282,25 +1254,20 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     it("publish + position computation across a ~100-student class stays fast", async () => {
       const subjectId = await createScratchSubject("E2E Timing");
       const students = await createScratchStudents(100, "Timing");
+      const [eval1, eval2] = await createEvaluationsForSubject(subjectId, scratchArmId, 2);
 
-      await scoreComponent(
+      await scoreEvaluation(
         sunriseAdminToken,
         subjectId,
-        ca1Id,
+        eval1,
         students.map((studentId, i) => ({ studentId, rawScore: 5 + (i % 16) })),
       );
-      await scoreComponent(
+      await scoreEvaluation(
         sunriseAdminToken,
         subjectId,
-        examId,
+        eval2,
         students.map((studentId, i) => ({ studentId, rawScore: 20 + (i % 60) })),
       );
-      await scoreComponent(
-        sunriseAdminToken,
-        subjectId,
-        ca2Id,
-        students.map((studentId) => ({ studentId, rawScore: 0 })),
-      ); // completeness gate — 0 contributes nothing
 
       const start = Date.now();
       const response = await request(app.getHttpServer())

@@ -23,9 +23,6 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
 
   let sunriseId: string;
   let jss2LevelId: string;
-  let ca1Id: string;
-  let ca2Id: string;
-  let examId: string;
 
   let hillcrestId: string;
   let hillcrestArmId: string;
@@ -46,13 +43,25 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
     termId: string;
     classArmId: string;
     subjectId: string;
+    evaluationId: string;
     studentIds: string[];
   }
 
-  // One session + term + class arm + subject + roster, fully isolated from
-  // every other bundle and from the real seeded data. `subjectCount` lets
-  // the per-slice-unlock test share one class arm across two subjects.
-  async function createScratchBundle(prefix: string, studentCount = 3, subjectCount = 1): Promise<ScratchBundle & { subjectIds: string[] }> {
+  // v0.7 step 1 (SPEC_V0.7.md §2/§5): an evaluation replaces the fixed
+  // CA1/CA2/Exam components — created directly via Prisma (no
+  // create-evaluation HTTP endpoint yet, Step 2).
+  async function createEvaluationFor(subjectId: string, classArmId: string, sessionId: string, termId: string, name = "CA 1"): Promise<string> {
+    const evaluation = await prisma.evaluation.create({
+      data: { schoolId: sunriseId, classArmId, subjectId, sessionId, termId, name, description: name, createdBy: teacherUserId },
+    });
+    return evaluation.id;
+  }
+
+  // One session + term + class arm + subject(s) + roster, fully isolated
+  // from every other bundle and from the real seeded data. `subjectCount`
+  // lets the per-slice-unlock test share one class arm across two
+  // subjects — each subject gets its own default evaluation.
+  async function createScratchBundle(prefix: string, studentCount = 3, subjectCount = 1): Promise<ScratchBundle & { subjectIds: string[]; evaluationIds: string[] }> {
     const stamp = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const session = await prisma.academicSession.create({
       data: { schoolId: sunriseId, name: `E2E-Terms-${stamp}`, startsOn: new Date("2027-01-01"), endsOn: new Date("2027-04-01"), isCurrent: false },
@@ -68,6 +77,7 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
     createdClassArmIds.push(classArm.id);
 
     const subjectIds: string[] = [];
+    const evaluationIds: string[] = [];
     for (let s = 0; s < subjectCount; s++) {
       const subject = await prisma.subject.create({
         data: { schoolId: sunriseId, name: `E2E Terms ${stamp} ${s}`, code: `ET${s}${stamp.slice(-4)}`.slice(0, 10).toUpperCase() },
@@ -79,6 +89,7 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
       await prisma.subjectTeacherAssignment.create({
         data: { schoolId: sunriseId, subjectId: subject.id, classArmId: classArm.id, sessionId: session.id, teacherUserId },
       });
+      evaluationIds.push(await createEvaluationFor(subject.id, classArm.id, session.id, term.id));
     }
 
     const studentIds: string[] = [];
@@ -102,14 +113,23 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
       studentIds.push(student.id);
     }
 
-    return { sessionId: session.id, termId: term.id, classArmId: classArm.id, subjectId: subjectIds[0], subjectIds, studentIds };
+    return {
+      sessionId: session.id,
+      termId: term.id,
+      classArmId: classArm.id,
+      subjectId: subjectIds[0],
+      evaluationId: evaluationIds[0],
+      subjectIds,
+      evaluationIds,
+      studentIds,
+    };
   }
 
-  async function saveScore(termId: string, classArmId: string, subjectId: string, componentId: string, studentId: string, rawScore: number) {
+  async function saveScore(termId: string, classArmId: string, subjectId: string, evaluationId: string, studentId: string, rawScore: number) {
     return request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send({ classArmId, subjectId, componentId, termId, scores: [{ studentId, rawScore }] });
+      .send({ classArmId, subjectId, evaluationId, termId, scores: [{ studentId, rawScore }] });
   }
 
   beforeAll(async () => {
@@ -126,14 +146,6 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
     const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
     jss2LevelId = jss2.id;
 
-    const components = await prisma.assessmentComponent.findMany({
-      where: { schoolId: sunriseId, deletedAt: null },
-      orderBy: { sortOrder: "asc" },
-    });
-    ca1Id = components[0].id;
-    ca2Id = components[1].id;
-    examId = components[2].id;
-
     const hillcrest = await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } });
     hillcrestId = hillcrest.id;
     const hillcrestSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: hillcrestId, isCurrent: true } });
@@ -147,7 +159,9 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
 
   afterAll(async () => {
     await prisma.termUnlock.deleteMany({ where: { termId: { in: createdTermIds } } });
-    await prisma.studentScore.deleteMany({ where: { termId: { in: createdTermIds } } });
+    const evaluations = await prisma.evaluation.findMany({ where: { termId: { in: createdTermIds } }, select: { id: true } });
+    await prisma.evaluationScore.deleteMany({ where: { evaluationId: { in: evaluations.map((e) => e.id) } } });
+    await prisma.evaluation.deleteMany({ where: { termId: { in: createdTermIds } } });
     await prisma.termSubjectResult.deleteMany({ where: { termId: { in: createdTermIds } } });
     await prisma.termOverallResult.deleteMany({ where: { termId: { in: createdTermIds } } });
     await prisma.studentEnrollment.deleteMany({ where: { studentId: { in: createdStudentIds } } });
@@ -163,10 +177,14 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
   describe("POST /terms/:id/close", () => {
     it("warn-but-allow (Q4): closes with unpublished results left behind, returning the grouped breakdown", async () => {
       const bundle = await createScratchBundle("CloseWarn");
-      const [pending, draftOnly] = bundle.studentIds;
-      await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, pending, 15);
-      await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, examId, pending, 60); // -> PENDING_APPROVAL
-      await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, draftOnly, 10); // -> DRAFT only
+      const [studentA, studentB] = bundle.studentIds;
+      const secondEvalId = await createEvaluationFor(bundle.subjectId, bundle.classArmId, bundle.sessionId, bundle.termId, "CA 2");
+      // v0.7 step 1 (confirmed): no more PENDING_APPROVAL hop — every
+      // not-yet-published row is DRAFT regardless of how many evaluations
+      // are scored.
+      await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, bundle.evaluationId, studentA, 15);
+      await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, secondEvalId, studentA, 60); // both scored -> still DRAFT
+      await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, bundle.evaluationId, studentB, 10); // one evaluation -> DRAFT
 
       const response = await request(app.getHttpServer())
         .post(`/api/v1/terms/${bundle.termId}/close`)
@@ -175,7 +193,7 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
       expect(response.body.closedAt).not.toBeNull();
       expect(response.body.unpublishedCount).toBe(2);
       expect(response.body.unpublished).toEqual([
-        { classArmId: bundle.classArmId, subjectId: bundle.subjectId, draftCount: 1, pendingApprovalCount: 1 },
+        { classArmId: bundle.classArmId, subjectId: bundle.subjectId, draftCount: 2, pendingApprovalCount: 0 },
       ]);
 
       const persisted = await prisma.term.findUniqueOrThrow({ where: { id: bundle.termId } });
@@ -228,7 +246,7 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
   describe("Edit-gating: saveGrid vs a closed term", () => {
     it("edit-open-ok: saveGrid succeeds normally on a never-closed term (baseline)", async () => {
       const bundle = await createScratchBundle("EditOpen");
-      const response = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, bundle.studentIds[0], 12);
+      const response = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, bundle.evaluationId, bundle.studentIds[0], 12);
       expect(response.status).toBe(200);
     });
 
@@ -236,20 +254,18 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
       const bundle = await createScratchBundle("EditClosed");
       await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
 
-      const response = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, bundle.studentIds[0], 12);
+      const response = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, bundle.evaluationId, bundle.studentIds[0], 12);
       expect(response.status).toBe(409);
       expect(response.body.message).toMatch(/closed/i);
       expect(response.body.message).toMatch(/unlock/i);
       // Structured, same precedent as lockedStudentIds — lets the save
       // queue's 409 handler route this to the same locked-cell treatment
-      // GET /grades/grid already renders from load (below).
+      // GET /grades/evaluation-scores already renders from load (below).
       expect(response.body.termLocked).toBe(true);
 
-      const persisted = await prisma.studentScore.findUnique({
+      const persisted = await prisma.evaluationScore.findUnique({
         where: {
-          studentId_subjectId_componentId_termId_sessionId: {
-            studentId: bundle.studentIds[0], subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId, sessionId: bundle.sessionId,
-          },
+          evaluationId_studentId: { evaluationId: bundle.evaluationId, studentId: bundle.studentIds[0] },
         },
       });
       expect(persisted).toBeNull();
@@ -257,9 +273,10 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
 
     it("unlock -> edit-ok -> relock -> edit-blocked-again (the core round trip)", async () => {
       const bundle = await createScratchBundle("RoundTrip");
+      const secondEvalId = await createEvaluationFor(bundle.subjectId, bundle.classArmId, bundle.sessionId, bundle.termId, "CA 2");
       await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
 
-      const blocked = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, bundle.studentIds[0], 12);
+      const blocked = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, bundle.evaluationId, bundle.studentIds[0], 12);
       expect(blocked.status).toBe(409);
 
       const unlockRes = await request(app.getHttpServer())
@@ -269,7 +286,7 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
       expect(unlockRes.status).toBe(200);
       expect(unlockRes.body.relockedAt).toBeNull();
 
-      const editedRes = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, bundle.studentIds[0], 12);
+      const editedRes = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, bundle.evaluationId, bundle.studentIds[0], 12);
       expect(editedRes.status).toBe(200);
 
       const relockRes = await request(app.getHttpServer())
@@ -280,13 +297,16 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
       expect(relockRes.body.relockedAt).not.toBeNull();
       expect(relockRes.body.id).toBe(unlockRes.body.id); // the SAME episode, resolved — not a new row
 
-      const blockedAgain = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca2Id, bundle.studentIds[0], 5);
+      // A DIFFERENT evaluation on the SAME subject, proving the lock is
+      // subject/term-level, not evaluation-specific.
+      const blockedAgain = await saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, secondEvalId, bundle.studentIds[0], 5);
       expect(blockedAgain.status).toBe(409);
     });
 
     it("unlock is per-slice: a second subject on the same closed term stays blocked", async () => {
       const bundle = await createScratchBundle("PerSlice", 2, 2);
       const [subjectA, subjectB] = bundle.subjectIds;
+      const [evalA, evalB] = bundle.evaluationIds;
       await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
 
       await request(app.getHttpServer())
@@ -294,25 +314,25 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
         .set(auth(sunriseAdminToken))
         .send({ classArmId: bundle.classArmId, subjectId: subjectA, reason: "Correcting subject A only" });
 
-      const editA = await saveScore(bundle.termId, bundle.classArmId, subjectA, ca1Id, bundle.studentIds[0], 10);
+      const editA = await saveScore(bundle.termId, bundle.classArmId, subjectA, evalA, bundle.studentIds[0], 10);
       expect(editA.status).toBe(200);
 
-      const editB = await saveScore(bundle.termId, bundle.classArmId, subjectB, ca1Id, bundle.studentIds[0], 10);
+      const editB = await saveScore(bundle.termId, bundle.classArmId, subjectB, evalB, bundle.studentIds[0], 10);
       expect(editB.status).toBe(409);
     });
   });
 
   // SPEC_V0.5.md §2.3, v0.5 step 5 — the web renders locked/read-only FROM
-  // LOAD, not reactively on a saveGrid 409, so GET /grades/grid itself must
-  // carry the slice's lock state. Same three-way proof style as v0.4's
-  // status field (open/closed/unlocked), same resolveSliceLockState logic
-  // saveGrid enforces above.
-  describe("GET /grades/grid — locked indicator", () => {
+  // LOAD, not reactively on a saveGrid 409, so GET /grades/evaluation-scores
+  // itself must carry the slice's lock state. Same three-way proof style as
+  // v0.4's status field (open/closed/unlocked), same resolveSliceLockState
+  // logic saveGrid enforces above.
+  describe("GET /grades/evaluation-scores — locked indicator", () => {
     it("open term: termClosed=false, locked=false, unlockReason=null", async () => {
       const bundle = await createScratchBundle("GridIndicatorOpen");
       const response = await request(app.getHttpServer())
-        .get("/api/v1/grades/grid")
-        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId })
+        .get("/api/v1/grades/evaluation-scores")
+        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, evaluationId: bundle.evaluationId, termId: bundle.termId })
         .set(auth(sunriseAdminToken));
       expect(response.status).toBe(200);
       expect(response.body.termClosed).toBe(false);
@@ -325,8 +345,8 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
       await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
 
       const response = await request(app.getHttpServer())
-        .get("/api/v1/grades/grid")
-        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId })
+        .get("/api/v1/grades/evaluation-scores")
+        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, evaluationId: bundle.evaluationId, termId: bundle.termId })
         .set(auth(sunriseAdminToken));
       expect(response.status).toBe(200);
       expect(response.body.termClosed).toBe(true);
@@ -343,8 +363,8 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
         .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Parent requested a correction" });
 
       const response = await request(app.getHttpServer())
-        .get("/api/v1/grades/grid")
-        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId })
+        .get("/api/v1/grades/evaluation-scores")
+        .query({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, evaluationId: bundle.evaluationId, termId: bundle.termId })
         .set(auth(sunriseAdminToken));
       expect(response.status).toBe(200);
       expect(response.body.termClosed).toBe(true);
@@ -355,6 +375,7 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
     it("unlock is per-slice here too: a second subject on the same closed term still reads locked=true", async () => {
       const bundle = await createScratchBundle("GridIndicatorPerSlice", 1, 2);
       const [subjectA, subjectB] = bundle.subjectIds;
+      const [evalA, evalB] = bundle.evaluationIds;
       await request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken));
       await request(app.getHttpServer())
         .post(`/api/v1/terms/${bundle.termId}/unlock`)
@@ -362,14 +383,14 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
         .send({ classArmId: bundle.classArmId, subjectId: subjectA, reason: "Correcting subject A only" });
 
       const gridA = await request(app.getHttpServer())
-        .get("/api/v1/grades/grid")
-        .query({ classArmId: bundle.classArmId, subjectId: subjectA, componentId: ca1Id, termId: bundle.termId })
+        .get("/api/v1/grades/evaluation-scores")
+        .query({ classArmId: bundle.classArmId, subjectId: subjectA, evaluationId: evalA, termId: bundle.termId })
         .set(auth(sunriseAdminToken));
       expect(gridA.body.locked).toBe(false);
 
       const gridB = await request(app.getHttpServer())
-        .get("/api/v1/grades/grid")
-        .query({ classArmId: bundle.classArmId, subjectId: subjectB, componentId: ca1Id, termId: bundle.termId })
+        .get("/api/v1/grades/evaluation-scores")
+        .query({ classArmId: bundle.classArmId, subjectId: subjectB, evaluationId: evalB, termId: bundle.termId })
         .set(auth(sunriseAdminToken));
       expect(gridB.body.locked).toBe(true);
     });
@@ -484,18 +505,14 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
 
       const [closeRes, saveRes] = await Promise.all([
         request(app.getHttpServer()).post(`/api/v1/terms/${bundle.termId}/close`).set(auth(sunriseAdminToken)),
-        saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, student, 14),
+        saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, bundle.evaluationId, student, 14),
       ]);
 
       expect(closeRes.status).toBe(200); // close never depends on the save's outcome
       expect([200, 409]).toContain(saveRes.status);
 
-      const persisted = await prisma.studentScore.findUnique({
-        where: {
-          studentId_subjectId_componentId_termId_sessionId: {
-            studentId: student, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId, sessionId: bundle.sessionId,
-          },
-        },
+      const persisted = await prisma.evaluationScore.findUnique({
+        where: { evaluationId_studentId: { evaluationId: bundle.evaluationId, studentId: student } },
       });
       if (saveRes.status === 200) {
         expect(Number(persisted?.rawScore)).toBe(14); // the save's read won the race, landed before the close
@@ -517,18 +534,14 @@ describe("Term lifecycle (e2e) — close/unlock/relock (SPEC_V0.5.md §2.3, v0.5
           .post(`/api/v1/terms/${bundle.termId}/unlock`)
           .set(auth(sunriseAdminToken))
           .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, reason: "Racing the save" }),
-        saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, ca1Id, student, 9),
+        saveScore(bundle.termId, bundle.classArmId, bundle.subjectId, bundle.evaluationId, student, 9),
       ]);
 
       expect(unlockRes.status).toBe(200); // unlock never depends on the save's outcome
       expect([200, 409]).toContain(saveRes.status);
 
-      const persisted = await prisma.studentScore.findUnique({
-        where: {
-          studentId_subjectId_componentId_termId_sessionId: {
-            studentId: student, subjectId: bundle.subjectId, componentId: ca1Id, termId: bundle.termId, sessionId: bundle.sessionId,
-          },
-        },
+      const persisted = await prisma.evaluationScore.findUnique({
+        where: { evaluationId_studentId: { evaluationId: bundle.evaluationId, studentId: student } },
       });
       if (saveRes.status === 200) {
         expect(Number(persisted?.rawScore)).toBe(9); // the unlock committed first

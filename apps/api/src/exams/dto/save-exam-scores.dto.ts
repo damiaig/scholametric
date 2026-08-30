@@ -1,8 +1,8 @@
 import { Type } from "class-transformer";
 import { ArrayMinSize, IsArray, IsUUID, ValidateNested } from "class-validator";
-import { GridScoreItemDto } from "./grid-score-item.dto";
+import { ExamScoreItemDto } from "./exam-score-item.dto";
 
-export class SaveGradesGridDto {
+export class SaveExamScoresDto {
   @IsUUID()
   classArmId!: string;
 
@@ -10,7 +10,7 @@ export class SaveGradesGridDto {
   subjectId!: string;
 
   @IsUUID()
-  componentId!: string;
+  examId!: string;
 
   @IsUUID()
   termId!: string;
@@ -18,6 +18,6 @@ export class SaveGradesGridDto {
   @IsArray()
   @ArrayMinSize(1, { message: "At least 1 score is required." })
   @ValidateNested({ each: true })
-  @Type(() => GridScoreItemDto)
-  scores!: GridScoreItemDto[];
+  @Type(() => ExamScoreItemDto)
+  scores!: ExamScoreItemDto[];
 }

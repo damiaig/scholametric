@@ -23,9 +23,6 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
   let targetStudentId: string; // main assembly proof: absent + blank + real score, across two subjects
   let partialStudentId: string; // partial-term: one published, one not -> null overall position
   let remarksStudentId: string; // dedicated, score-free, for remark round-trip tests
-  let ca1Id: string;
-  let ca2Id: string;
-  let examId: string;
   let subjectA: string; // published for both target + partial
   let subjectB: string; // target only, left DRAFT — the blank-component proof
   let subjectC: string; // partial only, left PENDING_APPROVAL — the partial-term proof
@@ -48,20 +45,30 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
     return subject.id;
   }
 
-  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/grid now 404s without a
-  // subject_teacher_assignment for admin too — upsert one for whatever
-  // subject this call is scoring, same pattern as grades-publish's
+  // v0.7 step 1 (SPEC_V0.7.md §2/§5): evaluations replace the fixed
+  // CA1/CA2/Exam components — created directly via Prisma (no
+  // create-evaluation HTTP endpoint yet, Step 2).
+  async function createEvaluation(subjectIdArg: string, name: string): Promise<string> {
+    const evaluation = await prisma.evaluation.create({
+      data: { schoolId: sunriseId, classArmId: studentArmId, subjectId: subjectIdArg, sessionId: sunriseSessionId, termId: sunriseTermId, name, description: name, createdBy: teacherSubjectId },
+    });
+    return evaluation.id;
+  }
+
+  // SPEC_V0.5.1.md §2.1/§2.2: PUT /grades/evaluation-scores now 404s
+  // without a subject_teacher_assignment for admin too — upsert one for
+  // whatever subject this call is scoring, same pattern as grades-publish's
   // ensureAssignment.
-  async function score(subjectIdArg: string, componentId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
+  async function score(subjectIdArg: string, evaluationId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
     await prisma.subjectTeacherAssignment.upsert({
       where: { subjectId_classArmId_sessionId: { subjectId: subjectIdArg, classArmId: studentArmId, sessionId: sunriseSessionId } },
       update: {},
       create: { schoolId: sunriseId, subjectId: subjectIdArg, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherSubjectId },
     });
     const response = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send({ classArmId: studentArmId, subjectId: subjectIdArg, componentId, termId: sunriseTermId, scores });
+      .send({ classArmId: studentArmId, subjectId: subjectIdArg, evaluationId, termId: sunriseTermId, scores });
     if (response.status !== 200) {
       throw new Error(`score failed: ${response.status} ${JSON.stringify(response.body)}`);
     }
@@ -102,11 +109,6 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
     sunriseSessionId = sunriseSession.id;
     sunriseTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: sunriseSessionId, name: "FIRST" } })).id;
 
-    const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
-    ca1Id = components[0].id;
-    ca2Id = components[1].id;
-    examId = components[2].id;
-
     const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
     studentArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-ReportCard-${Date.now()}` } })).id;
     studentArmCreated = true;
@@ -133,12 +135,17 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
     });
 
     // subjectA: fully decided (score/absent) for both target and partial —
-    // publishable. target: CA1 18/20*20=18, CA2 ABSENT, Exam 55/100*60=33
-    // -> 51 (the exact hand-verified step-1 example). partial: CA1 15,
-    // CA2 0 (decided, contributes 0), Exam 50/100*60=30 -> 45.
-    await score(subjectA, ca1Id, [{ studentId: targetStudentId, rawScore: 18 }, { studentId: partialStudentId, rawScore: 15 }]);
-    await score(subjectA, ca2Id, [{ studentId: targetStudentId, isAbsent: true }, { studentId: partialStudentId, rawScore: 0 }]);
-    await score(subjectA, examId, [{ studentId: targetStudentId, rawScore: 55 }, { studentId: partialStudentId, rawScore: 50 }]);
+    // publishable. target: eval1=18, eval2 ABSENT, eval3=84 -> (18+84)/2=51
+    // (the exact hand-verified step-1 example). partial: eval1=15, eval2=0
+    // (decided, contributes 0), eval3=75 -> (15+0+75)/3=30.
+    const [aEval1, aEval2, aEval3] = await Promise.all([
+      createEvaluation(subjectA, "CA 1"),
+      createEvaluation(subjectA, "CA 2"),
+      createEvaluation(subjectA, "CA 3"),
+    ]);
+    await score(subjectA, aEval1, [{ studentId: targetStudentId, rawScore: 18 }, { studentId: partialStudentId, rawScore: 15 }]);
+    await score(subjectA, aEval2, [{ studentId: targetStudentId, isAbsent: true }, { studentId: partialStudentId, rawScore: 0 }]);
+    await score(subjectA, aEval3, [{ studentId: targetStudentId, rawScore: 84 }, { studentId: partialStudentId, rawScore: 75 }]);
     const publishRes = await request(app.getHttpServer())
       .post("/api/v1/grades/publish")
       .set(auth(sunriseAdminToken))
@@ -147,15 +154,18 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
       throw new Error(`publish failed: ${publishRes.status} ${JSON.stringify(publishRes.body)}`);
     }
 
-    // subjectB: target only, CA1 scored, CA2/Exam genuinely never touched
-    // (blank) -> DRAFT, never published. The blank-vs-absent proof.
-    await score(subjectB, ca1Id, [{ studentId: targetStudentId, rawScore: 10 }]);
+    // subjectB: target only, one evaluation scored, others genuinely never
+    // touched (blank) -> DRAFT, never published. The blank-vs-absent proof.
+    const bEval1 = await createEvaluation(subjectB, "CA 1");
+    await score(subjectB, bEval1, [{ studentId: targetStudentId, rawScore: 10 }]);
 
-    // subjectC: partial only, CA1+Exam scored (reaches PENDING_APPROVAL via
-    // the decided approval component) but never published -> keeps
-    // partial's overall from being fully published (the partial-term proof).
-    await score(subjectC, ca1Id, [{ studentId: partialStudentId, rawScore: 12 }]);
-    await score(subjectC, examId, [{ studentId: partialStudentId, rawScore: 40 }]);
+    // subjectC: partial only, scored but never published -> keeps partial's
+    // overall from being fully published (the partial-term proof;
+    // computeOverallStatus still reports PENDING_APPROVAL for a student
+    // with a mix of PUBLISHED and DRAFT subjects, even though no
+    // individual SUBJECT row can be PENDING_APPROVAL anymore — v0.7).
+    const cEval1 = await createEvaluation(subjectC, "CA 1");
+    await score(subjectC, cEval1, [{ studentId: partialStudentId, rawScore: 40 }]);
 
     const hillcrest = await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } });
     hillcrestId = hillcrest.id;
@@ -170,7 +180,9 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
       await prisma.termRemark.deleteMany({ where: { studentId: { in: createdStudentIds } } });
     }
     if (createdSubjectIds.length > 0) {
-      await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+      const evaluations = await prisma.evaluation.findMany({ where: { subjectId: { in: createdSubjectIds } }, select: { id: true } });
+      await prisma.evaluationScore.deleteMany({ where: { evaluationId: { in: evaluations.map((e) => e.id) } } });
+      await prisma.evaluation.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });
@@ -188,7 +200,7 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
   });
 
   describe("GET /students/:id/report-card", () => {
-    it("assembles the per-component breakdown: a real score, an ABSENT component, and a BLANK component are all distinct", async () => {
+    it("assembles totalScore/status/grade/position correctly, with an ABSENT evaluation excluded (not averaged as 0)", async () => {
       const response = await request(app.getHttpServer())
         .get(`/api/v1/students/${targetStudentId}/report-card`)
         .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
@@ -200,23 +212,17 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
 
       const subjA = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectA);
       expect(subjA.status).toBe("PUBLISHED");
-      expect(subjA.totalScore).toBe(51); // hand-verified: 18 + 0 (absent) + 33
+      expect(subjA.totalScore).toBe(51); // (18 + 84) / 2 — the absent evaluation excluded, not averaged as 0
       expect(subjA.finalGrade).toBe("C6"); // WAEC 50-54
-      expect(subjA.subjectPosition).toBe(1); // 51 beats partial's 45
-
-      const ca1Row = subjA.components.find((c: { componentId: string }) => c.componentId === ca1Id);
-      expect(ca1Row.rawScore).toBe(18);
-      expect(ca1Row.isAbsent).toBe(false);
-
-      const ca2Row = subjA.components.find((c: { componentId: string }) => c.componentId === ca2Id);
-      expect(ca2Row.rawScore).toBeNull();
-      expect(ca2Row.isAbsent).toBe(true); // "Abs" — explicit, not blank
+      expect(subjA.subjectPosition).toBe(1); // 51 beats partial's 30
+      // v0.7 step 1 (SPEC_V0.7.md §4, deferred to step 4): the per-
+      // evaluation breakdown is frozen at [] for now — totalScore/status/
+      // grade/position above are the real proof that scoring is correct.
+      expect(subjA.components).toEqual([]);
 
       const subjB = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectB);
       expect(subjB.status).toBe("DRAFT");
-      const examRowB = subjB.components.find((c: { componentId: string }) => c.componentId === examId);
-      expect(examRowB.rawScore).toBeNull();
-      expect(examRowB.isAbsent).toBe(false); // blank — never touched, distinct from Abs
+      expect(subjB.components).toEqual([]);
     });
 
     it("partial-term: a student with one published + one still-pending subject has a null overall position", async () => {

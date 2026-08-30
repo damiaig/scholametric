@@ -22,8 +22,6 @@ describe("GET /students/:id/results (e2e)", () => {
   let targetStudentId: string;
   let classmateId: string;
   let untouchedStudentId: string; // enrolled, never scored anything -> overall: null
-  let ca1Id: string;
-  let examId: string;
   let subjectId: string;
   let otherSubjectId: string; // taught by nobody assigned here — proves "full access, not filtered"
 
@@ -44,11 +42,21 @@ describe("GET /students/:id/results (e2e)", () => {
     return subject.id;
   }
 
-  async function score(subjectIdArg: string, componentId: string, scores: { studentId: string; rawScore: number }[]) {
+  // v0.7 step 1 (SPEC_V0.7.md §2/§5): evaluations replace the fixed
+  // CA1/CA2/Exam components — created directly via Prisma (no
+  // create-evaluation HTTP endpoint yet, Step 2).
+  async function createEvaluation(subjectIdArg: string, name: string, createdBy: string): Promise<string> {
+    const evaluation = await prisma.evaluation.create({
+      data: { schoolId: sunriseId, classArmId: studentArmId, subjectId: subjectIdArg, sessionId: sunriseSessionId, termId: sunriseTermId, name, description: name, createdBy },
+    });
+    return evaluation.id;
+  }
+
+  async function score(subjectIdArg: string, evaluationId: string, scores: { studentId: string; rawScore: number }[]) {
     const response = await request(app.getHttpServer())
-      .put("/api/v1/grades/grid")
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send({ classArmId: studentArmId, subjectId: subjectIdArg, componentId, termId: sunriseTermId, scores });
+      .send({ classArmId: studentArmId, subjectId: subjectIdArg, evaluationId, termId: sunriseTermId, scores });
     if (response.status !== 200) {
       throw new Error(`score failed: ${response.status} ${JSON.stringify(response.body)}`);
     }
@@ -69,10 +77,6 @@ describe("GET /students/:id/results (e2e)", () => {
     const sunriseSession = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: sunriseId, isCurrent: true } });
     sunriseSessionId = sunriseSession.id;
     sunriseTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: sunriseSessionId, name: "FIRST" } })).id;
-
-    const components = await prisma.assessmentComponent.findMany({ where: { schoolId: sunriseId, deletedAt: null }, orderBy: { sortOrder: "asc" } });
-    ca1Id = components[0].id;
-    examId = components[2].id;
 
     const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
     studentArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-StudentResults-${Date.now()}` } })).id;
@@ -122,11 +126,13 @@ describe("GET /students/:id/results (e2e)", () => {
       data: { schoolId: sunriseId, subjectId: otherSubjectId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherClass.id },
     });
 
-    // Target: CA1 20/20*20=20, Exam 60/100*60=36 -> total 56 (C5, 55-59).
-    await score(subjectId, ca1Id, [{ studentId: targetStudentId, rawScore: 20 }]);
-    await score(subjectId, examId, [{ studentId: targetStudentId, rawScore: 60 }]);
-    // Classmate: CA1 10/20*20=10, no exam -> total 10 (F9).
-    await score(subjectId, ca1Id, [{ studentId: classmateId, rawScore: 10 }]);
+    // Target: eval1=52, eval2=60 -> total (52+60)/2=56 (C5, 55-59).
+    const eval1 = await createEvaluation(subjectId, "CA 1", teacherSubject.id);
+    const eval2 = await createEvaluation(subjectId, "CA 2", teacherSubject.id);
+    await score(subjectId, eval1, [{ studentId: targetStudentId, rawScore: 52 }]);
+    await score(subjectId, eval2, [{ studentId: targetStudentId, rawScore: 60 }]);
+    // Classmate: eval1=10 only, eval2 never entered -> total 10 (F9).
+    await score(subjectId, eval1, [{ studentId: classmateId, rawScore: 10 }]);
     // Class average for this subject = (56 + 10) / 2 = 33 -> F9 — distinct
     // from the target's own finalGrade (C5), proving this is a real
     // class-wide average, not an echo of the student's own grade.
@@ -134,7 +140,8 @@ describe("GET /students/:id/results (e2e)", () => {
     // Target also touched otherSubjectId, taught only by teacherSubject's
     // colleague (nobody assigned here) — this row must still appear for
     // ANY teacher with a relationship to the arm (full access, not filtered).
-    await score(otherSubjectId, ca1Id, [{ studentId: targetStudentId, rawScore: 15 }]);
+    const otherEval = await createEvaluation(otherSubjectId, "CA 1", teacherClass.id);
+    await score(otherSubjectId, otherEval, [{ studentId: targetStudentId, rawScore: 15 }]);
 
     const hillcrest = await prisma.school.findUniqueOrThrow({ where: { slug: "hillcrest" } });
     hillcrestId = hillcrest.id;
@@ -146,7 +153,9 @@ describe("GET /students/:id/results (e2e)", () => {
 
   afterAll(async () => {
     if (createdSubjectIds.length > 0) {
-      await prisma.studentScore.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
+      const evaluations = await prisma.evaluation.findMany({ where: { subjectId: { in: createdSubjectIds } }, select: { id: true } });
+      await prisma.evaluationScore.deleteMany({ where: { evaluationId: { in: evaluations.map((e) => e.id) } } });
+      await prisma.evaluation.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.termSubjectResult.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subjectTeacherAssignment.deleteMany({ where: { subjectId: { in: createdSubjectIds } } });
       await prisma.subject.deleteMany({ where: { id: { in: createdSubjectIds } } });

@@ -4,8 +4,8 @@ import { Roles } from "../common/decorators/roles.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { GradesService } from "./grades.service";
-import { GetGradesGridQueryDto } from "./dto/get-grades-grid-query.dto";
-import { SaveGradesGridDto } from "./dto/save-grades-grid.dto";
+import { GetEvaluationScoresQueryDto } from "./dto/get-evaluation-scores-query.dto";
+import { SaveEvaluationScoresDto } from "./dto/save-evaluation-scores.dto";
 import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
 import { PublishGradesDto } from "./dto/publish-grades.dto";
 import { UnpublishGradesDto } from "./dto/unpublish-grades.dto";
@@ -25,14 +25,16 @@ import { GetGradesReviewQueryDto } from "./dto/get-grades-review-query.dto";
 export class GradesController {
   constructor(private readonly gradesService: GradesService) {}
 
-  @Get("grid")
-  getGrid(@Query() query: GetGradesGridQueryDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.gradesService.getGrid(query, user);
+  // v0.7 step 1: replaces /grades/grid (componentId-keyed) — evaluations
+  // replace the fixed CA1/CA2/Exam structure entirely (SPEC_V0.7.md §2).
+  @Get("evaluation-scores")
+  getEvaluationScores(@Query() query: GetEvaluationScoresQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.getEvaluationScores(query, user);
   }
 
-  @Put("grid")
-  saveGrid(@Body() dto: SaveGradesGridDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.gradesService.saveGrid(dto, user);
+  @Put("evaluation-scores")
+  saveEvaluationScores(@Body() dto: SaveEvaluationScoresDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.saveEvaluationScores(dto, user);
   }
 
   // Admin-only manual re-trigger (SPEC_V0.4.md §2) — overrides the class-

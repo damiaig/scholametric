@@ -108,33 +108,36 @@ model School {
   subjectTeacherAssignments SubjectTeacherAssignment[]
   guardians                 Guardian[]
   studentGuardians          StudentGuardian[]
-  assessmentComponents      AssessmentComponent[]
   gradeBoundaries           GradeBoundary[]
-  studentScores             StudentScore[]
   termSubjectResults        TermSubjectResult[]
   termOverallResults        TermOverallResult[]
   termUnlocks               TermUnlock[]
   termRemarks               TermRemark[]
+  evaluations               Evaluation[]
+  exams                     Exam[]
+  termSubjectExamResults    TermSubjectExamResult[]
+  termExamResults           TermExamResult[]
+  yearExamResults           YearExamResult[]
 
   @@map("schools")
 }
 
 model User {
-  id           String  @id @default(uuid(7)) @db.Uuid
-  schoolId     String  @map("school_id") @db.Uuid
+  id                 String     @id @default(uuid(7)) @db.Uuid
+  schoolId           String     @map("school_id") @db.Uuid
   // Nullable as of v0.6 (SPEC_V0.6.md §4): staff still log in by email
   // (required in practice, enforced at the API layer for STAFF-ish roles);
   // STUDENT/PARENT portal accounts log in by username instead (below) and
   // carry no email. @@unique tolerates multiple NULLs per Postgres — every
   // staff row keeps its own uniqueness untouched.
-  email        String? @db.Citext
+  email              String?    @db.Citext
   // Portal-account login handle (v0.6). NULL for every staff role. Always
   // CAPS by construction (portal-accounts.service.ts) but Citext for a
   // case-insensitive uniqueness/login safety net regardless.
-  username     String? @db.Citext
-  passwordHash String  @map("password_hash")
-  firstName    String  @map("first_name")
-  lastName     String  @map("last_name")
+  username           String?    @db.Citext
+  passwordHash       String     @map("password_hash")
+  firstName          String     @map("first_name")
+  lastName           String     @map("last_name")
   role               UserRole
   status             UserStatus @default(ACTIVE)
   lastLoginAt        DateTime?  @map("last_login_at")
@@ -146,8 +149,8 @@ model User {
   // STUDENT/PARENT account, and neither is set for staff — enforced again
   // at the DB layer by a hand-added CHECK constraint (see migration), not
   // just here.
-  studentId  String? @unique @map("student_id") @db.Uuid
-  guardianId String? @unique @map("guardian_id") @db.Uuid
+  studentId          String?    @unique @map("student_id") @db.Uuid
+  guardianId         String?    @unique @map("guardian_id") @db.Uuid
   deletedAt          DateTime?  @map("deleted_at")
   createdAt          DateTime   @default(now()) @map("created_at")
   updatedAt          DateTime   @updatedAt @map("updated_at")
@@ -160,12 +163,15 @@ model User {
   staffProfile              StaffProfile?
   classTeacherAssignments   ClassTeacherAssignment[]
   subjectTeacherAssignments SubjectTeacherAssignment[]
-  scoresEntered             StudentScore[]             @relation("StudentScoreEnteredBy")
   termsClosed               Term[]                     @relation("TermClosedBy")
   termUnlocksUnlocked       TermUnlock[]               @relation("TermUnlockUnlockedBy")
   termUnlocksRelocked       TermUnlock[]               @relation("TermUnlockRelockedBy")
   termRemarksAsTeacher      TermRemark[]               @relation("TermRemarkTeacherBy")
   termRemarksAsPrincipal    TermRemark[]               @relation("TermRemarkPrincipalBy")
+  evaluationsCreated        Evaluation[]               @relation("EvaluationCreatedBy")
+  evaluationScoresEntered   EvaluationScore[]          @relation("EvaluationScoreEnteredBy")
+  examsCreated              Exam[]                     @relation("ExamCreatedBy")
+  examScoresEntered         ExamScore[]                @relation("ExamScoreEnteredBy")
 
   @@unique([schoolId, email])
   @@unique([schoolId, username])
@@ -208,10 +214,14 @@ model AcademicSession {
   studentEnrollments        StudentEnrollment[]
   classTeacherAssignments   ClassTeacherAssignment[]
   subjectTeacherAssignments SubjectTeacherAssignment[]
-  studentScores             StudentScore[]
   termSubjectResults        TermSubjectResult[]
   termOverallResults        TermOverallResult[]
   termRemarks               TermRemark[]
+  evaluations               Evaluation[]
+  exams                     Exam[]
+  termSubjectExamResults    TermSubjectExamResult[]
+  termExamResults           TermExamResult[]
+  yearExamResults           YearExamResult[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -238,14 +248,17 @@ model Term {
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
-  school             School              @relation(fields: [schoolId], references: [id])
-  session            AcademicSession     @relation(fields: [sessionId], references: [id])
-  closedByUser       User?               @relation("TermClosedBy", fields: [closedBy], references: [id])
-  studentScores      StudentScore[]
-  termSubjectResults TermSubjectResult[]
-  termOverallResults TermOverallResult[]
-  termUnlocks        TermUnlock[]
-  termRemarks        TermRemark[]
+  school                 School                  @relation(fields: [schoolId], references: [id])
+  session                AcademicSession         @relation(fields: [sessionId], references: [id])
+  closedByUser           User?                   @relation("TermClosedBy", fields: [closedBy], references: [id])
+  termSubjectResults     TermSubjectResult[]
+  termOverallResults     TermOverallResult[]
+  termUnlocks            TermUnlock[]
+  termRemarks            TermRemark[]
+  evaluations            Evaluation[]
+  exams                  Exam[]
+  termSubjectExamResults TermSubjectExamResult[]
+  termExamResults        TermExamResult[]
 
   @@unique([sessionId, name])
   @@index([schoolId])
@@ -282,11 +295,14 @@ model ClassArm {
   studentEnrollments        StudentEnrollment[]
   classTeacherAssignments   ClassTeacherAssignment[]
   subjectTeacherAssignments SubjectTeacherAssignment[]
-  studentScores             StudentScore[]
   termSubjectResults        TermSubjectResult[]
   termOverallResults        TermOverallResult[]
   termUnlocks               TermUnlock[]
   termRemarks               TermRemark[]
+  evaluations               Evaluation[]
+  exams                     Exam[]
+  termSubjectExamResults    TermSubjectExamResult[]
+  termExamResults           TermExamResult[]
 
   @@unique([classLevelId, name])
   @@index([schoolId])
@@ -319,15 +335,19 @@ model Student {
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
-  school             School              @relation(fields: [schoolId], references: [id])
-  enrollments        StudentEnrollment[]
-  studentGuardians   StudentGuardian[]
-  studentScores      StudentScore[]
-  termSubjectResults TermSubjectResult[]
-  termOverallResults TermOverallResult[]
-  termRemarks        TermRemark[]
+  school                 School                  @relation(fields: [schoolId], references: [id])
+  enrollments            StudentEnrollment[]
+  studentGuardians       StudentGuardian[]
+  termSubjectResults     TermSubjectResult[]
+  termOverallResults     TermOverallResult[]
+  termRemarks            TermRemark[]
   // v0.6: the one portal STUDENT account for this student, if provisioned.
-  portalAccount      User?
+  portalAccount          User?
+  evaluationScores       EvaluationScore[]
+  examScores             ExamScore[]
+  termSubjectExamResults TermSubjectExamResult[]
+  termExamResults        TermExamResult[]
+  yearExamResults        YearExamResult[]
 
   @@unique([schoolId, admissionNumber])
   @@index([schoolId])
@@ -404,12 +424,14 @@ model Subject {
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
-  school             School                     @relation(fields: [schoolId], references: [id])
-  classLevels        SubjectClassLevel[]
-  teacherAssignments SubjectTeacherAssignment[]
-  studentScores      StudentScore[]
-  termSubjectResults TermSubjectResult[]
-  termUnlocks        TermUnlock[]
+  school                 School                     @relation(fields: [schoolId], references: [id])
+  classLevels            SubjectClassLevel[]
+  teacherAssignments     SubjectTeacherAssignment[]
+  termSubjectResults     TermSubjectResult[]
+  termUnlocks            TermUnlock[]
+  evaluations            Evaluation[]
+  exams                  Exam[]
+  termSubjectExamResults TermSubjectExamResult[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -518,43 +540,206 @@ model StudentGuardian {
   @@map("student_guardians")
 }
 
-// The school's scoring structure (SPEC_V0.3.md §1) — school-wide in v0.3,
-// per-level schemes are a future need (docs/DECISIONS.md, do not build).
-// The active (non-deleted) set summing to exactly 100 is validated at the
-// API layer on every mutation, not by a DB constraint.
-model AssessmentComponent {
-  id               String    @id @default(uuid(7)) @db.Uuid
-  schoolId         String    @map("school_id") @db.Uuid
-  name             String
-  weight           Int
-  sortOrder        Int       @map("sort_order")
-  // requiresApproval=true (e.g. "Exam") means scores against this
-  // component gate a term_subject_result behind director/owner publish;
-  // false (CA1, CA2) counts immediately (SPEC_V0.4.md §1).
-  requiresApproval Boolean   @default(false) @map("requires_approval")
-  // The raw ceiling a teacher enters against (validated 1-100 at the API
-  // layer) — independent of `weight`, which governs this component's
-  // contribution to the 100-point subject total (SPEC_V0.4.md §1).
-  maxScore         Int       @default(100) @map("max_score")
-  // Wired up in v0.4 (was reserved-but-unwired in v0.3, resolution 8,
-  // docs/DECISIONS.md): student_scores.component_id now FKs to this
-  // table, so PUT /assessment-components's full-set replace no longer
-  // hard-deletes a removed component — it soft-deletes (deleted_at set),
-  // so existing scores survive an assessment-structure edit. The
-  // `@@unique([schoolId, name])` below is GONE from this file on
-  // purpose — it's now a hand-written PARTIAL unique index
-  // (`WHERE deleted_at IS NULL`) in the migration SQL, same pattern as
-  // student_guardians' one-primary-per-student index — Prisma's schema
-  // DSL can't express a partial unique constraint.
-  deletedAt        DateTime? @map("deleted_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+// v0.7 step 1 (SPEC_V0.7.md §2/§3) — REPLACES the fixed CA1/CA2/Exam
+// assessment-component model entirely (schema cutover — no pilot-school
+// data to preserve, see docs/DECISIONS.md). A teacher-created evaluation
+// belongs to exactly one (class arm, subject, term) — unlike the old
+// StudentScore, which had to denormalize class_arm_id onto every score
+// row because a component alone couldn't scope one, EvaluationScore below
+// only needs (evaluationId, studentId): the evaluation itself already
+// carries the full scope, so nothing about it is re-derived per score.
+// Publishing is unchanged from v0.4/v0.5 (see term_subject_results below)
+// — this table has no publish state of its own. name/description freely
+// editable while the subject/term is unpublished; the evaluation SET is
+// frozen once published (adding a new one requires unpublish-first, the
+// existing path) — enforced by Step 2's authoring endpoints, not here.
+model Evaluation {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  schoolId    String    @map("school_id") @db.Uuid
+  classArmId  String    @map("class_arm_id") @db.Uuid
+  subjectId   String    @map("subject_id") @db.Uuid
+  sessionId   String    @map("session_id") @db.Uuid
+  termId      String    @map("term_id") @db.Uuid
+  name        String
+  description String
+  createdBy   String    @map("created_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  school        School         @relation(fields: [schoolId], references: [id])
-  studentScores StudentScore[]
+  school        School            @relation(fields: [schoolId], references: [id])
+  classArm      ClassArm          @relation(fields: [classArmId], references: [id])
+  subject       Subject           @relation(fields: [subjectId], references: [id])
+  session       AcademicSession   @relation(fields: [sessionId], references: [id])
+  term          Term              @relation(fields: [termId], references: [id])
+  createdByUser User              @relation("EvaluationCreatedBy", fields: [createdBy], references: [id])
+  scores        EvaluationScore[]
 
-  @@index([schoolId])
-  @@map("assessment_components")
+  @@index([schoolId, classArmId, subjectId, termId])
+  @@map("evaluations")
+}
+
+// rawScore/isAbsent mutually exclusive — same hand-added CHECK constraint
+// shape student_scores had (see migration SQL). No schoolId here — same
+// reasoning as RefreshToken not carrying one (docs/DECISIONS.md): a score
+// is only ever reached via its already-tenant-verified evaluationId.
+model EvaluationScore {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  evaluationId String    @map("evaluation_id") @db.Uuid
+  studentId    String    @map("student_id") @db.Uuid
+  rawScore     Decimal?  @map("raw_score") @db.Decimal(5, 2)
+  isAbsent     Boolean   @default(false) @map("is_absent")
+  enteredBy    String?   @map("entered_by") @db.Uuid
+  enteredAt    DateTime? @map("entered_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  evaluation    Evaluation @relation(fields: [evaluationId], references: [id])
+  student       Student    @relation(fields: [studentId], references: [id])
+  enteredByUser User?      @relation("EvaluationScoreEnteredBy", fields: [enteredBy], references: [id])
+
+  @@unique([evaluationId, studentId])
+  @@map("evaluation_scores")
+}
+
+// Track B (SPEC_V0.7.md §2) — exams never contribute to term_subject_
+// results/term_overall_results; they compute into their own parallel
+// cache tables below (term_subject_exam_results/term_exam_results/
+// year_exam_results). Structurally identical to Evaluation/
+// EvaluationScore; kept as a separate model rather than a `track` column
+// because the two tracks have different aggregate tables and different
+// publish actions — one shared table would just move the fork into every
+// query's WHERE clause instead of the table name.
+model Exam {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  schoolId   String    @map("school_id") @db.Uuid
+  classArmId String    @map("class_arm_id") @db.Uuid
+  subjectId  String    @map("subject_id") @db.Uuid
+  sessionId  String    @map("session_id") @db.Uuid
+  termId     String    @map("term_id") @db.Uuid
+  // Optional — defaults to "Exam" for display (confirmed; unlike
+  // Evaluation, exams don't need a teacher-authored name/description).
+  name       String?
+  createdBy  String    @map("created_by") @db.Uuid
+  deletedAt  DateTime? @map("deleted_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  school        School          @relation(fields: [schoolId], references: [id])
+  classArm      ClassArm        @relation(fields: [classArmId], references: [id])
+  subject       Subject         @relation(fields: [subjectId], references: [id])
+  session       AcademicSession @relation(fields: [sessionId], references: [id])
+  term          Term            @relation(fields: [termId], references: [id])
+  createdByUser User            @relation("ExamCreatedBy", fields: [createdBy], references: [id])
+  scores        ExamScore[]
+
+  @@index([schoolId, classArmId, subjectId, termId])
+  @@map("exams")
+}
+
+model ExamScore {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  examId    String    @map("exam_id") @db.Uuid
+  studentId String    @map("student_id") @db.Uuid
+  rawScore  Decimal?  @map("raw_score") @db.Decimal(5, 2)
+  isAbsent  Boolean   @default(false) @map("is_absent")
+  enteredBy String?   @map("entered_by") @db.Uuid
+  enteredAt DateTime? @map("entered_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  exam          Exam    @relation(fields: [examId], references: [id])
+  student       Student @relation(fields: [studentId], references: [id])
+  enteredByUser User?   @relation("ExamScoreEnteredBy", fields: [enteredBy], references: [id])
+
+  @@unique([examId, studentId])
+  @@map("exam_scores")
+}
+
+// Per student+subject+term exam average — analog of TermSubjectResult for
+// Track B, own publish state (Q3/step-1 scope). No subjectPosition — Q6
+// ranks only at the per-term (cross-subject) and whole-year levels.
+model TermSubjectExamResult {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  schoolId    String       @map("school_id") @db.Uuid
+  studentId   String       @map("student_id") @db.Uuid
+  subjectId   String       @map("subject_id") @db.Uuid
+  sessionId   String       @map("session_id") @db.Uuid
+  termId      String       @map("term_id") @db.Uuid
+  classArmId  String       @map("class_arm_id") @db.Uuid
+  totalScore  Decimal      @map("total_score") @db.Decimal(5, 2)
+  autoGrade   String?      @map("auto_grade")
+  status      ResultStatus @default(DRAFT)
+  publishedAt DateTime?    @map("published_at")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  school   School          @relation(fields: [schoolId], references: [id])
+  student  Student         @relation(fields: [studentId], references: [id])
+  subject  Subject         @relation(fields: [subjectId], references: [id])
+  session  AcademicSession @relation(fields: [sessionId], references: [id])
+  term     Term            @relation(fields: [termId], references: [id])
+  classArm ClassArm        @relation(fields: [classArmId], references: [id])
+
+  @@unique([studentId, subjectId, termId, sessionId])
+  @@index([schoolId, classArmId, subjectId, termId])
+  @@map("term_subject_exam_results")
+}
+
+// Per student+term, cross-subject exam average — Q6 ranking (b), analog
+// of TermOverallResult for Track B.
+model TermExamResult {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  schoolId      String       @map("school_id") @db.Uuid
+  studentId     String       @map("student_id") @db.Uuid
+  sessionId     String       @map("session_id") @db.Uuid
+  termId        String       @map("term_id") @db.Uuid
+  classArmId    String       @map("class_arm_id") @db.Uuid
+  averageScore  Decimal      @map("average_score") @db.Decimal(5, 2)
+  averageGrade  String?      @map("average_grade")
+  examPosition  Int?         @map("exam_position")
+  subjectsCount Int          @default(0) @map("subjects_count")
+  status        ResultStatus @default(DRAFT)
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  school   School          @relation(fields: [schoolId], references: [id])
+  student  Student         @relation(fields: [studentId], references: [id])
+  session  AcademicSession @relation(fields: [sessionId], references: [id])
+  term     Term            @relation(fields: [termId], references: [id])
+  classArm ClassArm        @relation(fields: [classArmId], references: [id])
+
+  @@unique([studentId, termId, sessionId])
+  @@index([schoolId, classArmId, termId])
+  @@map("term_exam_results")
+}
+
+// Per student+session, whole-year exam average across all terms so far —
+// Q6 ranking (c). Purely derived/cached: recomputed whenever any
+// TermExamResult for this student+session changes; no separate manual
+// publish action of its own (confirmed) — a student's row is visible/
+// ranked once at least one term this session is PUBLISHED, progressively,
+// never waiting for all three terms to exist.
+model YearExamResult {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  schoolId         String       @map("school_id") @db.Uuid
+  studentId        String       @map("student_id") @db.Uuid
+  sessionId        String       @map("session_id") @db.Uuid
+  averageScore     Decimal      @map("average_score") @db.Decimal(5, 2)
+  averageGrade     String?      @map("average_grade")
+  yearExamPosition Int?         @map("year_exam_position")
+  termsCount       Int          @default(0) @map("terms_count")
+  status           ResultStatus @default(DRAFT)
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  school  School          @relation(fields: [schoolId], references: [id])
+  student Student         @relation(fields: [studentId], references: [id])
+  session AcademicSession @relation(fields: [sessionId], references: [id])
+
+  @@unique([studentId, sessionId])
+  @@index([schoolId, sessionId])
+  @@map("year_exam_results")
 }
 
 // Score → grade mapping (SPEC_V0.3.md §1). Ranges must tile 0-100 with no
@@ -585,59 +770,13 @@ enum ResultStatus {
   PUBLISHED
 }
 
-// One row per (student, subject, component, term, session) — a single
-// entered raw score (SPEC_V0.4.md §1). raw_score is nullable: a grid row
-// exists conceptually for every enrolled student/component pair, but a
-// StudentScore row is only created once something's actually entered
-// (save-as-you-go, step 2). entered_by/entered_at are therefore nullable
-// too — no one has entered anything until someone has.
-model StudentScore {
-  id          String    @id @default(uuid(7)) @db.Uuid
-  schoolId    String    @map("school_id") @db.Uuid
-  studentId   String    @map("student_id") @db.Uuid
-  subjectId   String    @map("subject_id") @db.Uuid
-  componentId String    @map("component_id") @db.Uuid
-  sessionId   String    @map("session_id") @db.Uuid
-  termId      String    @map("term_id") @db.Uuid
-  // Denormalized for fast class-grid queries (SPEC_V0.4.md §1) — the
-  // enrollment this score was entered against, not re-derived from
-  // student_enrollments on every read.
-  classArmId  String    @map("class_arm_id") @db.Uuid
-  rawScore    Decimal?  @map("raw_score") @db.Decimal(5, 2)
-  // SPEC_V0.5.md §2.1 — a third, explicit state distinct from both
-  // not-entered (no row / raw_score null, isAbsent false) and a real 0
-  // (raw_score set). Excluded from the weighted subject total (contributes
-  // nothing, not a 0, not rescaled — grade-computation.ts), but counts as a
-  // DECIDED outcome for computeSubjectStatus, unlike not-entered. A row
-  // with both raw_score set AND is_absent true is uninterpretable — see
-  // this table's CHECK constraint (hand-added in the migration SQL,
-  // Prisma's DSL can't express it) and the DTO validation step 2 adds on
-  // top of it.
-  isAbsent    Boolean   @default(false) @map("is_absent")
-  enteredBy   String?   @map("entered_by") @db.Uuid
-  enteredAt   DateTime? @map("entered_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
-
-  school        School              @relation(fields: [schoolId], references: [id])
-  student       Student             @relation(fields: [studentId], references: [id])
-  subject       Subject             @relation(fields: [subjectId], references: [id])
-  component     AssessmentComponent @relation(fields: [componentId], references: [id])
-  session       AcademicSession     @relation(fields: [sessionId], references: [id])
-  term          Term                @relation(fields: [termId], references: [id])
-  classArm      ClassArm            @relation(fields: [classArmId], references: [id])
-  enteredByUser User?               @relation("StudentScoreEnteredBy", fields: [enteredBy], references: [id])
-
-  @@unique([studentId, subjectId, componentId, termId, sessionId])
-  @@index([schoolId, classArmId, subjectId, termId, sessionId])
-  @@index([schoolId, studentId, termId, sessionId])
-  @@map("student_scores")
-}
-
 // Cached per-student-per-subject-per-term computation (SPEC_V0.4.md §1) —
-// so results/positions don't recompute on every read. Recomputed on every
-// affected StudentScore write (step 2); status/position semantics are
-// resolved in SPEC_V0.4.md's review resolutions.
+// so results/positions don't recompute on every read. v0.7 step 1: the
+// SOURCE changed (average of this subject/term's Evaluation scores,
+// exams excluded — SPEC_V0.7.md §2/§5), but this table's own columns and
+// publish semantics are UNCHANGED from v0.4/v0.5 — recomputed on every
+// affected EvaluationScore write, same status/position/publish contract
+// the v0.6 portal wall already depends on.
 model TermSubjectResult {
   id              String       @id @default(uuid(7)) @db.Uuid
   schoolId        String       @map("school_id") @db.Uuid
@@ -646,9 +785,9 @@ model TermSubjectResult {
   sessionId       String       @map("session_id") @db.Uuid
   termId          String       @map("term_id") @db.Uuid
   classArmId      String       @map("class_arm_id") @db.Uuid
-  // Weighted sum across components with a score; missing components
-  // contribute 0 (SPEC_V0.4.md §1 review resolution — not rescaled to
-  // the entered weight's own 100%).
+  // v0.7: simple mean of the student's decided (non-absent) Evaluation
+  // scores for this subject/term, 0-100 native (no weighting/rescaling —
+  // SPEC_V0.7.md Q1). 0 if nothing decided yet.
   totalScore      Decimal      @map("total_score") @db.Decimal(5, 2)
   // Nullable: no grade_boundaries band matches (shouldn't happen once a
   // school's boundaries tile 0-100, but not DB-enforced — see
