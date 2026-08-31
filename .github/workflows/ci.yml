@@ -73,5 +73,18 @@ jobs:
       - name: Seed database
         run: pnpm seed
 
+      # api's Jest e2e suite (--runInBand) and web's Vitest suite used to
+      # run concurrently here (`pnpm run ci`'s `pnpm test` is a plain
+      # `pnpm -r ... run test`, which parallelizes by default) — the two
+      # fighting over this runner's fixed RAM at the same time was the
+      # long-standing intermittent "apps/web test: heap out of memory /
+      # Worker exited unexpectedly" CI flake (docs/DECISIONS.md).
+      # --workspace-concurrency=1 forces them sequential in CI specifically;
+      # local `pnpm run ci` is left concurrent (fast local dev still fine —
+      # OOM only ever showed up under this runner's tighter memory ceiling).
       - name: Typecheck, lint, test, unit test
-        run: pnpm run ci
+        run: >-
+          pnpm run typecheck &&
+          pnpm run lint &&
+          pnpm -r --workspace-concurrency=1 --if-present run test &&
+          pnpm run test:unit
