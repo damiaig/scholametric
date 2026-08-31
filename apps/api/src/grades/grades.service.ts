@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma, ResultStatus, UserRole, type Term, type TermSubjectResult } from "@prisma/client";
+import { Prisma, ResultStatus, UserRole, type Evaluation, type Term, type TermSubjectResult } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
@@ -26,6 +26,9 @@ import {
 } from "./grade-shared.util";
 import { GetEvaluationScoresQueryDto } from "./dto/get-evaluation-scores-query.dto";
 import { SaveEvaluationScoresDto } from "./dto/save-evaluation-scores.dto";
+import { GetEvaluationsQueryDto } from "./dto/get-evaluations-query.dto";
+import { CreateEvaluationDto } from "./dto/create-evaluation.dto";
+import { UpdateEvaluationDto } from "./dto/update-evaluation.dto";
 import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
 import { PublishGradesDto } from "./dto/publish-grades.dto";
 import { UnpublishGradesDto } from "./dto/unpublish-grades.dto";
@@ -86,6 +89,30 @@ export interface SaveEvaluationScoresResponse {
   termId: string;
   savedCount: number;
   rows: SavedEvaluationScoreRow[];
+}
+
+// v0.7 step 2 (SPEC_V0.7.md §3) — the authoring surface. An evaluation
+// carries no status/publish field of its own: "is this subject published"
+// is read fresh off term_subject_results at the moment of each authoring
+// action (create/update/delete), never cached on the Evaluation row
+// itself, so it can never drift from the real gate saveEvaluationScores/
+// publish/unpublish already enforce.
+export interface EvaluationResponse {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: Date;
+  createdBy: string;
+}
+
+export interface EvaluationsListResponse {
+  classArmId: string;
+  subjectId: string;
+  termId: string;
+  termClosed: boolean;
+  locked: boolean;
+  unlockReason: string | null;
+  evaluations: EvaluationResponse[];
 }
 
 interface RecomputeContext {
@@ -613,6 +640,261 @@ export class GradesService {
       },
       { timeout: 20000 }, // was 15000 — bumped to match publish()'s budget for the same added class-arm-wide phase (only spent when needsOverallRecompute fires)
     );
+  }
+
+  // v0.7 step 2 (SPEC_V0.7.md §3): the evaluation picker's data source.
+  // Same tenant-scope + teacher-assignment gate as score entry (reusing
+  // assertTeacherAssignment, NOT the broader resolveTeacherAccess — this
+  // is an authoring action, not a read-visibility one, confirmed). Also
+  // surfaces the slice's lock state so the frontend can show a blocked
+  // "+ New evaluation" affordance BEFORE the teacher opens the form, not
+  // as a bare 409 after submitting (docs/DECISIONS.md).
+  async listEvaluations(query: GetEvaluationsQueryDto, user: AuthenticatedUser): Promise<EvaluationsListResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, query);
+    await assertTeacherAssignment(this.prisma, schoolId, user, query.subjectId, query.classArmId, term.sessionId);
+
+    const [evaluations, lockState] = await Promise.all([
+      this.prisma.evaluation.findMany({
+        where: { schoolId, classArmId: query.classArmId, subjectId: query.subjectId, termId: query.termId, deletedAt: null },
+        orderBy: { createdAt: "asc" },
+      }),
+      resolveSliceLockState(this.prisma, {
+        termId: query.termId,
+        classArmId: query.classArmId,
+        subjectId: query.subjectId,
+        closedAt: term.closedAt,
+      }),
+    ]);
+
+    return {
+      classArmId: query.classArmId,
+      subjectId: query.subjectId,
+      termId: query.termId,
+      termClosed: term.closedAt !== null,
+      locked: lockState.locked,
+      unlockReason: lockState.unlockReason,
+      evaluations: evaluations.map((e) => this.toEvaluationResponse(e)),
+    };
+  }
+
+  // Create: TEACHER (must hold the assignment)/SCHOOL_ADMIN/PROPRIETOR,
+  // matching the scoring endpoint's own role list (confirmed — an admin
+  // stepping in for a teacher can author too). Term-lock first (shared
+  // with the exam track, same key order as saveEvaluationScores), then
+  // the confirmed Step 1 rule enforced here for the first time: a subject
+  // whose results are already PUBLISHED has its evaluation set frozen —
+  // creating a new one requires unpublish-first, the existing path.
+  async createEvaluation(dto: CreateEvaluationDto, user: AuthenticatedUser): Promise<EvaluationResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);
+    await assertTeacherAssignment(this.prisma, schoolId, user, dto.subjectId, dto.classArmId, term.sessionId);
+
+    const termLock = termLockKey(schoolId, dto.termId);
+    const subjLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
+
+        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
+        const { locked } = await resolveSliceLockState(tx, {
+          termId: dto.termId,
+          classArmId: dto.classArmId,
+          subjectId: dto.subjectId,
+          closedAt: freshTerm.closedAt,
+        });
+        if (locked) {
+          throw new ConflictException({
+            message: "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
+            termLocked: true,
+          });
+        }
+
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
+
+        const publishedCount = await tx.termSubjectResult.count({
+          where: {
+            schoolId,
+            classArmId: dto.classArmId,
+            subjectId: dto.subjectId,
+            termId: dto.termId,
+            sessionId: term.sessionId,
+            status: ResultStatus.PUBLISHED,
+          },
+        });
+        if (publishedCount > 0) {
+          throw new ConflictException(
+            "Cannot create: this subject's results are already published for this term — unpublish first to add a new evaluation.",
+          );
+        }
+
+        const evaluation = await tx.evaluation.create({
+          data: {
+            schoolId,
+            classArmId: dto.classArmId,
+            subjectId: dto.subjectId,
+            sessionId: term.sessionId,
+            termId: dto.termId,
+            name: dto.name,
+            description: dto.description,
+            createdBy: user.userId,
+          },
+        });
+
+        return this.toEvaluationResponse(evaluation);
+      },
+      { timeout: 10000 },
+    );
+  }
+
+  // Edit name/description only (classArmId/subjectId/termId are immutable
+  // — re-scoping isn't a "fix a typo" edit). Freely editable while this
+  // subject's results are DRAFT; once ANY row is PUBLISHED for this
+  // subject/term, only PROPRIETOR may edit — the same data-dependent
+  // role-narrowing shape override() already uses, confirmed. No recompute
+  // needed: name/description never feed the average.
+  async updateEvaluation(evaluationId: string, dto: UpdateEvaluationDto, user: AuthenticatedUser): Promise<EvaluationResponse> {
+    if (dto.name === undefined && dto.description === undefined) {
+      throw new BadRequestException("At least one of name or description must be provided.");
+    }
+
+    const schoolId = this.tenantContext.schoolId;
+    const evaluation = await this.prisma.evaluation.findFirst({ where: forSchool(schoolId, { id: evaluationId, deletedAt: null }) });
+    if (!evaluation) {
+      throw new NotFoundException("Evaluation not found.");
+    }
+    await assertTeacherAssignment(this.prisma, schoolId, user, evaluation.subjectId, evaluation.classArmId, evaluation.sessionId);
+
+    const termLock = termLockKey(schoolId, evaluation.termId);
+    const subjLockKey = buildSubjectLockKey(schoolId, evaluation.subjectId, evaluation.classArmId, evaluation.termId);
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
+
+      const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: evaluation.termId } });
+      const { locked } = await resolveSliceLockState(tx, {
+        termId: evaluation.termId,
+        classArmId: evaluation.classArmId,
+        subjectId: evaluation.subjectId,
+        closedAt: freshTerm.closedAt,
+      });
+      if (locked) {
+        throw new ConflictException({
+          message: "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
+          termLocked: true,
+        });
+      }
+
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
+
+      const publishedCount = await tx.termSubjectResult.count({
+        where: {
+          schoolId,
+          classArmId: evaluation.classArmId,
+          subjectId: evaluation.subjectId,
+          termId: evaluation.termId,
+          sessionId: evaluation.sessionId,
+          status: ResultStatus.PUBLISHED,
+        },
+      });
+      if (publishedCount > 0 && user.role !== UserRole.PROPRIETOR) {
+        throw new ForbiddenException("Only the school owner (PROPRIETOR) may edit an evaluation once this subject's results are published.");
+      }
+
+      const updated = await tx.evaluation.update({
+        where: { id: evaluationId },
+        data: {
+          name: dto.name ?? evaluation.name,
+          description: dto.description ?? evaluation.description,
+        },
+      });
+
+      return this.toEvaluationResponse(updated);
+    });
+  }
+
+  // PROPRIETOR only, categorical (enforced at the controller, mirrors
+  // unpublish() exactly — not data-dependent). Blocks outright (409) while
+  // this subject's results are PUBLISHED — confirmed: no force-delete-
+  // through-published cascade. This is why the recompute below can be a
+  // plain recomputeStudents() call with no gap-2/overall cascade: every
+  // affected term_subject_result is guaranteed DRAFT at delete-time (the
+  // block above), so no student's overall could already be PUBLISHED on
+  // the strength of this subject, and no first-ever-row/gap-2 case can
+  // arise either. A future change that allows force-deleting a PUBLISHED
+  // evaluation MUST add that cascade back (docs/DECISIONS.md).
+  async deleteEvaluation(evaluationId: string): Promise<{ id: string }> {
+    const schoolId = this.tenantContext.schoolId;
+    const evaluation = await this.prisma.evaluation.findFirst({ where: forSchool(schoolId, { id: evaluationId, deletedAt: null }) });
+    if (!evaluation) {
+      throw new NotFoundException("Evaluation not found.");
+    }
+
+    const students = await getRoster(this.prisma, schoolId, evaluation.classArmId, evaluation.sessionId);
+    const studentIds = students.map((s) => s.id);
+
+    const termLock = termLockKey(schoolId, evaluation.termId);
+    const subjLockKey = buildSubjectLockKey(schoolId, evaluation.subjectId, evaluation.classArmId, evaluation.termId);
+
+    await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
+
+        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: evaluation.termId } });
+        const { locked } = await resolveSliceLockState(tx, {
+          termId: evaluation.termId,
+          classArmId: evaluation.classArmId,
+          subjectId: evaluation.subjectId,
+          closedAt: freshTerm.closedAt,
+        });
+        if (locked) {
+          throw new ConflictException({
+            message: "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
+            termLocked: true,
+          });
+        }
+
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
+
+        const publishedCount = await tx.termSubjectResult.count({
+          where: {
+            schoolId,
+            classArmId: evaluation.classArmId,
+            subjectId: evaluation.subjectId,
+            termId: evaluation.termId,
+            sessionId: evaluation.sessionId,
+            status: ResultStatus.PUBLISHED,
+          },
+        });
+        if (publishedCount > 0) {
+          throw new ConflictException("Cannot delete: this subject's results are already published for this term — unpublish first.");
+        }
+
+        await tx.evaluation.update({ where: { id: evaluationId }, data: { deletedAt: new Date() } });
+
+        if (studentIds.length > 0) {
+          await this.recomputeStudents(
+            tx,
+            { schoolId, subjectId: evaluation.subjectId, termId: evaluation.termId, sessionId: evaluation.sessionId, classArmId: evaluation.classArmId },
+            studentIds,
+          );
+        }
+      },
+      { timeout: 20000 },
+    );
+
+    return { id: evaluationId };
+  }
+
+  private toEvaluationResponse(evaluation: Evaluation): EvaluationResponse {
+    return {
+      id: evaluation.id,
+      name: evaluation.name,
+      description: evaluation.description,
+      createdAt: evaluation.createdAt,
+      createdBy: evaluation.createdBy,
+    };
   }
 
   // Admin-only manual re-trigger — re-derives term_subject_results for a

@@ -1,7 +1,7 @@
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ApiError, getErrorMessage } from "../../lib/api-client";
 import { usePublishGrades } from "./use-publish-grades";
-import { useAssessmentComponents } from "../settings/use-assessment-components";
+import { useEvaluations } from "./use-evaluations";
 import type { GradesReviewSubject } from "@scholametric/shared";
 
 interface PublishConfirmDialogProps {
@@ -22,7 +22,7 @@ export function PublishConfirmDialog({ classArmName, termLabel, subject, classAr
   // happy path — canPublish already keeps that path from being clickable
   // in the common case (SPEC_V0.5.md §2.2/step 2), so this is a rare-race
   // fallback, not the primary defense.
-  const components = useAssessmentComponents();
+  const evaluations = useEvaluations(subject ? { classArmId, subjectId: subject.subjectId, termId } : null);
 
   function handleConfirm() {
     if (!subject) return;
@@ -53,11 +53,11 @@ export function PublishConfirmDialog({ classArmName, termLabel, subject, classAr
       )}
       {incompleteEntries && incompleteEntries.length > 0 && (
         <div role="alert" className="flex flex-col gap-1 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-text">
-          <p className="font-medium text-danger">Some students still have a blank component — open the grid to resolve:</p>
+          <p className="font-medium text-danger">Some students still have a blank evaluation — open the grid to resolve:</p>
           <ul className="list-inside list-disc">
-            {groupByComponent(incompleteEntries).map(({ componentId, studentCount }) => (
-              <li key={componentId}>
-                {componentNameFor(components.data, componentId)}: {studentCount} student{studentCount === 1 ? "" : "s"}
+            {groupByEvaluation(incompleteEntries).map(({ evaluationId, studentCount }) => (
+              <li key={evaluationId}>
+                {evaluationNameFor(evaluations.data?.evaluations, evaluationId)}: {studentCount} student{studentCount === 1 ? "" : "s"}
               </li>
             ))}
           </ul>
@@ -67,16 +67,16 @@ export function PublishConfirmDialog({ classArmName, termLabel, subject, classAr
   );
 }
 
-function groupByComponent(entries: { studentId: string; componentId: string }[]): { componentId: string; studentCount: number }[] {
-  const byComponent = new Map<string, Set<string>>();
+function groupByEvaluation(entries: { studentId: string; evaluationId: string }[]): { evaluationId: string; studentCount: number }[] {
+  const byEvaluation = new Map<string, Set<string>>();
   for (const entry of entries) {
-    const students = byComponent.get(entry.componentId) ?? new Set<string>();
+    const students = byEvaluation.get(entry.evaluationId) ?? new Set<string>();
     students.add(entry.studentId);
-    byComponent.set(entry.componentId, students);
+    byEvaluation.set(entry.evaluationId, students);
   }
-  return [...byComponent.entries()].map(([componentId, students]) => ({ componentId, studentCount: students.size }));
+  return [...byEvaluation.entries()].map(([evaluationId, students]) => ({ evaluationId, studentCount: students.size }));
 }
 
-function componentNameFor(components: { id: string; name: string }[] | undefined, componentId: string): string {
-  return components?.find((c) => c.id === componentId)?.name ?? "A component";
+function evaluationNameFor(evaluations: { id: string; name: string }[] | undefined, evaluationId: string): string {
+  return evaluations?.find((e) => e.id === evaluationId)?.name ?? "An evaluation";
 }

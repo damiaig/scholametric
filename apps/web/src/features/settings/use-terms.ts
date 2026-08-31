@@ -42,10 +42,12 @@ export function useCloseTerm() {
     mutationFn: (id: string) => apiRequest<CloseTermResponse>(`/api/v1/terms/${id}/close`, { method: "POST" }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["terms", data.sessionId] });
-      // Broad, not keyed to one params tuple — any currently-open score-
-      // entry grid needs to re-fetch and pick up its new locked state,
-      // and this mutation doesn't know which grids (if any) are open.
-      queryClient.invalidateQueries({ queryKey: ["grades", "grid"] });
+      // Broad, not keyed to one params tuple — any currently-open
+      // evaluation picker or score-entry grid needs to re-fetch and pick
+      // up its new locked state, and this mutation doesn't know which
+      // ones (if any) are open.
+      queryClient.invalidateQueries({ queryKey: ["grades", "evaluations"] });
+      queryClient.invalidateQueries({ queryKey: ["grades", "evaluation-scores"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
@@ -57,7 +59,8 @@ export function useUnlockTerm() {
     mutationFn: ({ termId, input }: { termId: string; input: UnlockTermInput }) =>
       apiRequest<TermUnlock>(`/api/v1/terms/${termId}/unlock`, { method: "POST", body: input }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["grades", "grid"] });
+      queryClient.invalidateQueries({ queryKey: ["grades", "evaluations"] });
+      queryClient.invalidateQueries({ queryKey: ["grades", "evaluation-scores"] });
     },
   });
 }
@@ -68,7 +71,8 @@ export function useRelockTerm() {
     mutationFn: ({ termId, input }: { termId: string; input: RelockTermInput }) =>
       apiRequest<TermUnlock>(`/api/v1/terms/${termId}/relock`, { method: "POST", body: input }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["grades", "grid"] });
+      queryClient.invalidateQueries({ queryKey: ["grades", "evaluations"] });
+      queryClient.invalidateQueries({ queryKey: ["grades", "evaluation-scores"] });
     },
   });
 }

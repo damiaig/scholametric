@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { GradesGridResponse, SaveGradesGridResponse } from "@scholametric/shared";
+import type { EvaluationScoresResponse, SaveEvaluationScoresResponse } from "@scholametric/shared";
 import { apiRequest, ApiError, getErrorMessage } from "../../lib/api-client";
-import { gradesGridQueryKey, type GradesGridParams } from "./use-grades-grid";
+import { evaluationScoresQueryKey, type EvaluationScoresParams } from "./use-evaluation-scores";
 
 export type CellStatus = "idle" | "pending" | "saving" | "saved" | "error" | "locked";
 
@@ -137,8 +137,8 @@ export interface ScoreEntrySaveQueueTiming {
 // waiting out the production delays — the state machine under test is
 // identical either way, only the clock changes.
 export function useScoreEntrySaveQueue(
-  params: GradesGridParams,
-  grid: GradesGridResponse | undefined,
+  params: EvaluationScoresParams,
+  grid: EvaluationScoresResponse | undefined,
   timing: ScoreEntrySaveQueueTiming = {},
 ) {
   const DEBOUNCE_MS = timing.debounceMs ?? DEFAULT_DEBOUNCE_MS;
@@ -154,7 +154,7 @@ export function useScoreEntrySaveQueue(
   const hydratedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!grid) return;
-    const key = gradesGridQueryKey(params).join("|");
+    const key = evaluationScoresQueryKey(params).join("|");
     if (hydratedKeyRef.current === key) return; // don't clobber in-progress edits on an unrelated cache update
     hydratedKeyRef.current = key;
     dispatch({
@@ -177,7 +177,7 @@ export function useScoreEntrySaveQueue(
       })),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grid, params.classArmId, params.subjectId, params.componentId, params.termId]);
+  }, [grid, params.classArmId, params.subjectId, params.evaluationId, params.termId]);
 
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxWaitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -204,12 +204,12 @@ export function useScoreEntrySaveQueue(
       dispatch({ type: "FLUSH_START", studentIds });
 
       try {
-        const response = await apiRequest<SaveGradesGridResponse>("/api/v1/grades/grid", {
+        const response = await apiRequest<SaveEvaluationScoresResponse>("/api/v1/grades/evaluation-scores", {
           method: "PUT",
           body: {
             classArmId: paramsRef.current.classArmId,
             subjectId: paramsRef.current.subjectId,
-            componentId: paramsRef.current.componentId,
+            evaluationId: paramsRef.current.evaluationId,
             termId: paramsRef.current.termId,
             scores: studentIds.map((id) => {
               const value = sent.get(id)!;
@@ -221,7 +221,7 @@ export function useScoreEntrySaveQueue(
           response.rows.map((row) => [row.studentId, { value: row.rawScore, isAbsent: row.isAbsent }]),
         );
         dispatch({ type: "FLUSH_SUCCESS", sent, results });
-        queryClient.setQueryData<GradesGridResponse>(gradesGridQueryKey(paramsRef.current), (old) => {
+        queryClient.setQueryData<EvaluationScoresResponse>(evaluationScoresQueryKey(paramsRef.current), (old) => {
           if (!old) return old;
           return {
             ...old,
@@ -236,8 +236,8 @@ export function useScoreEntrySaveQueue(
           // Whole-slice lock (SPEC_V0.5.md §2.3) — every requested student
           // in this batch is affected, not just specific ones (unlike the
           // published-lock case below, term_unlocks isn't per-student). In
-          // practice this is a race: GET /grades/grid already renders
-          // locked-from-load, so reaching this means the term closed or
+          // practice this is a race: GET /grades/evaluation-scores already
+          // renders locked-from-load, so reaching this means the term closed or
           // was relocked while this save was already in flight.
           dispatch({
             type: "LOCK",

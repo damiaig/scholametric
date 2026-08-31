@@ -5,11 +5,12 @@ import { Label } from "../../components/ui/label";
 import { Spinner } from "../../components/ui/spinner";
 import { Button } from "../../components/ui/button";
 import { getErrorMessage } from "../../lib/api-client";
+import { isProprietor } from "../../lib/roles";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useMyTeaching } from "../dashboard/use-my-teaching";
 import { useClassArmDetail } from "../classes/use-class-arm-detail";
-import { useAssessmentComponents } from "../settings/use-assessment-components";
 import { useAdminCurrentTerm } from "./use-admin-current-term";
+import { EvaluationPicker } from "./EvaluationPicker";
 import { ScoreEntryGrid } from "./ScoreEntryGrid";
 
 const SELECT_CLASS = "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
@@ -21,9 +22,10 @@ function formatTermName(name: string): string {
 // SPEC_V0.5.1.md §2.3, v0.5.1 step 3: class + subject are locked to
 // whichever "Enter grades" link the caller arrived through
 // (ClassArmDetailPage for admin/proprietor, MyClassesView for teacher) —
-// rendered as a read-only context label, never pickers. Only component and
-// term roam within that locked class+subject (they vary per grading job;
-// class+subject roaming was the actual disorganization this finding fixes).
+// rendered as a read-only context label, never pickers. Only term and
+// evaluation roam within that locked class+subject (they vary per grading
+// job; class+subject roaming was the actual disorganization this finding
+// fixes).
 // The lock is UX, not the security boundary — GradesService's
 // assertTeacherAssignment (v0.5.1 step 1) still rejects an unassigned/
 // unauthorized class+subject regardless of how this page got there; a
@@ -38,7 +40,7 @@ export function ScoreEntryGridPage() {
 
   const classArmId = searchParams.get("classArmId") ?? "";
   const subjectId = searchParams.get("subjectId") ?? "";
-  const [componentId, setComponentId] = useState("");
+  const [evaluationId, setEvaluationId] = useState("");
   const [termId, setTermId] = useState("");
 
   const hasLockedParams = Boolean(classArmId && subjectId);
@@ -60,11 +62,16 @@ export function ScoreEntryGridPage() {
 
   const armDetail = useClassArmDetail(hasLockedParams ? classArmId : undefined, 1, 1);
   const myTeaching = useMyTeaching();
-  const components = useAssessmentComponents();
   const adminTerm = useAdminCurrentTerm(isConfirmedAdmin);
 
   const effectiveTermId = isTeacher ? (myTeaching.data?.currentTermId ?? "") : termId || adminTerm.currentTermId || "";
-  const ready = Boolean(componentId && effectiveTermId && armDetail.data);
+  const ready = Boolean(evaluationId && effectiveTermId && armDetail.data);
+
+  // Evaluations are scoped per term (SPEC_V0.7.md §3) — a selection from a
+  // previous term is meaningless once the term changes underneath it.
+  useEffect(() => {
+    setEvaluationId("");
+  }, [effectiveTermId]);
 
   if (!hasLockedParams) {
     return (
@@ -79,7 +86,7 @@ export function ScoreEntryGridPage() {
 
   return (
     <div>
-      <PageHeader title="Enter grades" description="Pick a component and term to load the entry grid." />
+      <PageHeader title="Enter grades" description="Pick a term and evaluation to load the entry grid." />
 
       {armDetail.isLoading ? (
         <div className="flex items-center gap-2 p-10 text-sm text-muted">
@@ -104,26 +111,6 @@ export function ScoreEntryGridPage() {
               <p className="flex h-10 w-full items-center rounded-md border border-muted/30 bg-muted/5 px-3 text-sm font-medium text-text sm:w-56">
                 {armLabel} · {subjectLabel}
               </p>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="grid-component">Component</Label>
-              <select
-                id="grid-component"
-                className={SELECT_CLASS}
-                value={componentId}
-                onChange={(event) => setComponentId(event.target.value)}
-                disabled={components.isLoading}
-              >
-                <option value="" disabled>
-                  Select…
-                </option>
-                {(components.data ?? []).map((component) => (
-                  <option key={component.id} value={component.id}>
-                    {component.name}
-                  </option>
-                ))}
-              </select>
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -152,16 +139,30 @@ export function ScoreEntryGridPage() {
                 </select>
               )}
             </div>
+
+            {effectiveTermId && (
+              <EvaluationPicker
+                id="grid-evaluation"
+                classArmId={classArmId}
+                subjectId={subjectId}
+                termId={effectiveTermId}
+                value={evaluationId}
+                onChange={setEvaluationId}
+                allowManage
+                canManageTermLock={isConfirmedAdmin}
+                canDelete={isProprietor(currentUser?.role)}
+              />
+            )}
           </div>
 
           {ready ? (
             <ScoreEntryGrid
-              params={{ classArmId, subjectId, componentId, termId: effectiveTermId }}
+              params={{ classArmId, subjectId, evaluationId, termId: effectiveTermId }}
               canManageTermLock={isConfirmedAdmin}
             />
           ) : (
             <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
-              Choose a component and term to load the grid.
+              Choose a term and evaluation to load the grid.
             </p>
           )}
         </>

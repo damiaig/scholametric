@@ -1,11 +1,14 @@
+import { z } from "zod";
+
 // Mirrors apps/api/src/grades/grades.service.ts's response interfaces
-// (v0.4 steps 2-3) — deliberate mirror, not shared runtime code, same
-// convention as grading-config.ts: the backend is the source of truth,
-// this file must be kept in sync by hand if those shapes change.
+// (v0.4 steps 2-3, evaluation shapes added v0.7 step 1/2) — deliberate
+// mirror, not shared runtime code, same convention as grading-config.ts:
+// the backend is the source of truth, this file must be kept in sync by
+// hand if those shapes change.
 
 export type ResultStatus = "DRAFT" | "PENDING_APPROVAL" | "PUBLISHED";
 
-export interface GradesGridRow {
+export interface EvaluationScoresRow {
   studentId: string;
   firstName: string;
   lastName: string;
@@ -14,31 +17,29 @@ export interface GradesGridRow {
   // SPEC_V0.5.md §2.1 — mutually exclusive with rawScore (never both set).
   // null+false = blank/not-entered; null+true = "Abs".
   isAbsent: boolean;
-  // Subject-level status (not component-level) — a PUBLISHED row is
-  // read-only regardless of which component this grid is viewing. Can be
+  // Subject-level status (not evaluation-level) — a PUBLISHED row is
+  // read-only regardless of which evaluation this grid is viewing. Can be
   // genuinely mixed within one grid (staggered scoring/publishing).
   status: ResultStatus;
 }
 
-export interface GradesGridResponse {
+export interface EvaluationScoresResponse {
   classArmId: string;
   subjectId: string;
-  componentId: string;
+  evaluationId: string;
   termId: string;
-  maxScore: number;
-  requiresApproval: boolean;
-  // SPEC_V0.5.md §2.3, v0.5 step 5 — lets the grid render locked/read-only
-  // FROM LOAD, not reactively on a saveGrid 409. termClosed=false always
-  // implies locked=false. unlockReason is populated only when
-  // termClosed && !locked (an active unlock exists for this exact
-  // class-arm+subject).
+  // SPEC_V0.5.md §2.3, v0.5 step 5, carried into v0.7 — lets the grid
+  // render locked/read-only FROM LOAD, not reactively on a save 409.
+  // termClosed=false always implies locked=false. unlockReason is
+  // populated only when termClosed && !locked (an active unlock exists
+  // for this exact class-arm+subject).
   termClosed: boolean;
   locked: boolean;
   unlockReason: string | null;
-  rows: GradesGridRow[];
+  rows: EvaluationScoresRow[];
 }
 
-export interface SavedGridRow {
+export interface SavedEvaluationScoreRow {
   studentId: string;
   rawScore: number | null;
   isAbsent: boolean;
@@ -48,28 +49,71 @@ export interface SavedGridRow {
   status: ResultStatus;
 }
 
-export interface SaveGradesGridResponse {
+export interface SaveEvaluationScoresResponse {
   classArmId: string;
   subjectId: string;
-  componentId: string;
+  evaluationId: string;
   termId: string;
   savedCount: number;
-  rows: SavedGridRow[];
+  rows: SavedEvaluationScoreRow[];
 }
 
-export interface GridScoreItem {
+export interface EvaluationScoreItem {
   studentId: string;
   rawScore: number | null;
   isAbsent?: boolean;
 }
 
+// v0.7 step 2 (SPEC_V0.7.md §3) — the authoring surface. An evaluation
+// carries no status/publish field of its own: "is this subject published"
+// is derived fresh from term_subject_results at the moment of each
+// authoring action, never cached here.
+export interface Evaluation {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface EvaluationsListResponse {
+  classArmId: string;
+  subjectId: string;
+  termId: string;
+  // Same lock-state contract as EvaluationScoresResponse above — lets the
+  // picker render a blocked "+ New evaluation" state (disabled button +
+  // reason banner) FROM LOAD, before the teacher ever opens the form.
+  termClosed: boolean;
+  locked: boolean;
+  unlockReason: string | null;
+  evaluations: Evaluation[];
+}
+
+// Shared by the create/edit form dialog — both fields are required to
+// CREATE (mirrors CreateEvaluationDto's length caps exactly), but a PATCH
+// only needs to send whatever changed, hence UpdateEvaluationInput below
+// makes both optional instead of duplicating the shape.
+export const evaluationFormSchema = z.object({
+  name: z.string().min(1, "Name is required").max(200, "Name must be at most 200 characters"),
+  description: z.string().min(1, "Description is required").max(2000, "Description must be at most 2000 characters"),
+});
+export type EvaluationFormInput = z.infer<typeof evaluationFormSchema>;
+
+export interface CreateEvaluationInput extends EvaluationFormInput {
+  classArmId: string;
+  subjectId: string;
+  termId: string;
+}
+
+export type UpdateEvaluationInput = Partial<EvaluationFormInput>;
+
 // The publish() 409's own structured field (SPEC_V0.5.md §2.2, v0.5 step
 // 2) — parallel to ApiErrorBody.lockedStudentIds but a different meaning:
 // locked = already published, blocking further writes; incomplete = not
-// yet publishable (a candidate has a blank component).
+// yet publishable (a candidate has a blank evaluation).
 export interface IncompleteEntry {
   studentId: string;
-  componentId: string;
+  evaluationId: string;
 }
 
 // Mirrors GradesService.publish()/unpublish()/override() (v0.4 step 3 —
@@ -225,11 +269,10 @@ export interface StudentResultsResponse {
   overall: StudentResultOverall | null;
 }
 
-// Mirrors GradesService.saveGrid's bound check: the DTO's own lower bound
-// (>= 0) plus the SPECIFIC component's max_score — there is deliberately
-// no generic upper cap (see GridScoreItemDto's own comment). Client-side
-// use only: catches the common case before a network round trip: the
-// server remains the actual authority.
+// Mirrors GradesService.saveEvaluationScores's bound check: native /100,
+// no per-evaluation maxScore (v0.7 step 1) — every caller passes 100.
+// Client-side use only: catches the common case before a network round
+// trip, the server remains the actual authority.
 export function validateGridScore(rawScore: number, maxScore: number): { isValid: boolean; error?: string } {
   if (!Number.isFinite(rawScore)) {
     return { isValid: false, error: "Enter a number." };

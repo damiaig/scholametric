@@ -1,6 +1,7 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Put, Query } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Put, Query } from "@nestjs/common";
 import { UserRole } from "@prisma/client";
 import { Roles } from "../common/decorators/roles.decorator";
+import { Audit } from "../common/decorators/audit.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { GradesService } from "./grades.service";
@@ -11,6 +12,9 @@ import { PublishGradesDto } from "./dto/publish-grades.dto";
 import { UnpublishGradesDto } from "./dto/unpublish-grades.dto";
 import { OverrideGradeDto } from "./dto/override-grade.dto";
 import { GetGradesReviewQueryDto } from "./dto/get-grades-review-query.dto";
+import { GetEvaluationsQueryDto } from "./dto/get-evaluations-query.dto";
+import { CreateEvaluationDto } from "./dto/create-evaluation.dto";
+import { UpdateEvaluationDto } from "./dto/update-evaluation.dto";
 
 // TEACHER: only their own assigned subject+arm, and only for score entry
 // (enforced inside GradesService, not here — fine-grained authorization
@@ -35,6 +39,38 @@ export class GradesController {
   @Put("evaluation-scores")
   saveEvaluationScores(@Body() dto: SaveEvaluationScoresDto, @CurrentUser() user: AuthenticatedUser) {
     return this.gradesService.saveEvaluationScores(dto, user);
+  }
+
+  // v0.7 step 2 (SPEC_V0.7.md §3): the authoring surface. TEACHER/
+  // SCHOOL_ADMIN/PROPRIETOR all inherit the controller-level @Roles()
+  // above — same role list as scoring, confirmed. Fine-grained
+  // authorization (assignment check, draft-vs-published edit gating) lives
+  // in GradesService, same discipline as every other route here.
+  @Get("evaluations")
+  listEvaluations(@Query() query: GetEvaluationsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.listEvaluations(query, user);
+  }
+
+  @Audit("evaluation", "create")
+  @Post("evaluations")
+  createEvaluation(@Body() dto: CreateEvaluationDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.createEvaluation(dto, user);
+  }
+
+  @Audit("evaluation", "update")
+  @Patch("evaluations/:id")
+  updateEvaluation(@Param("id", ParseUUIDPipe) id: string, @Body() dto: UpdateEvaluationDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.updateEvaluation(id, dto, user);
+  }
+
+  // Owner-only, categorical (mirrors unpublish() above) — confirmed no
+  // force-delete-through-published path; GradesService 409s outright
+  // while this subject's results are published.
+  @Audit("evaluation", "remove")
+  @Roles(UserRole.PROPRIETOR)
+  @Delete("evaluations/:id")
+  deleteEvaluation(@Param("id", ParseUUIDPipe) id: string) {
+    return this.gradesService.deleteEvaluation(id);
   }
 
   // Admin-only manual re-trigger (SPEC_V0.4.md §2) — overrides the class-

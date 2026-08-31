@@ -1136,7 +1136,7 @@ out-of-scope line).
 
 ---
 
-## Evaluations — score entry (v0.7 step 1, SPEC_V0.7.md §2/§5)
+## Evaluations — authoring & score entry (v0.7 steps 1-2, SPEC_V0.7.md §2/§3/§5)
 
 v0.7 replaces v0.4's fixed CA1/CA2/Exam weighted-component model with
 teacher-created **evaluations** — arbitrarily many per (class arm,
@@ -1152,9 +1152,8 @@ DECISIONS.md). `term_overall_results.status` can still read
 `DRAFT`/`PUBLISHED` subject rows, unrelated to the retired per-subject
 tier.
 
-Step 1 ships the engine + score-entry endpoint only: creating/editing/
-deleting an `Evaluation` itself has no HTTP endpoint yet (Step 2) —
-evaluations exist for now as rows a future authoring UI will manage.
+Step 1 shipped the engine + score-entry endpoint; step 2 (below) adds
+creating/editing/deleting an `Evaluation` itself, plus the authoring UI.
 
 `TEACHER`: only their own `subject_teacher_assignments` (checked at the
 session level — assignments carry no `term_id`; `termId` in these requests
@@ -1272,6 +1271,93 @@ Audited manually (`grades.saveEvaluationScores`, `entityId` = `classArmId`),
 one row per bulk save, metadata includes `publishedBypassStudentIds` (empty
 for an ordinary save, populated only for the admin/proprietor published-lock
 bypass above, so that sensitive path stays traceable).
+
+### `GET /grades/evaluations` / `POST /grades/evaluations` (v0.7 step 2, SPEC_V0.7.md §3)
+
+The authoring surface — teacher-created evaluations. `TEACHER` (must hold
+the `subject_teacher_assignment`)/`SCHOOL_ADMIN`/`PROPRIETOR` — same role
+list as scoring (confirmed: an admin stepping in for a teacher may author
+too). An `Evaluation` carries no status/publish field of its own; "is this
+subject published" is read fresh off `term_subject_results` at the moment
+of each authoring action, never cached, so it can't drift from the real
+gate the scoring/publish endpoints already enforce.
+
+**`GET`** — query: `classArmId`, `subjectId`, `termId`. Returns every
+active (non-deleted) evaluation for that exact slice, oldest first, plus
+the SAME lock-state fields `GET /grades/evaluation-scores` carries
+(`termClosed`, `locked`, `unlockReason`) — so a "+ New evaluation"
+affordance can show a blocked state up front, before the teacher opens the
+form, not as a bare `409` after submitting.
+
+```json
+{
+  "classArmId": "...", "subjectId": "...", "termId": "...",
+  "termClosed": false, "locked": false, "unlockReason": null,
+  "evaluations": [
+    { "id": "...", "name": "CA 1", "description": "Fractions quiz", "createdAt": "...", "createdBy": "..." }
+  ]
+}
+```
+
+**`POST`** — body: `{ classArmId, subjectId, termId, name, description }`.
+`name` (1-200 chars) and `description` (1-2000 chars) are both required
+(SPEC_V0.7.md §3 — no optional description). classArmId/subjectId/termId
+are fixed at creation — there is no "move this evaluation to another
+term" operation.
+
+- **`409` `{ termLocked: true }`**: the term is closed for this class+
+  subject with no active unlock — same shared term lock the scoring
+  endpoints use (closing a term blocks editing either track).
+- **`409`**: this subject's results are already `PUBLISHED` for this term
+  — the evaluation set is frozen once published (confirmed in step 1);
+  unpublish first, then create.
+- **`403`**: `TEACHER` not assigned to this subject/class.
+- **`404`**: any id doesn't resolve within the caller's tenant, or no
+  `subject_teacher_assignment` exists at all for this (subject, class arm,
+  session) — same "hidden, not forbidden" rule as scoring.
+
+**Response `200`/`201`**: the created/listed evaluation(s) — `{ id, name, description, createdAt, createdBy }`.
+
+Audited (`evaluation.create`, standard `@Audit()`/`AuditInterceptor`).
+
+### `PATCH /grades/evaluations/:id` (v0.7 step 2)
+
+Body: `{ name?, description? }` — at least one required (`400` if both
+omitted). Name/description only; re-scoping isn't in scope.
+
+- Freely editable by `TEACHER` (assigned)/`SCHOOL_ADMIN`/`PROPRIETOR`
+  while this subject's results are `DRAFT`.
+- **`403`** once this subject has ANY `PUBLISHED` result: only
+  `PROPRIETOR` may edit from that point — the same data-dependent
+  role-narrowing shape `PUT /grades/override` already uses.
+- Same term-lock `409` as create.
+- No recompute — name/description never feed the average.
+
+Audited (`evaluation.update`).
+
+### `DELETE /grades/evaluations/:id` (v0.7 step 2)
+
+`PROPRIETOR` only, categorical — enforced at the route (mirrors
+`POST /grades/unpublish` exactly, not data-dependent).
+
+- **`409`**: this subject's results are already `PUBLISHED` for this term.
+  Blocks outright — confirmed no force-delete-through-published path.
+  Unpublish first, then delete.
+- Same term-lock `409` as create/edit.
+- Otherwise: soft-deletes (`deleted_at`) and recomputes every affected
+  student's `term_subject_result` for this class arm/subject/term — the
+  deleted evaluation is automatically excluded from every future average/
+  completeness check (every recompute already filters `deleted_at: null`,
+  zero new branching). No cross-subject overall cascade runs here: because
+  delete is blocked while anything's published, every affected row is
+  guaranteed `DRAFT` at delete-time, so no student's overall could already
+  be counting on this subject, and no first-ever-row case can arise
+  (docs/DECISIONS.md — a future change allowing force-delete through a
+  published state must add that cascade back).
+
+**Response `200`**: `{ id }`. **Response `404`**: doesn't resolve within the caller's tenant.
+
+Audited (`evaluation.remove`).
 
 ### `POST /grades/recompute`
 

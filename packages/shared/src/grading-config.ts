@@ -1,91 +1,28 @@
 import { z } from "zod";
 
-// Mirrors apps/api/src/assessment-components + grade-boundaries (v0.3
-// step 2) — both endpoints already exist and are unchanged by this file.
-// This is a deliberate MIRROR of the backend's validation rules, not a
-// single shared source: the backend validates with class-validator DTOs +
-// plain service methods (BadRequestException), the frontend needs live,
-// per-keystroke feedback with per-row highlighting, which needs a
-// different shape of result entirely. Porting the same RULES here (sum
-// must be exactly 100, tiling 0-100 with no gaps/overlaps, etc.) instead
-// of re-deriving them ad hoc keeps the two implementations honest without
-// forcing an artificial single-codebase abstraction across a REST
-// boundary between two different validation paradigms (CLAUDE.md §6).
-// If the backend's rules ever change, this file must be updated to match
-// — there is no compiler/test link between the two, only this comment.
+// Mirrors apps/api/src/grade-boundaries (v0.3 step 2) — the endpoint
+// already exists and is unchanged by this file. This is a deliberate
+// MIRROR of the backend's validation rules, not a single shared source:
+// the backend validates with class-validator DTOs + plain service methods
+// (BadRequestException), the frontend needs live, per-keystroke feedback
+// with per-row highlighting, which needs a different shape of result
+// entirely. Porting the same RULES here (tiling 0-100 with no
+// gaps/overlaps, etc.) instead of re-deriving them ad hoc keeps the two
+// implementations honest without forcing an artificial single-codebase
+// abstraction across a REST boundary between two different validation
+// paradigms (CLAUDE.md §6). If the backend's rules ever change, this file
+// must be updated to match — there is no compiler/test link between the
+// two, only this comment.
+//
+// v0.7 step 2: the assessment-components mirror that used to live here
+// (AssessmentComponent, assessmentComponentItemSchema,
+// validateAssessmentComponentsSet, ASSESSMENT_COMPONENTS_MIN/MAX) is
+// deleted — assessment_components was dropped in the v0.7 cutover
+// (docs/DECISIONS.md) and its only frontend consumer, the Assessment
+// Structure settings panel, is removed in this same step.
 
-export const ASSESSMENT_COMPONENTS_MIN = 1;
-export const ASSESSMENT_COMPONENTS_MAX = 8;
 export const GRADE_BOUNDARIES_MIN = 2;
 export const GRADE_BOUNDARIES_MAX = 12;
-
-export interface AssessmentComponent {
-  id: string;
-  schoolId: string;
-  name: string;
-  weight: number;
-  sortOrder: number;
-  // v0.5 acceptance-walk fix: this was missing from the mirror entirely,
-  // which is how AssessmentStructurePanel shipped never round-tripping it
-  // in the first place (see assessmentComponentItemSchema below).
-  requiresApproval: boolean;
-  deletedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-// requiresApproval is REQUIRED here (unlike the backend DTO's @IsOptional,
-// which exists for other API consumers) — the form always has a definite
-// boolean per row via the checkbox below, and making it required is what
-// stops a future edit from silently omitting it again the way this
-// shipped originally (v0.5 acceptance-walk finding #1, docs/DECISIONS.md).
-export const assessmentComponentItemSchema = z.object({
-  name: z.string().min(1, "Name is required"),
-  weight: z.coerce.number().int("Weight must be a whole number").min(1, "Weight must be at least 1"),
-  sortOrder: z.coerce.number().int().min(0),
-  requiresApproval: z.boolean(),
-});
-export type AssessmentComponentItemInput = z.infer<typeof assessmentComponentItemSchema>;
-
-export interface AssessmentComponentsValidation {
-  isValid: boolean;
-  totalWeight: number;
-  error?: string;
-}
-
-// Mirrors AssessmentComponentsService.validate() (apps/api/src/
-// assessment-components/assessment-components.service.ts).
-export function validateAssessmentComponentsSet(
-  items: AssessmentComponentItemInput[],
-): AssessmentComponentsValidation {
-  const totalWeight = items.reduce((sum, item) => sum + (Number.isFinite(item.weight) ? item.weight : 0), 0);
-
-  if (items.length < ASSESSMENT_COMPONENTS_MIN) {
-    return { isValid: false, totalWeight, error: `At least ${ASSESSMENT_COMPONENTS_MIN} component is required.` };
-  }
-  if (items.length > ASSESSMENT_COMPONENTS_MAX) {
-    return { isValid: false, totalWeight, error: `At most ${ASSESSMENT_COMPONENTS_MAX} components are allowed.` };
-  }
-  if (totalWeight !== 100) {
-    return { isValid: false, totalWeight, error: `Weights must sum to exactly 100 (currently ${totalWeight}).` };
-  }
-  const names = items.map((item) => item.name.trim().toLowerCase());
-  if (new Set(names).size !== names.length) {
-    return { isValid: false, totalWeight, error: "Component names must be unique." };
-  }
-  // Mirrors AssessmentComponentsService.validate()'s gap-1/Q7 rule exactly
-  // (same message) — catching this client-side before the round trip is
-  // the whole point of the fix: a save that would 400 anyway is blocked
-  // with a clear reason instead of every edit failing opaquely.
-  if (!items.some((item) => item.requiresApproval === true)) {
-    return {
-      isValid: false,
-      totalWeight,
-      error: "At least one component must require approval, or results can never be published.",
-    };
-  }
-  return { isValid: true, totalWeight };
-}
 
 export interface GradeBoundary {
   id: string;

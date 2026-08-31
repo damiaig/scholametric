@@ -4316,3 +4316,64 @@ workspaces. `pnpm test` (isolated `scholametric_test` DB, never dev) —
 `exam-rankings`). Dev DB re-verified byte-for-byte unaffected after the
 run (`SUN/2026/0001` row and `evaluations`/`term_subject_results` row
 counts identical before/after).
+
+## 2026-08-31 — CI: two long-standing environment-only failures, now fixed
+
+CI had been red on essentially every recent push (v0.6 step 6, the
+acceptance-walk fixes, v0.7 step 1) despite `pnpm run ci` passing locally
+every time. Diagnosed from the actual GitHub Actions job logs (not
+guessed) — two distinct, unrelated root causes, both environment-only:
+
+1. **`apps/api/test/test-db.ts` hardcoded `localhost:5433`** for both the
+   isolated test DB and its maintenance connection — the local
+   docker-compose host-port mapping. CI's Postgres service publishes the
+   standard `5432`; nothing ever listened on `5433` in CI, so Jest's
+   `globalSetup` failed to even connect, before a single test ran. 100%
+   reproducible in CI, not a flake — introduced the moment
+   `scholametric_test` isolation shipped (v0.6 acceptance-walk fixes).
+   Fixed by deriving both URLs from the ambient `DATABASE_URL` (swapping
+   only the database name via `URL.pathname`), falling back to the local
+   default only if unset — same code path targets 5433 locally and 5432
+   in CI, no branching.
+2. **`apps/api`'s Jest e2e suite and `apps/web`'s Vitest suite ran
+   concurrently** in CI (`pnpm run ci`'s `pnpm test` is a plain
+   `pnpm -r ... run test`, which parallelizes by default), intermittently
+   exhausting the runner's fixed RAM — `apps/web test: FATAL ERROR:
+   Reached heap limit` / `Worker exited unexpectedly`. This was the
+   OLDER, genuinely-intermittent failure bucket (reproduced identically
+   on at least 3 earlier unrelated runs, passing on the runs between
+   them) — a separate bug from (1), not the same streak. Fixed by adding
+   `--workspace-concurrency=1` to CI's test step specifically; local
+   `pnpm run ci` stays concurrent (fast local dev unaffected — the OOM
+   only ever showed up under the runner's tighter memory ceiling).
+
+**Proof**: pushed both fixes in one commit; the resulting run (#43) went
+green — first CI success since run #39 (v0.6 step 5).
+
+## 2026-08-31 — v0.7 step 2: DELETE /grades/evaluations/:id blocks outright while published, by design
+
+**Decision (confirmed):** deleting an evaluation whose subject already has
+any `PUBLISHED` `term_subject_result` for that term is a flat `409` —
+`PROPRIETOR` must unpublish first, then delete. No force-delete-through-
+published path was built, even though `DELETE` is otherwise
+`PROPRIETOR`-only (owner authority already implies they *could* be
+trusted with a stronger action).
+
+**Why this matters beyond the obvious ("don't silently change a number a
+parent already saw"):** `GradesService.deleteEvaluation()`'s recompute
+step is a **plain `recomputeStudents()` call with no cross-subject overall
+cascade** — unlike `saveEvaluationScores`/`recompute()`, which both carry
+gap-2/gap-2-twin handling (a first-ever-row-for-a-published-overall-
+student case). That simpler recompute is only correct **because** delete
+is blocked while published: every `term_subject_result` this delete can
+possibly touch is guaranteed `DRAFT` at delete-time, so no student's
+`term_overall_result` could already be `PUBLISHED` on the strength of
+this subject, and no first-ever-row case can arise either — the exact
+precondition gap-2's fix depends on never holding.
+
+**If a future step allows force-deleting a `PUBLISHED` evaluation, the
+gap-2/gap-2-twin cascade (the same class-arm-lock + `recomputeOverallForClassArm`
+call `publish()`/`unpublish()`/`saveEvaluationScores` already use) must be
+added back at that point.** Shipping the force-delete path without it
+would silently strand published overalls/positions, the exact bug gap-2
+was originally fixed for.

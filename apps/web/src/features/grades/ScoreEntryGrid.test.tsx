@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { screen, waitFor, cleanup, act, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { GradesGridResponse, SaveGradesGridResponse } from "@scholametric/shared";
+import type { EvaluationScoresResponse, SaveEvaluationScoresResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest, ApiError } from "../../lib/api-client";
@@ -14,15 +14,13 @@ vi.mock("../../lib/api-client", async (importOriginal) => {
 
 const mockedApiRequest = vi.mocked(apiRequest);
 
-const PARAMS = { classArmId: "arm1", subjectId: "sub1", componentId: "comp1", termId: "term1" };
+const PARAMS = { classArmId: "arm1", subjectId: "sub1", evaluationId: "comp1", termId: "term1" };
 
-const GRID: GradesGridResponse = {
+const GRID: EvaluationScoresResponse = {
   classArmId: "arm1",
   subjectId: "sub1",
-  componentId: "comp1",
+  evaluationId: "comp1",
   termId: "term1",
-  maxScore: 20,
-  requiresApproval: false,
   termClosed: false,
   locked: false,
   unlockReason: null,
@@ -33,11 +31,11 @@ const GRID: GradesGridResponse = {
   ],
 };
 
-function savedResponse(scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[]): SaveGradesGridResponse {
+function savedResponse(scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[]): SaveEvaluationScoresResponse {
   return {
     classArmId: "arm1",
     subjectId: "sub1",
-    componentId: "comp1",
+    evaluationId: "comp1",
     termId: "term1",
     savedCount: scores.length,
     rows: scores.map((s) => ({
@@ -53,7 +51,7 @@ function savedResponse(scores: { studentId: string; rawScore: number | null; isA
 }
 
 function putCalls() {
-  return mockedApiRequest.mock.calls.filter(([path, options]) => path === "/api/v1/grades/grid" && (options as { method?: string })?.method === "PUT");
+  return mockedApiRequest.mock.calls.filter(([path, options]) => path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method === "PUT");
 }
 
 beforeEach(() => {
@@ -69,7 +67,7 @@ afterEach(() => {
 describe("ScoreEntryGrid", () => {
   it("renders the roster and marks the already-published row locked from load, not reactively", async () => {
     mockedApiRequest.mockImplementation(async (path, options) => {
-      if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return GRID;
       throw new Error("unexpected call");
     });
     renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
@@ -81,8 +79,8 @@ describe("ScoreEntryGrid", () => {
   it("batches edits to two different cells made within the debounce window into one PUT call", async () => {
     mockedApiRequest.mockImplementation(async (path, options) => {
       const method = (options as { method?: string })?.method;
-      if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-      if (path === "/api/v1/grades/grid" && method === "PUT") {
+      if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
         const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null }[] } };
         return savedResponse(body.body.scores);
       }
@@ -109,8 +107,8 @@ describe("ScoreEntryGrid", () => {
   it("flushes within the max-wait ceiling even without a pause (continuous typing never triggers the debounce)", async () => {
     mockedApiRequest.mockImplementation(async (path, options) => {
       const method = (options as { method?: string })?.method;
-      if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-      if (path === "/api/v1/grades/grid" && method === "PUT") {
+      if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
         const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null }[] } };
         return savedResponse(body.body.scores);
       }
@@ -125,12 +123,12 @@ describe("ScoreEntryGrid", () => {
   });
 
   it("shows saving then saved status glyphs across a flush", async () => {
-    let resolvePut!: (value: SaveGradesGridResponse) => void;
+    let resolvePut!: (value: SaveEvaluationScoresResponse) => void;
     mockedApiRequest.mockImplementation(async (path, options) => {
       const method = (options as { method?: string })?.method;
-      if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-      if (path === "/api/v1/grades/grid" && method === "PUT") {
-        return new Promise<SaveGradesGridResponse>((resolve) => {
+      if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
+        return new Promise<SaveEvaluationScoresResponse>((resolve) => {
           resolvePut = resolve;
         });
       }
@@ -147,16 +145,16 @@ describe("ScoreEntryGrid", () => {
   });
 
   it("clobber guard: a slow response for an old value never overwrites a newer edit made while it was in flight", async () => {
-    let resolveSlow!: (value: SaveGradesGridResponse) => void;
+    let resolveSlow!: (value: SaveEvaluationScoresResponse) => void;
     const seenBatches: { studentId: string; rawScore: number | null }[][] = [];
     mockedApiRequest.mockImplementation(async (path, options) => {
       const method = (options as { method?: string })?.method;
-      if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-      if (path === "/api/v1/grades/grid" && method === "PUT") {
+      if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
         const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null }[] } };
         seenBatches.push(body.body.scores);
         if (seenBatches.length === 1) {
-          return new Promise<SaveGradesGridResponse>((resolve) => {
+          return new Promise<SaveEvaluationScoresResponse>((resolve) => {
             resolveSlow = resolve;
           });
         }
@@ -187,18 +185,18 @@ describe("ScoreEntryGrid", () => {
   it("a flush completing re-arms for an edit stranded during its flight (both the edit's debounce and max-wait timers elapsed mid-flight)", async () => {
     vi.useFakeTimers();
     try {
-      let resolveFirst!: (value: SaveGradesGridResponse) => void;
+      let resolveFirst!: (value: SaveEvaluationScoresResponse) => void;
       const seenBatches: { studentId: string; rawScore: number | null }[][] = [];
       mockedApiRequest.mockImplementation(async (path, options) => {
         const method = (options as { method?: string })?.method;
-        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-        if (path === "/api/v1/grades/grid" && method === "PUT") {
+        if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
           const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null }[] } };
           seenBatches.push(body.body.scores);
           if (seenBatches.length === 1) {
             // s1's flush hangs here — deliberately slow, standing in for a
             // >MAX_WAIT_MS save on a bad connection.
-            return new Promise<SaveGradesGridResponse>((resolve) => {
+            return new Promise<SaveEvaluationScoresResponse>((resolve) => {
               resolveFirst = resolve;
             });
           }
@@ -256,8 +254,8 @@ describe("ScoreEntryGrid", () => {
     let firstBatchAttempted = false;
     mockedApiRequest.mockImplementation(async (path, options) => {
       const method = (options as { method?: string })?.method;
-      if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-      if (path === "/api/v1/grades/grid" && method === "PUT") {
+      if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
         const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null }[] } };
         const scores = body.body.scores;
         if (scores.length > 1 && !firstBatchAttempted) {
@@ -287,8 +285,8 @@ describe("ScoreEntryGrid", () => {
   it("409 with lockedStudentIds: locks exactly those cells and retries the rest of the batch", async () => {
     mockedApiRequest.mockImplementation(async (path, options) => {
       const method = (options as { method?: string })?.method;
-      if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-      if (path === "/api/v1/grades/grid" && method === "PUT") {
+      if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
         const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null }[] } };
         const scores = body.body.scores;
         if (scores.some((s) => s.studentId === "s1")) {
@@ -321,7 +319,7 @@ describe("ScoreEntryGrid", () => {
 
   it("keyboard: Enter and ArrowDown move focus to the next row's input", async () => {
     mockedApiRequest.mockImplementation(async (path, options) => {
-      if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return GRID;
       return savedResponse([]);
     });
     const user = userEvent.setup();
@@ -343,7 +341,7 @@ describe("ScoreEntryGrid", () => {
 
   it("Tab moves focus in natural DOM order across rows (native browser behavior, no custom handling)", async () => {
     mockedApiRequest.mockImplementation(async (path, options) => {
-      if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return GRID;
       return savedResponse([]);
     });
     const user = userEvent.setup();
@@ -359,8 +357,8 @@ describe("ScoreEntryGrid", () => {
     it("pressing A in a focused cell marks it absent — distinct from blank and from 0, and saves isAbsent", async () => {
       mockedApiRequest.mockImplementation(async (path, options) => {
         const method = (options as { method?: string })?.method;
-        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-        if (path === "/api/v1/grades/grid" && method === "PUT") {
+        if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
           const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[] } };
           return savedResponse(body.body.scores);
         }
@@ -394,8 +392,8 @@ describe("ScoreEntryGrid", () => {
     it("clicking the Abs chip toggles absent the same way as the keyboard shortcut, and pressing A again clears it back to blank (not 0)", async () => {
       mockedApiRequest.mockImplementation(async (path, options) => {
         const method = (options as { method?: string })?.method;
-        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-        if (path === "/api/v1/grades/grid" && method === "PUT") {
+        if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
           const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[] } };
           return savedResponse(body.body.scores);
         }
@@ -425,8 +423,8 @@ describe("ScoreEntryGrid", () => {
     it("typing a real score after a prior absent mark clears absent (mutual exclusion)", async () => {
       mockedApiRequest.mockImplementation(async (path, options) => {
         const method = (options as { method?: string })?.method;
-        if (path === "/api/v1/grades/grid" && method !== "PUT") return GRID;
-        if (path === "/api/v1/grades/grid" && method === "PUT") {
+        if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/evaluation-scores" && method === "PUT") {
           const body = options as unknown as { body: { scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[] } };
           return savedResponse(body.body.scores);
         }
@@ -459,7 +457,7 @@ describe("ScoreEntryGrid", () => {
 
     it("a locked (PUBLISHED) cell ignores the A shortcut entirely", async () => {
       mockedApiRequest.mockImplementation(async (path, options) => {
-        if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return GRID;
         throw new Error("unexpected call");
       });
       renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
@@ -475,8 +473,8 @@ describe("ScoreEntryGrid", () => {
   });
 
   describe("term-closed lock (SPEC_V0.5.md §2.3)", () => {
-    const CLOSED_LOCKED_GRID: GradesGridResponse = { ...GRID, termClosed: true, locked: true, unlockReason: null };
-    const CLOSED_UNLOCKED_GRID: GradesGridResponse = {
+    const CLOSED_LOCKED_GRID: EvaluationScoresResponse = { ...GRID, termClosed: true, locked: true, unlockReason: null };
+    const CLOSED_UNLOCKED_GRID: EvaluationScoresResponse = {
       ...GRID,
       termClosed: true,
       locked: false,
@@ -485,7 +483,7 @@ describe("ScoreEntryGrid", () => {
 
     it("renders locked from load (every row disabled) with the ask-to-unlock message — TEACHER sees no Unlock control", async () => {
       mockedApiRequest.mockImplementation(async (path, options) => {
-        if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return CLOSED_LOCKED_GRID;
+        if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return CLOSED_LOCKED_GRID;
         throw new Error("unexpected call");
       });
       renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} />);
@@ -500,7 +498,7 @@ describe("ScoreEntryGrid", () => {
       let unlocked = false;
       mockedApiRequest.mockImplementation(async (path, options) => {
         const method = (options as { method?: string })?.method;
-        if (path === "/api/v1/grades/grid" && method !== "PUT") return unlocked ? CLOSED_UNLOCKED_GRID : CLOSED_LOCKED_GRID;
+        if (path === "/api/v1/grades/evaluation-scores" && method !== "PUT") return unlocked ? CLOSED_UNLOCKED_GRID : CLOSED_LOCKED_GRID;
         if (path === "/api/v1/terms/term1/unlock" && method === "POST") {
           unlocked = true;
           return { id: "unlock1", schoolId: "s1", termId: "term1", classArmId: "arm1", subjectId: "sub1", reason: "Parent requested a correction", unlockedBy: "u1", unlockedAt: "t", relockedBy: null, relockedAt: null, createdAt: "t", updatedAt: "t" };
@@ -529,7 +527,7 @@ describe("ScoreEntryGrid", () => {
 
     it("SCHOOL_ADMIN/PROPRIETOR sees Relock on an unlocked slice; TEACHER sees the reason but no Relock control", async () => {
       mockedApiRequest.mockImplementation(async (path, options) => {
-        if (path === "/api/v1/grades/grid" && (options as { method?: string })?.method !== "PUT") return CLOSED_UNLOCKED_GRID;
+        if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return CLOSED_UNLOCKED_GRID;
         throw new Error("unexpected call");
       });
       const { unmount } = renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} />);

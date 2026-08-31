@@ -7,33 +7,32 @@ import { Input } from "../../components/ui/input";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
-import { useAssessmentComponents } from "../settings/use-assessment-components";
-import { useGradesGrid } from "./use-grades-grid";
+import { EvaluationPicker } from "./EvaluationPicker";
+import { useEvaluationScores } from "./use-evaluation-scores";
 import { useCorrectPublishedScore } from "./use-correct-published-score";
 import type { MarkAbsentTarget } from "./ClassArmResultsView";
-
-const SELECT_CLASS = "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50";
 
 interface MarkAbsentDialogProps {
   target: MarkAbsentTarget | null;
   onClose: () => void;
 }
 
-// SPEC_V0.5.1.md §2.5, v0.5.1 step 4: corrects one component's absence/
+// SPEC_V0.5.1.md §2.5, v0.5.1 step 4: corrects one evaluation's absence/
 // score on an already-PUBLISHED result — the real case is "a teacher
 // entered a score, but the student was actually absent" (or the reverse),
 // discovered after publishing. This view only shows the subject TOTAL, not
-// a per-component breakdown, so a component is picked here first; once
-// picked, GET /grades/grid (the same query the entry grid itself uses)
-// shows this student's CURRENT value for that exact cell to correct from.
+// a per-evaluation breakdown, so an evaluation is picked here first; once
+// picked, GET /grades/evaluation-scores (the same query the entry grid
+// itself uses) shows this student's CURRENT value for that exact cell to
+// correct from. allowManage is false here — this is a browse-only picker
+// (correcting an existing evaluation's score), not the authoring surface.
 export function MarkAbsentDialog({ target, onClose }: MarkAbsentDialogProps) {
-  const components = useAssessmentComponents();
-  const [componentId, setComponentId] = useState("");
+  const [evaluationId, setEvaluationId] = useState("");
   const [isAbsent, setIsAbsent] = useState(false);
   const [scoreText, setScoreText] = useState("");
 
-  const gridQuery = useGradesGrid(
-    target && componentId ? { classArmId: target.classArmId, subjectId: target.subjectId, componentId, termId: target.termId } : null,
+  const gridQuery = useEvaluationScores(
+    target && evaluationId ? { classArmId: target.classArmId, subjectId: target.subjectId, evaluationId, termId: target.termId } : null,
   );
   const currentRow = gridQuery.data?.rows.find((r) => r.studentId === target?.studentId);
 
@@ -41,7 +40,7 @@ export function MarkAbsentDialog({ target, onClose }: MarkAbsentDialogProps) {
 
   useEffect(() => {
     if (target) {
-      setComponentId("");
+      setEvaluationId("");
       setIsAbsent(false);
       setScoreText("");
     }
@@ -57,10 +56,10 @@ export function MarkAbsentDialog({ target, onClose }: MarkAbsentDialogProps) {
     }
   }, [currentRow]);
 
-  const maxScore = gridQuery.data?.maxScore ?? null;
+  // v0.7 step 1: native /100 scoring, no per-evaluation maxScore anymore.
   const scoreValidation =
-    isAbsent || scoreText.trim() === "" || maxScore === null ? { isValid: true } : validateGridScore(Number(scoreText), maxScore);
-  const canSubmit = componentId !== "" && (isAbsent || (scoreText.trim() !== "" && scoreValidation.isValid));
+    isAbsent || scoreText.trim() === "" || gridQuery.data === undefined ? { isValid: true } : validateGridScore(Number(scoreText), 100);
+  const canSubmit = evaluationId !== "" && (isAbsent || (scoreText.trim() !== "" && scoreValidation.isValid));
 
   function handleSubmit() {
     if (!target || !canSubmit) return;
@@ -68,7 +67,7 @@ export function MarkAbsentDialog({ target, onClose }: MarkAbsentDialogProps) {
       {
         classArmId: target.classArmId,
         subjectId: target.subjectId,
-        componentId,
+        evaluationId,
         termId: target.termId,
         studentId: target.studentId,
         rawScore: isAbsent ? null : Number(scoreText),
@@ -91,37 +90,28 @@ export function MarkAbsentDialog({ target, onClose }: MarkAbsentDialogProps) {
           )}
         </div>
 
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="mark-absent-component">Component</Label>
-          <select
-            id="mark-absent-component"
-            className={SELECT_CLASS}
-            value={componentId}
-            onChange={(event) => setComponentId(event.target.value)}
-            disabled={components.isLoading}
-          >
-            <option value="" disabled>
-              Select…
-            </option>
-            {(components.data ?? []).map((component) => (
-              <option key={component.id} value={component.id}>
-                {component.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        {target && (
+          <EvaluationPicker
+            id="mark-absent-evaluation"
+            classArmId={target.classArmId}
+            subjectId={target.subjectId}
+            termId={target.termId}
+            value={evaluationId}
+            onChange={setEvaluationId}
+          />
+        )}
 
-        {componentId && gridQuery.isLoading && (
+        {evaluationId && gridQuery.isLoading && (
           <div className="flex items-center gap-2 text-sm text-muted">
             <Spinner /> Loading current value…
           </div>
         )}
 
-        {componentId && gridQuery.isError && (
+        {evaluationId && gridQuery.isError && (
           <p className="text-sm text-danger">{getErrorMessage(gridQuery.error, "Couldn't load the current value.")}</p>
         )}
 
-        {componentId && gridQuery.data && (
+        {evaluationId && gridQuery.data && (
           <>
             <div className="flex items-center gap-2">
               <Checkbox id="mark-absent-checkbox" checked={isAbsent} onChange={(event) => setIsAbsent(event.target.checked)} />
@@ -129,7 +119,7 @@ export function MarkAbsentDialog({ target, onClose }: MarkAbsentDialogProps) {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="mark-absent-score">Score (out of {gridQuery.data.maxScore})</Label>
+              <Label htmlFor="mark-absent-score">Score (out of 100)</Label>
               <Input
                 id="mark-absent-score"
                 type="text"

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { screen, cleanup, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { AssessmentComponent, GradesReviewResponse, Paginated, Term, AcademicSession } from "@scholametric/shared";
+import type { Evaluation, GradesReviewResponse, Paginated, Term, AcademicSession } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest, ApiError } from "../../lib/api-client";
@@ -65,7 +65,9 @@ function mockCommon(role: "SCHOOL_ADMIN" | "PROPRIETOR", review: GradesReviewRes
     // PublishConfirmDialog is always mounted (gated internally, not by
     // conditional render) and fetches this to label a completeness-gate
     // 409 — fires regardless of whether the dialog is open.
-    if (path === "/api/v1/assessment-components") return [];
+    if (path === "/api/v1/grades/evaluations") {
+      return { classArmId: "arm1", subjectId: "sub1", termId: "term1", termClosed: false, locked: false, unlockReason: null, evaluations: [] };
+    }
     if (path === "/api/v1/grades/review") {
       const query = (options as { query?: Record<string, string> })?.query;
       expect(query?.classArmId).toBe("arm1");
@@ -158,10 +160,10 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
     expect(within(dialog).getByText(/recomputes overall positions for the whole class/)).toBeInTheDocument();
   });
 
-  it("publish 409s with incompleteEntries (the completeness-gate race): shows blocking components grouped, not a generic toast", async () => {
-    const components: AssessmentComponent[] = [
-      { id: "ca1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
-      { id: "examId", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 3, requiresApproval: true, deletedAt: null, createdAt: "t", updatedAt: "t" },
+  it("publish 409s with incompleteEntries (the completeness-gate race): shows blocking evaluations grouped, not a generic toast", async () => {
+    const evaluations: Evaluation[] = [
+      { id: "ca1", name: "CA 1", description: "CA 1", createdAt: "t", createdBy: "u1" },
+      { id: "examId", name: "Exam", description: "Exam", createdAt: "t", createdBy: "u1" },
     ];
     mockedApiRequest.mockImplementation(async (path, options) => {
       const method = (options as { method?: string })?.method;
@@ -169,19 +171,21 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
       if (path === "/api/v1/classes") return CLASSES;
       if (path === "/api/v1/sessions") return SESSIONS;
       if (path === "/api/v1/terms") return TERMS;
-      if (path === "/api/v1/assessment-components") return components;
+      if (path === "/api/v1/grades/evaluations") {
+        return { classArmId: "arm1", subjectId: "sub1", termId: "term1", termClosed: false, locked: false, unlockReason: null, evaluations };
+      }
       if (path === "/api/v1/grades/review") return REVIEW_CAN_PUBLISH;
       if (path === "/api/v1/grades/publish" && method === "POST") {
         throw new ApiError(409, {
           statusCode: 409,
-          message: "Cannot publish: 2 student(s) have at least one component that's neither scored nor marked absent.",
+          message: "Cannot publish: 2 student(s) have at least one evaluation that's neither scored nor marked absent.",
           error: "Conflict",
           path: "",
           timestamp: "",
           incompleteEntries: [
-            { studentId: "st1", componentId: "ca1" },
-            { studentId: "st2", componentId: "examId" },
-            { studentId: "st3", componentId: "examId" },
+            { studentId: "st1", evaluationId: "ca1" },
+            { studentId: "st2", evaluationId: "examId" },
+            { studentId: "st3", evaluationId: "examId" },
           ],
         });
       }
@@ -195,7 +199,7 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "Publish" }));
 
-    await waitFor(() => expect(within(dialog).getByText(/Some students still have a blank component/)).toBeInTheDocument());
+    await waitFor(() => expect(within(dialog).getByText(/Some students still have a blank evaluation/)).toBeInTheDocument());
     expect(within(dialog).getByText(/CA 1: 1 student/)).toBeInTheDocument();
     expect(within(dialog).getByText(/Exam: 2 students/)).toBeInTheDocument();
   });

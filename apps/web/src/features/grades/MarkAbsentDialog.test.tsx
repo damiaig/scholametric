@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { AssessmentComponent, GradesGridResponse } from "@scholametric/shared";
+import type { Evaluation, EvaluationScoresResponse, EvaluationsListResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest, ApiError } from "../../lib/api-client";
@@ -24,19 +24,21 @@ const TARGET: MarkAbsentTarget = {
   termId: "term1",
 };
 
-const COMPONENTS: AssessmentComponent[] = [
-  { id: "c1", schoolId: "s1", name: "CA 1", weight: 20, sortOrder: 1, requiresApproval: false, deletedAt: null, createdAt: "t", updatedAt: "t" },
-  { id: "exam", schoolId: "s1", name: "Exam", weight: 60, sortOrder: 2, requiresApproval: true, deletedAt: null, createdAt: "t", updatedAt: "t" },
+const EVALUATIONS: Evaluation[] = [
+  { id: "c1", name: "CA 1", description: "CA 1", createdAt: "t", createdBy: "u1" },
+  { id: "exam", name: "Exam", description: "Exam", createdAt: "t", createdBy: "u1" },
 ];
 
-function gridResponse(overrides: Partial<GradesGridResponse["rows"][number]>): GradesGridResponse {
+function evaluationsListResponse(): EvaluationsListResponse {
+  return { classArmId: "arm1", subjectId: "sub1", termId: "term1", termClosed: false, locked: false, unlockReason: null, evaluations: EVALUATIONS };
+}
+
+function gridResponse(overrides: Partial<EvaluationScoresResponse["rows"][number]>): EvaluationScoresResponse {
   return {
     classArmId: "arm1",
     subjectId: "sub1",
-    componentId: "exam",
+    evaluationId: "exam",
     termId: "term1",
-    maxScore: 100,
-    requiresApproval: true,
     termClosed: false,
     locked: false,
     unlockReason: null,
@@ -50,11 +52,11 @@ beforeEach(() => {
   authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
 });
 
-// The component select starts disabled (useAssessmentComponents() hasn't
-// resolved on first render) — waiting for it to enable before selecting
-// avoids a race against the mocked query settling.
-async function selectComponent(user: ReturnType<typeof userEvent.setup>, value: string) {
-  const select = (await screen.findByLabelText("Component")) as HTMLSelectElement;
+// The evaluation select starts disabled (useEvaluations() hasn't resolved
+// on first render) — waiting for it to enable before selecting avoids a
+// race against the mocked query settling.
+async function selectEvaluation(user: ReturnType<typeof userEvent.setup>, value: string) {
+  const select = (await screen.findByLabelText("Evaluation")) as HTMLSelectElement;
   await waitFor(() => expect(select).not.toBeDisabled());
   await user.selectOptions(select, value);
 }
@@ -74,10 +76,10 @@ describe("MarkAbsentDialog", () => {
     expect(screen.queryByText("Correct a published result")).not.toBeInTheDocument();
   });
 
-  it("picking a component loads and prefills the student's current value", async () => {
+  it("picking an evaluation loads and prefills the student's current value", async () => {
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/assessment-components") return COMPONENTS;
-      if (path === "/api/v1/grades/grid") return gridResponse({ rawScore: 100, isAbsent: false });
+      if (path === "/api/v1/grades/evaluations") return evaluationsListResponse();
+      if (path === "/api/v1/grades/evaluation-scores") return gridResponse({ rawScore: 100, isAbsent: false });
       throw new Error(`unexpected call: ${path}`);
     });
 
@@ -85,7 +87,7 @@ describe("MarkAbsentDialog", () => {
     renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={vi.fn()} />);
 
     expect(await screen.findByText(/Chidi Okoro — Mathematics/)).toBeInTheDocument();
-    await selectComponent(user, "exam");
+    await selectEvaluation(user, "exam");
 
     const scoreInput = (await screen.findByLabelText(/Score \(out of 100\)/)) as HTMLInputElement;
     await waitFor(() => expect(scoreInput.value).toBe("100"));
@@ -94,30 +96,30 @@ describe("MarkAbsentDialog", () => {
 
   it("prefills as absent (checkbox checked, score field disabled) when the current row is already absent", async () => {
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/assessment-components") return COMPONENTS;
-      if (path === "/api/v1/grades/grid") return gridResponse({ rawScore: null, isAbsent: true });
+      if (path === "/api/v1/grades/evaluations") return evaluationsListResponse();
+      if (path === "/api/v1/grades/evaluation-scores") return gridResponse({ rawScore: null, isAbsent: true });
       throw new Error(`unexpected call: ${path}`);
     });
 
     const user = userEvent.setup();
     renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={vi.fn()} />);
-    await selectComponent(user, "exam");
+    await selectEvaluation(user, "exam");
 
     const checkbox = (await screen.findByLabelText("Mark absent")) as HTMLInputElement;
     await waitFor(() => expect(checkbox.checked).toBe(true));
     expect(screen.getByLabelText(/Score \(out of 100\)/)).toBeDisabled();
   });
 
-  it("submitting a mark-absent correction calls PUT /grades/grid with rawScore: null, isAbsent: true, and closes on success", async () => {
+  it("submitting a mark-absent correction calls PUT /grades/evaluation-scores with rawScore: null, isAbsent: true, and closes on success", async () => {
     const onClose = vi.fn();
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
-      if (path === "/api/v1/assessment-components") return COMPONENTS;
-      if (path === "/api/v1/grades/grid" && (!opts?.method || opts.method === "GET")) return gridResponse({ rawScore: 100, isAbsent: false });
-      if (path === "/api/v1/grades/grid" && opts?.method === "PUT") {
+      if (path === "/api/v1/grades/evaluations") return evaluationsListResponse();
+      if (path === "/api/v1/grades/evaluation-scores" && (!opts?.method || opts.method === "GET")) return gridResponse({ rawScore: 100, isAbsent: false });
+      if (path === "/api/v1/grades/evaluation-scores" && opts?.method === "PUT") {
         expect(opts.body).toEqual({
           classArmId: "arm1",
           subjectId: "sub1",
-          componentId: "exam",
+          evaluationId: "exam",
           termId: "term1",
           scores: [{ studentId: "st1", rawScore: null, isAbsent: true }],
         });
@@ -128,7 +130,7 @@ describe("MarkAbsentDialog", () => {
 
     const user = userEvent.setup();
     renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={onClose} />);
-    await selectComponent(user, "exam");
+    await selectEvaluation(user, "exam");
     await screen.findByDisplayValue("100");
 
     await user.click(screen.getByLabelText("Mark absent"));
@@ -140,13 +142,13 @@ describe("MarkAbsentDialog", () => {
   it("submitting a score correction (un-absent) sends the real rawScore with isAbsent: false", async () => {
     const onClose = vi.fn();
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
-      if (path === "/api/v1/assessment-components") return COMPONENTS;
-      if (path === "/api/v1/grades/grid" && (!opts?.method || opts.method === "GET")) return gridResponse({ rawScore: null, isAbsent: true });
-      if (path === "/api/v1/grades/grid" && opts?.method === "PUT") {
+      if (path === "/api/v1/grades/evaluations") return evaluationsListResponse();
+      if (path === "/api/v1/grades/evaluation-scores" && (!opts?.method || opts.method === "GET")) return gridResponse({ rawScore: null, isAbsent: true });
+      if (path === "/api/v1/grades/evaluation-scores" && opts?.method === "PUT") {
         expect(opts.body).toEqual({
           classArmId: "arm1",
           subjectId: "sub1",
-          componentId: "exam",
+          evaluationId: "exam",
           termId: "term1",
           scores: [{ studentId: "st1", rawScore: 85, isAbsent: false }],
         });
@@ -157,7 +159,7 @@ describe("MarkAbsentDialog", () => {
 
     const user = userEvent.setup();
     renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={onClose} />);
-    await selectComponent(user, "exam");
+    await selectEvaluation(user, "exam");
     await waitFor(() => expect((screen.getByLabelText("Mark absent") as HTMLInputElement).checked).toBe(true));
 
     await user.click(screen.getByLabelText("Mark absent")); // uncheck
@@ -171,14 +173,14 @@ describe("MarkAbsentDialog", () => {
 
   it("a rejected correction (e.g. closed term) shows the backend's message, not a silent failure", async () => {
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
-      if (path === "/api/v1/assessment-components") return COMPONENTS;
-      if (path === "/api/v1/grades/grid" && (!opts?.method || opts.method === "GET")) return gridResponse({ rawScore: 100, isAbsent: false });
-      if (path === "/api/v1/grades/grid" && opts?.method === "PUT") {
+      if (path === "/api/v1/grades/evaluations") return evaluationsListResponse();
+      if (path === "/api/v1/grades/evaluation-scores" && (!opts?.method || opts.method === "GET")) return gridResponse({ rawScore: 100, isAbsent: false });
+      if (path === "/api/v1/grades/evaluation-scores" && opts?.method === "PUT") {
         throw new ApiError(409, {
           statusCode: 409,
           message: "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
           error: "Conflict",
-          path: "/api/v1/grades/grid",
+          path: "/api/v1/grades/evaluation-scores",
           timestamp: new Date().toISOString(),
         });
       }
@@ -187,7 +189,7 @@ describe("MarkAbsentDialog", () => {
 
     const user = userEvent.setup();
     renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={vi.fn()} />);
-    await selectComponent(user, "exam");
+    await selectEvaluation(user, "exam");
     await screen.findByDisplayValue("100");
 
     await user.click(screen.getByLabelText("Mark absent"));
@@ -196,9 +198,9 @@ describe("MarkAbsentDialog", () => {
     expect(await screen.findByText(/This term is closed/)).toBeInTheDocument();
   });
 
-  it("Save correction is disabled until a component is chosen", async () => {
+  it("Save correction is disabled until an evaluation is chosen", async () => {
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/assessment-components") return COMPONENTS;
+      if (path === "/api/v1/grades/evaluations") return evaluationsListResponse();
       throw new Error(`unexpected call: ${path}`);
     });
     renderWithProviders(<MarkAbsentDialog target={TARGET} onClose={vi.fn()} />);
