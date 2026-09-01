@@ -80,6 +80,28 @@ describe("ClassArmDetailPage", () => {
     expect(studentsTable.getByText("SUN/2026/0001")).toBeInTheDocument();
   });
 
+  // SPEC_V0.7.1.md §3 (items 5, 7) — grades live inside the class now: one
+  // "Grades" button (Results tab) plus per-subject "Enter grades"/"Enter
+  // exam scores" links, all landing on the SAME unified route, distinguished
+  // only by tab=/track= query params — not three separate old routes.
+  it("Grades button and per-subject Enter-grades/Enter-exam-scores links all point at the unified /classes/arms/:id/grades route", async () => {
+    renderPage();
+
+    expect(await screen.findByText("JSS 1 A")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Grades" })).toBeInTheDocument();
+
+    const enterGradesLinks = screen.getAllByRole("link", { name: "Enter grades" });
+    const enterExamLinks = screen.getAllByRole("link", { name: "Enter exam scores" });
+    expect(enterGradesLinks.length).toBeGreaterThan(0);
+    expect(enterExamLinks.length).toBeGreaterThan(0);
+    for (const link of enterGradesLinks) {
+      expect(link).toHaveAttribute("href", "/classes/arms/arm-1/grades?tab=enter&subjectId=subj-1&track=evaluations");
+    }
+    for (const link of enterExamLinks) {
+      expect(link).toHaveAttribute("href", "/classes/arms/arm-1/grades?tab=enter&subjectId=subj-1&track=exams");
+    }
+  });
+
   it("TEACHER: no assign/add/remove controls render", async () => {
     renderPage("TEACHER");
 

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Pencil, Plus, Trash2 } from "lucide-react";
+import { cn } from "../../lib/utils";
 import { Label } from "../../components/ui/label";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
@@ -8,8 +9,6 @@ import { getErrorMessage } from "../../lib/api-client";
 import { useDeleteExam, useExams } from "./use-exams";
 import { ExamFormDialog } from "./ExamFormDialog";
 import { TermLockBanner } from "./TermLockBanner";
-
-const SELECT_CLASS = "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
 
 interface ExamPickerProps {
   classArmId: string;
@@ -72,29 +71,14 @@ export function ExamPicker({
     });
   }
 
+  const labelId = `${id}-label`;
+
   return (
     <div className="flex flex-col gap-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      <div className="flex items-center gap-2">
-        <select
-          id={id}
-          className={SELECT_CLASS}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          disabled={examsQuery.isLoading}
-        >
-          <option value="" disabled>
-            {exams.length === 0 ? "No exams yet" : "Select…"}
-          </option>
-          {exams.map((exam) => (
-            <option key={exam.id} value={exam.id}>
-              {exam.name}
-            </option>
-          ))}
-        </select>
-
+      <div className="flex items-center justify-between gap-2">
+        <Label id={labelId}>{label}</Label>
         {allowManage && (
-          <>
+          <div className="flex items-center gap-2">
             <Button
               type="button"
               variant="outline"
@@ -123,7 +107,7 @@ export function ExamPicker({
                 <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
             )}
-          </>
+          </div>
         )}
       </div>
 
@@ -138,6 +122,36 @@ export function ExamPicker({
           <Button type="button" variant="outline" size="sm" onClick={() => examsQuery.refetch()}>
             Try again
           </Button>
+        </div>
+      )}
+
+      {/* SPEC_V0.7.1.md §3 (item 6) — same list-not-dropdown treatment as
+          EvaluationPicker. No description field on exams (schema comment:
+          exams don't need a teacher-authored name/description), so each
+          row is name-only. */}
+      {!examsQuery.isLoading && !examsQuery.isError && (
+        <div role="group" aria-labelledby={labelId} className="flex flex-col gap-2">
+          {exams.length === 0 ? (
+            <p className="rounded-md border border-dashed border-muted/30 p-3 text-sm text-muted">No exams yet — create one.</p>
+          ) : (
+            exams.map((exam) => {
+              const isSelected = exam.id === value;
+              return (
+                <button
+                  key={exam.id}
+                  type="button"
+                  aria-pressed={isSelected}
+                  onClick={() => onChange(exam.id)}
+                  className={cn(
+                    "flex flex-col items-start rounded-md border p-3 text-left transition-colors",
+                    isSelected ? "border-primary bg-primary/5" : "border-muted/20 bg-card hover:border-muted/40",
+                  )}
+                >
+                  <span className="text-sm font-medium text-text">{exam.name}</span>
+                </button>
+              );
+            })
+          )}
         </div>
       )}
 

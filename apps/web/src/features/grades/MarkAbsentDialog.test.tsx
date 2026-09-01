@@ -52,13 +52,12 @@ beforeEach(() => {
   authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
 });
 
-// The evaluation select starts disabled (useEvaluations() hasn't resolved
-// on first render) — waiting for it to enable before selecting avoids a
-// race against the mocked query settling.
+// SPEC_V0.7.1.md §3 (item 6) — EvaluationPicker renders a clickable list,
+// not a <select>; find the row by the evaluation's own name and click it.
 async function selectEvaluation(user: ReturnType<typeof userEvent.setup>, value: string) {
-  const select = (await screen.findByLabelText("Evaluation")) as HTMLSelectElement;
-  await waitFor(() => expect(select).not.toBeDisabled());
-  await user.selectOptions(select, value);
+  const evaluation = EVALUATIONS.find((e) => e.id === value)!;
+  const button = await screen.findByRole("button", { name: new RegExp(evaluation.name) });
+  await user.click(button);
 }
 
 afterEach(() => {

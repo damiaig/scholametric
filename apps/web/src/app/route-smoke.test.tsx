@@ -83,6 +83,14 @@ const CLASS_ARM_DETAIL = {
   students: PAGINATED_EMPTY,
 };
 
+const CLASS_ARM_RESULTS = {
+  classArmId: "route-smoke-id",
+  termId: "term1",
+  students: [],
+  subjects: [],
+  overall: null,
+};
+
 const STUDENT_ROW = {
   id: "st1",
   schoolId: "s1",
@@ -131,6 +139,7 @@ function mockApi() {
 
     if (path === "/api/v1/classes") return CLASS_LEVEL_OVERVIEW;
     if (path === "/api/v1/class-arms/route-smoke-id") return CLASS_ARM_DETAIL;
+    if (path === "/api/v1/class-arms/route-smoke-id/results") return CLASS_ARM_RESULTS;
     if (path === "/api/v1/class-arms") return PAGINATED_EMPTY;
     if (path === "/api/v1/class-levels") return PAGINATED_EMPTY;
     if (path === "/api/v1/subjects") return PAGINATED_EMPTY;
@@ -154,7 +163,7 @@ const ROUTES = [
   "/teachers/route-smoke-id",
   "/classes",
   "/classes/arms/route-smoke-id",
-  "/grades/overview",
+  "/classes/arms/route-smoke-id/grades",
   "/grades/review",
   "/personnel",
   "/settings/school",

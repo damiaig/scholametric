@@ -18,7 +18,7 @@ interface TermLockBannerProps {
   canManage: boolean;
 }
 
-// SPEC_V0.5.md §2.3, v0.5 step 5 — renders directly from GET /grades/grid's
+// SPEC_V0.5.md §2.3, v0.5 step 5 — renders directly from the picker's own
 // termClosed/locked/unlockReason (load-time, never reactive on a 409).
 // Lives right on the grid the need arises on, not a separate settings
 // screen — classArmId/subjectId/termId are already in context here.

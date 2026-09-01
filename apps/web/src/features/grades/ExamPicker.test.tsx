@@ -38,16 +38,30 @@ afterEach(() => {
 });
 
 describe("ExamPicker", () => {
-  it("lists exams for the given class/subject/term and lets the caller pick one", async () => {
+  // SPEC_V0.7.1.md §3 (item 6) — the same list-not-dropdown treatment as
+  // EvaluationPicker (name-only here — exams have no description field).
+  it("lists exams for the given class/subject/term, each clickable, and calls onChange on click", async () => {
     mockedApiRequest.mockImplementation(async (path) => {
       if (path === "/api/v1/exams") return OPEN;
       throw new Error(`unexpected call: ${path}`);
     });
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    renderWithProviders(<ExamPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={onChange} allowManage />);
+
+    const examButton = await screen.findByRole("button", { name: "Exam" });
+    await user.click(examButton);
+    expect(onChange).toHaveBeenCalledWith("e1");
+  });
+
+  it("no exams yet: shows the named empty state, not a bare/blank list", async () => {
+    mockedApiRequest.mockImplementation(async (path) => {
+      if (path === "/api/v1/exams") return { ...OPEN, exams: [] };
+      throw new Error(`unexpected call: ${path}`);
+    });
     renderWithProviders(<ExamPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={vi.fn()} allowManage />);
 
-    const select = await screen.findByLabelText("Exam");
-    await waitFor(() => expect(select).not.toBeDisabled());
-    expect(screen.getByRole("option", { name: "Exam" })).toBeInTheDocument();
+    expect(await screen.findByText("No exams yet — create one.")).toBeInTheDocument();
   });
 
   // The exact requirement this proves: the closed-term block must be

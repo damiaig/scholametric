@@ -21,7 +21,7 @@ const OPEN: EvaluationsListResponse = {
   termClosed: false,
   locked: false,
   unlockReason: null,
-  evaluations: [{ id: "e1", name: "CA 1", description: "CA 1", createdAt: "t", createdBy: "u1" }],
+  evaluations: [{ id: "e1", name: "CA 1", description: "First continuous assessment", createdAt: "t", createdBy: "u1" }],
 };
 
 const CLOSED_LOCKED: EvaluationsListResponse = { ...OPEN, termClosed: true, locked: true, unlockReason: null };
@@ -38,16 +38,34 @@ afterEach(() => {
 });
 
 describe("EvaluationPicker", () => {
-  it("lists evaluations for the given class/subject/term and lets the caller pick one", async () => {
+  // SPEC_V0.7.1.md §3 (item 6) — the evaluation LIST shown up front (name +
+  // description, each independently clickable), replacing the old empty
+  // dropdown a teacher had to decode.
+  it("lists evaluations (name + description) for the given class/subject/term, each clickable, and calls onChange on click", async () => {
     mockedApiRequest.mockImplementation(async (path) => {
       if (path === "/api/v1/grades/evaluations") return OPEN;
       throw new Error(`unexpected call: ${path}`);
     });
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    renderWithProviders(<EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={onChange} allowManage />);
+
+    const evaluationButton = await screen.findByRole("button", { name: /CA 1/ });
+    expect(within(evaluationButton).getByText("CA 1")).toBeInTheDocument();
+    expect(within(evaluationButton).getByText("First continuous assessment")).toBeInTheDocument();
+
+    await user.click(evaluationButton);
+    expect(onChange).toHaveBeenCalledWith("e1");
+  });
+
+  it("no evaluations yet: shows the named empty state, not a bare/blank list", async () => {
+    mockedApiRequest.mockImplementation(async (path) => {
+      if (path === "/api/v1/grades/evaluations") return { ...OPEN, evaluations: [] };
+      throw new Error(`unexpected call: ${path}`);
+    });
     renderWithProviders(<EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={vi.fn()} allowManage />);
 
-    const select = await screen.findByLabelText("Evaluation");
-    await waitFor(() => expect(select).not.toBeDisabled());
-    expect(screen.getByRole("option", { name: "CA 1" })).toBeInTheDocument();
+    expect(await screen.findByText("No evaluations yet — create one.")).toBeInTheDocument();
   });
 
   // The exact requirement this proves: the closed-term block must be

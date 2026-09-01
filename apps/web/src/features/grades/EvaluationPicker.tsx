@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Pencil, Plus, Trash2 } from "lucide-react";
+import { cn } from "../../lib/utils";
 import { Label } from "../../components/ui/label";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
@@ -8,8 +9,6 @@ import { getErrorMessage } from "../../lib/api-client";
 import { useDeleteEvaluation, useEvaluations } from "./use-evaluations";
 import { EvaluationFormDialog } from "./EvaluationFormDialog";
 import { TermLockBanner } from "./TermLockBanner";
-
-const SELECT_CLASS = "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
 
 interface EvaluationPickerProps {
   classArmId: string;
@@ -76,29 +75,14 @@ export function EvaluationPicker({
     });
   }
 
+  const labelId = `${id}-label`;
+
   return (
     <div className="flex flex-col gap-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      <div className="flex items-center gap-2">
-        <select
-          id={id}
-          className={SELECT_CLASS}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          disabled={evaluationsQuery.isLoading}
-        >
-          <option value="" disabled>
-            {evaluations.length === 0 ? "No evaluations yet" : "Select…"}
-          </option>
-          {evaluations.map((evaluation) => (
-            <option key={evaluation.id} value={evaluation.id}>
-              {evaluation.name}
-            </option>
-          ))}
-        </select>
-
+      <div className="flex items-center justify-between gap-2">
+        <Label id={labelId}>{label}</Label>
         {allowManage && (
-          <>
+          <div className="flex items-center gap-2">
             <Button
               type="button"
               variant="outline"
@@ -127,7 +111,7 @@ export function EvaluationPicker({
                 <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
             )}
-          </>
+          </div>
         )}
       </div>
 
@@ -142,6 +126,39 @@ export function EvaluationPicker({
           <Button type="button" variant="outline" size="sm" onClick={() => evaluationsQuery.refetch()}>
             Try again
           </Button>
+        </div>
+      )}
+
+      {/* SPEC_V0.7.1.md §3 (item 6) — the evaluation LIST shown up front,
+          replacing the empty dropdown a teacher had to decode. Each row is
+          independently clickable (name + description); the empty state
+          names the exact next action instead of a bare placeholder. */}
+      {!evaluationsQuery.isLoading && !evaluationsQuery.isError && (
+        <div role="group" aria-labelledby={labelId} className="flex flex-col gap-2">
+          {evaluations.length === 0 ? (
+            <p className="rounded-md border border-dashed border-muted/30 p-3 text-sm text-muted">
+              No evaluations yet — create one.
+            </p>
+          ) : (
+            evaluations.map((evaluation) => {
+              const isSelected = evaluation.id === value;
+              return (
+                <button
+                  key={evaluation.id}
+                  type="button"
+                  aria-pressed={isSelected}
+                  onClick={() => onChange(evaluation.id)}
+                  className={cn(
+                    "flex flex-col items-start rounded-md border p-3 text-left transition-colors",
+                    isSelected ? "border-primary bg-primary/5" : "border-muted/20 bg-card hover:border-muted/40",
+                  )}
+                >
+                  <span className="text-sm font-medium text-text">{evaluation.name}</span>
+                  {evaluation.description && <span className="text-xs text-muted">{evaluation.description}</span>}
+                </button>
+              );
+            })
+          )}
         </div>
       )}
 

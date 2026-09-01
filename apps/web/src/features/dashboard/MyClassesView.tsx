@@ -95,14 +95,14 @@ export function MyClassesView() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Link
-                        to={`/grades/grid?classArmId=${entry.classArmId}&subjectId=${entry.subjectId}`}
+                        to={`/classes/arms/${entry.classArmId}/grades?tab=enter&subjectId=${entry.subjectId}&track=evaluations`}
                         className="text-primary hover:underline"
                       >
                         Enter grades
                       </Link>
                       <span className="mx-2 text-muted">·</span>
                       <Link
-                        to={`/grades/exams-grid?classArmId=${entry.classArmId}&subjectId=${entry.subjectId}`}
+                        to={`/classes/arms/${entry.classArmId}/grades?tab=enter&subjectId=${entry.subjectId}&track=exams`}
                         className="text-primary hover:underline"
                       >
                         Enter exam scores

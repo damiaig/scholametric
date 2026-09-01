@@ -91,8 +91,8 @@ export function ClassArmDetailPage() {
         description={`${arm.students.total} student${arm.students.total === 1 ? "" : "s"} enrolled this session`}
         actions={
           <>
-            <Button type="button" variant="outline" size="sm" onClick={() => navigate(`/grades/overview?classArmId=${arm.id}`)}>
-              Grades overview
+            <Button type="button" variant="outline" size="sm" onClick={() => navigate(`/classes/arms/${arm.id}/grades?tab=results`)}>
+              Grades
             </Button>
             {canManage && (
               <Button type="button" variant="outline" size="sm" onClick={() => navigate(`/grades/review?classArmId=${arm.id}`)}>
@@ -173,13 +173,13 @@ export function ClassArmDetailPage() {
                   {canManage && (
                     <div className="flex shrink-0 items-center gap-2">
                       <Link
-                        to={`/grades/grid?classArmId=${arm.id}&subjectId=${entry.subjectId}`}
+                        to={`/classes/arms/${arm.id}/grades?tab=enter&subjectId=${entry.subjectId}&track=evaluations`}
                         className="text-sm text-primary hover:underline"
                       >
                         Enter grades
                       </Link>
                       <Link
-                        to={`/grades/exams-grid?classArmId=${arm.id}&subjectId=${entry.subjectId}`}
+                        to={`/classes/arms/${arm.id}/grades?tab=enter&subjectId=${entry.subjectId}&track=exams`}
                         className="text-sm text-primary hover:underline"
                       >
                         Enter exam scores
@@ -222,13 +222,13 @@ export function ClassArmDetailPage() {
                         <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-3">
                             <Link
-                              to={`/grades/grid?classArmId=${arm.id}&subjectId=${entry.subjectId}`}
+                              to={`/classes/arms/${arm.id}/grades?tab=enter&subjectId=${entry.subjectId}&track=evaluations`}
                               className="text-primary hover:underline"
                             >
                               Enter grades
                             </Link>
                             <Link
-                              to={`/grades/exams-grid?classArmId=${arm.id}&subjectId=${entry.subjectId}`}
+                              to={`/classes/arms/${arm.id}/grades?tab=enter&subjectId=${entry.subjectId}&track=exams`}
                               className="text-primary hover:underline"
                             >
                               Enter exam scores

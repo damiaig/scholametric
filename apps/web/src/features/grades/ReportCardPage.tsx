@@ -44,7 +44,7 @@ export function ReportCardPage() {
   const { data: currentUser } = useCurrentUser();
   const isTeacher = currentUser?.role === "TEACHER";
   // Fail closed before /auth/me resolves — same reasoning as
-  // ScoreEntryGridPage's isConfirmedAdmin (avoids a doomed admin-only
+  // EnterScoresTab's isConfirmedAdmin (avoids a doomed admin-only
   // request firing for a role that turns out not to be admin).
   const isConfirmedAdmin = isSchoolAdmin(currentUser?.role);
 

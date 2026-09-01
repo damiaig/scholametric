@@ -4,7 +4,7 @@ import { useTerms } from "../settings/use-terms";
 
 // SCHOOL_ADMIN/PROPRIETOR only — GET /sessions and GET /terms both 403
 // for TEACHER, who instead reads currentSessionId/currentTermId straight
-// off GET /me/teaching (see ScoreEntryGridPage). Admin gets a real term
+// off GET /me/teaching (see EnterScoresTab). Admin gets a real term
 // dropdown (not just "current"), since an admin may legitimately need to
 // enter/correct a non-current term's scores.
 //

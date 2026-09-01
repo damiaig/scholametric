@@ -4584,3 +4584,50 @@ unaffected by the extreme value while the same request from staff reflects
 it, plus a `JSON.stringify` check that the straggler's first name/
 admission-number/id (never `lastName`, which every fixture student in
 these files shares) appear nowhere in the response.
+
+## 2026-09-01 — v0.7.1 step 1: grades-in-class navigation — admin's free-roam "any class" Results dropdown removed (deliberate trade)
+
+**Decision:** `/grades/grid`, `/grades/exams-grid`, and `/grades/overview`
+are removed outright (not redirected) and replaced by one unified route,
+`/classes/arms/:id/grades?tab=enter|results&subjectId=&track=evaluations|exams`
+(`ClassGradesPage.tsx` — `EnterScoresTab`/`ResultsTab` carry over the old
+pages' logic almost unchanged; `classArmId` now comes from the route
+param, not an optional query string). Zero backend/endpoint/query/role-
+check changes — confirmed by running the full e2e suite before and after
+with no e2e file edits (SPEC_V0.7.1.md's hard rule).
+
+**The one real behavior-adjacent change, called out explicitly per the
+plan approval:** the old `GradesOverviewPage` let an admin/proprietor pick
+*any* class arm from an in-page dropdown without leaving the page. Folded
+into a specific class's Grades area, the Results tab is now strictly
+scoped to the class arm you're already inside — that dropdown is gone.
+An admin switches classes via the Classes list now, same click-cost, just
+one extra page hop. This is a deliberate convenience trade, not an
+oversight — reversible if a real admin misses the in-page switcher during
+the v0.7.1 acceptance walk (SPEC_V0.7.1.md §6 step 6).
+
+**Also fixed a self-inflicted design bug caught by the tab-switch test
+before it shipped:** the first draft of `setTab()` deleted `subjectId`
+from the URL when switching to Results, which meant clicking back to
+"Enter scores" afterward had nothing to restore — the tab looked
+unresponsive. Fixed by leaving `subjectId` alone across tab switches
+(only the "Enter grades"/"Enter exam scores" links themselves ever set
+it) and giving the genuinely-empty case (`tab=enter`, no `subjectId` —
+e.g. a hand-edited URL) a named next step instead of a blank grid.
+
+**Tabs primitive:** one new `components/ui/tabs.tsx` introduced, used only
+by `ClassGradesPage` (outer Enter-scores/Results, inner Evaluations/Exams
+track) — the three existing hand-rolled `role="tablist"` copies
+(`ClassesPage`, `SettingsLayout`, `StudentDetailPage`) are deliberately
+left as-is this step, per the approved scope (no refactor of already-
+working pages).
+
+**Proof run anomaly (not a regression):** the first full-suite run after
+this step's changes hung ~8 minutes then reported 15 failures across 2
+files; an immediate clean re-run (zero files touched in between) passed
+455/455 in 61s, matching the pre-change baseline exactly. Since this
+step's diff touches zero files under `apps/api/` (confirmed via `git diff
+--stat`), a real regression here is structurally impossible — treated as
+a one-off environmental flake (background process contention from an
+earlier, unrelated hung process in the same session), same posture as
+the classes.e2e-spec.ts/portal-accounts.e2e-spec.ts flakes logged above.

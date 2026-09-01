@@ -19,7 +19,7 @@ export interface OverrideTarget {
 // correct is picked inside MarkAbsentDialog itself (this view only shows
 // the subject TOTAL, not a per-component breakdown), so the target is just
 // enough to identify the (student, subject, class, term) the dialog needs
-// to fetch that breakdown from GET /grades/grid once a component is chosen.
+// to fetch that breakdown once an evaluation is chosen.
 export interface MarkAbsentTarget {
   studentId: string;
   studentName: string;
