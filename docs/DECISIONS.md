@@ -4530,3 +4530,57 @@ connection; killing it and re-running cleanly brought the suite back to
 ~62s with `classes.e2e-spec.ts` passing (the file that had cascaded 24
 timeout failures under the stale-lock condition) — an environment
 artifact, not a code issue.
+
+## 2026-09-01 — v0.7 step 5 (final): comparative analytics — on-read, two-part published-only filter, one no-classArmId wrinkle
+
+**Decision:** every analytics figure (`classAverageScore`/`bestScore`/
+`worstScore`/`generalClassAverage`, numbers only — no class-average grade
+letter this step, confirmed) is a Prisma `groupBy`/`aggregate` computed
+fresh on each read, never cached — same "fewer tables, no cascade to keep
+in sync" reasoning as every other derived field in this app.
+`computeAssessmentClassStats` (`grade-computation.ts`) is the one new pure
+function, shared by both tracks.
+
+**The published-only filter has two genuinely different shapes, not one:**
+subject/general-level averages live on tables that already carry `status`
+directly (`term_subject_result(s)`/`term_overall_results`/
+`term_exam_results`), so the fix is just adding `status: PUBLISHED` to an
+existing `groupBy`/`aggregate`'s `where` — the exact gap
+`GradesService.getStudentResults`'s pre-existing `classAverageBySubject`
+had (that method is staff-only, so it never needed the filter). Per-
+evaluation/per-exam best/worst has no such column to filter on at all —
+`evaluation_scores`/`exam_scores` carry no publish state, and publishing
+is **per-student-per-subject**, so a `groupBy` can't express it. Resolved
+as: fetch the eligible (published) studentId set per subject first, then
+filter+aggregate every score row for that assessment in application code.
+Never a 0 for "nothing decided" — `null`, matching every other average
+in this app.
+
+**Anonymity is structural:** studentId is used only to build the
+eligibility Set; it's never selected into the response-shaping code
+alongside a name. There's no "fetch the name, then strip it" step to get
+wrong, because no code path in these two methods ever has a classmate's
+name in scope for these fields.
+
+**One column-shape wrinkle, exam track only:** `year_exam_results` has no
+`class_arm_id` (whole-session, not per-class-arm). Its general class
+average resolves "who's in the class" via `student_enrollments` for that
+class arm + session first — the only analytics level that isn't a direct
+column filter. Covered by its own fully-isolated e2e fixture
+(`exams-views.e2e-spec.ts`), not just incidental coverage from the main
+partial-year fixture (which deliberately never reaches a real
+`YearExamResult`, so it could never have distinguished a correct
+roster-join from an always-null fallback).
+
+**Test technique — the "straggler" fixture, reused three times:** to get
+a classmate whose subject-level row is genuinely `DRAFT` while the
+caller's own is `PUBLISHED` (publish is per-student-per-subject — real
+classmates can be mixed), the classmate is scored with a deliberately
+EXTREME value (100 against a ~50 average) in a SEPARATE call issued AFTER
+the initial `publish()`, landing fresh and un-swept. Used in
+`report-card.e2e-spec.ts`, `me-student.e2e-spec.ts`, `me-parent.e2e-spec.ts`,
+and `exams-views.e2e-spec.ts` — each asserts the self-view figure is
+unaffected by the extreme value while the same request from staff reflects
+it, plus a `JSON.stringify` check that the straggler's first name/
+admission-number/id (never `lastName`, which every fixture student in
+these files shares) appear nowhere in the response.

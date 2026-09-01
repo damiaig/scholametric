@@ -227,12 +227,29 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
       expect(ca2).toMatchObject({ description: "CA 2", rawScore: null, isAbsent: true });
       expect(ca3).toMatchObject({ description: "CA 3", rawScore: 84, isAbsent: false });
 
+      // v0.7 step 5 (SPEC_V0.7.md §4) — comparative analytics, staff view:
+      // computed over the WHOLE class (target + partial), unfiltered by
+      // anyone's publish state. subjectA's class average is (51+30)/2.
+      expect(subjA.classAverageScore).toBe(40.5);
+      // CA1: target=18, partial=15 -> avg 16.5, best 18, worst 15.
+      expect(ca1).toMatchObject({ classAverageScore: 16.5, bestScore: 18, worstScore: 15 });
+      // CA2: target is ABSENT (excluded); partial's real 0 is the only
+      // decided score -> avg/best/worst all 0, not null (a real 0 is a
+      // real data point, distinct from "nothing decided").
+      expect(ca2).toMatchObject({ classAverageScore: 0, bestScore: 0, worstScore: 0 });
+      // CA3: target=84, partial=75 -> avg 79.5, best 84, worst 75.
+      expect(ca3).toMatchObject({ classAverageScore: 79.5, bestScore: 84, worstScore: 75 });
+
       // Staff sees the breakdown regardless of publish state — subjectB
       // below is still DRAFT, and its evaluation is visible all the same.
       const subjB = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectB);
       expect(subjB.status).toBe("DRAFT");
       expect(subjB.evaluations).toHaveLength(1);
       expect(subjB.evaluations[0]).toMatchObject({ name: "CA 1", description: "CA 1", rawScore: 10, isAbsent: false });
+      // Only one student (target) has ever been scored on subjectB — the
+      // class average with a single data point is just that data point.
+      expect(subjB.classAverageScore).toBe(10);
+      expect(subjB.evaluations[0]).toMatchObject({ classAverageScore: 10, bestScore: 10, worstScore: 10 });
     });
 
     it("partial-term: a student with one published + one still-pending subject has a null overall position", async () => {

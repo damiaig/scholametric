@@ -123,12 +123,19 @@ export interface UnpublishExamResponse {
   yearExamRecomputedCount: number;
 }
 
-// v0.7 step 3 (SPEC_V0.7.md §4) — the two exam read views.
+// v0.7 step 3 (SPEC_V0.7.md §4) — the two exam read views. v0.7 step 5
+// (SPEC_V0.7.md §4) adds comparative analytics, numbers only, same
+// eligibility rule as grades.ts's ReportCardEvaluation: null when nothing
+// decided survives the filter (published classmates only for STUDENT/
+// PARENT; the whole class for staff) — never a 0 or a leaked draft score.
 export interface StudentExamRow {
   examId: string;
   name: string;
   rawScore: number | null;
   isAbsent: boolean;
+  classAverageScore: number | null;
+  bestScore: number | null;
+  worstScore: number | null;
 }
 
 // The per-term "Show exams" button's data (subject-scoped). For
@@ -144,6 +151,7 @@ export interface StudentSubjectExamsResponse {
   subjectExamAverage: number | null;
   subjectExamGrade: string | null;
   status: ResultStatus | null;
+  classAverageScore: number | null;
 }
 
 export interface YearExamsTermSubject {
@@ -152,6 +160,7 @@ export interface YearExamsTermSubject {
   exams: StudentExamRow[];
   subjectExamAverage: number | null;
   subjectExamGrade: string | null;
+  classAverageScore: number | null;
 }
 
 export interface YearExamsTerm {
@@ -162,6 +171,7 @@ export interface YearExamsTerm {
   termExamGrade: string | null;
   termExamPosition: number | null;
   status: ResultStatus | null;
+  classAverageScore: number | null;
 }
 
 // The dedicated year-long Exams view — one entry per term the student was
@@ -180,4 +190,5 @@ export interface YearExamsResponse {
   yearExamPosition: number | null;
   termsCount: number;
   overallStatus: ResultStatus | null;
+  generalClassAverage: number | null;
 }

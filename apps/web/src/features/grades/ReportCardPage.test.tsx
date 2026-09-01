@@ -58,9 +58,36 @@ const CARD: ReportCardResponse = {
       subjectName: "Mathematics",
       needsTeacherAssignment: false,
       evaluations: [
-        { evaluationId: "ca1", name: "CA 1", description: "Maths first continuous assessment", rawScore: 0, isAbsent: false },
-        { evaluationId: "ca2", name: "CA 2", description: "Maths second continuous assessment", rawScore: null, isAbsent: true },
-        { evaluationId: "ca3", name: "CA 3", description: "Maths third continuous assessment", rawScore: null, isAbsent: false },
+        {
+          evaluationId: "ca1",
+          name: "CA 1",
+          description: "Maths first continuous assessment",
+          rawScore: 0,
+          isAbsent: false,
+          classAverageScore: 45,
+          bestScore: 90,
+          worstScore: 0,
+        },
+        {
+          evaluationId: "ca2",
+          name: "CA 2",
+          description: "Maths second continuous assessment",
+          rawScore: null,
+          isAbsent: true,
+          classAverageScore: null,
+          bestScore: null,
+          worstScore: null,
+        },
+        {
+          evaluationId: "ca3",
+          name: "CA 3",
+          description: "Maths third continuous assessment",
+          rawScore: null,
+          isAbsent: false,
+          classAverageScore: null,
+          bestScore: null,
+          worstScore: null,
+        },
       ],
       totalScore: 0,
       autoGrade: "F9",
@@ -68,15 +95,43 @@ const CARD: ReportCardResponse = {
       finalGrade: "F9",
       subjectPosition: 5,
       status: "DRAFT",
+      classAverageScore: 42,
     },
     {
       subjectId: "sub2",
       subjectName: "English Language",
       needsTeacherAssignment: false,
       evaluations: [
-        { evaluationId: "ca1", name: "CA 1", description: "First continuous assessment", rawScore: 18, isAbsent: false },
-        { evaluationId: "ca2", name: "CA 2", description: "Second continuous assessment", rawScore: 17, isAbsent: false },
-        { evaluationId: "ca3", name: "CA 3", description: "Third continuous assessment", rawScore: 55, isAbsent: false },
+        {
+          evaluationId: "ca1",
+          name: "CA 1",
+          description: "First continuous assessment",
+          rawScore: 18,
+          isAbsent: false,
+          classAverageScore: 20,
+          bestScore: 25,
+          worstScore: 15,
+        },
+        {
+          evaluationId: "ca2",
+          name: "CA 2",
+          description: "Second continuous assessment",
+          rawScore: 17,
+          isAbsent: false,
+          classAverageScore: 18,
+          bestScore: 22,
+          worstScore: 12,
+        },
+        {
+          evaluationId: "ca3",
+          name: "CA 3",
+          description: "Third continuous assessment",
+          rawScore: 55,
+          isAbsent: false,
+          classAverageScore: 50,
+          bestScore: 60,
+          worstScore: 40,
+        },
       ],
       totalScore: 90,
       autoGrade: "A1",
@@ -84,6 +139,7 @@ const CARD: ReportCardResponse = {
       finalGrade: "A1",
       subjectPosition: null,
       status: "PENDING_APPROVAL",
+      classAverageScore: 68,
     },
   ],
   overall: null,
@@ -187,6 +243,38 @@ describe("ReportCardPage — rendering", () => {
     expect(screen.getByText("First continuous assessment")).toBeInTheDocument();
     expect(screen.getByText("Second continuous assessment")).toBeInTheDocument();
     expect(screen.getByText("Third continuous assessment")).toBeInTheDocument();
+  });
+
+  it("v0.7 step 5: renders class average/best/worst as anonymous numbers, and renders nothing for a null (unavailable) stat", async () => {
+    mockCommon("SCHOOL_ADMIN", CARD);
+    renderPage();
+
+    const mathHeading = await screen.findByText("Mathematics");
+    const mathSubject = within(mathHeading.closest("div.break-inside-avoid")!);
+    // Subject-level class average.
+    expect(mathSubject.getByText("Class avg 42")).toBeInTheDocument();
+    // CA1's per-evaluation stats.
+    expect(mathSubject.getByText("Class avg 45 · Best 90 · Worst 0")).toBeInTheDocument();
+    // CA2 (absent) and CA3 (blank) have null stats in the fixture — nothing
+    // extra renders for them (only one "Class avg 45..." line exists, not
+    // one per evaluation).
+    expect(mathSubject.getAllByText(/Class avg/).length).toBe(2); // the subject line + CA1's line only
+
+    const englishHeading = screen.getByText("English Language");
+    const englishSubject = within(englishHeading.closest("div.break-inside-avoid")!);
+    expect(englishSubject.getByText("Class avg 68")).toBeInTheDocument();
+    expect(englishSubject.getByText("Class avg 50 · Best 60 · Worst 40")).toBeInTheDocument();
+  });
+
+  it("v0.7 step 5: renders the general class average beside the overall block, absent when null", async () => {
+    mockCommon("SCHOOL_ADMIN", {
+      ...CARD,
+      overall: { averageScore: 75, averageGrade: "B3", overallPosition: 2, status: "PUBLISHED", subjectsCount: 2, generalClassAverage: 58 },
+    });
+    renderPage();
+
+    await screen.findByText("Mathematics");
+    expect(screen.getByText("Class avg 58")).toBeInTheDocument();
   });
 
   it("a subject with zero evaluations entered shows an empty (not broken) breakdown", async () => {

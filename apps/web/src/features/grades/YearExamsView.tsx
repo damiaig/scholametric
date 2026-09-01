@@ -2,6 +2,7 @@ import type { YearExamsResponse } from "@scholametric/shared";
 import { StatusBadge } from "../../components/StatusBadge";
 import { resultStatusLabel, resultStatusTone } from "./result-status";
 import { formatScore } from "./format-score";
+import { AssessmentClassStatsLabel, ClassAverageLabel } from "./ClassStats";
 
 function formatTermName(name: string): string {
   return name.charAt(0) + name.slice(1).toLowerCase() + " term";
@@ -50,30 +51,39 @@ export function YearExamsView({ data }: YearExamsViewProps) {
                   <p className="mb-1 text-sm font-medium text-text">{subject.subjectName}</p>
                   <ul className="flex flex-col gap-0.5 text-sm">
                     {subject.exams.map((exam) => (
-                      <li key={exam.examId} className="flex items-center justify-between gap-2">
-                        <span className="text-text">{exam.name}</span>
+                      <li key={exam.examId} className="flex items-start justify-between gap-2">
+                        <span className="flex flex-col">
+                          <span className="text-text">{exam.name}</span>
+                          <AssessmentClassStatsLabel classAverageScore={exam.classAverageScore} bestScore={exam.bestScore} worstScore={exam.worstScore} />
+                        </span>
                         <span className="font-mono text-text">
                           {exam.isAbsent ? "Abs" : exam.rawScore === null ? "—" : formatScore(exam.rawScore)}
                         </span>
                       </li>
                     ))}
                   </ul>
-                  <p className="mt-1 text-xs text-muted">
-                    Subject average:{" "}
-                    <span className="font-mono text-text">
-                      {subject.subjectExamAverage === null ? "—" : formatScore(subject.subjectExamAverage)}
-                    </span>{" "}
-                    {subject.subjectExamGrade ?? ""}
+                  <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+                    <span>
+                      Subject average:{" "}
+                      <span className="font-mono text-text">
+                        {subject.subjectExamAverage === null ? "—" : formatScore(subject.subjectExamAverage)}
+                      </span>{" "}
+                      {subject.subjectExamGrade ?? ""}
+                    </span>
+                    <ClassAverageLabel value={subject.classAverageScore} />
                   </p>
                 </div>
               ))}
             </div>
           )}
 
-          <p className="mt-2 text-sm text-text">
-            Term exam average:{" "}
-            <span className="font-mono">{term.termExamAverage === null ? "—" : formatScore(term.termExamAverage)}</span>{" "}
-            {term.termExamGrade ?? "—"} <span className="text-muted">{positionLabel(term.termExamPosition)}</span>
+          <p className="mt-2 flex flex-wrap items-center gap-2 text-sm text-text">
+            <span>
+              Term exam average:{" "}
+              <span className="font-mono">{term.termExamAverage === null ? "—" : formatScore(term.termExamAverage)}</span>{" "}
+              {term.termExamGrade ?? "—"} <span className="text-muted">{positionLabel(term.termExamPosition)}</span>
+            </span>
+            <ClassAverageLabel value={term.classAverageScore} />
           </p>
         </div>
       ))}
@@ -89,6 +99,7 @@ export function YearExamsView({ data }: YearExamsViewProps) {
             </p>
             <p className="text-muted">{positionLabel(data.yearExamPosition)}</p>
             <p className="text-xs text-muted">{data.termsCount} term(s)</p>
+            <ClassAverageLabel value={data.generalClassAverage} />
           </div>
         )}
       </div>

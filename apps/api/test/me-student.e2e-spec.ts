@@ -33,6 +33,7 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
   let studentAId: string; // "Mixed": subjectX published + subjectY draft -> overall stays non-published
   let studentBId: string; // "Full": subjectX published, only subject -> overall PUBLISHED
   let studentCId: string; // "Empty": enrolled, nothing entered this term
+  let studentDraftId: string; // v0.7 step 5 — extreme, unpublished classmate score on subjectX (the class-analytics exclusion proof)
 
   let tokenA: string;
   let tokenB: string;
@@ -171,6 +172,18 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     await score(subjectX, xEval3, [{ studentId: studentAId, rawScore: 84 }, { studentId: studentBId, rawScore: 80 }]);
     // A: (18+84)/2=51 (eval2 absent, excluded). B: (12+80)/2=46.
     await publish(subjectX);
+
+    // v0.7 step 5 (SPEC_V0.7.md §4) — a THIRD student added to subjectX
+    // AFTER publish() already ran: this is the "straggler" case GET
+    // /grades/review documents (a fresh term_subject_result starts, and
+    // stays, DRAFT — publish() doesn't retroactively sweep new students
+    // in). Deliberately extreme (100 on every evaluation, decided not
+    // absent) so a broken published-only filter on the class analytics
+    // is unmissable, not a subtle few-point drift.
+    studentDraftId = await enrollSunrise("MeDraft", 3);
+    await score(subjectX, xEval1, [{ studentId: studentDraftId, rawScore: 100 }]);
+    await score(subjectX, xEval2, [{ studentId: studentDraftId, rawScore: 100 }]);
+    await score(subjectX, xEval3, [{ studentId: studentDraftId, rawScore: 100 }]);
 
     // subjectY: A only, one evaluation scored -> DRAFT, never published.
     // This is what keeps A's OVERALL from ever reaching PUBLISHED
@@ -360,6 +373,60 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     it("401 unauthenticated", async () => {
       const response = await request(app.getHttpServer()).get("/api/v1/me/report-card").query({ termId: sunriseTermId, sessionId: sunriseSessionId });
       expect(response.status).toBe(401);
+    });
+
+    // v0.7 step 5 (SPEC_V0.7.md §4) — comparative analytics: the two
+    // non-negotiables. (1) An unpublished classmate's EXTREME score must
+    // not feed the self-view caller's class average/best/worst — proven
+    // against studentDraftId's 100s, added as a straggler after subjectX
+    // was already published. (2) Anonymity is structural: the response
+    // never carries the draft classmate's name or id anywhere, checked via
+    // JSON.stringify on the WHOLE body, not just the fields we expect to
+    // hold analytics.
+    it("class average/best/worst EXCLUDE an unpublished classmate's extreme score for the self-view caller, while staff sees the real class — and the classmate's identity never leaks", async () => {
+      const selfView = await request(app.getHttpServer())
+        .get("/api/v1/me/report-card")
+        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
+        .set(auth(tokenA));
+      expect(selfView.status).toBe(200);
+      const subj = selfView.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectX);
+
+      // Subject-level: avg(A=51, B=46) = 48.5 — studentDraftId's 100 excluded.
+      expect(subj.classAverageScore).toBe(48.5);
+
+      const ca1 = subj.evaluations.find((e: { name: string }) => e.name === "CA 1");
+      const ca2 = subj.evaluations.find((e: { name: string }) => e.name === "CA 2");
+      const ca3 = subj.evaluations.find((e: { name: string }) => e.name === "CA 3");
+      // CA1: A=18, B=12 (both published) -> avg 15, best 18, worst 12.
+      expect(ca1).toMatchObject({ classAverageScore: 15, bestScore: 18, worstScore: 12 });
+      // CA2: A and B are BOTH absent -> nothing decided among ELIGIBLE
+      // (published) students -> null, even though studentDraftId DOES have
+      // a decided (100) score there — ineligible, not just unlucky timing.
+      expect(ca2).toMatchObject({ classAverageScore: null, bestScore: null, worstScore: null });
+      // CA3: A=84, B=80 -> avg 82, best 84, worst 80 — never 100.
+      expect(ca3).toMatchObject({ classAverageScore: 82, bestScore: 84, worstScore: 80 });
+
+      // Structural anonymity: studentDraftId's firstName/admissionNumber/id
+      // (all unique to them, unlike lastName "Student" which every fixture
+      // student here shares) appear NOWHERE in the response.
+      const serialized = JSON.stringify(selfView.body);
+      expect(serialized).not.toContain("MeDraft");
+      expect(serialized).not.toContain("E2E-MESTUDENT/MeDraft");
+      expect(serialized).not.toContain(studentDraftId);
+
+      // Staff sees the real, unfiltered class — the extreme value included.
+      const staffView = await request(app.getHttpServer())
+        .get(`/api/v1/students/${studentAId}/report-card`)
+        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
+        .set(auth(sunriseAdminToken));
+      expect(staffView.status).toBe(200);
+      const staffSubj = staffView.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectX);
+      // avg(51, 46, 100) = 65.666... -> 65.67.
+      expect(staffSubj.classAverageScore).toBeCloseTo(65.67, 2);
+      const staffCa2 = staffSubj.evaluations.find((e: { name: string }) => e.name === "CA 2");
+      // Staff has no eligibility filter — studentDraftId's 100 is the ONLY
+      // decided CA2 score (A and B are both absent), so it stands alone.
+      expect(staffCa2).toMatchObject({ classAverageScore: 100, bestScore: 100, worstScore: 100 });
     });
   });
 

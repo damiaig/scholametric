@@ -9,6 +9,7 @@ import { formatScore } from "./format-score";
 import { useStudentExams } from "./use-student-exams";
 import { useMyExams } from "./use-my-exams";
 import { useChildExams } from "./use-child-exams";
+import { AssessmentClassStatsLabel, ClassAverageLabel } from "./ClassStats";
 
 export type ExamsViewer = { kind: "staff"; studentId: string } | { kind: "self" } | { kind: "child"; childId: string };
 
@@ -62,8 +63,11 @@ export function SubjectExamsPanel({ subjectId, subjectName, termId, sessionId, v
         <div className="mt-2 flex flex-col gap-1">
           <ul className="flex flex-col gap-1 text-sm">
             {query.data.exams.map((exam) => (
-              <li key={exam.examId} className="flex items-center justify-between gap-2">
-                <span className="text-text">{exam.name}</span>
+              <li key={exam.examId} className="flex items-start justify-between gap-2">
+                <span className="flex flex-col">
+                  <span className="text-text">{exam.name}</span>
+                  <AssessmentClassStatsLabel classAverageScore={exam.classAverageScore} bestScore={exam.bestScore} worstScore={exam.worstScore} />
+                </span>
                 <span className="font-mono text-text">{exam.isAbsent ? "Abs" : exam.rawScore === null ? "—" : formatScore(exam.rawScore)}</span>
               </li>
             ))}
@@ -75,6 +79,7 @@ export function SubjectExamsPanel({ subjectId, subjectName, termId, sessionId, v
             </span>
             <span className="text-text">{query.data.subjectExamGrade ?? "—"}</span>
             {query.data.status && <StatusBadge label={resultStatusLabel(query.data.status)} tone={resultStatusTone(query.data.status)} />}
+            <ClassAverageLabel value={query.data.classAverageScore} />
           </div>
         </div>
       )}

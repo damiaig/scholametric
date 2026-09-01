@@ -31,6 +31,7 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
 
   let studentAId: string; // "Mixed" — parent1's child #1
   let studentBId: string; // "Full" — parent1's child #2, overall PUBLISHED + remark
+  let studentDraftId: string; // v0.7 step 5 — extreme, unpublished classmate score on subjectX (the class-analytics exclusion proof)
   let notCoveredStudentId: string; // linked to g2 only, NOT to g1 — child_not_covered analogue
   let otherFamilyStudentId: string; // a REAL student in a wholly different family (g3)
 
@@ -191,6 +192,16 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
     await score(subjectX, xEval3, [{ studentId: studentAId, rawScore: 84 }, { studentId: studentBId, rawScore: 80 }]);
     // A: (18+84)/2=51. B: (12+80)/2=46.
     await publish(subjectX);
+
+    // v0.7 step 5 (SPEC_V0.7.md §4) — a THIRD student added to subjectX
+    // AFTER publish() already ran (the "straggler" case): their
+    // term_subject_result starts, and stays, DRAFT. Deliberately extreme
+    // (100 on every evaluation, decided not absent) so a broken
+    // published-only filter on the class analytics is unmissable.
+    studentDraftId = await enrollSunrise("PDraft", 4);
+    await score(subjectX, xEval1, [{ studentId: studentDraftId, rawScore: 100 }]);
+    await score(subjectX, xEval2, [{ studentId: studentDraftId, rawScore: 100 }]);
+    await score(subjectX, xEval3, [{ studentId: studentDraftId, rawScore: 100 }]);
 
     // subjectY: A only, one evaluation scored -> DRAFT, never published.
     // Keeps A's overall from ever reaching PUBLISHED.
@@ -392,6 +403,45 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
         .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
         .set(auth(tokenStudentA));
       expect(response.status).toBe(403);
+    });
+
+    // v0.7 step 5 (SPEC_V0.7.md §4) — same two non-negotiables as
+    // me-student.e2e-spec.ts, now through the PARENT route.
+    it("class average/best/worst EXCLUDE an unpublished classmate's extreme score for the self-view (PARENT) caller, while staff sees the real class — and the classmate's identity never leaks", async () => {
+      const parentView = await request(app.getHttpServer())
+        .get(`/api/v1/me/children/${studentAId}/report-card`)
+        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
+        .set(auth(tokenParent1));
+      expect(parentView.status).toBe(200);
+      const subj = parentView.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectX);
+
+      // Subject-level: avg(A=51, B=46) = 48.5 — studentDraftId's 100 excluded.
+      expect(subj.classAverageScore).toBe(48.5);
+
+      const ca1 = subj.evaluations.find((e: { name: string }) => e.name === "CA 1");
+      const ca2 = subj.evaluations.find((e: { name: string }) => e.name === "CA 2");
+      const ca3 = subj.evaluations.find((e: { name: string }) => e.name === "CA 3");
+      expect(ca1).toMatchObject({ classAverageScore: 15, bestScore: 18, worstScore: 12 });
+      // Both A and B are absent on CA2 -> null for the parent, even though
+      // studentDraftId has a decided (100) score there.
+      expect(ca2).toMatchObject({ classAverageScore: null, bestScore: null, worstScore: null });
+      expect(ca3).toMatchObject({ classAverageScore: 82, bestScore: 84, worstScore: 80 });
+
+      const serialized = JSON.stringify(parentView.body);
+      expect(serialized).not.toContain("PDraft");
+      expect(serialized).not.toContain("E2E-MEPARENT/PDraft");
+      expect(serialized).not.toContain(studentDraftId);
+
+      // Staff sees the real, unfiltered class — the extreme value included.
+      const staffView = await request(app.getHttpServer())
+        .get(`/api/v1/students/${studentAId}/report-card`)
+        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
+        .set(auth(sunriseAdminToken));
+      expect(staffView.status).toBe(200);
+      const staffSubj = staffView.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectX);
+      expect(staffSubj.classAverageScore).toBeCloseTo(65.67, 2);
+      const staffCa2 = staffSubj.evaluations.find((e: { name: string }) => e.name === "CA 2");
+      expect(staffCa2).toMatchObject({ classAverageScore: 100, bestScore: 100, worstScore: 100 });
     });
   });
 

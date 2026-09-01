@@ -46,6 +46,7 @@ const REPORT_CARD = {
       finalGrade: "B2",
       subjectPosition: 3,
       status: "PUBLISHED",
+      classAverageScore: null,
     },
   ],
   overall: null,

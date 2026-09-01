@@ -1,4 +1,4 @@
-import { computeEvaluationAverage, type DecidableScoreInput } from "./grade-computation";
+import { computeAssessmentClassStats, computeEvaluationAverage, type ClassScoreRow, type DecidableScoreInput } from "./grade-computation";
 
 describe("computeEvaluationAverage — absent exclusion (SPEC_V0.7.md §2/§5)", () => {
   it("averages decided scores, native /100, no weighting", () => {
@@ -55,5 +55,41 @@ describe("computeEvaluationAverage — absent exclusion (SPEC_V0.7.md §2/§5)",
     expect(computeEvaluationAverage(notEntered)).toBe(computeEvaluationAverage(absent));
     expect(computeEvaluationAverage(realZero)).not.toBe(computeEvaluationAverage(absent));
     expect(computeEvaluationAverage(realZero)).toBe(10);
+  });
+});
+
+describe("computeAssessmentClassStats — comparative analytics (SPEC_V0.7.md §4, step 5)", () => {
+  it("computes average/best/worst over decided scores, unrestricted (staff — eligibleStudentIds: null)", () => {
+    const rows: ClassScoreRow[] = [
+      { studentId: "s1", rawScore: 60, isAbsent: false },
+      { studentId: "s2", rawScore: 40, isAbsent: false },
+      { studentId: "s3", rawScore: 80, isAbsent: false },
+    ];
+    expect(computeAssessmentClassStats(rows, null)).toEqual({ classAverageScore: 60, bestScore: 80, worstScore: 40 });
+  });
+
+  it("excludes a student NOT in the eligible set — the published-only filter, applied", () => {
+    const rows: ClassScoreRow[] = [
+      { studentId: "published1", rawScore: 60, isAbsent: false },
+      { studentId: "published2", rawScore: 40, isAbsent: false },
+      { studentId: "draftStudent", rawScore: 100, isAbsent: false }, // NOT eligible — must not move avg/best
+    ];
+    const eligible = new Set(["published1", "published2"]);
+    expect(computeAssessmentClassStats(rows, eligible)).toEqual({ classAverageScore: 50, bestScore: 60, worstScore: 40 });
+  });
+
+  it("excludes absent rows from average AND best/worst, same as computeEvaluationAverage", () => {
+    const rows: ClassScoreRow[] = [
+      { studentId: "s1", rawScore: 60, isAbsent: false },
+      { studentId: "s2", rawScore: null, isAbsent: true },
+    ];
+    expect(computeAssessmentClassStats(rows, null)).toEqual({ classAverageScore: 60, bestScore: 60, worstScore: 60 });
+  });
+
+  it("returns null (not 0) across all three when nothing decided survives the filter", () => {
+    const rows: ClassScoreRow[] = [{ studentId: "onlyDraftStudent", rawScore: 90, isAbsent: false }];
+    const eligible = new Set<string>(); // nobody eligible
+    expect(computeAssessmentClassStats(rows, eligible)).toEqual({ classAverageScore: null, bestScore: null, worstScore: null });
+    expect(computeAssessmentClassStats([], null)).toEqual({ classAverageScore: null, bestScore: null, worstScore: null });
   });
 });

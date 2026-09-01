@@ -5,6 +5,7 @@ import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import {
+  computeAssessmentClassStats,
   computeEvaluationAverage,
   computeStandardCompetitionRanking,
   resolveGradeBand,
@@ -127,12 +128,18 @@ export interface ExamsListResponse {
 }
 
 // v0.7 step 3 (SPEC_V0.7.md §4) — one row per exam, for both the per-term
-// "Show exams" panel and the year view's per-subject breakdown.
+// "Show exams" panel and the year view's per-subject breakdown. v0.7
+// step 5 adds comparative analytics (numbers only) — see
+// computeAssessmentClassStats (grade-computation.ts) for the eligibility
+// rule these three come from.
 export interface StudentExamRow {
   examId: string;
   name: string;
   rawScore: number | null;
   isAbsent: boolean;
+  classAverageScore: number | null;
+  bestScore: number | null;
+  worstScore: number | null;
 }
 
 // The per-term "Show exams" button's data (subject-scoped). For STUDENT/
@@ -150,6 +157,7 @@ export interface StudentSubjectExamsResponse {
   subjectExamAverage: number | null;
   subjectExamGrade: string | null;
   status: ResultStatus | null;
+  classAverageScore: number | null;
 }
 
 export interface YearExamsTermSubject {
@@ -158,6 +166,7 @@ export interface YearExamsTermSubject {
   exams: StudentExamRow[];
   subjectExamAverage: number | null;
   subjectExamGrade: string | null;
+  classAverageScore: number | null;
 }
 
 export interface YearExamsTerm {
@@ -168,6 +177,7 @@ export interface YearExamsTerm {
   termExamGrade: string | null;
   termExamPosition: number | null;
   status: ResultStatus | null;
+  classAverageScore: number | null;
 }
 
 // The dedicated year-long Exams view (SPEC_V0.7.md §4) — one entry per
@@ -187,6 +197,7 @@ export interface YearExamsResponse {
   yearExamPosition: number | null;
   termsCount: number;
   overallStatus: ResultStatus | null;
+  generalClassAverage: number | null;
 }
 
 // SPEC_V0.7.md §2/§5, step 1: Track B — exams are scored/published
@@ -899,6 +910,7 @@ export class ExamsService {
         subjectExamAverage: null,
         subjectExamGrade: null,
         status: null,
+        classAverageScore: null,
       };
     }
 
@@ -910,6 +922,52 @@ export class ExamsService {
     const scores = examIds.length > 0 ? await this.prisma.examScore.findMany({ where: { examId: { in: examIds }, studentId } }) : [];
     const scoreByExam = new Map(scores.map((s) => [s.examId, s]));
 
+    // v0.7 step 5 (SPEC_V0.7.md §4) — comparative analytics. Only computed
+    // once `visible` is true, matching this method's existing early-return:
+    // an invisible subject stays byte-for-byte "nothing entered yet,"
+    // never carrying a real classAverageScore either. Same eligibility
+    // rule as GradesService.getReportCard: subject-level class average is
+    // a direct groupBy-able aggregate (status lives on
+    // term_subject_exam_results itself); per-exam best/worst needs the
+    // studentId allow-list since exam_scores carries no status of its own.
+    const [classAvgAgg, publishedRowsForEligibility, classScores] = await Promise.all([
+      this.prisma.termSubjectExamResult.aggregate({
+        where: {
+          schoolId,
+          classArmId: enrollment.classArmId,
+          subjectId: query.subjectId,
+          termId: query.termId,
+          sessionId: query.sessionId,
+          ...(publishedOnlyForSelfView ? { status: ResultStatus.PUBLISHED } : {}),
+        },
+        _avg: { totalScore: true },
+      }),
+      publishedOnlyForSelfView
+        ? this.prisma.termSubjectExamResult.findMany({
+            where: {
+              schoolId,
+              classArmId: enrollment.classArmId,
+              subjectId: query.subjectId,
+              termId: query.termId,
+              sessionId: query.sessionId,
+              status: ResultStatus.PUBLISHED,
+            },
+            select: { studentId: true },
+          })
+        : [],
+      examIds.length > 0
+        ? this.prisma.examScore.findMany({ where: { examId: { in: examIds } }, select: { examId: true, studentId: true, rawScore: true, isAbsent: true } })
+        : [],
+    ]);
+    const classAverageScore = classAvgAgg._avg.totalScore === null ? null : Math.round(Number(classAvgAgg._avg.totalScore) * 100) / 100;
+    const eligibleStudentIds = publishedOnlyForSelfView ? new Set(publishedRowsForEligibility.map((r) => r.studentId)) : null;
+    const classScoresByExamId = new Map<string, typeof classScores>();
+    for (const s of classScores) {
+      const arr = classScoresByExamId.get(s.examId) ?? [];
+      arr.push(s);
+      classScoresByExamId.set(s.examId, arr);
+    }
+
     return {
       studentId,
       subjectId: query.subjectId,
@@ -918,14 +976,23 @@ export class ExamsService {
       sessionId: query.sessionId,
       exams: exams.map((e) => {
         const score = scoreByExam.get(e.id);
+        const classRows = classScoresByExamId.get(e.id) ?? [];
+        const stats = computeAssessmentClassStats(
+          classRows.map((row) => ({ studentId: row.studentId, rawScore: row.rawScore === null ? null : Number(row.rawScore), isAbsent: row.isAbsent })),
+          eligibleStudentIds,
+        );
         return {
           examId: e.id,
           name: e.name ?? "Exam",
           rawScore: score?.rawScore === null || score?.rawScore === undefined ? null : Number(score.rawScore),
           isAbsent: score?.isAbsent ?? false,
+          classAverageScore: stats.classAverageScore,
+          bestScore: stats.bestScore,
+          worstScore: stats.worstScore,
         };
       }),
       subjectExamAverage: Number(subjectResult!.totalScore),
+      classAverageScore,
       subjectExamGrade: subjectResult!.autoGrade,
       status: subjectResult!.status,
     };
@@ -1007,6 +1074,90 @@ export class ExamsService {
       examsByTermAndSubject.set(key, arr);
     }
 
+    // v0.7 step 5 (SPEC_V0.7.md §4) — comparative analytics, batched
+    // across the WHOLE year in one extra query per level (never per-term/
+    // per-subject/per-exam). `visibleSubjectResultsAll` is the exact same
+    // per-row status predicate the termViews.map() below applies per
+    // term — computed once here so the analytics queries can be scoped to
+    // it up front; correctness still comes from each aggregate's own
+    // `status: PUBLISHED` where-clause (self-view only), not from this
+    // coarse pre-filter, so a subject visible in one term but not another
+    // can never cross-contaminate.
+    const termIds = terms.map((t) => t.id);
+    const visibleSubjectResultsAll = allSubjectResults.filter((r) => !publishedOnlyForSelfView || r.status === ResultStatus.PUBLISHED);
+    const visibleSubjectIds = [...new Set(visibleSubjectResultsAll.map((r) => r.subjectId))];
+
+    const [subjectClassAverages, subjectEligibilityRows, classExamScores, termClassAverages, classmates] = await Promise.all([
+      visibleSubjectIds.length > 0
+        ? this.prisma.termSubjectExamResult.groupBy({
+            by: ["termId", "subjectId"],
+            where: {
+              schoolId,
+              classArmId: enrollment.classArmId,
+              sessionId: query.sessionId,
+              subjectId: { in: visibleSubjectIds },
+              termId: { in: termIds },
+              ...(publishedOnlyForSelfView ? { status: ResultStatus.PUBLISHED } : {}),
+            },
+            _avg: { totalScore: true },
+          })
+        : [],
+      publishedOnlyForSelfView && visibleSubjectIds.length > 0
+        ? this.prisma.termSubjectExamResult.findMany({
+            where: {
+              schoolId,
+              classArmId: enrollment.classArmId,
+              sessionId: query.sessionId,
+              subjectId: { in: visibleSubjectIds },
+              termId: { in: termIds },
+              status: ResultStatus.PUBLISHED,
+            },
+            select: { termId: true, subjectId: true, studentId: true },
+          })
+        : [],
+      examIds.length > 0
+        ? this.prisma.examScore.findMany({ where: { examId: { in: examIds } }, select: { examId: true, studentId: true, rawScore: true, isAbsent: true } })
+        : [],
+      termIds.length > 0
+        ? this.prisma.termExamResult.groupBy({
+            by: ["termId"],
+            where: {
+              schoolId,
+              classArmId: enrollment.classArmId,
+              sessionId: query.sessionId,
+              termId: { in: termIds },
+              ...(publishedOnlyForSelfView ? { status: ResultStatus.PUBLISHED } : {}),
+            },
+            _avg: { averageScore: true },
+          })
+        : [],
+      // year_exam_results has no class_arm_id (it's whole-session, not
+      // per-class-arm) — "class" membership for the year-level general
+      // average has to be resolved via this session's roster instead of a
+      // direct column filter, unlike every other level above.
+      getRoster(this.prisma, schoolId, enrollment.classArmId, query.sessionId),
+    ]);
+
+    const classAverageByTermSubject = new Map(
+      subjectClassAverages.map((c) => [`${c.termId}:${c.subjectId}`, c._avg.totalScore === null ? null : Math.round(Number(c._avg.totalScore) * 100) / 100]),
+    );
+    const eligibleStudentIdsByTermSubject = new Map<string, Set<string>>();
+    for (const row of subjectEligibilityRows) {
+      const key = `${row.termId}:${row.subjectId}`;
+      const set = eligibleStudentIdsByTermSubject.get(key) ?? new Set<string>();
+      set.add(row.studentId);
+      eligibleStudentIdsByTermSubject.set(key, set);
+    }
+    const classScoresByExamId = new Map<string, typeof classExamScores>();
+    for (const s of classExamScores) {
+      const arr = classScoresByExamId.get(s.examId) ?? [];
+      arr.push(s);
+      classScoresByExamId.set(s.examId, arr);
+    }
+    const termClassAverageByTermId = new Map(
+      termClassAverages.map((c) => [c.termId, c._avg.averageScore === null ? null : Math.round(Number(c._avg.averageScore) * 100) / 100]),
+    );
+
     const termViews: YearExamsTerm[] = terms.map((term) => {
       const termResult = termResultByTermId.get(term.id);
       const termAggregateVisible = Boolean(termResult) && (!publishedOnlyForSelfView || termResult!.status === ResultStatus.PUBLISHED);
@@ -1017,20 +1168,32 @@ export class ExamsService {
       const subjects: YearExamsTermSubject[] = visibleSubjectResults
         .map((r) => {
           const exams = examsByTermAndSubject.get(`${term.id}:${r.subjectId}`) ?? [];
+          const eligibleForSubject = publishedOnlyForSelfView
+            ? (eligibleStudentIdsByTermSubject.get(`${term.id}:${r.subjectId}`) ?? new Set<string>())
+            : null;
           return {
             subjectId: r.subjectId,
             subjectName: r.subject.name,
             exams: exams.map((e) => {
               const score = scoreByExam.get(e.id);
+              const classRows = classScoresByExamId.get(e.id) ?? [];
+              const stats = computeAssessmentClassStats(
+                classRows.map((row) => ({ studentId: row.studentId, rawScore: row.rawScore === null ? null : Number(row.rawScore), isAbsent: row.isAbsent })),
+                eligibleForSubject,
+              );
               return {
                 examId: e.id,
                 name: e.name ?? "Exam",
                 rawScore: score?.rawScore === null || score?.rawScore === undefined ? null : Number(score.rawScore),
                 isAbsent: score?.isAbsent ?? false,
+                classAverageScore: stats.classAverageScore,
+                bestScore: stats.bestScore,
+                worstScore: stats.worstScore,
               };
             }),
             subjectExamAverage: Number(r.totalScore),
             subjectExamGrade: r.autoGrade,
+            classAverageScore: classAverageByTermSubject.get(`${term.id}:${r.subjectId}`) ?? null,
           };
         })
         .sort((a, b) => a.subjectName.localeCompare(b.subjectName));
@@ -1043,15 +1206,35 @@ export class ExamsService {
         termExamGrade: termAggregateVisible ? termResult!.averageGrade : null,
         termExamPosition: termAggregateVisible ? termResult!.examPosition : null,
         status: termAggregateVisible ? termResult!.status : null,
+        classAverageScore: termAggregateVisible ? (termClassAverageByTermId.get(term.id) ?? null) : null,
       };
     });
 
     const yearVisible = Boolean(yearResult) && (!publishedOnlyForSelfView || yearResult!.status === ResultStatus.PUBLISHED);
 
+    let generalClassAverage: number | null = null;
+    if (yearVisible) {
+      const classmateIds = classmates.map((s) => s.id);
+      const yearClassAvg =
+        classmateIds.length > 0
+          ? await this.prisma.yearExamResult.aggregate({
+              where: {
+                schoolId,
+                sessionId: query.sessionId,
+                studentId: { in: classmateIds },
+                ...(publishedOnlyForSelfView ? { status: ResultStatus.PUBLISHED } : {}),
+              },
+              _avg: { averageScore: true },
+            })
+          : null;
+      generalClassAverage = yearClassAvg?._avg.averageScore == null ? null : Math.round(Number(yearClassAvg._avg.averageScore) * 100) / 100;
+    }
+
     return {
       studentId,
       sessionId: query.sessionId,
       terms: termViews,
+      generalClassAverage,
       overallExamAverage: yearVisible ? Number(yearResult!.averageScore) : null,
       overallExamGrade: yearVisible ? yearResult!.averageGrade : null,
       yearExamPosition: yearVisible ? yearResult!.yearExamPosition : null,

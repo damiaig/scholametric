@@ -5,6 +5,7 @@ import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import {
+  computeAssessmentClassStats,
   computeEvaluationAverage,
   computeOverallAverage,
   computeOverallStatus,
@@ -283,12 +284,18 @@ export interface StudentResultsResponse {
 // Only the CURRENTLY ACTIVE evaluations are represented (deletedAt: null)
 // — matches exactly what produced `totalScore` below; a soft-deleted
 // evaluation's historical score is already excluded from every recompute.
+// v0.7 step 5 (SPEC_V0.7.md §4) — comparative analytics, numbers only
+// (no class-average grade letter this step). See computeAssessmentClassStats
+// (grade-computation.ts) for the eligibility rule these three come from.
 export interface ReportCardEvaluation {
   evaluationId: string;
   name: string;
   description: string;
   rawScore: number | null;
   isAbsent: boolean;
+  classAverageScore: number | null;
+  bestScore: number | null;
+  worstScore: number | null;
 }
 
 export interface ReportCardSubject {
@@ -302,6 +309,7 @@ export interface ReportCardSubject {
   finalGrade: string | null;
   subjectPosition: number | null;
   status: ResultStatus;
+  classAverageScore: number | null;
 }
 
 export interface ReportCardOverall {
@@ -310,6 +318,7 @@ export interface ReportCardOverall {
   overallPosition: number | null;
   status: ResultStatus;
   subjectsCount: number;
+  generalClassAverage: number | null;
 }
 
 interface RemarkAuthor {
@@ -1681,28 +1690,114 @@ export class GradesService {
       evaluationsBySubject.set(e.subjectId, arr);
     }
 
+    // v0.7 step 5 (SPEC_V0.7.md §4) — comparative analytics, batched (one
+    // extra query per level, never per-subject/per-evaluation). Subject-
+    // level class average reuses getStudentResults()'s exact groupBy
+    // pattern, extended with the missing publish gate that method never
+    // needed (it's staff-only). Per-evaluation stats need a JOIN-shaped
+    // filter no groupBy can express — Evaluation/EvaluationScore carry no
+    // publish state of their own, only the PARENT subject's
+    // term_subject_result.status does, PER STUDENT — so eligibility is
+    // resolved as a studentId allow-list per subject first, then applied
+    // in JS via computeAssessmentClassStats. `null` allow-list (staff)
+    // means every classmate's row counts regardless of publish state.
+    const [classAveragesBySubject, publishedRowsForEligibility, allEvaluationScores, overallClassAvg] = await Promise.all([
+      visibleSubjectIds.length > 0
+        ? this.prisma.termSubjectResult.groupBy({
+            by: ["subjectId"],
+            where: {
+              schoolId,
+              classArmId: enrollment.classArmId,
+              termId: query.termId,
+              sessionId: query.sessionId,
+              subjectId: { in: visibleSubjectIds },
+              ...(publishedOnlyForSelfView ? { status: ResultStatus.PUBLISHED } : {}),
+            },
+            _avg: { totalScore: true },
+          })
+        : [],
+      publishedOnlyForSelfView && visibleSubjectIds.length > 0
+        ? this.prisma.termSubjectResult.findMany({
+            where: {
+              schoolId,
+              classArmId: enrollment.classArmId,
+              termId: query.termId,
+              sessionId: query.sessionId,
+              subjectId: { in: visibleSubjectIds },
+              status: ResultStatus.PUBLISHED,
+            },
+            select: { subjectId: true, studentId: true },
+          })
+        : [],
+      evaluationIds.length > 0
+        ? this.prisma.evaluationScore.findMany({
+            where: { evaluationId: { in: evaluationIds } },
+            select: { evaluationId: true, studentId: true, rawScore: true, isAbsent: true },
+          })
+        : [],
+      this.prisma.termOverallResult.aggregate({
+        where: {
+          schoolId,
+          classArmId: enrollment.classArmId,
+          termId: query.termId,
+          sessionId: query.sessionId,
+          ...(publishedOnlyForSelfView ? { status: ResultStatus.PUBLISHED } : {}),
+        },
+        _avg: { averageScore: true },
+      }),
+    ]);
+    const classAverageBySubjectId = new Map(
+      classAveragesBySubject.map((c) => [c.subjectId, c._avg.totalScore === null ? null : Math.round(Number(c._avg.totalScore) * 100) / 100]),
+    );
+    const eligibleStudentIdsBySubject = new Map<string, Set<string>>();
+    for (const row of publishedRowsForEligibility) {
+      const set = eligibleStudentIdsBySubject.get(row.subjectId) ?? new Set<string>();
+      set.add(row.studentId);
+      eligibleStudentIdsBySubject.set(row.subjectId, set);
+    }
+    const classScoresByEvaluationId = new Map<string, typeof allEvaluationScores>();
+    for (const s of allEvaluationScores) {
+      const arr = classScoresByEvaluationId.get(s.evaluationId) ?? [];
+      arr.push(s);
+      classScoresByEvaluationId.set(s.evaluationId, arr);
+    }
+    const generalClassAverage =
+      overallClassAvg._avg.averageScore === null ? null : Math.round(Number(overallClassAvg._avg.averageScore) * 100) / 100;
+
     const subjects: ReportCardSubject[] = subjectResults
-      .map((r) => ({
-        subjectId: r.subjectId,
-        subjectName: r.subject.name,
-        needsTeacherAssignment: !assignedSubjects.has(r.subjectId),
-        evaluations: (evaluationsBySubject.get(r.subjectId) ?? []).map((e) => {
-          const score = scoreByEvaluation.get(e.id);
-          return {
-            evaluationId: e.id,
-            name: e.name,
-            description: e.description,
-            rawScore: score?.rawScore === null || score?.rawScore === undefined ? null : Number(score.rawScore),
-            isAbsent: score?.isAbsent ?? false,
-          };
-        }),
-        totalScore: Number(r.totalScore),
-        autoGrade: r.autoGrade,
-        overrideGrade: r.overrideGrade,
-        finalGrade: r.finalGrade,
-        subjectPosition: r.subjectPosition,
-        status: r.status,
-      }))
+      .map((r) => {
+        const eligibleForSubject = publishedOnlyForSelfView ? (eligibleStudentIdsBySubject.get(r.subjectId) ?? new Set<string>()) : null;
+        return {
+          subjectId: r.subjectId,
+          subjectName: r.subject.name,
+          needsTeacherAssignment: !assignedSubjects.has(r.subjectId),
+          evaluations: (evaluationsBySubject.get(r.subjectId) ?? []).map((e) => {
+            const score = scoreByEvaluation.get(e.id);
+            const classRows = classScoresByEvaluationId.get(e.id) ?? [];
+            const stats = computeAssessmentClassStats(
+              classRows.map((row) => ({ studentId: row.studentId, rawScore: row.rawScore === null ? null : Number(row.rawScore), isAbsent: row.isAbsent })),
+              eligibleForSubject,
+            );
+            return {
+              evaluationId: e.id,
+              name: e.name,
+              description: e.description,
+              rawScore: score?.rawScore === null || score?.rawScore === undefined ? null : Number(score.rawScore),
+              isAbsent: score?.isAbsent ?? false,
+              classAverageScore: stats.classAverageScore,
+              bestScore: stats.bestScore,
+              worstScore: stats.worstScore,
+            };
+          }),
+          totalScore: Number(r.totalScore),
+          autoGrade: r.autoGrade,
+          overrideGrade: r.overrideGrade,
+          finalGrade: r.finalGrade,
+          subjectPosition: r.subjectPosition,
+          status: r.status,
+          classAverageScore: classAverageBySubjectId.get(r.subjectId) ?? null,
+        };
+      })
       .sort((a, b) => a.subjectName.localeCompare(b.subjectName));
 
     return {
@@ -1721,6 +1816,7 @@ export class GradesService {
             overallPosition: overall.overallPosition,
             status: overall.status,
             subjectsCount: overall.subjectsCount,
+            generalClassAverage,
           }
         : null,
       remarks: {

@@ -297,12 +297,21 @@ export function validateGridScore(rawScore: number, maxScore: number): { isValid
 // §2.4). An evaluation with no evaluation_scores row at all is
 // rawScore: null, isAbsent: false — blank/not-entered, distinct from
 // isAbsent: true ("Abs" on the printed card).
+// v0.7 step 5 (SPEC_V0.7.md §4) — comparative analytics, numbers only
+// (no class-average grade letter this step). classAverageScore is the
+// class's average on this SAME evaluation; bestScore/worstScore are the
+// class's best/worst on it. All three null when nothing decided survives
+// the eligibility filter (STUDENT/PARENT: published classmates only;
+// staff: the whole class) — never a 0 or a leaked draft score standing in.
 export interface ReportCardEvaluation {
   evaluationId: string;
   name: string;
   description: string;
   rawScore: number | null;
   isAbsent: boolean;
+  classAverageScore: number | null;
+  bestScore: number | null;
+  worstScore: number | null;
 }
 
 export interface ReportCardSubject {
@@ -316,6 +325,9 @@ export interface ReportCardSubject {
   finalGrade: string | null;
   subjectPosition: number | null;
   status: ResultStatus;
+  // The class's average totalScore for this subject — same PUBLISHED-only
+  // eligibility rule as above.
+  classAverageScore: number | null;
 }
 
 export interface ReportCardOverall {
@@ -324,6 +336,8 @@ export interface ReportCardOverall {
   overallPosition: number | null;
   status: ResultStatus;
   subjectsCount: number;
+  // The general (across-subjects) class average — same rule, one level up.
+  generalClassAverage: number | null;
 }
 
 export interface RemarkAuthor {

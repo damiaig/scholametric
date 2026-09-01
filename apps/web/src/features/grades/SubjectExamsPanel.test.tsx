@@ -20,10 +20,11 @@ const PUBLISHED: StudentSubjectExamsResponse = {
   subjectName: "Mathematics",
   termId: "term1",
   sessionId: "sess1",
-  exams: [{ examId: "e1", name: "Exam", rawScore: 78, isAbsent: false }],
+  exams: [{ examId: "e1", name: "Exam", rawScore: 78, isAbsent: false, classAverageScore: 65, bestScore: 90, worstScore: 40 }],
   subjectExamAverage: 78,
   subjectExamGrade: "B2",
   status: "PUBLISHED",
+  classAverageScore: 70,
 };
 
 const EMPTY: StudentSubjectExamsResponse = {
@@ -36,6 +37,7 @@ const EMPTY: StudentSubjectExamsResponse = {
   subjectExamAverage: null,
   subjectExamGrade: null,
   status: null,
+  classAverageScore: null,
 };
 
 beforeEach(() => {
@@ -73,6 +75,21 @@ describe("SubjectExamsPanel", () => {
     expect(await screen.findByText("Exam")).toBeInTheDocument();
     expect(screen.getAllByText("78")).toHaveLength(2); // one exam row + the subject average
     await waitFor(() => expect(screen.getByRole("button", { name: "Hide exams" })).toBeInTheDocument());
+  });
+
+  it("v0.7 step 5: renders class average/best/worst as anonymous numbers, per exam and per subject", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/me/exams") return PUBLISHED;
+      throw new Error(`unexpected call: ${path}`);
+    });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <SubjectExamsPanel subjectId="sub1" subjectName="Mathematics" termId="term1" sessionId="sess1" viewer={{ kind: "self" }} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Show exams" }));
+    expect(await screen.findByText("Class avg 65 · Best 90 · Worst 40")).toBeInTheDocument();
+    expect(screen.getByText("Class avg 70")).toBeInTheDocument();
   });
 
   it("self viewer, unpublished subject: shows the empty state, not an error, not a hint of draft data", async () => {

@@ -4,6 +4,7 @@ import { resultStatusLabel, resultStatusTone } from "./result-status";
 import { formatScore } from "./format-score";
 import { RemarkPanel } from "./RemarkPanel";
 import { SubjectExamsPanel, type ExamsViewer } from "./SubjectExamsPanel";
+import { AssessmentClassStatsLabel, ClassAverageLabel } from "./ClassStats";
 
 function positionLabel(position: number | null): string {
   return position === null ? "Not yet ranked" : `#${position}`;
@@ -81,6 +82,7 @@ export function ReportCardDocument({
                 <div className="flex flex-wrap items-center gap-1.5">
                   {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher assigned" tone="warning" />}
                   <StatusBadge label={resultStatusLabel(subject.status)} tone={resultStatusTone(subject.status)} />
+                  <ClassAverageLabel value={subject.classAverageScore} />
                 </div>
               </div>
               {/* v0.7 step 4 (SPEC_V0.7.md §4) — each evaluation shown one
@@ -94,6 +96,11 @@ export function ReportCardDocument({
                       <span className="flex flex-col">
                         <span className="text-text">{evaluation.name}</span>
                         {evaluation.description && <span className="text-xs text-muted">{evaluation.description}</span>}
+                        <AssessmentClassStatsLabel
+                          classAverageScore={evaluation.classAverageScore}
+                          bestScore={evaluation.bestScore}
+                          worstScore={evaluation.worstScore}
+                        />
                       </span>
                       <span className="whitespace-nowrap font-mono text-text">{evaluationDisplay(evaluation)}</span>
                     </li>
@@ -146,6 +153,7 @@ export function ReportCardDocument({
             <p className="text-muted">{positionLabel(data.overall.overallPosition)}</p>
             <StatusBadge label={resultStatusLabel(data.overall.status)} tone={resultStatusTone(data.overall.status)} />
             <p className="text-xs text-muted">{data.overall.subjectsCount} subject(s)</p>
+            <ClassAverageLabel value={data.overall.generalClassAverage} />
           </div>
         ) : (
           <p className="text-sm text-muted">Overall results not yet available.</p>

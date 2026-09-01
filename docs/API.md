@@ -1521,6 +1521,61 @@ this response.
 }
 ```
 
+### Comparative analytics (v0.7 step 5, SPEC_V0.7.md §4) — numbers only, never a name
+
+`ReportCardSubject.classAverageScore`, each `ReportCardEvaluation`'s
+`classAverageScore`/`bestScore`/`worstScore`, and
+`ReportCardOverall.generalClassAverage` — the same treatment applies to
+the exam views below (`StudentExamRow`, `StudentSubjectExamsResponse`,
+`YearExamsTerm`, `YearExamsResponse`). All computed **on read** (a Prisma
+aggregate, never a cached table) and **numbers only** — no class-average
+grade letter this step, and best/worst are never paired with whose score
+they are (Q5's hard privacy rule: "Best in class: 92," never "Best: Chidi
+Okafor: 92").
+
+**The published-only interaction has two distinct parts, not one:**
+
+1. **Subject/general-level averages** (`term_subject_results`/
+   `term_subject_exam_results`/`term_overall_results`/`term_exam_results`
+   all carry `status` directly) — the same `groupBy`/`aggregate` pattern
+   `GET /students/:id/results` already used for staff, extended with the
+   `status: PUBLISHED` filter that method never needed (it's staff-only).
+2. **Per-evaluation/per-exam best/worst** — `evaluation_scores`/
+   `exam_scores` carry **no** publish state of their own, and publishing
+   is **per-student-per-subject** (classmates can genuinely be a mix of
+   `DRAFT`/`PUBLISHED` for the same subject). So there's no column to
+   `groupBy` on directly: the caller first resolves which classmates'
+   subject-level row is `PUBLISHED` (STUDENT/PARENT only — staff skips
+   this and sees everyone), then applies that allow-list in application
+   code (`computeAssessmentClassStats`, `grade-computation.ts`) over every
+   score row for that evaluation/exam. Absences are excluded from the
+   average AND best/worst, same rule as the average itself. All three are
+   `null` (never `0`) when nothing decided survives the filter.
+
+**Anonymity is structural**: a student id is used only to build the
+eligibility set server-side; it is never selected into the response
+alongside a name — there is no redaction step to get wrong, because the
+response-shaping code path never has a name in scope for these fields.
+
+**One column-shape wrinkle**: `year_exam_results` has no `class_arm_id`
+(it's a whole-session aggregate, not per-class-arm) — its general class
+average resolves "who's in the class" via `student_enrollments` for that
+class arm + session first, unlike every other level above.
+
+```json
+{
+  "subjects": [
+    {
+      "classAverageScore": 58.4,
+      "evaluations": [
+        { "evaluationId": "...", "name": "CA 1", "rawScore": 18, "isAbsent": false, "classAverageScore": 45, "bestScore": 90, "worstScore": 0 }
+      ]
+    }
+  ],
+  "overall": { "generalClassAverage": 62.1 }
+}
+```
+
 ### `GET /grades/review?classArmId=&termId=&status=` (v0.4 step 5, SPEC_V0.4.md §2)
 
 Director/owner publish-readiness view — `SCHOOL_ADMIN`/`PROPRIETOR` only,
@@ -1708,11 +1763,19 @@ Staff (`TEACHER`/`SCHOOL_ADMIN`/`PROPRIETOR`) always sees the real state.
   "studentId": "...", "subjectId": "...", "subjectName": "Mathematics",
   "termId": "...", "sessionId": "...",
   "exams": [
-    { "examId": "...", "name": "Exam", "rawScore": 78, "isAbsent": false }
+    { "examId": "...", "name": "Exam", "rawScore": 78, "isAbsent": false, "classAverageScore": 65, "bestScore": 90, "worstScore": 40 }
   ],
-  "subjectExamAverage": 78, "subjectExamGrade": "B2", "status": "PUBLISHED"
+  "subjectExamAverage": 78, "subjectExamGrade": "B2", "status": "PUBLISHED",
+  "classAverageScore": 70
 }
 ```
+
+Comparative analytics (`classAverageScore` on both the subject and each
+exam row, `bestScore`/`worstScore` per exam) — see "Comparative analytics"
+above for the full published-only/anonymity rule, identical here. Only
+computed when the subject itself is `visible` — an invisible subject's
+early-return response carries `classAverageScore: null` too, never a real
+number leaking ahead of the exams array it belongs next to.
 
 **Response `404`**: student/subject/term don't resolve in-tenant, or the
 student has no enrollment for `sessionId`. **`403`**: `TEACHER` with no
@@ -1749,13 +1812,24 @@ gets an entry, empty or not).
       "subjects": [
         { "subjectId": "...", "subjectName": "Mathematics", "exams": [...], "subjectExamAverage": 78, "subjectExamGrade": "B2" }
       ],
-      "termExamAverage": 74, "termExamGrade": "B3", "termExamPosition": 2, "status": "PUBLISHED"
+      "termExamAverage": 74, "termExamGrade": "B3", "termExamPosition": 2, "status": "PUBLISHED", "classAverageScore": 68
     },
-    { "termId": "...", "termName": "SECOND", "subjects": [], "termExamAverage": null, "termExamGrade": null, "termExamPosition": null, "status": null }
+    { "termId": "...", "termName": "SECOND", "subjects": [], "termExamAverage": null, "termExamGrade": null, "termExamPosition": null, "status": null, "classAverageScore": null }
   ],
-  "overallExamAverage": null, "overallExamGrade": null, "yearExamPosition": null, "termsCount": 0, "overallStatus": null
+  "overallExamAverage": null, "overallExamGrade": null, "yearExamPosition": null, "termsCount": 0, "overallStatus": null,
+  "generalClassAverage": null
 }
 ```
+
+Comparative analytics (see "Comparative analytics" above): each subject
+and each exam row gets the same `classAverageScore`/`bestScore`/
+`worstScore` treatment as the per-term view; each term additionally gets
+its own cross-subject `classAverageScore` (`term_exam_results`), gated to
+the SAME `termAggregateVisible` condition as `termExamAverage` itself —
+never populated ahead of the term's own aggregate. `generalClassAverage`
+is the year-level figure (`year_exam_results`) — the one place "class"
+membership is resolved via `student_enrollments` rather than a direct
+`class_arm_id` column, since that table has none.
 
 **Response `404`**: student doesn't resolve in-tenant, or no enrollment
 for `sessionId`. **`403`**: `TEACHER` with no relationship to this

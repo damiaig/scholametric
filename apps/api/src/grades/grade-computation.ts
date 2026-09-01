@@ -78,6 +78,45 @@ export function computeOverallAverage(subjectTotals: number[]): number {
   return Math.round((sum / subjectTotals.length) * 100) / 100;
 }
 
+export interface AssessmentClassStats {
+  classAverageScore: number | null;
+  bestScore: number | null;
+  worstScore: number | null;
+}
+
+export interface ClassScoreRow {
+  studentId: string;
+  rawScore: number | null;
+  isAbsent: boolean;
+}
+
+/**
+ * v0.7 step 5 (SPEC_V0.7.md §4) — class-wide average/best/worst for ONE
+ * evaluation or exam. `eligibleStudentIds: null` means "no restriction"
+ * (staff, who see the real class regardless of anyone's publish state);
+ * a non-null Set restricts the pool to students whose OWN subject-level
+ * result the caller has already resolved as PUBLISHED (STUDENT/PARENT) —
+ * the caller builds that set from term_subject_result(s)/
+ * term_subject_exam_result(s), this function only ever applies it, so an
+ * unpublished classmate's score structurally cannot reach the numerator/
+ * denominator or the max/min here. Absences are excluded from all three,
+ * same rule as computeEvaluationAverage. null (never 0) across all three
+ * when nothing decided survives the filter — an empty aggregate is not
+ * the same as a real score of 0.
+ */
+export function computeAssessmentClassStats(rows: ClassScoreRow[], eligibleStudentIds: Set<string> | null): AssessmentClassStats {
+  const decided = rows
+    .filter((r) => !r.isAbsent && r.rawScore !== null && (eligibleStudentIds === null || eligibleStudentIds.has(r.studentId)))
+    .map((r) => r.rawScore!);
+  if (decided.length === 0) return { classAverageScore: null, bestScore: null, worstScore: null };
+  const sum = decided.reduce((a, b) => a + b, 0);
+  return {
+    classAverageScore: Math.round((sum / decided.length) * 100) / 100,
+    bestScore: Math.max(...decided),
+    worstScore: Math.min(...decided),
+  };
+}
+
 /** Standard competition ranking ("1,2,2,4"): ties share a position, the next rank skips. Reused unchanged for all three v0.7 ranking tracks (Q6). */
 export function computeStandardCompetitionRanking<T>(
   items: T[],
