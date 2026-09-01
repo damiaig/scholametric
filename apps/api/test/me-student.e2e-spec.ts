@@ -28,6 +28,7 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
 
   let subjectX: string; // published for both A and B, different scores -> distinct positions
   let subjectY: string; // A only, left DRAFT -> keeps A's overall from completing
+  let subjectYEvalId: string; // v0.7 step 4 — the finer-grained-wall belt-and-suspenders check below
 
   let studentAId: string; // "Mixed": subjectX published + subjectY draft -> overall stays non-published
   let studentBId: string; // "Full": subjectX published, only subject -> overall PUBLISHED
@@ -175,8 +176,8 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     // This is what keeps A's OVERALL from ever reaching PUBLISHED
     // (computeOverallStatus requires EVERY subject published) — the exact
     // coupling verified in grade-computation.ts before building.
-    const yEval1 = await createEvaluation(subjectY, "CA 1");
-    await score(subjectY, yEval1, [{ studentId: studentAId, rawScore: 10 }]);
+    subjectYEvalId = await createEvaluation(subjectY, "CA 1");
+    await score(subjectY, subjectYEvalId, [{ studentId: studentAId, rawScore: 10 }]);
 
     // B has ONLY subjectX, which is published -> computeOverallStatus sees
     // a single PUBLISHED status -> B's overall reaches PUBLISHED too, via
@@ -256,13 +257,19 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       expect(subj.totalScore).toBe(51); // (18 + 84) / 2 — eval2's absence excluded, not averaged as 0
       expect(subj.subjectPosition).toBe(1); // A (51) beats B's total below
 
-      // v0.7 step 1 (SPEC_V0.7.md §4, deferred to step 4): the per-evaluation
-      // breakdown is frozen at [] for now — totalScore/status/position above
-      // are the real proof that the absence was excluded correctly.
-      expect(subj.components).toEqual([]);
+      // v0.7 step 4 (SPEC_V0.7.md §4): the real per-evaluation breakdown —
+      // name/description/score for every evaluation, absence rendered
+      // honestly (rawScore: null, isAbsent: true), never a 0.
+      expect(subj.evaluations).toHaveLength(3);
+      const ca1 = subj.evaluations.find((e: { name: string }) => e.name === "CA 1");
+      const ca2 = subj.evaluations.find((e: { name: string }) => e.name === "CA 2");
+      const ca3 = subj.evaluations.find((e: { name: string }) => e.name === "CA 3");
+      expect(ca1).toMatchObject({ description: "CA 1", rawScore: 18, isAbsent: false });
+      expect(ca2).toMatchObject({ description: "CA 2", rawScore: null, isAbsent: true });
+      expect(ca3).toMatchObject({ description: "CA 3", rawScore: 84, isAbsent: false });
     });
 
-    it("a DRAFT subject for the SAME student is ABSENT from subjects[], not a hidden/flagged row", async () => {
+    it("a DRAFT subject for the SAME student is ABSENT from subjects[], not a hidden/flagged row — and NONE of its evaluation data appears anywhere in the response", async () => {
       const response = await request(app.getHttpServer())
         .get("/api/v1/me/report-card")
         .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
@@ -278,6 +285,15 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       // Remarks gate: no published overall -> no remarks, even though this
       // student could in principle have one written.
       expect(response.body.remarks.teacherRemark).toBeNull();
+
+      // v0.7 step 4 (SPEC_V0.7.md §4) — the finer-grained wall,
+      // belt-and-suspenders (mirrors v0.6's A-sees-only-A test): subjectY's
+      // evaluation id, and A's own real score on it (10, decided but never
+      // published), must not surface in ANY field of the response — not
+      // just subjectY's absence from `subjects[]` at the top level.
+      const serialized = JSON.stringify(response.body);
+      expect(serialized).not.toContain(subjectYEvalId);
+      expect(serialized).not.toContain(subjectY);
     });
 
     it("published OVERALL position matches the report card once every subject is published, and remarks appear", async () => {

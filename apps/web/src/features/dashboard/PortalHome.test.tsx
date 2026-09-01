@@ -39,7 +39,7 @@ const REPORT_CARD = {
       subjectId: "sub1",
       subjectName: "Mathematics",
       needsTeacherAssignment: false,
-      components: [],
+      evaluations: [],
       totalScore: 78,
       autoGrade: "B2",
       overrideGrade: null,

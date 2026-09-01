@@ -290,16 +290,17 @@ export function validateGridScore(rawScore: number, maxScore: number): { isValid
   return { isValid: true };
 }
 
-// Mirrors GradesService.getReportCard()/write*Remark() (SPEC_V0.5.md §2.4,
-// v0.5 step 4 backend / step 6 web). A component with no student_scores row
-// at all is rawScore: null, isAbsent: false — blank/not-entered, distinct
-// from isAbsent: true ("Abs" on the printed card).
-export interface ReportCardComponent {
-  componentId: string;
-  componentName: string;
-  weight: number;
-  maxScore: number;
-  requiresApproval: boolean;
+// v0.7 step 4 (SPEC_V0.7.md §4) — the per-evaluation breakdown, replacing
+// the old fixed CA1/CA2/Exam ReportCardComponent shape (weight/maxScore/
+// requiresApproval all gone — evaluations have none of those, everything's
+// native /100 per Q1). Mirrors GradesService.getReportCard() (SPEC_V0.5.md
+// §2.4). An evaluation with no evaluation_scores row at all is
+// rawScore: null, isAbsent: false — blank/not-entered, distinct from
+// isAbsent: true ("Abs" on the printed card).
+export interface ReportCardEvaluation {
+  evaluationId: string;
+  name: string;
+  description: string;
   rawScore: number | null;
   isAbsent: boolean;
 }
@@ -308,7 +309,7 @@ export interface ReportCardSubject {
   subjectId: string;
   subjectName: string;
   needsTeacherAssignment: boolean;
-  components: ReportCardComponent[];
+  evaluations: ReportCardEvaluation[];
   totalScore: number;
   autoGrade: string | null;
   overrideGrade: string | null;

@@ -4470,3 +4470,63 @@ failure mode as the suite keeps growing.
 **Proof:** `CI=true pnpm exec vitest run` locally (forcing the same
 `fileParallelism: false` path) passes all 226 tests in ~24s — correctness
 unaffected, only the parallelism strategy changes.
+
+## 2026-09-01 — v0.7 step 4: report-card evaluation breakdown repurposes the dead `ReportCardComponent` stub; wall is where-clause-inherited, not post-fetch
+
+**Decision:** `ReportCardComponent` (`weight`/`maxScore`/`requiresApproval`
+— the old fixed CA1/CA2/Exam shape, frozen at `[]` since v0.7 step 1) is
+replaced, not extended, by `ReportCardEvaluation` (`evaluationId`/`name`/
+`description`/`rawScore`/`isAbsent`), and `ReportCardSubject.components`
+is renamed to `.evaluations`. Confirmed safe as a straight rename rather
+than an additive change: the old field had exactly three consumers
+(`packages/shared/src/grades.ts`, `grades.service.ts`'s locally-declared
+mirror interface, `ReportCardDocument.tsx`) and had never held real data,
+so there is no live shape to preserve.
+
+**Why the wall holds without touching `Evaluation`/`EvaluationScore`:**
+those two tables carry no publish state of their own — only
+`TermSubjectResult.status` does. `getReportCard`'s `subjectResults` query
+already applies `status: PUBLISHED` inside its Prisma `where` for
+`STUDENT`/`PARENT` (unchanged from v0.6). The evaluations query is scoped
+to exactly the `subjectId`s that survived that filter — an unpublished
+subject's evaluations are never queried at all, not fetched-then-hidden.
+This is stronger than step 3's exams views (post-fetch-filter-with-
+early-return, reviewed and confirmed safe on its own terms, left as-is —
+not being changed here).
+
+**Two independent `ReportCardComponent`/`ReportCardSubject`/
+`ReportCardResponse` declarations exist** — one in `packages/shared/src/
+grades.ts` (frontend), one locally inside `grades.service.ts` (backend,
+`remarkAt` typed `Date | null` there vs `string | null` in shared) — kept
+structurally in sync by convention, not by import. Both were updated
+together this step; a future report-card shape change must touch both.
+
+## 2026-09-01 — New flake observed: `portal-accounts.e2e-spec.ts`'s re-provision test 401s once, only inside the FULL serial suite
+
+**Observed:** running the whole `pnpm test` suite (v0.7 step 4 pre-push
+check) produced exactly one failure — "re-running provisioning creates no
+duplicates and no new rows" got `401` instead of `200` on its SECOND call
+to `POST /portal-accounts/provision`, reusing the same `sunriseAdminToken`
+the file's first test had just used successfully seconds earlier.
+`portal-accounts.e2e-spec.ts` alone (15/15) and re-run immediately after
+`classes.e2e-spec.ts`/`teachers.e2e-spec.ts` (the two files that preceded
+it in the failing run, 39/39) both passed clean on repeat — not
+reproducible in isolation, and no code in this diff (report-card/
+evaluations only) touches auth, portal-accounts, or JWT issuance.
+
+**Not investigated further / not fixed:** out of scope for this step, no
+lead beyond "some full-suite-only timing/state condition intermittently
+invalidates an access token issued seconds earlier, condition unknown."
+Reported per CLAUDE.md's "report only, don't modify code" precedent for
+pre-existing flakes (same posture as the 2026-08-31 `classes.e2e-spec.ts`
+entry) — this is a second, independent flake in the full serial suite,
+not a recurrence of that one (different file, different symptom: query-
+count mismatch there, a 401 on a fresh token here).
+
+**Also confirmed the same run's ~4-hour (14636s) wall-clock hang was NOT
+a real regression:** a stale `jest --runInBand` process from earlier in
+this session was left running against `scholametric_test` holding an idle
+connection; killing it and re-running cleanly brought the suite back to
+~62s with `classes.e2e-spec.ts` passing (the file that had cascaded 24
+timeout failures under the stale-lock condition) — an environment
+artifact, not a code issue.

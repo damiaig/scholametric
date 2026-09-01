@@ -215,14 +215,24 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
       expect(subjA.totalScore).toBe(51); // (18 + 84) / 2 — the absent evaluation excluded, not averaged as 0
       expect(subjA.finalGrade).toBe("C6"); // WAEC 50-54
       expect(subjA.subjectPosition).toBe(1); // 51 beats partial's 30
-      // v0.7 step 1 (SPEC_V0.7.md §4, deferred to step 4): the per-
-      // evaluation breakdown is frozen at [] for now — totalScore/status/
-      // grade/position above are the real proof that scoring is correct.
-      expect(subjA.components).toEqual([]);
 
+      // v0.7 step 4 (SPEC_V0.7.md §4): the real per-evaluation breakdown —
+      // name/description/score for every evaluation, absence rendered
+      // honestly (rawScore: null, isAbsent: true), never a 0.
+      expect(subjA.evaluations).toHaveLength(3);
+      const ca1 = subjA.evaluations.find((e: { name: string }) => e.name === "CA 1");
+      const ca2 = subjA.evaluations.find((e: { name: string }) => e.name === "CA 2");
+      const ca3 = subjA.evaluations.find((e: { name: string }) => e.name === "CA 3");
+      expect(ca1).toMatchObject({ description: "CA 1", rawScore: 18, isAbsent: false });
+      expect(ca2).toMatchObject({ description: "CA 2", rawScore: null, isAbsent: true });
+      expect(ca3).toMatchObject({ description: "CA 3", rawScore: 84, isAbsent: false });
+
+      // Staff sees the breakdown regardless of publish state — subjectB
+      // below is still DRAFT, and its evaluation is visible all the same.
       const subjB = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectB);
       expect(subjB.status).toBe("DRAFT");
-      expect(subjB.components).toEqual([]);
+      expect(subjB.evaluations).toHaveLength(1);
+      expect(subjB.evaluations[0]).toMatchObject({ name: "CA 1", description: "CA 1", rawScore: 10, isAbsent: false });
     });
 
     it("partial-term: a student with one published + one still-pending subject has a null overall position", async () => {

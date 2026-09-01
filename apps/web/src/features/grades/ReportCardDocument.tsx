@@ -1,4 +1,4 @@
-import type { ReportCardComponent, ReportCardResponse } from "@scholametric/shared";
+import type { ReportCardEvaluation, ReportCardResponse } from "@scholametric/shared";
 import { StatusBadge } from "../../components/StatusBadge";
 import { resultStatusLabel, resultStatusTone } from "./result-status";
 import { formatScore } from "./format-score";
@@ -12,10 +12,10 @@ function positionLabel(position: number | null): string {
 // SPEC_V0.5.md §2.1/§2.4 — the same three-way distinction as the score-entry
 // grid (ScoreEntryRow): isAbsent -> "Abs", null&&!isAbsent -> blank/not-
 // entered ("—", never confused with a real 0), otherwise the real number.
-function componentDisplay(component: ReportCardComponent): string {
-  if (component.isAbsent) return "Abs";
-  if (component.rawScore === null) return "—";
-  return formatScore(component.rawScore);
+function evaluationDisplay(evaluation: ReportCardEvaluation): string {
+  if (evaluation.isAbsent) return "Abs";
+  if (evaluation.rawScore === null) return "—";
+  return formatScore(evaluation.rawScore);
 }
 
 interface ReportCardDocumentProps {
@@ -83,15 +83,30 @@ export function ReportCardDocument({
                   <StatusBadge label={resultStatusLabel(subject.status)} tone={resultStatusTone(subject.status)} />
                 </div>
               </div>
+              {/* v0.7 step 4 (SPEC_V0.7.md §4) — each evaluation shown one
+                  after another (Pronote-style), not collapsed into a fixed
+                  CA1/CA2/Exam column set: a teacher can create arbitrarily
+                  many, each with its own name/description. */}
+              {subject.evaluations.length > 0 ? (
+                <ul className="mb-2 flex flex-col gap-1 text-sm">
+                  {subject.evaluations.map((evaluation) => (
+                    <li key={evaluation.evaluationId} className="flex items-start justify-between gap-2">
+                      <span className="flex flex-col">
+                        <span className="text-text">{evaluation.name}</span>
+                        {evaluation.description && <span className="text-xs text-muted">{evaluation.description}</span>}
+                      </span>
+                      <span className="whitespace-nowrap font-mono text-text">{evaluationDisplay(evaluation)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mb-2 text-sm text-muted">No evaluations entered for this subject yet.</p>
+              )}
+
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead>
                     <tr className="border-b border-muted/20">
-                      {subject.components.map((component) => (
-                        <th key={component.componentId} className="whitespace-nowrap px-2 py-1.5 font-medium text-muted">
-                          {component.componentName} <span className="font-normal">(/{component.maxScore})</span>
-                        </th>
-                      ))}
                       <th className="whitespace-nowrap px-2 py-1.5 font-medium text-muted">Total</th>
                       <th className="whitespace-nowrap px-2 py-1.5 font-medium text-muted">Grade</th>
                       <th className="whitespace-nowrap px-2 py-1.5 font-medium text-muted">Position</th>
@@ -99,11 +114,6 @@ export function ReportCardDocument({
                   </thead>
                   <tbody>
                     <tr>
-                      {subject.components.map((component) => (
-                        <td key={component.componentId} className="whitespace-nowrap px-2 py-1.5 font-mono text-text">
-                          {componentDisplay(component)}
-                        </td>
-                      ))}
                       <td className="whitespace-nowrap px-2 py-1.5 font-mono text-text">{formatScore(subject.totalScore)}</td>
                       <td className="whitespace-nowrap px-2 py-1.5 text-text">{subject.finalGrade ?? "—"}</td>
                       <td className="whitespace-nowrap px-2 py-1.5 text-muted">{positionLabel(subject.subjectPosition)}</td>

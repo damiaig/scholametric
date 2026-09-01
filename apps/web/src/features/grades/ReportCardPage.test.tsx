@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { screen, cleanup, waitFor } from "@testing-library/react";
+import { screen, cleanup, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import type { ClassLevelOverview, Paginated, Term, AcademicSession, ReportCardResponse } from "@scholametric/shared";
@@ -57,10 +57,10 @@ const CARD: ReportCardResponse = {
       subjectId: "sub1",
       subjectName: "Mathematics",
       needsTeacherAssignment: false,
-      components: [
-        { componentId: "ca1", componentName: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 0, isAbsent: false },
-        { componentId: "ca2", componentName: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, rawScore: null, isAbsent: true },
-        { componentId: "exam", componentName: "Exam", weight: 60, maxScore: 100, requiresApproval: true, rawScore: null, isAbsent: false },
+      evaluations: [
+        { evaluationId: "ca1", name: "CA 1", description: "Maths first continuous assessment", rawScore: 0, isAbsent: false },
+        { evaluationId: "ca2", name: "CA 2", description: "Maths second continuous assessment", rawScore: null, isAbsent: true },
+        { evaluationId: "ca3", name: "CA 3", description: "Maths third continuous assessment", rawScore: null, isAbsent: false },
       ],
       totalScore: 0,
       autoGrade: "F9",
@@ -73,10 +73,10 @@ const CARD: ReportCardResponse = {
       subjectId: "sub2",
       subjectName: "English Language",
       needsTeacherAssignment: false,
-      components: [
-        { componentId: "ca1", componentName: "CA 1", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 18, isAbsent: false },
-        { componentId: "ca2", componentName: "CA 2", weight: 20, maxScore: 20, requiresApproval: false, rawScore: 17, isAbsent: false },
-        { componentId: "exam", componentName: "Exam", weight: 60, maxScore: 100, requiresApproval: true, rawScore: 55, isAbsent: false },
+      evaluations: [
+        { evaluationId: "ca1", name: "CA 1", description: "First continuous assessment", rawScore: 18, isAbsent: false },
+        { evaluationId: "ca2", name: "CA 2", description: "Second continuous assessment", rawScore: 17, isAbsent: false },
+        { evaluationId: "ca3", name: "CA 3", description: "Third continuous assessment", rawScore: 55, isAbsent: false },
       ],
       totalScore: 90,
       autoGrade: "A1",
@@ -168,13 +168,33 @@ describe("ReportCardPage — rendering", () => {
     mockCommon("SCHOOL_ADMIN", CARD);
     renderPage();
 
+    const mathHeading = await screen.findByText("Mathematics");
+    const mathSubject = within(mathHeading.closest("div.break-inside-avoid")!);
+    // Mathematics: CA1 = real 0, CA2 = Abs, CA3 = blank/not-entered.
+    expect(mathSubject.getByText("Abs")).toBeInTheDocument();
+    expect(mathSubject.getAllByText("—").length).toBeGreaterThan(0);
+    // The real 0 sits beside CA1's row, distinct from the blank "—" for CA3.
+    const ca1Row = mathSubject.getByText("CA 1").closest("li");
+    expect(ca1Row).not.toBeNull();
+    expect(ca1Row!.textContent).toContain("0");
+  });
+
+  it("shows the per-evaluation breakdown — name, description, and score, each listed separately", async () => {
+    mockCommon("SCHOOL_ADMIN", CARD);
+    renderPage();
+
     await screen.findByText("Mathematics");
-    const mathCells = screen.getAllByRole("cell");
-    const cellTexts = mathCells.map((cell) => cell.textContent);
-    // Mathematics: CA1 = real 0, CA2 = Abs, Exam = blank/not-entered.
-    expect(cellTexts).toContain("0");
-    expect(cellTexts).toContain("Abs");
-    expect(cellTexts.some((text) => text === "—")).toBe(true);
+    expect(screen.getByText("First continuous assessment")).toBeInTheDocument();
+    expect(screen.getByText("Second continuous assessment")).toBeInTheDocument();
+    expect(screen.getByText("Third continuous assessment")).toBeInTheDocument();
+  });
+
+  it("a subject with zero evaluations entered shows an empty (not broken) breakdown", async () => {
+    mockCommon("SCHOOL_ADMIN", { ...CARD, subjects: [{ ...CARD.subjects[0], evaluations: [] }, CARD.subjects[1]] });
+    renderPage();
+
+    await screen.findByText("Mathematics");
+    expect(screen.getByText("No evaluations entered for this subject yet.")).toBeInTheDocument();
   });
 
   it("partial-term states: null overall renders a message (not a blank/zeroed row), a DRAFT subject shows its status, and a null position reads 'Not yet ranked'", async () => {

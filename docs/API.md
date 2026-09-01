@@ -1489,6 +1489,38 @@ editing either track; the two tracks' subject/class-arm locks use
 distinct key namespaces (`grades:...` vs `exams:...`) so they never
 contend with each other.
 
+### The report-card evaluation breakdown (v0.7 step 4, SPEC_V0.7.md §4)
+
+`GET /students/:id/report-card` / `GET /me/report-card` / `GET /me/children/:childId/report-card`
+now populate `subjects[].evaluations` — previously frozen at `[]` since
+step 1. Each entry: `{ evaluationId, name, description, rawScore, isAbsent }`,
+one per active (non-deleted) `Evaluation` in that subject/class-arm/term,
+ordered oldest-first — the Pronote-style "each evaluation shown, one
+after another," never collapsed into a single figure. `rawScore: null,
+isAbsent: false` is blank/not-entered, distinct from `isAbsent: true`
+("Abs" on the printed card, excluded from `totalScore`'s average, never
+averaged in as a 0) — same three-way distinction the score-entry grid uses.
+
+**The published-only wall:** `Evaluation`/`EvaluationScore` carry no
+publish state of their own — only `term_subject_results.status` does. The
+`subjectResults` query already filters to `status: PUBLISHED` for
+`STUDENT`/`PARENT` inside its own `where` (unchanged since v0.6); the
+evaluations query is then scoped to exactly the `subjectId`s that survived
+that filter. An unpublished subject's evaluations are therefore **never
+queried at all** for a self-view caller — not fetched and then hidden.
+Staff (`TEACHER`/`SCHOOL_ADMIN`/`PROPRIETOR`) see every subject's
+evaluations regardless of publish state, same as every other field on
+this response.
+
+```json
+{
+  "evaluations": [
+    { "evaluationId": "...", "name": "CA 1", "description": "Fractions quiz", "rawScore": 18, "isAbsent": false },
+    { "evaluationId": "...", "name": "CA 2", "description": "Times tables test", "rawScore": null, "isAbsent": true }
+  ]
+}
+```
+
 ### `GET /grades/review?classArmId=&termId=&status=` (v0.4 step 5, SPEC_V0.4.md §2)
 
 Director/owner publish-readiness view — `SCHOOL_ADMIN`/`PROPRIETOR` only,

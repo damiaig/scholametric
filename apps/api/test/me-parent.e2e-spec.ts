@@ -27,6 +27,7 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
 
   let subjectX: string; // published for both A and B, different scores -> distinct positions
   let subjectY: string; // A only, left DRAFT -> keeps A's overall from completing
+  let subjectYEvalId: string; // v0.7 step 4 — the finer-grained-wall belt-and-suspenders check below
 
   let studentAId: string; // "Mixed" — parent1's child #1
   let studentBId: string; // "Full" — parent1's child #2, overall PUBLISHED + remark
@@ -193,8 +194,8 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
 
     // subjectY: A only, one evaluation scored -> DRAFT, never published.
     // Keeps A's overall from ever reaching PUBLISHED.
-    const yEval1 = await createEvaluation(subjectY, "CA 1");
-    await score(subjectY, yEval1, [{ studentId: studentAId, rawScore: 10 }]);
+    subjectYEvalId = await createEvaluation(subjectY, "CA 1");
+    await score(subjectY, subjectYEvalId, [{ studentId: studentAId, rawScore: 10 }]);
 
     // B has ONLY subjectX (published) -> B's overall reaches PUBLISHED too
     // (publish()'s own class-arm-wide recompute, no extra call needed).
@@ -314,6 +315,20 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
       expect(subjX.totalScore).toBe(51); // (18 + 84) / 2 — the absent evaluation excluded, not averaged as 0
       expect(subjX.subjectPosition).toBe(1);
       expect(response.body.overall).toBeNull(); // subjectY still DRAFT -> overall never published
+
+      // v0.7 step 4 (SPEC_V0.7.md §4): subjectX's real per-evaluation
+      // breakdown — name/description/score, absence rendered honestly.
+      expect(subjX.evaluations).toHaveLength(3);
+      const ca2 = subjX.evaluations.find((e: { name: string }) => e.name === "CA 2");
+      expect(ca2).toMatchObject({ rawScore: null, isAbsent: true });
+
+      // The finer-grained wall, belt-and-suspenders (mirrors v0.6's
+      // A-sees-only-A test): subjectY's evaluation id and subjectY's own id
+      // must not surface in ANY field of the response — not just its
+      // absence from `subjects[]` at the top level.
+      const serialized = JSON.stringify(response.body);
+      expect(serialized).not.toContain(subjectYEvalId);
+      expect(serialized).not.toContain(subjectY);
     });
 
     it("shows child B's published OVERALL position and remark once every subject is published", async () => {

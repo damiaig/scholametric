@@ -277,18 +277,16 @@ export interface StudentResultsResponse {
   overall: StudentResultOverall | null;
 }
 
-// SPEC_V0.5.md §2.4, v0.5 step 4. A component with NO student_scores row at
-// all is `rawScore: null, isAbsent: false` — blank/not-entered, distinct
-// from an explicit `isAbsent: true` ("Abs" on the printed card). Only the
-// CURRENTLY ACTIVE assessment structure is represented (deletedAt: null) —
-// matches exactly what produced `totalScore` below; a soft-deleted
-// component's historical score is already excluded from every recompute.
-export interface ReportCardComponent {
-  componentId: string;
-  componentName: string;
-  weight: number;
-  maxScore: number;
-  requiresApproval: boolean;
+// v0.7 step 4 (SPEC_V0.7.md §4). An evaluation with NO evaluation_scores
+// row at all is `rawScore: null, isAbsent: false` — blank/not-entered,
+// distinct from an explicit `isAbsent: true` ("Abs" on the printed card).
+// Only the CURRENTLY ACTIVE evaluations are represented (deletedAt: null)
+// — matches exactly what produced `totalScore` below; a soft-deleted
+// evaluation's historical score is already excluded from every recompute.
+export interface ReportCardEvaluation {
+  evaluationId: string;
+  name: string;
+  description: string;
   rawScore: number | null;
   isAbsent: boolean;
 }
@@ -297,7 +295,7 @@ export interface ReportCardSubject {
   subjectId: string;
   subjectName: string;
   needsTeacherAssignment: boolean;
-  components: ReportCardComponent[];
+  evaluations: ReportCardEvaluation[];
   totalScore: number;
   autoGrade: string | null;
   overrideGrade: string | null;
@@ -1569,15 +1567,11 @@ export class GradesService {
   // same read rule (any relationship to the class arm), not the stricter
   // class-teacher-only rule the remark WRITE endpoints below use.
   //
-  // v0.7 step 1 (SPEC_V0.7.md §4, deferred to step 4): `components` is
-  // frozen at [] for now — the per-evaluation breakdown (name/description/
-  // score) this field used to carry for CA1/CA2/Exam is real UI work for
-  // step 4, out of this step's scope (data model + engine only). Every
-  // OTHER field below (totalScore/autoGrade/finalGrade/subjectPosition/
-  // status, overall, remarks, the whole publish-filtering contract) is
-  // unchanged — this keeps ReportCardResponse's shape frozen (no changes
-  // to packages/shared, no frontend breakage beyond an empty breakdown
-  // table) while the SOURCE of totalScore/status is now Evaluation-based.
+  // v0.7 step 4 (SPEC_V0.7.md §4): `evaluations` (per subject) is now real —
+  // name/description/score for every Evaluation feeding that subject's
+  // totalScore. Every OTHER field (totalScore/autoGrade/finalGrade/
+  // subjectPosition/status, overall, remarks, the whole publish-filtering
+  // contract) is unchanged from step 1.
   async getReportCard(studentId: string, query: GetStudentResultsQueryDto, user: AuthenticatedUser): Promise<ReportCardResponse> {
     const schoolId = this.tenantContext.schoolId;
     const [student, term] = await Promise.all([
@@ -1658,13 +1652,50 @@ export class GradesService {
     // "only what's been made final."
     const remarksVisibleToCaller = !publishedOnlyForSelfView || overall !== null;
 
+    // v0.7 step 4 (SPEC_V0.7.md §4) — the published-only wall for the
+    // evaluation breakdown. `Evaluation`/`EvaluationScore` carry no publish
+    // state of their own; the wall above (the `status: PUBLISHED` filter
+    // baked into subjectResults' own `where`, not a post-fetch check) has
+    // ALREADY decided which subjectIds a STUDENT/PARENT caller is allowed
+    // to see. Scoping this query to exactly those surviving subjectIds
+    // means an unpublished subject's evaluations are never queried at all —
+    // there is no row to leak, not a row that's fetched and then hidden.
+    const visibleSubjectIds = subjectResults.map((r) => r.subjectId);
+    const evaluations =
+      visibleSubjectIds.length > 0
+        ? await this.prisma.evaluation.findMany({
+            where: { schoolId, classArmId: enrollment.classArmId, subjectId: { in: visibleSubjectIds }, termId: query.termId, deletedAt: null },
+            orderBy: { createdAt: "asc" },
+          })
+        : [];
+    const evaluationIds = evaluations.map((e) => e.id);
+    const evaluationScores =
+      evaluationIds.length > 0
+        ? await this.prisma.evaluationScore.findMany({ where: { evaluationId: { in: evaluationIds }, studentId } })
+        : [];
+    const scoreByEvaluation = new Map(evaluationScores.map((s) => [s.evaluationId, s]));
+    const evaluationsBySubject = new Map<string, typeof evaluations>();
+    for (const e of evaluations) {
+      const arr = evaluationsBySubject.get(e.subjectId) ?? [];
+      arr.push(e);
+      evaluationsBySubject.set(e.subjectId, arr);
+    }
+
     const subjects: ReportCardSubject[] = subjectResults
       .map((r) => ({
         subjectId: r.subjectId,
         subjectName: r.subject.name,
         needsTeacherAssignment: !assignedSubjects.has(r.subjectId),
-        // Step 4's job — see this method's doc comment above.
-        components: [],
+        evaluations: (evaluationsBySubject.get(r.subjectId) ?? []).map((e) => {
+          const score = scoreByEvaluation.get(e.id);
+          return {
+            evaluationId: e.id,
+            name: e.name,
+            description: e.description,
+            rawScore: score?.rawScore === null || score?.rawScore === undefined ? null : Number(score.rawScore),
+            isAbsent: score?.isAbsent ?? false,
+          };
+        }),
         totalScore: Number(r.totalScore),
         autoGrade: r.autoGrade,
         overrideGrade: r.overrideGrade,
