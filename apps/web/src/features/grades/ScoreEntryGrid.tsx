@@ -3,7 +3,9 @@ import { RefreshCw } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
-import { useEvaluationScores, type EvaluationScoresParams } from "./use-evaluation-scores";
+import { useEvaluationScores } from "./use-evaluation-scores";
+import { useExamScores } from "./use-exam-scores";
+import { type EntryParams, isExamParams } from "./score-entry-track";
 import { useScoreEntrySaveQueue, type CellState, type ScoreEntrySaveQueueTiming } from "./use-score-entry-save-queue";
 import { ScoreEntryRow } from "./ScoreEntryRow";
 import { TermLockBanner } from "./TermLockBanner";
@@ -16,7 +18,8 @@ const DEFAULT_CELL: CellState = { value: null, isAbsent: false, serverValue: nul
 const MAX_SCORE = 100;
 
 interface ScoreEntryGridProps {
-  params: EvaluationScoresParams;
+  /** Discriminated by shape (evaluationId vs examId present) — see score-entry-track.ts. */
+  params: EntryParams;
   /** SCHOOL_ADMIN/PROPRIETOR — shows Unlock/Relock on a closed term (SPEC_V0.5.md §2.3); hidden, not disabled, for anyone else. */
   canManageTermLock: boolean;
   /** Test-only: overrides the save queue's debounce/max-wait/retry timing. */
@@ -28,8 +31,16 @@ interface ScoreEntryGridProps {
 // (see docs/DECISIONS.md): a flat list of ~100 single-input rows is well
 // within what React handles natively, and virtualizing would break native
 // Tab traversal across rows that aren't mounted.
+//
+// v0.7 step 3 (SPEC_V0.7.md §3): reused for BOTH tracks — evaluations and
+// exams. Both read hooks are ALWAYS called (React's rules of hooks forbid
+// calling one conditionally); only the one matching `params`'s shape is
+// actually enabled, the other stays a permanently-disabled no-op query.
 export function ScoreEntryGrid({ params, canManageTermLock, saveQueueTiming }: ScoreEntryGridProps) {
-  const gridQuery = useEvaluationScores(params);
+  const isExam = isExamParams(params);
+  const evaluationQuery = useEvaluationScores(isExamParams(params) ? null : params);
+  const examQuery = useExamScores(isExamParams(params) ? params : null);
+  const gridQuery = isExam ? examQuery : evaluationQuery;
   const queue = useScoreEntrySaveQueue(params, gridQuery.data, saveQueueTiming);
   const inputRefs = useRef(new Map<string, HTMLInputElement>());
 

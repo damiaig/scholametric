@@ -22,6 +22,9 @@ import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { GradesService } from "../grades/grades.service";
 import { GetStudentResultsQueryDto } from "../grades/dto/get-student-results-query.dto";
 import { WriteRemarkDto } from "../grades/dto/write-remark.dto";
+import { ExamsService } from "../exams/exams.service";
+import { GetStudentSubjectExamsQueryDto } from "../exams/dto/get-student-subject-exams-query.dto";
+import { GetYearExamsQueryDto } from "../exams/dto/get-year-exams-query.dto";
 import { StudentsService } from "./students.service";
 import { StudentGuardiansService } from "./student-guardians.service";
 import { CreateStudentDto } from "./dto/create-student.dto";
@@ -42,6 +45,7 @@ export class StudentsController {
     private readonly studentsService: StudentsService,
     private readonly studentGuardiansService: StudentGuardiansService,
     private readonly gradesService: GradesService,
+    private readonly examsService: ExamsService,
   ) {}
 
   @Get()
@@ -81,6 +85,28 @@ export class StudentsController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.gradesService.getReportCard(id, query, user);
+  }
+
+  // v0.7 step 3 (SPEC_V0.7.md §4): the per-term "Show exams" button's
+  // data source — same TEACHER read rule as the two routes above (any
+  // relationship to the class arm, enforced inside ExamsService).
+  @Get(":id/exams")
+  getStudentSubjectExams(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Query() query: GetStudentSubjectExamsQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.examsService.getStudentSubjectExams(id, query, user);
+  }
+
+  // The dedicated year-long Exams view — same read rule.
+  @Get(":id/year-exams")
+  getStudentYearExams(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Query() query: GetYearExamsQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.examsService.getStudentYearExams(id, query, user);
   }
 
   // Class-teacher-only for TEACHER (enforced inside GradesService, since it

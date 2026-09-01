@@ -14,4 +14,5 @@ export * from "./audit";
 export * from "./me";
 export * from "./grading-config";
 export * from "./grades";
+export * from "./exams";
 export * from "./portal-accounts";

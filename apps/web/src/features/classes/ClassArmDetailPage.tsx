@@ -178,6 +178,12 @@ export function ClassArmDetailPage() {
                       >
                         Enter grades
                       </Link>
+                      <Link
+                        to={`/grades/exams-grid?classArmId=${arm.id}&subjectId=${entry.subjectId}`}
+                        className="text-sm text-primary hover:underline"
+                      >
+                        Enter exam scores
+                      </Link>
                       <Button
                         type="button"
                         variant="outline"
@@ -220,6 +226,12 @@ export function ClassArmDetailPage() {
                               className="text-primary hover:underline"
                             >
                               Enter grades
+                            </Link>
+                            <Link
+                              to={`/grades/exams-grid?classArmId=${arm.id}&subjectId=${entry.subjectId}`}
+                              className="text-primary hover:underline"
+                            >
+                              Enter exam scores
                             </Link>
                             <Button
                               type="button"

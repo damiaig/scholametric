@@ -11,7 +11,9 @@ import { useMyTeaching } from "../dashboard/use-my-teaching";
 import { useClasses } from "../classes/use-classes";
 import { useAdminCurrentTerm } from "./use-admin-current-term";
 import { useReportCard } from "./use-report-card";
+import { useStudentYearExams } from "./use-student-year-exams";
 import { ReportCardDocument } from "./ReportCardDocument";
+import { YearExamsView } from "./YearExamsView";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
@@ -19,6 +21,14 @@ const SELECT_CLASS =
 function formatTermName(name: string): string {
   return name.charAt(0) + name.slice(1).toLowerCase() + " term";
 }
+
+// v0.7 step 3 (SPEC_V0.7.md §4) — the year-long Exams view is a 4th entry
+// in the SAME admin term selector below (confirmed: staff gets it too,
+// reusing one YearExamsView — no separate route). TEACHER has no term
+// selector at all on this page (current-term-only, pre-existing
+// limitation noted above) so this entry is admin-only, same as the
+// selector itself.
+const EXAMS_OPTION_VALUE = "__exams__";
 
 // Printable per-student term report card (SPEC_V0.5.md §2.4, v0.5 step 6).
 // A dedicated route (not a StudentDetailPage tab) — printing wants a
@@ -42,6 +52,7 @@ export function ReportCardPage() {
   const adminTerm = useAdminCurrentTerm(isConfirmedAdmin);
   const classes = useClasses();
   const [adminTermId, setAdminTermId] = useState(searchParams.get("termId") ?? "");
+  const [viewMode, setViewMode] = useState<"term" | "exams">("term");
 
   // TEACHER is current-term-only, matching StudentResultsTab's existing
   // precedent (SPEC_V0.5.md §2.4 step 6, confirmed) — the backend already
@@ -51,8 +62,20 @@ export function ReportCardPage() {
   const sessionId = isTeacher ? (myTeaching.data?.currentSessionId ?? "") : adminTerm.currentSessionId ?? "";
   const ready = Boolean(id && termId && sessionId);
 
-  const reportCardQuery = useReportCard(ready ? { studentId: id!, termId, sessionId } : null);
+  const reportCardQuery = useReportCard(viewMode === "term" && ready ? { studentId: id!, termId, sessionId } : null);
   const data = reportCardQuery.data;
+  const yearExams = useStudentYearExams(
+    viewMode === "exams" && id && adminTerm.currentSessionId ? { studentId: id, sessionId: adminTerm.currentSessionId } : null,
+  );
+
+  function handleTermSelectChange(value: string) {
+    if (value === EXAMS_OPTION_VALUE) {
+      setViewMode("exams");
+      return;
+    }
+    setViewMode("term");
+    setAdminTermId(value);
+  }
 
   const classArmLabel =
     data &&
@@ -96,8 +119,8 @@ export function ReportCardPage() {
               <select
                 id="report-card-term"
                 className={SELECT_CLASS}
-                value={termId}
-                onChange={(event) => setAdminTermId(event.target.value)}
+                value={viewMode === "exams" ? EXAMS_OPTION_VALUE : termId}
+                onChange={(event) => handleTermSelectChange(event.target.value)}
                 disabled={adminTerm.isLoading}
               >
                 <option value="" disabled>
@@ -109,29 +132,30 @@ export function ReportCardPage() {
                     {term.isCurrent ? " (current)" : ""}
                   </option>
                 ))}
+                <option value={EXAMS_OPTION_VALUE}>Exams</option>
               </select>
             </div>
           )}
 
-          <Button type="button" size="sm" disabled={!data} onClick={() => window.print()}>
+          <Button type="button" size="sm" disabled={viewMode === "term" ? !data : !yearExams.data} onClick={() => window.print()}>
             <Printer className="mr-2 h-4 w-4" aria-hidden="true" /> Print
           </Button>
         </div>
       </div>
 
-      {!ready && (
+      {viewMode === "term" && !ready && (
         <div className="flex items-center gap-2 text-sm text-muted">
           <Spinner /> Loading…
         </div>
       )}
 
-      {ready && reportCardQuery.isLoading && (
+      {viewMode === "term" && ready && reportCardQuery.isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted">
           <Spinner /> Loading report card…
         </div>
       )}
 
-      {ready && reportCardQuery.isError && (
+      {viewMode === "term" && ready && reportCardQuery.isError && (
         <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center print:hidden">
           <p className="text-sm text-danger">{getErrorMessage(reportCardQuery.error, "Couldn't load this report card.")}</p>
           <Button type="button" variant="outline" size="sm" onClick={() => reportCardQuery.refetch()}>
@@ -140,7 +164,24 @@ export function ReportCardPage() {
         </div>
       )}
 
-      {data && (
+      {viewMode === "exams" && yearExams.isLoading && (
+        <div className="flex items-center gap-2 text-sm text-muted">
+          <Spinner /> Loading exams…
+        </div>
+      )}
+
+      {viewMode === "exams" && yearExams.isError && (
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center print:hidden">
+          <p className="text-sm text-danger">{getErrorMessage(yearExams.error, "Couldn't load exams.")}</p>
+          <Button type="button" variant="outline" size="sm" onClick={() => yearExams.refetch()}>
+            Try again
+          </Button>
+        </div>
+      )}
+
+      {viewMode === "exams" && yearExams.data && <YearExamsView data={yearExams.data} />}
+
+      {viewMode === "term" && data && (
         <ReportCardDocument
           data={data}
           schoolName={currentUser?.school.name}
@@ -149,6 +190,7 @@ export function ReportCardPage() {
           sessionLabel={sessionLabel}
           showTeacherForm={showTeacherForm}
           showPrincipalForm={showPrincipalForm}
+          examsViewer={{ kind: "staff", studentId: id! }}
         />
       )}
     </div>

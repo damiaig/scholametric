@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { EvaluationScoresResponse, SaveEvaluationScoresResponse } from "@scholametric/shared";
+import type { EvaluationScoresResponse, ExamScoresResponse, SaveEvaluationScoresResponse, SaveExamScoresResponse } from "@scholametric/shared";
 import { apiRequest, ApiError, getErrorMessage } from "../../lib/api-client";
-import { evaluationScoresQueryKey, type EvaluationScoresParams } from "./use-evaluation-scores";
+import { type EntryParams, entryId, idFieldName, scoresEndpoint, scoresQueryKey } from "./score-entry-track";
 
 export type CellStatus = "idle" | "pending" | "saving" | "saved" | "error" | "locked";
 
@@ -136,9 +136,19 @@ export interface ScoreEntrySaveQueueTiming {
 // real debounce/max-wait/retry behavior in milliseconds instead of
 // waiting out the production delays — the state machine under test is
 // identical either way, only the clock changes.
+//
+// v0.7 step 3 (SPEC_V0.7.md §3): shared between both tracks — `params`
+// is the EntryParams union (score-entry-track.ts), discriminated by
+// shape (evaluationId vs examId present), not a separate `track` arg.
+// Every branch below that used to hardcode the evaluation endpoint/id
+// field now goes through entryId()/idFieldName()/scoresEndpoint()/
+// scoresQueryKey() instead — for an evaluation caller these resolve to
+// EXACTLY the same strings as before the generalization (same URL, same
+// body shape, same cache key), which is what keeps this reuse invisible
+// to the v0.7 step 2 evaluation grid and its tests.
 export function useScoreEntrySaveQueue(
-  params: EvaluationScoresParams,
-  grid: EvaluationScoresResponse | undefined,
+  params: EntryParams,
+  grid: EvaluationScoresResponse | ExamScoresResponse | undefined,
   timing: ScoreEntrySaveQueueTiming = {},
 ) {
   const DEBOUNCE_MS = timing.debounceMs ?? DEFAULT_DEBOUNCE_MS;
@@ -154,7 +164,7 @@ export function useScoreEntrySaveQueue(
   const hydratedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!grid) return;
-    const key = evaluationScoresQueryKey(params).join("|");
+    const key = scoresQueryKey(params).join("|");
     if (hydratedKeyRef.current === key) return; // don't clobber in-progress edits on an unrelated cache update
     hydratedKeyRef.current = key;
     dispatch({
@@ -177,7 +187,7 @@ export function useScoreEntrySaveQueue(
       })),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grid, params.classArmId, params.subjectId, params.evaluationId, params.termId]);
+  }, [grid, params.classArmId, params.subjectId, entryId(params), params.termId]);
 
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxWaitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -204,13 +214,13 @@ export function useScoreEntrySaveQueue(
       dispatch({ type: "FLUSH_START", studentIds });
 
       try {
-        const response = await apiRequest<SaveEvaluationScoresResponse>("/api/v1/grades/evaluation-scores", {
+        const response = await apiRequest<SaveEvaluationScoresResponse | SaveExamScoresResponse>(scoresEndpoint(paramsRef.current), {
           method: "PUT",
           body: {
             classArmId: paramsRef.current.classArmId,
             subjectId: paramsRef.current.subjectId,
-            evaluationId: paramsRef.current.evaluationId,
             termId: paramsRef.current.termId,
+            [idFieldName(paramsRef.current)]: entryId(paramsRef.current),
             scores: studentIds.map((id) => {
               const value = sent.get(id)!;
               return { studentId: id, rawScore: value.value, isAbsent: value.isAbsent };
@@ -221,7 +231,7 @@ export function useScoreEntrySaveQueue(
           response.rows.map((row) => [row.studentId, { value: row.rawScore, isAbsent: row.isAbsent }]),
         );
         dispatch({ type: "FLUSH_SUCCESS", sent, results });
-        queryClient.setQueryData<EvaluationScoresResponse>(evaluationScoresQueryKey(paramsRef.current), (old) => {
+        queryClient.setQueryData<EvaluationScoresResponse | ExamScoresResponse>(scoresQueryKey(paramsRef.current), (old) => {
           if (!old) return old;
           return {
             ...old,
@@ -236,7 +246,7 @@ export function useScoreEntrySaveQueue(
           // Whole-slice lock (SPEC_V0.5.md §2.3) — every requested student
           // in this batch is affected, not just specific ones (unlike the
           // published-lock case below, term_unlocks isn't per-student). In
-          // practice this is a race: GET /grades/evaluation-scores already
+          // practice this is a race: the scores GET (either track) already
           // renders locked-from-load, so reaching this means the term closed or
           // was relocked while this save was already in flight.
           dispatch({

@@ -1530,20 +1530,24 @@ don't resolve within the caller's tenant.
 
 ---
 
-## Exams — score entry & publish (v0.7 step 1, SPEC_V0.7.md §2/§5)
+## Exams — authoring, score entry, publish & the two exam views (v0.7 steps 1-3, SPEC_V0.7.md §2/§3/§4/§5)
 
 Track B: exams are a **separate track** from evaluations above, scored
 against `Exam`/`exam_scores` (native /100, same absence semantics) and
 published into their own `term_subject_exam_results` — they **never**
-contribute to `term_subject_results`/`term_overall_results`. Step 1 ships
-the engine + score-entry/publish endpoints only; creating an `Exam` itself
-has no HTTP endpoint yet (Step 2) — an exam's `name` is optional and
-defaults to "Exam" once authoring lands. Role rules, lock ordering,
-completeness-gate shape, and audit-log discipline all mirror the
-evaluation track above exactly ("same publish model as v0.4," confirmed)
-— only the target tables differ. `term_subject_exam_results` has neither
-`subjectPosition` nor `overrideGrade` (Q6: exams rank only at the
-per-term/whole-year levels below, never per-subject).
+contribute to `term_subject_results`/`term_overall_results`. Role rules,
+lock ordering, completeness-gate shape, and audit-log discipline all
+mirror the evaluation track above exactly ("same publish model as v0.4,"
+confirmed) — only the target tables differ. `term_subject_exam_results`
+has neither `subjectPosition` nor `overrideGrade` (Q6: exams rank only at
+the per-term/whole-year levels below, never per-subject).
+
+Step 1 shipped the engine + score-entry/publish endpoints; step 3 (below)
+adds creating/editing/deleting an `Exam` itself, plus the two read views
+(`GET .../exams` and `GET .../year-exams`) that surface what the engine
+computes. There is still no `GET /exams/review` — publishing from the UI
+is a minimal action on the scoring page, not a second review-list surface
+(confirmed, out of scope this step).
 
 ### `GET` / `PUT /exams/scores`
 
@@ -1586,6 +1590,144 @@ out of a fully-published term also drops out of that term's ranking, and
 the year-level average recomputes without their now-unpublished term).
 
 **Response `200`**: `{ classArmId, subjectId, termId, unpublishedCount, termExamRevertedCount, yearExamRecomputedCount }`.
+
+### `GET /exams` / `POST /exams` (v0.7 step 3, SPEC_V0.7.md §3)
+
+The authoring surface — mirrors `GET`/`POST /grades/evaluations` exactly,
+with one shape difference: an `Exam` has only a `name`, and it's
+**optional** (`1-200` chars if given). A caller who omits it gets `"Exam"`
+back as the display name — resolved once, server-side
+(`ExamsService.toExamResponse`), so no consumer ever handles `null`.
+
+**`GET`** — query: `classArmId`, `subjectId`, `termId`. Same lock-state
+fields as the evaluation list (`termClosed`, `locked`, `unlockReason`).
+
+```json
+{
+  "classArmId": "...", "subjectId": "...", "termId": "...",
+  "termClosed": false, "locked": false, "unlockReason": null,
+  "exams": [
+    { "id": "...", "name": "Exam", "createdAt": "...", "createdBy": "..." }
+  ]
+}
+```
+
+**`POST`** — body: `{ classArmId, subjectId, termId, name? }`.
+classArmId/subjectId/termId fixed at creation, same as evaluations.
+
+- **`409` `{ termLocked: true }`**: shared term lock, same as evaluations.
+- **`409`**: this subject's exam results are already `PUBLISHED` for this
+  term — the exam set is frozen once published (confirmed, mirrors the
+  evaluation rule exactly) — unpublish first, then create.
+- **`403`**/**`404`**: same `TEACHER` assignment / tenant / "no assignment
+  at all" rules as the evaluation authoring routes.
+
+**Response `200`/`201`**: `{ id, name, createdAt, createdBy }`.
+
+Audited (`exam.create`, standard `@Audit()`).
+
+### `PATCH /exams/:id` (v0.7 step 3)
+
+Body: `{ name? }` — required (`400` if omitted; the only field there is).
+
+- Freely editable while this subject's exam results are `DRAFT`.
+- **`403`** once ANY row is `PUBLISHED` for this subject/term: `PROPRIETOR`
+  only from that point — same data-dependent narrowing as evaluations.
+- Same term-lock `409` as create.
+
+Audited (`exam.update`).
+
+### `DELETE /exams/:id` (v0.7 step 3)
+
+`PROPRIETOR` only (categorical — no `TEACHER`/`SCHOOL_ADMIN` path exists
+at all, regardless of state). Soft-deletes (`deletedAt`) and recomputes
+the roster's `term_subject_exam_results` for this subject/term.
+
+- **`409`**: this subject's exam results are already `PUBLISHED` — no
+  force-delete-through-published path. This is why the recompute needs no
+  cascade to `term_exam_results`/`year_exam_results`: every affected row
+  is guaranteed `DRAFT` at delete-time (docs/DECISIONS.md).
+- **`409` `{ termLocked: true }`**: same shared term lock.
+
+**Response `200`**: `{ id }`.
+
+Audited (`exam.remove`).
+
+### `GET /students/:id/exams` / `GET /me/exams` / `GET /me/children/:childId/exams` (v0.7 step 3, SPEC_V0.7.md §4)
+
+The per-term "Show exams" button — one subject's exam breakdown for one
+student in one term. Query: `subjectId`, `termId`, `sessionId`. Same
+security resolution as `GET /students/:id/report-card` (student ->
+enrollment -> `resolveTeacherAccess` for `TEACHER` -> published-only for
+`STUDENT`/`PARENT`), just scoped to a single subject instead of the whole
+card. The self/child routes resolve `studentId` from the token/linked-
+children set exactly like the report-card routes do — never a request
+field.
+
+**The published-only wall (the safety-critical part):** for `STUDENT`/
+`PARENT`, a subject is visible only if its `term_subject_exam_result` row
+is `PUBLISHED`. If it's `DRAFT` (or doesn't exist yet), the response is
+**indistinguishable from "nothing entered yet"** — `exams: []`, both
+averages `null`, `status: null` — never a hint that draft data exists.
+Staff (`TEACHER`/`SCHOOL_ADMIN`/`PROPRIETOR`) always sees the real state.
+
+```json
+{
+  "studentId": "...", "subjectId": "...", "subjectName": "Mathematics",
+  "termId": "...", "sessionId": "...",
+  "exams": [
+    { "examId": "...", "name": "Exam", "rawScore": 78, "isAbsent": false }
+  ],
+  "subjectExamAverage": 78, "subjectExamGrade": "B2", "status": "PUBLISHED"
+}
+```
+
+**Response `404`**: student/subject/term don't resolve in-tenant, or the
+student has no enrollment for `sessionId`. **`403`**: `TEACHER` with no
+relationship to this student's class arm.
+
+### `GET /students/:id/year-exams` / `GET /me/year-exams` / `GET /me/children/:childId/year-exams` (v0.7 step 3, SPEC_V0.7.md §4)
+
+The dedicated year-long Exams view. Query: `sessionId`. Returns every term
+in that session (chronological), each with every subject's individual
+exams + that subject's average, the term's cross-subject average/grade/
+position (`term_exam_results`), and the whole-session overall at the end
+(`year_exam_results`).
+
+**Visibility is independently gated at every level**, mirroring
+`GET /students/:id/report-card`'s per-subject filtering exactly — a
+subject's own row, its term's cross-subject aggregate, and the
+whole-session aggregate each check **their own** `status`. Concretely:
+publishing is a per-subject action, so a student's Mathematics exam can be
+published before the rest of that term's subjects are — the subject
+shows immediately, without waiting for the term-level average to catch
+up. This is also what makes a **partially-published year** fall out for
+free: a term with no published aggregate yet still shows whichever of its
+subjects individually published; a term with zero published anything
+shows `subjects: []` and every aggregate `null` — never an error, never a
+gap in the array (every term the student was enrolled in this session
+gets an entry, empty or not).
+
+```json
+{
+  "studentId": "...", "sessionId": "...",
+  "terms": [
+    {
+      "termId": "...", "termName": "FIRST",
+      "subjects": [
+        { "subjectId": "...", "subjectName": "Mathematics", "exams": [...], "subjectExamAverage": 78, "subjectExamGrade": "B2" }
+      ],
+      "termExamAverage": 74, "termExamGrade": "B3", "termExamPosition": 2, "status": "PUBLISHED"
+    },
+    { "termId": "...", "termName": "SECOND", "subjects": [], "termExamAverage": null, "termExamGrade": null, "termExamPosition": null, "status": null }
+  ],
+  "overallExamAverage": null, "overallExamGrade": null, "yearExamPosition": null, "termsCount": 0, "overallStatus": null
+}
+```
+
+**Response `404`**: student doesn't resolve in-tenant, or no enrollment
+for `sessionId`. **`403`**: `TEACHER` with no relationship to this
+student's class arm.
 
 ---
 

@@ -6,8 +6,11 @@ import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
 import { useCurrentUser } from "../shell/use-current-user";
 import { ReportCardDocument } from "../grades/ReportCardDocument";
+import { YearExamsView } from "../grades/YearExamsView";
 import { useMyReportCard } from "../grades/use-my-report-card";
 import { useChildReportCard } from "../grades/use-child-report-card";
+import { useMyYearExams } from "../grades/use-my-year-exams";
+import { useChildYearExams } from "../grades/use-child-year-exams";
 import { useMyProfile } from "./use-my-profile";
 import { useMyTerms } from "./use-my-terms";
 import { useMyChildren } from "./use-my-children";
@@ -20,6 +23,12 @@ function formatTermName(name: string): string {
   return name.charAt(0) + name.slice(1).toLowerCase() + " term";
 }
 
+// v0.7 step 3 (SPEC_V0.7.md §4) — the year-long Exams view is a 4th entry
+// in the SAME term selector, not a separate control/route (confirmed) —
+// this sentinel prefix distinguishes it from a real term id (a UUID,
+// never colliding with this string) in the one shared <select>'s value.
+const EXAMS_OPTION_PREFIX = "exams:";
+
 // v0.6 step 3 (SPEC_V0.6.md §2.3): a STUDENT's own read view — their
 // published grades + report card, reusing the SAME ReportCardDocument
 // renderer the staff-facing ReportCardPage uses (v0.5 step 4), with the
@@ -30,6 +39,7 @@ function StudentPortalHome() {
   const terms = useMyTerms();
   const [termId, setTermId] = useState("");
   const [sessionId, setSessionId] = useState("");
+  const [viewMode, setViewMode] = useState<"term" | "exams">("term");
 
   const termOptions = (terms.data?.sessions ?? []).flatMap((session) =>
     session.terms.map((term) => ({
@@ -41,6 +51,12 @@ function StudentPortalHome() {
       label: `${formatTermName(term.name)} — ${session.name}${term.isCurrent ? " (current)" : ""}`,
     })),
   );
+  // v0.7 step 3 — one "Exams" entry per session the student has ever been
+  // enrolled in, same grouping the term options already use.
+  const examsOptions = (terms.data?.sessions ?? []).map((session) => ({
+    sessionId: session.id,
+    label: `Exams — ${session.name}`,
+  }));
 
   // Default to the current term once the list loads — a student most
   // often wants "now," but every term they were ever enrolled in stays
@@ -53,9 +69,25 @@ function StudentPortalHome() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terms.data]);
 
+  function handleSelectChange(value: string) {
+    if (value.startsWith(EXAMS_OPTION_PREFIX)) {
+      setViewMode("exams");
+      setSessionId(value.slice(EXAMS_OPTION_PREFIX.length));
+      return;
+    }
+    const option = termOptions.find((o) => o.id === value);
+    if (option) {
+      setViewMode("term");
+      setTermId(option.id);
+      setSessionId(option.sessionId);
+    }
+  }
+
   const ready = Boolean(termId && sessionId);
-  const reportCard = useMyReportCard(ready ? { termId, sessionId } : null);
+  const reportCard = useMyReportCard(viewMode === "term" && ready ? { termId, sessionId } : null);
+  const yearExams = useMyYearExams(viewMode === "exams" && sessionId ? { sessionId } : null);
   const selectedOption = termOptions.find((option) => option.id === termId);
+  const selectValue = viewMode === "exams" ? `${EXAMS_OPTION_PREFIX}${sessionId}` : termId;
 
   return (
     <div>
@@ -67,14 +99,8 @@ function StudentPortalHome() {
           <select
             id="portal-term"
             className={SELECT_CLASS}
-            value={termId}
-            onChange={(event) => {
-              const option = termOptions.find((o) => o.id === event.target.value);
-              if (option) {
-                setTermId(option.id);
-                setSessionId(option.sessionId);
-              }
-            }}
+            value={selectValue}
+            onChange={(event) => handleSelectChange(event.target.value)}
             disabled={terms.isLoading}
           >
             <option value="" disabled>
@@ -85,23 +111,28 @@ function StudentPortalHome() {
                 {option.label}
               </option>
             ))}
+            {examsOptions.map((option) => (
+              <option key={`${EXAMS_OPTION_PREFIX}${option.sessionId}`} value={`${EXAMS_OPTION_PREFIX}${option.sessionId}`}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </div>
       )}
 
-      {!terms.isLoading && !ready && termOptions.length === 0 && (
+      {!terms.isLoading && termOptions.length === 0 && (
         <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
           No terms yet — check back once you've been enrolled this session.
         </p>
       )}
 
-      {ready && reportCard.isLoading && (
+      {viewMode === "term" && ready && reportCard.isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted">
           <Spinner /> Loading your report card…
         </div>
       )}
 
-      {ready && reportCard.isError && (
+      {viewMode === "term" && ready && reportCard.isError && (
         <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
           <p className="text-sm text-danger">{getErrorMessage(reportCard.error, "Couldn't load your report card.")}</p>
           <Button type="button" variant="outline" size="sm" onClick={() => reportCard.refetch()}>
@@ -110,12 +141,30 @@ function StudentPortalHome() {
         </div>
       )}
 
-      {ready && reportCard.data && (
+      {viewMode === "exams" && sessionId && yearExams.isLoading && (
+        <div className="flex items-center gap-2 text-sm text-muted">
+          <Spinner /> Loading your exams…
+        </div>
+      )}
+
+      {viewMode === "exams" && sessionId && yearExams.isError && (
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
+          <p className="text-sm text-danger">{getErrorMessage(yearExams.error, "Couldn't load your exams.")}</p>
+          <Button type="button" variant="outline" size="sm" onClick={() => yearExams.refetch()}>
+            Try again
+          </Button>
+        </div>
+      )}
+
+      {viewMode === "exams" && sessionId && yearExams.data && <YearExamsView data={yearExams.data} />}
+
+      {viewMode === "term" && ready && reportCard.data && (
         <ReportCardDocument
           data={reportCard.data}
           schoolName={user?.school.name}
           classArmLabel={profile.data?.currentClassArmLabel}
           termLabel={selectedOption ? formatTermName(selectedOption.termName) : null}
+          examsViewer={{ kind: "self" }}
           sessionLabel={selectedOption?.sessionName}
           showTeacherForm={false}
           showPrincipalForm={false}
@@ -148,6 +197,7 @@ function ParentPortalHome() {
   const terms = useChildTerms(childId || null);
   const [termId, setTermId] = useState("");
   const [sessionId, setSessionId] = useState("");
+  const [viewMode, setViewMode] = useState<"term" | "exams">("term");
 
   const termOptions = (terms.data?.sessions ?? []).flatMap((session) =>
     session.terms.map((term) => ({
@@ -159,12 +209,17 @@ function ParentPortalHome() {
       label: `${formatTermName(term.name)} — ${session.name}${term.isCurrent ? " (current)" : ""}`,
     })),
   );
+  const examsOptions = (terms.data?.sessions ?? []).map((session) => ({
+    sessionId: session.id,
+    label: `Exams — ${session.name}`,
+  }));
 
   // Switching children resets the term choice — the new child's terms
   // load fresh and default below, same as the initial load.
   useEffect(() => {
     setTermId("");
     setSessionId("");
+    setViewMode("term");
   }, [childId]);
 
   useEffect(() => {
@@ -175,9 +230,25 @@ function ParentPortalHome() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terms.data]);
 
+  function handleSelectChange(value: string) {
+    if (value.startsWith(EXAMS_OPTION_PREFIX)) {
+      setViewMode("exams");
+      setSessionId(value.slice(EXAMS_OPTION_PREFIX.length));
+      return;
+    }
+    const option = termOptions.find((o) => o.id === value);
+    if (option) {
+      setViewMode("term");
+      setTermId(option.id);
+      setSessionId(option.sessionId);
+    }
+  }
+
   const ready = Boolean(childId && termId && sessionId);
-  const reportCard = useChildReportCard(ready ? { childId, termId, sessionId } : null);
+  const reportCard = useChildReportCard(viewMode === "term" && ready ? { childId, termId, sessionId } : null);
+  const yearExams = useChildYearExams(viewMode === "exams" && childId && sessionId ? { childId, sessionId } : null);
   const selectedTermOption = termOptions.find((option) => option.id === termId);
+  const selectValue = viewMode === "exams" ? `${EXAMS_OPTION_PREFIX}${sessionId}` : termId;
 
   return (
     <div>
@@ -217,14 +288,8 @@ function ParentPortalHome() {
             <select
               id="portal-term"
               className={SELECT_CLASS}
-              value={termId}
-              onChange={(event) => {
-                const option = termOptions.find((o) => o.id === event.target.value);
-                if (option) {
-                  setTermId(option.id);
-                  setSessionId(option.sessionId);
-                }
-              }}
+              value={selectValue}
+              onChange={(event) => handleSelectChange(event.target.value)}
               disabled={!childId || terms.isLoading}
             >
               <option value="" disabled>
@@ -235,18 +300,23 @@ function ParentPortalHome() {
                   {option.label}
                 </option>
               ))}
+              {examsOptions.map((option) => (
+                <option key={`${EXAMS_OPTION_PREFIX}${option.sessionId}`} value={`${EXAMS_OPTION_PREFIX}${option.sessionId}`}>
+                  {option.label}
+                </option>
+              ))}
             </select>
           </div>
         </div>
       )}
 
-      {ready && reportCard.isLoading && (
+      {viewMode === "term" && ready && reportCard.isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted">
           <Spinner /> Loading report card…
         </div>
       )}
 
-      {ready && reportCard.isError && (
+      {viewMode === "term" && ready && reportCard.isError && (
         <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
           <p className="text-sm text-danger">{getErrorMessage(reportCard.error, "Couldn't load this report card.")}</p>
           <Button type="button" variant="outline" size="sm" onClick={() => reportCard.refetch()}>
@@ -255,7 +325,24 @@ function ParentPortalHome() {
         </div>
       )}
 
-      {ready && reportCard.data && (
+      {viewMode === "exams" && childId && sessionId && yearExams.isLoading && (
+        <div className="flex items-center gap-2 text-sm text-muted">
+          <Spinner /> Loading exams…
+        </div>
+      )}
+
+      {viewMode === "exams" && childId && sessionId && yearExams.isError && (
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
+          <p className="text-sm text-danger">{getErrorMessage(yearExams.error, "Couldn't load exams.")}</p>
+          <Button type="button" variant="outline" size="sm" onClick={() => yearExams.refetch()}>
+            Try again
+          </Button>
+        </div>
+      )}
+
+      {viewMode === "exams" && childId && sessionId && yearExams.data && <YearExamsView data={yearExams.data} />}
+
+      {viewMode === "term" && ready && reportCard.data && (
         <ReportCardDocument
           data={reportCard.data}
           schoolName={user?.school.name}
@@ -264,6 +351,7 @@ function ParentPortalHome() {
           sessionLabel={selectedTermOption?.sessionName}
           showTeacherForm={false}
           showPrincipalForm={false}
+          examsViewer={childId ? { kind: "child", childId } : undefined}
         />
       )}
     </div>

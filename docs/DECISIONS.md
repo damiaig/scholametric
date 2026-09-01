@@ -4377,3 +4377,59 @@ call `publish()`/`unpublish()`/`saveEvaluationScores` already use) must be
 added back at that point.** Shipping the force-delete path without it
 would silently strand published overalls/positions, the exact bug gap-2
 was originally fixed for.
+
+## 2026-08-31 — CI flake: classes.e2e-spec.ts's "constant query count" test, connection-warmup dependent
+
+**Observed:** the first CI run of the v0.7 step 2 commit (`998a4bf`, run
+#44) failed on `classes.e2e-spec.ts`'s "runs as a CONSTANT number of
+queries regardless of data size (not N+1)" assertion — `countForSunrise`
+(3) didn't equal `countForHillcrest` (1). This test has nothing to do
+with grades/evaluations; `GET /classes` is unchanged, still one
+`$queryRaw` (2026-07-17 entry above). The identical commit passed this
+exact test in a full local `pnpm run ci` run, and re-running only the
+failed job in CI (no code/test change) went green.
+
+**Cause (working theory, not proven further):** the test counts raw SQL
+statements via `prisma.$on('query', ...)` across two sequential requests
+(Sunrise first, Hillcrest second). If the connection pool's first
+statement on a freshly-acquired connection triggers extra prepared-
+statement/setup queries, Sunrise — queried first — absorbs that cost;
+Hillcrest, reusing an already-warm connection, doesn't. That's timing/
+connection-state dependent, not row-count dependent, which is consistent
+with local runs (warm from earlier test files touching Sunrise) passing
+while a fresh CI connection pool occasionally doesn't.
+
+**Decision:** left unchanged — this is a pre-existing flake unrelated to
+this diff, not something to "fix" by loosening the assertion without
+understanding the real mechanism first. If it recurs, re-run the job
+before assuming a regression; the fix (if any) belongs to whoever
+untangles the connection-pool timing, not to whichever commit happened to
+land when it fired.
+
+## 2026-08-31 — v0.7 step 3: DELETE /exams/:id blocks outright while published, same dependency as evaluations — now naming BOTH cascade tables
+
+**Decision (confirmed):** extends the 2026-08-31 evaluation-delete entry
+above to the exam track. `ExamsService.deleteExam()` 409s outright while
+the subject's `term_subject_exam_result` is `PUBLISHED` — same owner-only,
+no-force-delete-through-published rule. Its recompute step is a plain
+`recomputeExamStudents()` call with **no cascade to either
+`TermExamResult` (per-term, cross-subject) or `YearExamResult`
+(whole-session)** — one level deeper than the evaluation track's single
+`TermOverallResult` cascade, since Track B has two aggregate levels above
+the subject.
+
+**Why the extra table changes nothing about the argument:** because
+delete is blocked while `PUBLISHED`, every `term_subject_exam_result` a
+delete can touch is guaranteed `DRAFT` at delete-time. `TermExamResult`
+only ever flips to `PUBLISHED` for a student once *every* subject's
+`term_subject_exam_result` that term is itself `PUBLISHED`
+(`recomputeExamOverallForClassArm`) — so a DRAFT subject means that
+student's `TermExamResult` cannot already be `PUBLISHED` on the strength
+of it, and `YearExamResult` only aggregates `PUBLISHED` `TermExamResult`
+rows, so it's unreachable transitively too. Deleting a draft exam can
+therefore never strand a published number at either level.
+
+**If a future change allows force-deleting a `PUBLISHED` exam, it must add
+back BOTH cascades** — `recomputeExamOverallForClassArm` (per-term) *and*
+`recomputeYearExamResults` (whole-session), not just the nearer one —
+mirroring `publish()`/`unpublish()`'s existing two-level cascade exactly.

@@ -4,6 +4,8 @@ import { Roles } from "../common/decorators/roles.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { GetStudentResultsQueryDto } from "../grades/dto/get-student-results-query.dto";
+import { GetStudentSubjectExamsQueryDto } from "../exams/dto/get-student-subject-exams-query.dto";
+import { GetYearExamsQueryDto } from "../exams/dto/get-year-exams-query.dto";
 import { MeService } from "./me.service";
 
 // No @Roles() at the class level — every authenticated role may ask
@@ -44,6 +46,20 @@ export class MeController {
     return this.meService.getMyReportCard(user, query);
   }
 
+  // v0.7 step 3 (SPEC_V0.7.md §4) — the per-term "Show exams" button and
+  // the year-long Exams view, for a STUDENT's own record.
+  @Roles(UserRole.STUDENT)
+  @Get("exams")
+  exams(@CurrentUser() user: AuthenticatedUser, @Query() query: GetStudentSubjectExamsQueryDto) {
+    return this.meService.getMyExams(user, query);
+  }
+
+  @Roles(UserRole.STUDENT)
+  @Get("year-exams")
+  yearExams(@CurrentUser() user: AuthenticatedUser, @Query() query: GetYearExamsQueryDto) {
+    return this.meService.getMyYearExams(user, query);
+  }
+
   // v0.6 step 4 (SPEC_V0.6.md §2.4) — the child-switcher's data.
   @Roles(UserRole.PARENT)
   @Get("children")
@@ -71,5 +87,25 @@ export class MeController {
     @Query() query: GetStudentResultsQueryDto,
   ) {
     return this.meService.getChildReportCard(user, childId, query);
+  }
+
+  @Roles(UserRole.PARENT)
+  @Get("children/:childId/exams")
+  childExams(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("childId", ParseUUIDPipe) childId: string,
+    @Query() query: GetStudentSubjectExamsQueryDto,
+  ) {
+    return this.meService.getChildExams(user, childId, query);
+  }
+
+  @Roles(UserRole.PARENT)
+  @Get("children/:childId/year-exams")
+  childYearExams(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("childId", ParseUUIDPipe) childId: string,
+    @Query() query: GetYearExamsQueryDto,
+  ) {
+    return this.meService.getChildYearExams(user, childId, query);
   }
 }

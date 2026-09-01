@@ -6,6 +6,9 @@ import { forSchool } from "../common/tenant/for-school";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { GradesService, type ReportCardResponse } from "../grades/grades.service";
 import type { GetStudentResultsQueryDto } from "../grades/dto/get-student-results-query.dto";
+import { ExamsService, type StudentSubjectExamsResponse, type YearExamsResponse } from "../exams/exams.service";
+import type { GetStudentSubjectExamsQueryDto } from "../exams/dto/get-student-subject-exams-query.dto";
+import type { GetYearExamsQueryDto } from "../exams/dto/get-year-exams-query.dto";
 
 export interface MyClassTeacherOfEntry {
   classArmId: string;
@@ -92,6 +95,7 @@ export class MeService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContext,
     private readonly gradesService: GradesService,
+    private readonly examsService: ExamsService,
   ) {}
 
   // The identity-resolution seam every /me/* STUDENT endpoint below goes
@@ -239,6 +243,20 @@ export class MeService {
     return this.gradesService.getReportCard(studentId, query, user);
   }
 
+  // v0.7 step 3 (SPEC_V0.7.md §4) — same delegation shape as
+  // getMyReportCard above, onto ExamsService.getStudentSubjectExams
+  // instead: studentId resolved from the token, role STUDENT passed
+  // through so the published-only wall there applies.
+  async getMyExams(user: AuthenticatedUser, query: GetStudentSubjectExamsQueryDto): Promise<StudentSubjectExamsResponse> {
+    const studentId = await this.resolveOwnStudentId(user.userId);
+    return this.examsService.getStudentSubjectExams(studentId, query, user);
+  }
+
+  async getMyYearExams(user: AuthenticatedUser, query: GetYearExamsQueryDto): Promise<YearExamsResponse> {
+    const studentId = await this.resolveOwnStudentId(user.userId);
+    return this.examsService.getStudentYearExams(studentId, query, user);
+  }
+
   // v0.6 step 4 — the child-switcher's data: every MyProfile the caller's
   // own linked children resolve to (§ resolveOwnChildIds above). A
   // guardian linked to zero students (shouldn't happen post-v0.6-step-1,
@@ -268,6 +286,20 @@ export class MeService {
   async getChildReportCard(user: AuthenticatedUser, childId: string, query: GetStudentResultsQueryDto): Promise<ReportCardResponse> {
     await this.assertChildBelongsToCaller(user.userId, childId);
     return this.gradesService.getReportCard(childId, query, user);
+  }
+
+  // Same reuse as getChildReportCard above: assertChildBelongsToCaller
+  // runs FIRST, then role PARENT passes through to the exact same
+  // ExamsService methods self-view (STUDENT) uses — the published-only
+  // wall there already covers PARENT alongside STUDENT.
+  async getChildExams(user: AuthenticatedUser, childId: string, query: GetStudentSubjectExamsQueryDto): Promise<StudentSubjectExamsResponse> {
+    await this.assertChildBelongsToCaller(user.userId, childId);
+    return this.examsService.getStudentSubjectExams(childId, query, user);
+  }
+
+  async getChildYearExams(user: AuthenticatedUser, childId: string, query: GetYearExamsQueryDto): Promise<YearExamsResponse> {
+    await this.assertChildBelongsToCaller(user.userId, childId);
+    return this.examsService.getStudentYearExams(childId, query, user);
   }
 
   // Reuses the same class-teacher/subject-teacher join shape as

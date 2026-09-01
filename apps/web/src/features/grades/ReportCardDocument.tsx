@@ -3,6 +3,7 @@ import { StatusBadge } from "../../components/StatusBadge";
 import { resultStatusLabel, resultStatusTone } from "./result-status";
 import { formatScore } from "./format-score";
 import { RemarkPanel } from "./RemarkPanel";
+import { SubjectExamsPanel, type ExamsViewer } from "./SubjectExamsPanel";
 
 function positionLabel(position: number | null): string {
   return position === null ? "Not yet ranked" : `#${position}`;
@@ -29,6 +30,12 @@ interface ReportCardDocumentProps {
   // disabled" pattern as a subject-only TEACHER).
   showTeacherForm?: boolean;
   showPrincipalForm?: boolean;
+  // v0.7 step 3 (SPEC_V0.7.md §4) — who's asking, for the per-subject
+  // "Show exams" button below (SubjectExamsPanel resolves the right
+  // endpoint/published-only rule from this). Omitted entirely hides the
+  // button — used nowhere in this app today, but keeps this component
+  // usable in a context that doesn't have viewer identity to hand.
+  examsViewer?: ExamsViewer;
 }
 
 // The printable document itself (SPEC_V0.5.md §2.4, v0.5 step 4) —
@@ -46,6 +53,7 @@ export function ReportCardDocument({
   sessionLabel,
   showTeacherForm = false,
   showPrincipalForm = false,
+  examsViewer,
 }: ReportCardDocumentProps) {
   return (
     <div className="mx-auto max-w-3xl rounded-lg border border-muted/20 bg-card p-6 text-text print:border-0 print:p-0 print:shadow-none">
@@ -103,6 +111,16 @@ export function ReportCardDocument({
                   </tbody>
                 </table>
               </div>
+
+              {examsViewer && (
+                <SubjectExamsPanel
+                  subjectId={subject.subjectId}
+                  subjectName={subject.subjectName}
+                  termId={data.termId}
+                  sessionId={data.sessionId}
+                  viewer={examsViewer}
+                />
+              )}
             </div>
           ))}
         </div>

@@ -100,6 +100,13 @@ export function MyClassesView() {
                       >
                         Enter grades
                       </Link>
+                      <span className="mx-2 text-muted">·</span>
+                      <Link
+                        to={`/grades/exams-grid?classArmId=${entry.classArmId}&subjectId=${entry.subjectId}`}
+                        className="text-primary hover:underline"
+                      >
+                        Enter exam scores
+                      </Link>
                     </td>
                   </tr>
                 ))}

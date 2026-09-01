@@ -12,6 +12,7 @@ import { TeacherDetailPage } from "./features/teachers/TeacherDetailPage";
 import { ClassesPage } from "./features/classes/ClassesPage";
 import { ClassArmDetailPage } from "./features/classes/ClassArmDetailPage";
 import { ScoreEntryGridPage } from "./features/grades/ScoreEntryGridPage";
+import { ExamScoringPage } from "./features/grades/ExamScoringPage";
 import { GradesOverviewPage } from "./features/grades/GradesOverviewPage";
 import { ReviewPublishPage } from "./features/grades/ReviewPublishPage";
 import { ReportCardPage } from "./features/grades/ReportCardPage";
@@ -45,6 +46,7 @@ export function AppRoutes() {
         <Route path="/classes" element={<ClassesPage />} />
         <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
         <Route path="/grades/grid" element={<ScoreEntryGridPage />} />
+        <Route path="/grades/exams-grid" element={<ExamScoringPage />} />
         <Route path="/grades/overview" element={<GradesOverviewPage />} />
         <Route path="/help" element={<HelpPage />} />
         <Route path="/account/change-password" element={<AccountChangePasswordPage />} />
