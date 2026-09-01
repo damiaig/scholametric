@@ -4433,3 +4433,40 @@ therefore never strand a published number at either level.
 back BOTH cascades** — `recomputeExamOverallForClassArm` (per-term) *and*
 `recomputeYearExamResults` (whole-session), not just the nearer one —
 mirroring `publish()`/`unpublish()`'s existing two-level cascade exactly.
+
+## 2026-09-01 — CI OOM, take two: web's OWN Vitest suite now needs to run sequentially, not just serialized against api's Jest
+
+**Observed:** the v0.7 step 3 push (`445d1d7`, run #45) failed with the
+same signature as the earlier documented flake — "FATAL ERROR: Reached
+heap limit... Worker exited unexpectedly" — but this time it happened
+with `apps/api`'s Jest suite **not even running concurrently** (the
+2026-08-31 `--workspace-concurrency=1` fix already serializes api vs
+web). `apps/web`'s own Vitest run climbed to ~4GB heap in a single worker
+and died on its own, after 40 of 41 files had already passed. Adding this
+step's 4 new web test files (ExamPicker/ExamFormDialog/SubjectExamsPanel/
+YearExamsView, ~19 more tests, 37→41 files) was enough to push a single
+Vitest worker over the runner's ceiling — a second, independent memory
+pressure point from the one fixed before, this time entirely internal to
+Vitest's own default file-parallelism (many jsdom environments alive at
+once across worker threads), unrelated to pnpm's cross-workspace
+concurrency.
+
+**Fix:** `apps/web/vite.config.ts`'s `test` block sets
+`fileParallelism: !process.env.CI` — every GitHub Actions job sets `CI`
+automatically, so this needs no workflow-file change, unlike the
+api/web fix (which lives in `.github/workflows/ci.yml` because it
+coordinates across workspaces). Local dev keeps Vitest's normal parallel
+file execution (fast); CI runs test files sequentially within Vitest
+itself, bounding peak heap to roughly one file's worth of jsdom
+environments instead of a whole worker pool's.
+
+**Why this is a different bug from the 2026-08-31 entry, not a
+recurrence:** that fix stopped `api`'s Jest and `web`'s Vitest from
+running *at the same time*; this one is needed because `web`'s Vitest
+alone, now with a larger suite, can exceed the ceiling by itself. Both
+fixes should stay in place — removing either reintroduces its own
+failure mode as the suite keeps growing.
+
+**Proof:** `CI=true pnpm exec vitest run` locally (forcing the same
+`fileParallelism: false` path) passes all 226 tests in ~24s — correctness
+unaffected, only the parallelism strategy changes.

@@ -39,5 +39,15 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: "./src/test/setup.ts",
+    // GitHub Actions' runner has a much tighter memory ceiling than local
+    // dev (see docs/DECISIONS.md's api/web pnpm-workspace-concurrency
+    // fix for the sibling issue) — Vitest's default file-parallelism
+    // spins up enough concurrent jsdom environments across this suite's
+    // ~40 files to OOM there specifically ("heap out of memory / Worker
+    // exited unexpectedly"), even with api's Jest suite no longer running
+    // at the same time. `CI` is set by every GitHub Actions job
+    // automatically — sequential-within-Vitest only there; local dev
+    // keeps its normal (fast) parallel file execution.
+    fileParallelism: !process.env.CI,
   },
 });
