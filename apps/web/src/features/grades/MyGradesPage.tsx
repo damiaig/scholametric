@@ -1,20 +1,21 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
 import { Label } from "../../components/ui/label";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
 import { useCurrentUser } from "../shell/use-current-user";
-import { ReportCardDocument } from "../grades/ReportCardDocument";
-import { YearExamsView } from "../grades/YearExamsView";
-import { useMyReportCard } from "../grades/use-my-report-card";
-import { useChildReportCard } from "../grades/use-child-report-card";
-import { useMyYearExams } from "../grades/use-my-year-exams";
-import { useChildYearExams } from "../grades/use-child-year-exams";
-import { useMyProfile } from "./use-my-profile";
-import { useMyTerms } from "./use-my-terms";
-import { useMyChildren } from "./use-my-children";
-import { useChildTerms } from "./use-child-terms";
+import { ReportCardDocument } from "./ReportCardDocument";
+import { YearExamsView } from "./YearExamsView";
+import { useMyReportCard } from "./use-my-report-card";
+import { useChildReportCard } from "./use-child-report-card";
+import { useMyYearExams } from "./use-my-year-exams";
+import { useChildYearExams } from "./use-child-year-exams";
+import { useMyProfile } from "../dashboard/use-my-profile";
+import { useMyTerms } from "../dashboard/use-my-terms";
+import { useMyChildren } from "../dashboard/use-my-children";
+import { useChildTerms } from "../dashboard/use-child-terms";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-64";
@@ -29,11 +30,15 @@ function formatTermName(name: string): string {
 // never colliding with this string) in the one shared <select>'s value.
 const EXAMS_OPTION_PREFIX = "exams:";
 
-// v0.6 step 3 (SPEC_V0.6.md §2.3): a STUDENT's own read view — their
-// published grades + report card, reusing the SAME ReportCardDocument
-// renderer the staff-facing ReportCardPage uses (v0.5 step 4), with the
-// remark forms always off (read-only, self-view).
-function StudentPortalHome() {
+// SPEC_V0.7.1.md §3 (item 20) — the dedicated student/parent Grades page,
+// at /me/grades. This is PortalHome.tsx's exact former content (the full
+// report-card/year-exams document + term/exams selector), relocated off
+// /dashboard now that the dashboard itself shows summarized stat cards
+// instead (StudentDashboard/ParentDashboard) — a pure move, same hooks,
+// same components, same two-mode selector, zero behavior change. The
+// whole-year exams mode is kept exactly as it was — nothing here says to
+// drop a working feature.
+function MyGrades() {
   const { data: user } = useCurrentUser();
   const profile = useMyProfile();
   const terms = useMyTerms();
@@ -51,16 +56,11 @@ function StudentPortalHome() {
       label: `${formatTermName(term.name)} — ${session.name}${term.isCurrent ? " (current)" : ""}`,
     })),
   );
-  // v0.7 step 3 — one "Exams" entry per session the student has ever been
-  // enrolled in, same grouping the term options already use.
   const examsOptions = (terms.data?.sessions ?? []).map((session) => ({
     sessionId: session.id,
     label: `Exams — ${session.name}`,
   }));
 
-  // Default to the current term once the list loads — a student most
-  // often wants "now," but every term they were ever enrolled in stays
-  // pickable (a just-closed term's report card is the other common case).
   useEffect(() => {
     if (termId || termOptions.length === 0) return;
     const current = termOptions.find((option) => option.isCurrent) ?? termOptions[termOptions.length - 1];
@@ -91,7 +91,7 @@ function StudentPortalHome() {
 
   return (
     <div>
-      <PageHeader title={`Welcome, ${user?.firstName ?? ""}`} description={profile.data?.currentClassArmLabel ?? user?.school.name} />
+      <PageHeader title="Grades" description={profile.data?.currentClassArmLabel ?? user?.school.name} />
 
       {termOptions.length > 0 && (
         <div className="mb-4 flex flex-col gap-1.5">
@@ -175,22 +175,30 @@ function StudentPortalHome() {
 }
 
 // v0.6 step 4 (SPEC_V0.6.md §2.4): a PARENT's own read view — the SAME
-// read scope as StudentPortalHome above, for EACH of their directly-
-// linked children, via a child-switcher. childId is validated server-side
-// against the parent's own children before any grade query runs
-// (MeService.assertChildBelongsToCaller) — this component just picks
-// among whatever GET /me/children already returned, never an arbitrary id.
-function ParentPortalHome() {
+// read scope as MyGrades above, for EACH of their directly-linked
+// children, via a child-switcher. `childId` now lives in the query string
+// (?childId=) rather than only local state — so the dashboard's per-child
+// "View all →" link can point straight at a specific child's grades. A
+// missing/invalid childId falls back to the parent's first linked child,
+// same default today's dashboard child-switcher already applies.
+function ChildGrades() {
   const { data: user } = useCurrentUser();
   const children = useMyChildren();
-  const [childId, setChildId] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedChildId = searchParams.get("childId") ?? "";
+  const validChildId =
+    requestedChildId && children.data?.children.some((child) => child.studentId === requestedChildId) ? requestedChildId : "";
+  const childId = validChildId || (children.data?.children[0]?.studentId ?? "");
 
-  // Default to the first child once the list loads.
+  // Once the children list loads, if the URL didn't already name a valid
+  // child, settle it onto the resolved default so the URL stays shareable.
   useEffect(() => {
-    if (childId || (children.data?.children.length ?? 0) === 0) return;
-    setChildId(children.data!.children[0].studentId);
+    if (!children.data || requestedChildId === childId || !childId) return;
+    const next = new URLSearchParams(searchParams);
+    next.set("childId", childId);
+    setSearchParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [children.data]);
+  }, [children.data, childId]);
 
   const selectedChild = children.data?.children.find((child) => child.studentId === childId) ?? null;
 
@@ -244,6 +252,12 @@ function ParentPortalHome() {
     }
   }
 
+  function handleChildChange(nextChildId: string) {
+    const next = new URLSearchParams(searchParams);
+    next.set("childId", nextChildId);
+    setSearchParams(next, { replace: true });
+  }
+
   const ready = Boolean(childId && termId && sessionId);
   const reportCard = useChildReportCard(viewMode === "term" && ready ? { childId, termId, sessionId } : null);
   const yearExams = useChildYearExams(viewMode === "exams" && childId && sessionId ? { childId, sessionId } : null);
@@ -252,7 +266,7 @@ function ParentPortalHome() {
 
   return (
     <div>
-      <PageHeader title={`Welcome, ${user?.firstName ?? ""}`} description={user?.school.name} />
+      <PageHeader title="Grades" description={user?.school.name} />
 
       {!children.isLoading && (children.data?.children.length ?? 0) === 0 && (
         <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
@@ -268,7 +282,7 @@ function ParentPortalHome() {
               id="portal-child"
               className={SELECT_CLASS}
               value={childId}
-              onChange={(event) => setChildId(event.target.value)}
+              onChange={(event) => handleChildChange(event.target.value)}
               disabled={children.isLoading}
             >
               <option value="" disabled>
@@ -358,10 +372,10 @@ function ParentPortalHome() {
   );
 }
 
-export function PortalHome() {
+export function MyGradesPage() {
   const { data: user } = useCurrentUser();
   if (user?.role === "STUDENT") {
-    return <StudentPortalHome />;
+    return <MyGrades />;
   }
-  return <ParentPortalHome />;
+  return <ChildGrades />;
 }

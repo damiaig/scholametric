@@ -18,9 +18,9 @@ interface YearExamsViewProps {
 
 // v0.7 step 3 (SPEC_V0.7.md §4) — the dedicated year-long Exams view, a
 // 4th entry alongside Term 1/2/3 in every term selector this app has
-// (ReportCardPage for staff, StudentPortalHome/ParentPortalHome for
-// self/child — one component, reused across all three, per the approved
-// plan). Purely presentational, same convention as ReportCardDocument —
+// (ReportCardPage for staff, MyGradesPage for self/child — one component,
+// reused across all three, per the approved plan). Purely presentational,
+// same convention as ReportCardDocument —
 // no data fetching here; the caller already resolved which of
 // useStudentYearExams/useMyYearExams/useChildYearExams applies. Every
 // term the student was enrolled in this session gets an entry, empty or

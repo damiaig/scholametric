@@ -14,6 +14,7 @@ import { ClassArmDetailPage } from "./features/classes/ClassArmDetailPage";
 import { ClassGradesPage } from "./features/grades/ClassGradesPage";
 import { ReviewPublishPage } from "./features/grades/ReviewPublishPage";
 import { ReportCardPage } from "./features/grades/ReportCardPage";
+import { MyGradesPage } from "./features/grades/MyGradesPage";
 import { PersonnelListPage } from "./features/personnel/PersonnelListPage";
 import { HelpPage } from "./features/help/HelpPage";
 import { SettingsLayout } from "./features/settings/SettingsLayout";
@@ -39,6 +40,7 @@ export function AppRoutes() {
         <Route path="/students/new" element={<NewStudentPage />} />
         <Route path="/students/:id" element={<StudentDetailPage />} />
         <Route path="/students/:id/report-card" element={<ReportCardPage />} />
+        <Route path="/me/grades" element={<MyGradesPage />} />
         <Route path="/teachers" element={<TeachersListPage />} />
         <Route path="/teachers/:id" element={<TeacherDetailPage />} />
         <Route path="/classes" element={<ClassesPage />} />

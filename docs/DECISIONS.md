@@ -4631,3 +4631,52 @@ step's diff touches zero files under `apps/api/` (confirmed via `git diff
 a one-off environmental flake (background process contention from an
 earlier, unrelated hung process in the same session), same posture as
 the classes.e2e-spec.ts/portal-accounts.e2e-spec.ts flakes logged above.
+
+## 2026-09-02 — v0.7.1 step 2: student/parent dashboards — "Your grades" not "Recent grades" (no timestamp field exists yet)
+
+**Decision:** the dashboard's per-subject grades summary is titled **"Your
+grades"**, not "Recent grades," and its subtitle says "Your most recent
+evaluation or exam in each subject" — deliberately not implying a true
+cross-subject chronological feed. Neither `ReportCardEvaluation` nor
+`StudentExamRow` carries a timestamp; the backend only guarantees
+within-subject order (`createdAt: asc`), never exposed as a field, so
+there is no real way to compare "when" across two different subjects'
+arrays. `buildGradesBySubject` (`recent-grades.ts`) takes the LAST
+(most recent within its own subject) evaluation and the LAST exam per
+subject and merges them — an honest "latest per subject" snapshot, not a
+"latest across everything" feed a "Recent grades" label would falsely
+promise.
+
+**Deferred, not built here:** a true recency feed needs a `createdAt` (or
+similar) field added to `ReportCardEvaluation`/`StudentExamRow` — a real
+backend/response-shape change, out of scope for this UI-only version.
+Revisit as its own step if a genuine chronological "recent activity"
+feed is wanted later.
+
+**StatCard extracted** (`components/ui/stat-card.tsx`) — the same icon-
+circle/label/value card pattern was already hand-copied twice
+(`AdminDashboard`, `MyClassesView`, both left untouched per the Tabs-
+extraction precedent from step 1); this is the shared primitive for
+every new stat tile from here on, starting with the student/parent
+dashboards' three metric cards.
+
+**`/me/grades` (`MyGradesPage.tsx`) is `PortalHome.tsx`'s exact former
+content**, relocated off `/dashboard` now that the dashboard itself shows
+summarized stat cards instead — same hooks, same `ReportCardDocument`/
+`YearExamsView` components, same two-mode (term / whole-year-exams)
+selector, zero behavior change. `childId` moved from parent-only local
+state into the query string (`?childId=`) so the dashboard's per-child
+"View all →" link can target a specific child directly; an invalid/
+missing `childId` falls back to the parent's first linked child, same
+default `PortalHome` already applied.
+
+**Anonymity/published-only wall on the new surface:** every number the
+dashboard shows (average, class average, position, per-subject grades)
+comes straight from `GET /me/report-card`/`GET /me/year-exams` (and the
+`/me/children/:childId/...` equivalents) — the exact same already-gated
+endpoints `MyGradesPage` uses. No new query params, fields, or role
+checks. A web test (`StudentDashboard.test.tsx`) feeds a deliberately
+hostile payload (an evaluation/exam row carrying an extra, made-up name
+field no real response would ever include) and asserts it never reaches
+the rendered DOM — proving the new cards read known fields explicitly
+rather than spreading/dumping whatever an object happens to contain.

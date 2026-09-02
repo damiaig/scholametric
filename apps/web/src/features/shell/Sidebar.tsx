@@ -29,8 +29,9 @@ interface SidebarProps {
 
 export function Sidebar({ onNavigate }: SidebarProps) {
   const { data: user, isLoading, isError } = useCurrentUser();
-  // v0.6 step 2: STUDENT/PARENT portal accounts only have a placeholder
-  // home (PortalHome.tsx, via DashboardPage.tsx) and no access to
+  // v0.6 step 2: STUDENT/PARENT portal accounts only have their own
+  // dashboard (StudentDashboard.tsx/ParentDashboard.tsx, via
+  // DashboardPage.tsx) and no access to
   // Students/Teachers/Classes at all — those routes hit staff/admin-only
   // endpoints, so leaving them visible would be a dead-end 403 click, not
   // a placeholder. Help stays visible; its content mismatch for these

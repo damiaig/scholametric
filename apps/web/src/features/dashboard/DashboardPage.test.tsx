@@ -222,4 +222,36 @@ describe("DashboardPage", () => {
       await screen.findByText("You have no class assignments yet — your school admin assigns these."),
     ).toBeInTheDocument();
   });
+
+  // SPEC_V0.7.1.md §2.1/§2.4 — thin routing proof only; StudentDashboard.
+  // test.tsx/ParentDashboard.test.tsx cover the actual rendered content.
+  it("STUDENT: renders StudentDashboard (stat cards), not the admin dashboard", async () => {
+    const STUDENT_USER = { ...CURRENT_USER, id: "u3", role: "STUDENT", firstName: "Chidi" };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return STUDENT_USER;
+      if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: null };
+      if (path.includes("/me/terms")) return { sessions: [] };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(await screen.findByText("Welcome, Chidi")).toBeInTheDocument();
+    expect(screen.queryByText("Students by class level")).not.toBeInTheDocument();
+  });
+
+  it("PARENT: renders ParentDashboard (child-switcher), not the admin dashboard", async () => {
+    const PARENT_USER = { ...CURRENT_USER, id: "u4", role: "PARENT", firstName: "Ngozi" };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return PARENT_USER;
+      if (path.includes("/me/children")) return { children: [] };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(await screen.findByText("No children linked to your account yet.")).toBeInTheDocument();
+    expect(screen.getByText("Welcome, Ngozi")).toBeInTheDocument();
+    expect(screen.queryByText("Students by class level")).not.toBeInTheDocument();
+  });
 });

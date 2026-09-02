@@ -147,6 +147,13 @@ function mockApi() {
     if (path === "/api/v1/sessions") return PAGINATED_EMPTY;
     if (path === "/api/v1/terms") return PAGINATED_EMPTY;
 
+    // SPEC_V0.7.1.md §3 (item 20) — /me/grades is reachable by any
+    // authenticated role at the URL bar (the real gate is server-side,
+    // same "UX lock, not the security boundary" pattern used everywhere
+    // else in this app); this fixture's fixed SCHOOL_ADMIN user falls to
+    // the PARENT branch (not STUDENT), which calls GET /me/children.
+    if (path === "/api/v1/me/children") return { children: [] };
+
     throw new Error(`route-smoke.test.tsx: unexpected apiRequest call: ${method} ${path}`);
   });
 }
@@ -165,6 +172,7 @@ const ROUTES = [
   "/classes/arms/route-smoke-id",
   "/classes/arms/route-smoke-id/grades",
   "/grades/review",
+  "/me/grades",
   "/personnel",
   "/settings/school",
   "/settings/academic",

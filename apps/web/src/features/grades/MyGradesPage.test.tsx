@@ -3,7 +3,7 @@ import { screen, cleanup } from "@testing-library/react";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
-import { PortalHome } from "./PortalHome";
+import { MyGradesPage } from "./MyGradesPage";
 
 vi.mock("../../lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api-client")>();
@@ -78,17 +78,19 @@ afterEach(() => {
   authStore.clear();
 });
 
-describe("PortalHome", () => {
+// SPEC_V0.7.1.md §3 (item 20) — MyGradesPage is PortalHome's exact former
+// content, relocated to /me/grades; these tests port PortalHome.test.tsx's
+// coverage unchanged, plus the new childId-in-the-URL behavior for PARENT.
+describe("MyGradesPage", () => {
   it("STUDENT: shows their own published subject via the shared report-card renderer, with a term picker defaulting to current", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockStudentApi();
 
-    renderWithProviders(<PortalHome />);
+    renderWithProviders(<MyGradesPage />);
 
     expect(await screen.findByText("Mathematics")).toBeInTheDocument();
     expect(screen.getByText("Chidi Okafor")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Term" })).toHaveValue(TERM_ID);
-    // Read-only for a STUDENT — no remark write forms.
     expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();
   });
 
@@ -106,19 +108,59 @@ describe("PortalHome", () => {
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
-    renderWithProviders(<PortalHome />);
+    renderWithProviders(<MyGradesPage />);
 
     expect(await screen.findByText("Mathematics")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Child" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Term" })).toHaveValue(TERM_ID);
-    // Read-only for a PARENT too — no remark write forms.
     expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();
   });
 
-  // v0.6 step 6 polish: an empty Term picker (nothing to pick) is hidden
-  // entirely rather than showing an unusable "Select…"-only dropdown above
-  // the empty-state message — matches how the PARENT child-picker row
-  // already only renders when there's at least one child.
+  it("PARENT: a childId already in the URL (e.g. from the dashboard's 'View all →') is honored directly, no default-child flicker", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
+      if (path.includes("/me/children/child-2/terms")) {
+        return { sessions: [{ id: SESSION_ID, name: "2026/2027", isCurrent: true, terms: [{ id: TERM_ID, name: "FIRST", isCurrent: true, closedAt: null }] }] };
+      }
+      if (path.includes("/me/children/child-2/report-card")) return { ...REPORT_CARD, studentId: "child-2" };
+      if (path.includes("/me/children")) {
+        return {
+          children: [
+            { studentId: "child-1", firstName: "Kemi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" },
+            { studentId: "child-2", firstName: "Tunde", lastName: "Okafor", currentClassArmLabel: "JSS 2 A" },
+          ],
+        };
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<MyGradesPage />, { route: "/me/grades?childId=child-2" });
+
+    await screen.findByText("Mathematics");
+    expect(screen.getByRole("combobox", { name: "Child" })).toHaveValue("child-2");
+  });
+
+  it("PARENT: an invalid/unknown childId in the URL falls back to the parent's first linked child", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
+      if (path.includes("/me/children/child-1/terms")) {
+        return { sessions: [{ id: SESSION_ID, name: "2026/2027", isCurrent: true, terms: [{ id: TERM_ID, name: "FIRST", isCurrent: true, closedAt: null }] }] };
+      }
+      if (path.includes("/me/children/child-1/report-card")) return { ...REPORT_CARD, studentId: "child-1" };
+      if (path.includes("/me/children")) {
+        return { children: [{ studentId: "child-1", firstName: "Kemi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" }] };
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<MyGradesPage />, { route: "/me/grades?childId=not-mine" });
+
+    await screen.findByText("Mathematics");
+    expect(screen.getByRole("combobox", { name: "Child" })).toHaveValue("child-1");
+  });
+
   it("STUDENT with no terms yet: shows the empty state and hides the (unusable) Term picker", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
@@ -128,7 +170,7 @@ describe("PortalHome", () => {
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
-    renderWithProviders(<PortalHome />);
+    renderWithProviders(<MyGradesPage />);
 
     expect(await screen.findByText(/No terms yet/)).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Term" })).not.toBeInTheDocument();

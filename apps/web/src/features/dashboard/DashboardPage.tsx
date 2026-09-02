@@ -8,7 +8,8 @@ import { useCurrentUser } from "../shell/use-current-user";
 import { useDashboardStats } from "./use-dashboard-stats";
 import { computeIntegerTicks } from "./chart-ticks";
 import { MyClassesView } from "./MyClassesView";
-import { PortalHome } from "./PortalHome";
+import { StudentDashboard } from "./StudentDashboard";
+import { ParentDashboard } from "./ParentDashboard";
 
 export function DashboardPage() {
   const { data: user } = useCurrentUser();
@@ -25,12 +26,15 @@ export function DashboardPage() {
     );
   }
 
-  // v0.6 step 2: STUDENT/PARENT can now log in, but their real read views
-  // are steps 3-4 — same route, a placeholder in the meantime (see
-  // PortalHome.tsx for why this exists rather than falling through to
-  // AdminDashboard, which would 403 on an admin-only endpoint for them).
-  if (user?.role === "STUDENT" || user?.role === "PARENT") {
-    return <PortalHome />;
+  // SPEC_V0.7.1.md §2.1/§2.4 — STUDENT/PARENT get a summarized, stat-card
+  // dashboard now (formerly PortalHome, which dumped the whole report
+  // card here — that full document lives at /me/grades, MyGradesPage,
+  // now). Same route, same role gate; only the content changed.
+  if (user?.role === "STUDENT") {
+    return <StudentDashboard />;
+  }
+  if (user?.role === "PARENT") {
+    return <ParentDashboard />;
   }
 
   return <AdminDashboard />;
