@@ -4739,3 +4739,77 @@ showing the same "active students" number twice. `DashboardPage.test.
 tsx`'s admin assertions were updated for the new labels/layout — a UI-
 relabeling web-test edit, not a backend e2e edit, so it does not signal
 moved behavior.
+
+## 2026-09-03 — v0.7.1 step 4: report card + results + grid + exam styling — Card-wrap sweep, three additive elements, zero test-logic changes
+
+**The wrapper swap itself touched zero existing tests.** Report card,
+results/overview, Review & Publish, the enter-scores grid, and both exam
+views all had their hand-rolled `rounded-lg border border-muted/20
+bg-card p-X` divs replaced with the shared `Card`/`CardContent`
+primitives (established in the v0.7.1 dashboard steps) — every text
+string, every conditional (`.length === 0`, `?? "—"`, `status &&`,
+`disabled={...}`, `canPublish`, `locked`, `termClosed`, hidden-not-
+disabled RBAC branches) left byte-for-byte identical. Confirmed by
+running the full web suite before writing any new tests: all 266
+existing tests passed unchanged — proof the restyle never touched a
+query, a filter, or a gate, only the wrapping markup around them.
+
+**TermLockBanner's blocking (locked) state restyled to danger tone**
+(was neutral `border-muted/30 bg-muted/5`, now `border-danger/30
+bg-danger/5` with a danger-colored lock icon and bolder text) — this
+was the state item 11 called out as too subtle: previously the FULLY
+blocked state was styled more quietly than the merely-temporary
+unlocked-with-reason state (which was already amber). The unlocked-
+with-reason state is untouched. Exact copy in both states is unchanged.
+
+**Three new (not restyled) elements, each display-only over already-
+fetched data, approved individually before building:**
+1. Mobile `StatusBadge` parity in `ClassArmResultsView` — the desktop
+   table always showed a per-row publish-status badge; the mobile card
+   list didn't. Now both do, reading the same `row.status` the desktop
+   table already had.
+2. Per-subject Published/Waiting to publish/Still in draft `StatusBadge`
+   on `ReviewPublishPage` — derived entirely from fields
+   `GET /grades/review` already returns (`publishedCount`/`rosterSize`/
+   `canPublish`). This is the LEGITIMATE per-subject version of the
+   three-tier card the admin dashboard held in step 3 — that one needed
+   a school-wide fan-out across every class arm (rejected); this one is
+   already scoped to one class-arm+term per page load, so no fan-out at
+   all. See `subjectPublishTier()` in `ReviewPublishPage.tsx`.
+3. Evaluation/exam name in the `ScoreEntryGrid` heading ("Now grading:
+   {name} · {class} · {subject}") — previously the grid only showed
+   class+subject context; which evaluation/exam was selected was only
+   visible via the picker's own highlighted row. The name comes from
+   the SAME `useEvaluations`/`useExams` query key the picker already
+   uses (`EvaluationsTrack`/`ExamsTrack` in `EnterScoresTab.tsx` call it
+   a second time purely to read the selected item's name — React Query
+   dedupes it to zero extra network calls, same pattern as Step 3's
+   `MyClassesView` reuse).
+
+**Publish button prominence unified.** The exams-track Publish button
+(`EnterScoresTab.tsx`'s `ExamsTrack`) was `variant="outline"` — easy to
+miss, per item 12 — while the evaluations-track Publish on
+`ReviewPublishPage` was already solid/primary. Both are solid/primary
+now; Unpublish stays danger-outline on both. Zero change to who can
+click either button or when it's enabled — only the CSS variant prop.
+
+**Confirm-dialog copy is untouched.** `PublishConfirmDialog`,
+`UnpublishConfirmDialog`, `ConfirmDialog`, and the two exams-track
+`ConfirmDialog` instances in `EnterScoresTab.tsx` were not edited at
+all — the whole-class-cascade wording, the completeness-gate blocking-
+evaluations list, and the danger-tone button styling on Unpublish are
+exactly what they were before this step.
+
+**Exam/evaluation visual distinction.** `SubjectExamsPanel`'s expanded
+content and `YearExamsView`'s per-subject exam blocks now sit in a
+secondary(emerald)-tinted `Card`/div, giving exams a consistent visual
+identity distinct from evaluations wherever the two could appear near
+each other (the report card's embedded "Show exams" panel).
+
+**New web tests only — no existing test needed a logic change:** 6 new
+tests across `ClassArmResultsView.test.tsx` (mobile badge parity),
+`ReviewPublishPage.test.tsx` (the three tier-badge states), and
+`ClassGradesPage.test.tsx` (evaluation/exam name in the grid heading).
+Full e2e suite 455/455 before and after, zero `apps/api/` diff, zero
+e2e file edits.
+moved behavior.

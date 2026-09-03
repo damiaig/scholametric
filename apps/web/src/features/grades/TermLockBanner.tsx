@@ -22,7 +22,15 @@ interface TermLockBannerProps {
 // termClosed/locked/unlockReason (load-time, never reactive on a 409).
 // Lives right on the grid the need arises on, not a separate settings
 // screen — classArmId/subjectId/termId are already in context here.
-export function TermLockBanner({ termId, classArmId, subjectId, termClosed, locked, unlockReason, canManage }: TermLockBannerProps) {
+export function TermLockBanner({
+  termId,
+  classArmId,
+  subjectId,
+  termClosed,
+  locked,
+  unlockReason,
+  canManage,
+}: TermLockBannerProps) {
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [relockOpen, setRelockOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -45,15 +53,21 @@ export function TermLockBanner({ termId, classArmId, subjectId, termClosed, lock
 
   if (locked) {
     return (
-      <div className="flex flex-col gap-3 rounded-lg border border-muted/30 bg-muted/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 rounded-lg border-2 border-danger/30 bg-danger/5 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
-          <Lock className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
-          <p className="text-sm text-text">
-            This term is closed for this class and subject. Ask your principal/proprietor to unlock before editing.
+          <Lock className="h-4 w-4 shrink-0 text-danger" aria-hidden="true" />
+          <p className="text-sm font-medium text-text">
+            This term is closed for this class and subject. Ask your
+            principal/proprietor to unlock before editing.
           </p>
         </div>
         {canManage && (
-          <Button type="button" size="sm" variant="outline" onClick={() => setUnlockOpen(true)}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => setUnlockOpen(true)}
+          >
             Unlock
           </Button>
         )}
@@ -103,11 +117,17 @@ export function TermLockBanner({ termId, classArmId, subjectId, termClosed, lock
       <div className="flex items-center gap-2">
         <Unlock className="h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
         <p className="text-sm text-text">
-          Unlocked for editing — reason: <span className="italic">"{unlockReason}"</span>
+          Unlocked for editing — reason:{" "}
+          <span className="italic">"{unlockReason}"</span>
         </p>
       </div>
       {canManage && (
-        <Button type="button" size="sm" variant="outline" onClick={() => setRelockOpen(true)}>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => setRelockOpen(true)}
+        >
           Relock
         </Button>
       )}
@@ -115,7 +135,12 @@ export function TermLockBanner({ termId, classArmId, subjectId, termClosed, lock
       <ConfirmDialog
         open={relockOpen}
         onClose={closeRelock}
-        onConfirm={() => relockTerm.mutate({ termId, input: { classArmId, subjectId } }, { onSuccess: () => setRelockOpen(false) })}
+        onConfirm={() =>
+          relockTerm.mutate(
+            { termId, input: { classArmId, subjectId } },
+            { onSuccess: () => setRelockOpen(false) },
+          )
+        }
         title="Relock this class and subject"
         description="Scores can no longer be edited for this class and subject until unlocked again."
         confirmLabel="Relock"

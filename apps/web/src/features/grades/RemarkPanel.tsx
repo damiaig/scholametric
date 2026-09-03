@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { RemarkAuthor } from "@scholametric/shared";
+import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Textarea } from "../../components/ui/textarea";
 import { Spinner } from "../../components/ui/spinner";
@@ -30,7 +31,17 @@ interface RemarkPanelProps {
 // hasn't yet is the real workflow), so the copy below says "Teacher
 // remark," never "write as the class teacher" — whoever saves it is
 // stamped with THEIR own name, admin included.
-export function RemarkPanel({ label, studentId, termId, sessionId, remark, remarkBy, remarkAt, showForm, field }: RemarkPanelProps) {
+export function RemarkPanel({
+  label,
+  studentId,
+  termId,
+  sessionId,
+  remark,
+  remarkBy,
+  remarkAt,
+  showForm,
+  field,
+}: RemarkPanelProps) {
   const { data: currentUser } = useCurrentUser();
   const teacherMutation = useWriteTeacherRemark();
   const principalMutation = useWritePrincipalRemark();
@@ -53,47 +64,63 @@ export function RemarkPanel({ label, studentId, termId, sessionId, remark, remar
     mutation.mutate({
       studentId,
       input: { termId, sessionId, remark: text.trim() === "" ? null : text },
-      authorName: { firstName: currentUser.firstName, lastName: currentUser.lastName },
+      authorName: {
+        firstName: currentUser.firstName,
+        lastName: currentUser.lastName,
+      },
     });
   }
 
   return (
-    <div className="break-inside-avoid rounded-lg border border-muted/20 p-3">
-      <p className="mb-1 font-medium text-text">{label}</p>
-      {remark ? (
-        <>
-          <p className="whitespace-pre-wrap text-sm text-text">{remark}</p>
-          {remarkBy && (
-            <p className="mt-1 text-xs text-muted">
-              — {remarkBy.firstName} {remarkBy.lastName}
-              {remarkAt ? `, ${formatDate(remarkAt)}` : ""}
-            </p>
-          )}
-        </>
-      ) : (
-        <p className="text-sm text-muted">No remark yet.</p>
-      )}
+    <Card className="break-inside-avoid shadow-none">
+      <CardContent className="p-3">
+        <p className="mb-1 font-medium text-text">{label}</p>
+        {remark ? (
+          <>
+            <p className="whitespace-pre-wrap text-sm text-text">{remark}</p>
+            {remarkBy && (
+              <p className="mt-1 text-xs text-muted">
+                — {remarkBy.firstName} {remarkBy.lastName}
+                {remarkAt ? `, ${formatDate(remarkAt)}` : ""}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-muted">No remark yet.</p>
+        )}
 
-      {showForm && (
-        <div className="mt-3 flex flex-col gap-2 print:hidden">
-          <Textarea
-            ref={textareaRef}
-            aria-label={label}
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            placeholder={`Write the ${field === "teacher" ? "teacher" : "principal"} remark…`}
-            rows={3}
-          />
-          <div className="flex items-center gap-2">
-            <Button type="button" size="sm" onClick={handleSave} disabled={mutation.isPending}>
-              {mutation.isPending && <Spinner className="mr-2" />}
-              Save
-            </Button>
-            {mutation.isSuccess && !mutation.isPending && <span className="text-xs text-success">Saved</span>}
+        {showForm && (
+          <div className="mt-3 flex flex-col gap-2 print:hidden">
+            <Textarea
+              ref={textareaRef}
+              aria-label={label}
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              placeholder={`Write the ${field === "teacher" ? "teacher" : "principal"} remark…`}
+              rows={3}
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleSave}
+                disabled={mutation.isPending}
+              >
+                {mutation.isPending && <Spinner className="mr-2" />}
+                Save
+              </Button>
+              {mutation.isSuccess && !mutation.isPending && (
+                <span className="text-xs text-success">Saved</span>
+              )}
+            </div>
+            {mutation.isError && (
+              <p className="text-xs text-danger">
+                {getErrorMessage(mutation.error)}
+              </p>
+            )}
           </div>
-          {mutation.isError && <p className="text-xs text-danger">{getErrorMessage(mutation.error)}</p>}
-        </div>
-      )}
-    </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

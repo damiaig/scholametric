@@ -1,5 +1,10 @@
 import { Pencil, UserX } from "lucide-react";
-import type { ClassArmResultsResponse, ClassArmResultsSubject, ClassArmResultsSubjectRow } from "@scholametric/shared";
+import type {
+  ClassArmResultsResponse,
+  ClassArmResultsSubject,
+  ClassArmResultsSubjectRow,
+} from "@scholametric/shared";
+import { Card, CardContent } from "../../components/ui/card";
 import { StatusBadge } from "../../components/StatusBadge";
 import { resultStatusTone, resultStatusLabel } from "./result-status";
 import { formatScore } from "./format-score";
@@ -53,7 +58,10 @@ function positionLabel(position: number | null): string {
 // regardless of role, and PUBLISHED is PROPRIETOR-only — don't offer a
 // control that'll just 403/409, same principle as every prior step's
 // RBAC-in-UI.
-function canOverrideRow(row: ClassArmResultsSubjectRow, permission: OverridePermission): boolean {
+function canOverrideRow(
+  row: ClassArmResultsSubjectRow,
+  permission: OverridePermission,
+): boolean {
   if (permission === "none" || row.status === "DRAFT") return false;
   if (row.status === "PUBLISHED") return permission === "any";
   return true; // PENDING_APPROVAL, permission is pendingOnly or any
@@ -74,15 +82,25 @@ export function ClassArmResultsView({
 }: ClassArmResultsViewProps) {
   if (data.subjects.length === 0) {
     return (
-      <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
-        No subjects have been entered for this class and term yet.
-      </p>
+      <Card>
+        <CardContent className="p-10 text-center">
+          <p className="text-sm text-muted">
+            No subjects have been entered for this class and term yet.
+          </p>
+        </CardContent>
+      </Card>
     );
   }
 
-  const overallByStudent = new Map((data.overall ?? []).map((row) => [row.studentId, row]));
+  const overallByStudent = new Map(
+    (data.overall ?? []).map((row) => [row.studentId, row]),
+  );
 
-  function overrideButton(subject: ClassArmResultsSubject, row: ClassArmResultsSubjectRow, studentName: string) {
+  function overrideButton(
+    subject: ClassArmResultsSubject,
+    row: ClassArmResultsSubjectRow,
+    studentName: string,
+  ) {
     if (!onOverride || !canOverrideRow(row, overridePermission)) return null;
     return (
       <button
@@ -110,8 +128,13 @@ export function ClassArmResultsView({
   // non-published row's absence/score is already freely editable through
   // the normal Enter-grades grid, so this control would just be a
   // redundant second path there.
-  function markAbsentButton(subject: ClassArmResultsSubject, row: ClassArmResultsSubjectRow, studentName: string) {
-    if (!onMarkAbsent || !canMarkAbsent || row.status !== "PUBLISHED") return null;
+  function markAbsentButton(
+    subject: ClassArmResultsSubject,
+    row: ClassArmResultsSubjectRow,
+    studentName: string,
+  ) {
+    if (!onMarkAbsent || !canMarkAbsent || row.status !== "PUBLISHED")
+      return null;
     return (
       <button
         type="button"
@@ -137,16 +160,27 @@ export function ClassArmResultsView({
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         {data.subjects.map((subject) => (
-          <div key={subject.subjectId} className="rounded-lg border border-muted/20 bg-card p-3">
-            <p className="truncate text-sm font-medium text-text">{subject.subjectName}</p>
-            {subject.needsTeacherAssignment && (
-              <StatusBadge label="Needs a teacher assigned" tone="warning" className="mt-1" />
-            )}
-            <p className="text-xs text-muted">Class average</p>
-            <p className="font-mono text-lg text-text">
-              {subject.averageGrade ?? "—"} <span className="text-xs text-muted">({formatScore(subject.averageScore)})</span>
-            </p>
-          </div>
+          <Card key={subject.subjectId}>
+            <CardContent className="p-3">
+              <p className="truncate text-sm font-medium text-text">
+                {subject.subjectName}
+              </p>
+              {subject.needsTeacherAssignment && (
+                <StatusBadge
+                  label="Needs a teacher assigned"
+                  tone="warning"
+                  className="mt-1"
+                />
+              )}
+              <p className="text-xs text-muted">Class average</p>
+              <p className="font-mono text-lg text-text">
+                {subject.averageGrade ?? "—"}{" "}
+                <span className="text-xs text-muted">
+                  ({formatScore(subject.averageScore)})
+                </span>
+              </p>
+            </CardContent>
+          </Card>
         ))}
       </div>
 
@@ -155,116 +189,183 @@ export function ClassArmResultsView({
           const overall = overallByStudent.get(student.studentId);
           const studentName = `${student.firstName} ${student.lastName}`;
           return (
-            <div key={student.studentId} className="rounded-lg border border-muted/20 bg-card p-3">
-              <p className="font-medium text-text">{studentName}</p>
-              <p className="font-mono text-xs text-muted">{student.admissionNumber}</p>
-              <dl className="mt-2 flex flex-col gap-1.5">
-                {data.subjects.map((subject) => {
-                  const row = subject.results.find((r) => r.studentId === student.studentId);
-                  return (
-                    <div key={subject.subjectId} className="flex items-center justify-between gap-2 text-sm">
-                      <dt className="flex items-center gap-1.5 truncate text-muted">
-                        {subject.subjectName}
-                        {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher" tone="warning" />}
-                      </dt>
-                      <dd className="flex shrink-0 items-center gap-1.5 text-right text-text">
-                        {row ? (
-                          <>
-                            {row.finalGrade ?? "—"} <span className="text-xs text-muted">({positionLabel(row.subjectPosition)})</span>
-                            {overrideButton(subject, row, studentName)}
-                            {markAbsentButton(subject, row, studentName)}
-                          </>
-                        ) : (
-                          <span className="text-muted">Not yet entered</span>
-                        )}
-                      </dd>
-                    </div>
-                  );
-                })}
-              </dl>
-              {data.overall && (
-                <div className="mt-2 flex items-center justify-between border-t border-muted/10 pt-2 text-sm">
-                  <p className="font-medium text-text">Overall</p>
-                  <p className="text-text">
-                    {overall ? (
-                      <>
-                        {overall.averageGrade ?? "—"} <span className="text-xs text-muted">({positionLabel(overall.overallPosition)})</span>
-                      </>
-                    ) : (
-                      <span className="text-muted">No results yet</span>
-                    )}
-                  </p>
-                </div>
-              )}
-            </div>
+            <Card key={student.studentId}>
+              <CardContent className="p-3">
+                <p className="font-medium text-text">{studentName}</p>
+                <p className="font-mono text-xs text-muted">
+                  {student.admissionNumber}
+                </p>
+                <dl className="mt-2 flex flex-col gap-1.5">
+                  {data.subjects.map((subject) => {
+                    const row = subject.results.find(
+                      (r) => r.studentId === student.studentId,
+                    );
+                    return (
+                      <div
+                        key={subject.subjectId}
+                        className="flex items-center justify-between gap-2 text-sm"
+                      >
+                        <dt className="flex items-center gap-1.5 truncate text-muted">
+                          {subject.subjectName}
+                          {subject.needsTeacherAssignment && (
+                            <StatusBadge
+                              label="Needs a teacher"
+                              tone="warning"
+                            />
+                          )}
+                        </dt>
+                        <dd className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 text-right text-text">
+                          {row ? (
+                            <>
+                              {row.finalGrade ?? "—"}{" "}
+                              <span className="text-xs text-muted">
+                                ({positionLabel(row.subjectPosition)})
+                              </span>
+                              <StatusBadge
+                                label={resultStatusLabel(row.status)}
+                                tone={resultStatusTone(row.status)}
+                              />
+                              {overrideButton(subject, row, studentName)}
+                              {markAbsentButton(subject, row, studentName)}
+                            </>
+                          ) : (
+                            <span className="text-muted">Not yet entered</span>
+                          )}
+                        </dd>
+                      </div>
+                    );
+                  })}
+                </dl>
+                {data.overall && (
+                  <div className="mt-2 flex items-center justify-between border-t border-muted/10 pt-2 text-sm">
+                    <p className="font-medium text-text">Overall</p>
+                    <p className="text-text">
+                      {overall ? (
+                        <>
+                          {overall.averageGrade ?? "—"}{" "}
+                          <span className="text-xs text-muted">
+                            ({positionLabel(overall.overallPosition)})
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-muted">No results yet</span>
+                      )}
+                    </p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           );
         })}
       </div>
 
-      <div className="hidden overflow-x-auto rounded-lg border border-muted/20 bg-card sm:block">
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-muted/20">
-              <th className="whitespace-nowrap px-4 py-3 font-medium text-muted">Student</th>
-              {data.subjects.map((subject) => (
-                <th key={subject.subjectId} className="whitespace-nowrap px-4 py-3 font-medium text-muted">
-                  <span className="flex items-center gap-1.5">
-                    {subject.subjectName}
-                    {subject.needsTeacherAssignment && <StatusBadge label="Needs a teacher" tone="warning" />}
-                  </span>
+      <Card className="hidden overflow-hidden sm:block">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-muted/20">
+                <th className="whitespace-nowrap px-4 py-3 font-medium text-muted">
+                  Student
                 </th>
-              ))}
-              {data.overall && <th className="whitespace-nowrap px-4 py-3 font-medium text-muted">Overall</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {data.students.map((student) => {
-              const overall = overallByStudent.get(student.studentId);
-              const studentName = `${student.firstName} ${student.lastName}`;
-              return (
-                <tr key={student.studentId} className="border-b border-muted/10 last:border-0">
-                  <td className="whitespace-nowrap px-4 py-3 text-text">
-                    <p>{studentName}</p>
-                    <p className="font-mono text-xs text-muted">{student.admissionNumber}</p>
-                  </td>
-                  {data.subjects.map((subject) => {
-                    const row = subject.results.find((r) => r.studentId === student.studentId);
-                    return (
-                      <td key={subject.subjectId} className="whitespace-nowrap px-4 py-3">
-                        {row ? (
+                {data.subjects.map((subject) => (
+                  <th
+                    key={subject.subjectId}
+                    className="whitespace-nowrap px-4 py-3 font-medium text-muted"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      {subject.subjectName}
+                      {subject.needsTeacherAssignment && (
+                        <StatusBadge label="Needs a teacher" tone="warning" />
+                      )}
+                    </span>
+                  </th>
+                ))}
+                {data.overall && (
+                  <th className="whitespace-nowrap px-4 py-3 font-medium text-muted">
+                    Overall
+                  </th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {data.students.map((student) => {
+                const overall = overallByStudent.get(student.studentId);
+                const studentName = `${student.firstName} ${student.lastName}`;
+                return (
+                  <tr
+                    key={student.studentId}
+                    className="border-b border-muted/10 last:border-0"
+                  >
+                    <td className="whitespace-nowrap px-4 py-3 text-text">
+                      <p>{studentName}</p>
+                      <p className="font-mono text-xs text-muted">
+                        {student.admissionNumber}
+                      </p>
+                    </td>
+                    {data.subjects.map((subject) => {
+                      const row = subject.results.find(
+                        (r) => r.studentId === student.studentId,
+                      );
+                      return (
+                        <td
+                          key={subject.subjectId}
+                          className="whitespace-nowrap px-4 py-3"
+                        >
+                          {row ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-text">
+                                {row.finalGrade ?? "—"}
+                              </span>
+                              <span className="text-xs text-muted">
+                                ({formatScore(row.totalScore)})
+                              </span>
+                              <StatusBadge
+                                label={resultStatusLabel(row.status)}
+                                tone={resultStatusTone(row.status)}
+                              />
+                              <span className="text-xs text-muted">
+                                {positionLabel(row.subjectPosition)}
+                              </span>
+                              {overrideButton(subject, row, studentName)}
+                              {markAbsentButton(subject, row, studentName)}
+                            </div>
+                          ) : (
+                            <span className="text-sm text-muted">
+                              Not yet entered
+                            </span>
+                          )}
+                        </td>
+                      );
+                    })}
+                    {data.overall && (
+                      <td className="whitespace-nowrap px-4 py-3">
+                        {overall ? (
                           <div className="flex items-center gap-2">
-                            <span className="text-text">{row.finalGrade ?? "—"}</span>
-                            <span className="text-xs text-muted">({formatScore(row.totalScore)})</span>
-                            <StatusBadge label={resultStatusLabel(row.status)} tone={resultStatusTone(row.status)} />
-                            <span className="text-xs text-muted">{positionLabel(row.subjectPosition)}</span>
-                            {overrideButton(subject, row, studentName)}
-                            {markAbsentButton(subject, row, studentName)}
+                            <span className="text-text">
+                              {overall.averageGrade ?? "—"}
+                            </span>
+                            <StatusBadge
+                              label={resultStatusLabel(overall.status)}
+                              tone={resultStatusTone(overall.status)}
+                            />
+                            <span className="text-xs text-muted">
+                              {positionLabel(overall.overallPosition)}
+                            </span>
                           </div>
                         ) : (
-                          <span className="text-sm text-muted">Not yet entered</span>
+                          <span className="text-sm text-muted">
+                            No results yet
+                          </span>
                         )}
                       </td>
-                    );
-                  })}
-                  {data.overall && (
-                    <td className="whitespace-nowrap px-4 py-3">
-                      {overall ? (
-                        <div className="flex items-center gap-2">
-                          <span className="text-text">{overall.averageGrade ?? "—"}</span>
-                          <StatusBadge label={resultStatusLabel(overall.status)} tone={resultStatusTone(overall.status)} />
-                          <span className="text-xs text-muted">{positionLabel(overall.overallPosition)}</span>
-                        </div>
-                      ) : (
-                        <span className="text-sm text-muted">No results yet</span>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }

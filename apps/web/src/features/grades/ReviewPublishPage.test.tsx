@@ -55,6 +55,13 @@ const REVIEW_CANNOT_PUBLISH: GradesReviewResponse = {
     { subjectId: "sub2", subjectName: "English Language", needsTeacherAssignment: false, rosterSize: 20, draftCount: 20, pendingApprovalCount: 0, publishedCount: 0, averageScore: 0, averageGrade: null, canPublish: false },
   ],
 };
+const REVIEW_FULLY_PUBLISHED: GradesReviewResponse = {
+  classArmId: "arm1",
+  termId: "term1",
+  subjects: [
+    { subjectId: "sub3", subjectName: "Biology", needsTeacherAssignment: false, rosterSize: 20, draftCount: 0, pendingApprovalCount: 0, publishedCount: 20, averageScore: 61, averageGrade: "C6", canPublish: false },
+  ],
+};
 
 function mockCommon(role: "SCHOOL_ADMIN" | "PROPRIETOR", review: GradesReviewResponse) {
   mockedApiRequest.mockImplementation(async (path, options) => {
@@ -134,6 +141,34 @@ describe("ReviewPublishPage — owner-vs-admin control visibility", () => {
     expect(await screen.findByText(/13 published/)).toBeInTheDocument();
     expect(screen.getByText(/5 pending/)).toBeInTheDocument();
     expect(screen.getByText(/2 not yet scored/)).toBeInTheDocument();
+  });
+
+  // v0.7.1 step 4 (SPEC_V0.7.1.md §4.2, item 10) — the per-subject "at a
+  // glance" tier badge, derived entirely from fields GET /grades/review
+  // already returns (publishedCount/rosterSize/canPublish). Legitimate
+  // per-subject version of the school-wide card the admin dashboard held.
+  it("shows the 'Waiting to publish' tier badge when canPublish is true but not everyone is published yet", async () => {
+    mockCommon("SCHOOL_ADMIN", REVIEW_CAN_PUBLISH);
+    renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });
+
+    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+    expect(screen.getByText("Waiting to publish")).toBeInTheDocument();
+  });
+
+  it("shows the 'Still in draft' tier badge when nothing is publishable yet", async () => {
+    mockCommon("SCHOOL_ADMIN", REVIEW_CANNOT_PUBLISH);
+    renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });
+
+    expect(await screen.findByText("English Language")).toBeInTheDocument();
+    expect(screen.getByText("Still in draft")).toBeInTheDocument();
+  });
+
+  it("shows the 'Published' tier badge when every roster row is published", async () => {
+    mockCommon("SCHOOL_ADMIN", REVIEW_FULLY_PUBLISHED);
+    renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });
+
+    expect(await screen.findByText("Biology")).toBeInTheDocument();
+    expect(screen.getByText("Published")).toBeInTheDocument();
   });
 
   it("clicking Publish opens the confirm dialog naming class, subject, and term", async () => {

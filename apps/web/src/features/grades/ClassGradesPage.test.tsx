@@ -205,6 +205,59 @@ describe("ClassGradesPage — Enter scores tab", () => {
     expect(screen.getByRole("button", { name: "Publish" })).toBeInTheDocument();
   });
 
+  // v0.7.1 step 4 (SPEC_V0.7.1.md §4.3, item 11) — the grid header now
+  // names WHICH evaluation/exam is being graded, not just the class+
+  // subject context. Derived from the same already-fetched evaluations/
+  // exams list the picker itself uses (no new fetch, see use-recently-
+  // posted.ts's analogous pattern in the teacher dashboard).
+  it("selecting an evaluation shows its name + class/subject context in the grid heading ('Now grading')", async () => {
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, unknown> }) => {
+      if (path === "/api/v1/auth/me") return ADMIN_USER;
+      if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL;
+      if (path === "/api/v1/grades/evaluations") return EVALUATIONS_OPEN;
+      if (path === "/api/v1/sessions") return SESSIONS;
+      if (path === "/api/v1/terms") return TERMS;
+      if (path === "/api/v1/grades/evaluation-scores") {
+        expect(opts?.query).toMatchObject({ classArmId: "arm1", subjectId: "sub1" });
+        return { classArmId: "arm1", subjectId: "sub1", evaluationId: "c1", termId: "term1", termClosed: false, locked: false, unlockReason: null, rows: [] };
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    renderPage("/classes/arms/arm1/grades?tab=enter&subjectId=sub1&track=evaluations");
+
+    const evaluationButton = await screen.findByRole("button", { name: /CA 1/ });
+    const user = userEvent.setup();
+    await user.click(evaluationButton);
+
+    expect(await screen.findByText("Now grading")).toBeInTheDocument();
+    expect(screen.getByText(/JSS 1 A · Mathematics/, { selector: "span" })).toBeInTheDocument();
+    expect(screen.getAllByText("CA 1").length).toBeGreaterThan(0);
+  });
+
+  it("selecting an exam shows its name + class/subject context in the grid heading", async () => {
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, unknown> }) => {
+      if (path === "/api/v1/auth/me") return ADMIN_USER;
+      if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL;
+      if (path === "/api/v1/grades/evaluations") return EVALUATIONS_OPEN;
+      if (path === "/api/v1/exams") return EXAMS_OPEN;
+      if (path === "/api/v1/sessions") return SESSIONS;
+      if (path === "/api/v1/terms") return TERMS;
+      if (path === "/api/v1/exams/scores") {
+        expect(opts?.query).toMatchObject({ classArmId: "arm1", subjectId: "sub1" });
+        return { classArmId: "arm1", subjectId: "sub1", examId: "e1", termId: "term1", termClosed: false, locked: false, unlockReason: null, rows: [] };
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    renderPage("/classes/arms/arm1/grades?tab=enter&subjectId=sub1&track=exams");
+
+    const examButton = await screen.findByRole("button", { name: "Term 1 Exam" });
+    const user = userEvent.setup();
+    await user.click(examButton);
+
+    expect(await screen.findByText("Now grading")).toBeInTheDocument();
+    expect(screen.getAllByText("Term 1 Exam").length).toBeGreaterThan(0);
+  });
+
   it("no evaluations yet: shows the named empty state, not a bare/blank list", async () => {
     mockCommon("SCHOOL_ADMIN", { ...EVALUATIONS_OPEN, evaluations: [] });
     renderPage("/classes/arms/arm1/grades?tab=enter&subjectId=sub1&track=evaluations");

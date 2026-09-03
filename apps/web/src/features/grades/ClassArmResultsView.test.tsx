@@ -80,6 +80,17 @@ describe("ClassArmResultsView", () => {
     expect(screen.queryByText(/Needs a teacher/)).not.toBeInTheDocument();
   });
 
+  // v0.7.1 step 4 (SPEC_V0.7.1.md §4.2, item 10) — the desktop table always
+  // showed a per-row status badge; the mobile card list didn't. Both render
+  // in jsdom (no real breakpoint), so a status label present on both now
+  // shows up TWICE — proof the mobile card gained its own badge, not that
+  // the desktop one is somehow duplicated.
+  it("mobile card list shows a status badge per subject row, matching the desktop table (parity fix)", () => {
+    render(<ClassArmResultsView data={BASE_DATA} />);
+    expect(screen.getAllByText("Pending approval").length).toBe(2);
+    expect(screen.getAllByText("Published").length).toBeGreaterThanOrEqual(2);
+  });
+
   describe("override control visibility (owner-vs-admin, DOM presence not just disabled)", () => {
     it("overridePermission='none' (TEACHER): no override buttons at all", () => {
       const onOverride = vi.fn();
