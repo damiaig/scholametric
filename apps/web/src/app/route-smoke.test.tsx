@@ -136,6 +136,7 @@ function mockApi() {
     if (path === "/api/v1/teachers") return { ...PAGINATED_EMPTY, items: [PERSONNEL_ROW] };
     if (path === "/api/v1/teachers/route-smoke-id") return TEACHER_DETAIL;
     if (path === "/api/v1/personnel") return { ...PAGINATED_EMPTY, items: [PERSONNEL_ROW] };
+    if (path === "/api/v1/portal-accounts") return PAGINATED_EMPTY;
 
     if (path === "/api/v1/classes") return CLASS_LEVEL_OVERVIEW;
     if (path === "/api/v1/class-arms/route-smoke-id") return CLASS_ARM_DETAIL;

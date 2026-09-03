@@ -69,20 +69,41 @@ afterEach(() => {
   authStore.clear();
 });
 
+const PAGINATED_EMPTY = { items: [], total: 0, page: 1, pageSize: 20 };
+const CLASS_LEVEL_OVERVIEW = [
+  { id: "lvl1", name: "JSS 1", rank: 1, arms: [{ id: "arm1", name: "A", enrollmentCount: 25, classTeacher: null }] },
+  { id: "lvl2", name: "JSS 2", rank: 2, arms: [{ id: "arm2", name: "A", enrollmentCount: 30, classTeacher: null }, { id: "arm3", name: "B", enrollmentCount: 28, classTeacher: null }] },
+];
+
+function mockAdminEndpoints(overrides: Record<string, unknown> = {}) {
+  mockedApiRequest.mockImplementation(async (path: string) => {
+    if (path.includes("/auth/me")) return CURRENT_USER;
+    if (path === "/api/v1/dashboard/stats") return overrides.stats ?? STATS;
+    if (path === "/api/v1/teachers") return overrides.teachers ?? { ...PAGINATED_EMPTY, total: 12 };
+    if (path === "/api/v1/classes") return overrides.classes ?? CLASS_LEVEL_OVERVIEW;
+    if (path === "/api/v1/portal-accounts") return overrides.portalAccounts ?? { ...PAGINATED_EMPTY, total: 104 };
+    throw new Error(`unexpected apiRequest call: ${path}`);
+  });
+}
+
 describe("DashboardPage", () => {
-  it("renders stat cards and the class-level chart from mocked data", async () => {
-    mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path.includes("/auth/me")) return CURRENT_USER;
-      if (path.includes("/dashboard/stats")) return STATS;
-      throw new Error(`unexpected apiRequest call: ${path}`);
-    });
+  it("renders the 3 metric cards (students/teachers/classes), the class-level chart, and the Review & Publish / Portal accounts cards", async () => {
+    mockAdminEndpoints();
 
     renderWithProviders(<DashboardPage />);
 
     expect(await screen.findByText("25")).toBeInTheDocument();
-    expect(screen.getByText("2026/2027")).toBeInTheDocument();
-    expect(screen.getByText("(First term)")).toBeInTheDocument();
+    expect(screen.getByText("Students")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText("Teachers")).toBeInTheDocument();
+    // 3 class arms total across the 2 levels in CLASS_LEVEL_OVERVIEW.
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("Classes")).toBeInTheDocument();
+    expect(screen.getByText("Sunrise College · 2026/2027 (First term)")).toBeInTheDocument();
     expect(screen.getByText("Students by class level")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Review & Publish/ })).toHaveAttribute("href", "/grades/review");
+    expect(screen.getByText("104 provisioned")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Provision/ })).toHaveAttribute("href", "/settings/portal-accounts");
   });
 
   it("shows an error state with retry when stats fail to load", async () => {
@@ -143,20 +164,16 @@ describe("DashboardPage", () => {
     }
     globalThis.ResizeObserver = FiringResizeObserverStub as unknown as typeof ResizeObserver;
 
-    mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path.includes("/auth/me")) return CURRENT_USER;
-      if (path.includes("/dashboard/stats")) {
-        return {
-          ...STATS,
-          totalActiveStudents: 126,
-          studentsByLevel: [
-            { levelName: "JSS 1", rank: 1, count: 6 },
-            { levelName: "JSS 2", rank: 2, count: 104 },
-            { levelName: "JSS 3", rank: 3, count: 4 },
-          ],
-        };
-      }
-      throw new Error(`unexpected apiRequest call: ${path}`);
+    mockAdminEndpoints({
+      stats: {
+        ...STATS,
+        totalActiveStudents: 126,
+        studentsByLevel: [
+          { levelName: "JSS 1", rank: 1, count: 6 },
+          { levelName: "JSS 2", rank: 2, count: 104 },
+          { levelName: "JSS 3", rank: 3, count: 4 },
+        ],
+      },
     });
 
     renderWithProviders(<DashboardPage />);
@@ -171,13 +188,7 @@ describe("DashboardPage", () => {
   });
 
   it("shows the empty-session banner when the current session has zero enrollments", async () => {
-    mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path.includes("/auth/me")) return CURRENT_USER;
-      if (path.includes("/dashboard/stats")) {
-        return { ...STATS, totalActiveStudents: 0, studentsByLevel: [], currentSession: "2027/2028" };
-      }
-      throw new Error(`unexpected apiRequest call: ${path}`);
-    });
+    mockAdminEndpoints({ stats: { ...STATS, totalActiveStudents: 0, studentsByLevel: [], currentSession: "2027/2028" } });
 
     renderWithProviders(<DashboardPage />);
 
@@ -190,6 +201,9 @@ describe("DashboardPage", () => {
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return TEACHER_USER;
       if (path.includes("/me/teaching")) return TEACHING;
+      if (path === "/api/v1/grades/evaluations") return { classArmId: "arm2", subjectId: "sub1", termId: "term1", termClosed: false, locked: false, unlockReason: null, evaluations: [] };
+      if (path === "/api/v1/exams") return { classArmId: "arm2", subjectId: "sub1", termId: "term1", termClosed: false, locked: false, unlockReason: null, exams: [] };
+      if (path === "/api/v1/class-arms/arm2/results") return { classArmId: "arm2", termId: "term1", students: [], overall: null, subjects: [] };
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 

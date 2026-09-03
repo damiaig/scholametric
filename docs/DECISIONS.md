@@ -4680,3 +4680,62 @@ hostile payload (an evaluation/exam row carrying an extra, made-up name
 field no real response would ever include) and asserts it never reaches
 the rendered DOM — proving the new cards read known fields explicitly
 rather than spreading/dumping whatever an object happens to contain.
+
+## 2026-09-03 — v0.7.1 step 3: teacher + admin/proprietor dashboards — four held/approximated gaps, none faked
+
+**"Needs grading" (teacher) — held, not built.** No existing endpoint
+gives an aggregate ungraded-student count for a teacher; computing one
+would mean reading the full scoring grid for every evaluation across
+every subject a teacher owns (unbounded), and is ambiguous besides (does
+a subject with zero evaluations count as "needs grading"?). The teacher
+dashboard ships without this metric/badge — a plain "Enter grades →"
+link replaces it. Needs a purpose-built read endpoint; deferred.
+
+**School-wide "Publishing status" (admin) — held, not built.**
+`GET /grades/review` is hard-scoped to one `classArmId`+`termId`; there
+is no batch/all-arms variant. Faking a school-wide rollup would mean
+fanning that call out across every class arm in the school (dozens of
+calls for one dashboard tile) — simulating a missing aggregate endpoint
+via brute force, explicitly rejected rather than built. Replaced with a
+plain "Review & Publish →" link card, no numbers. Needs a real aggregate
+endpoint; deferred.
+
+**"Recent activity" (admin) — held, not built.** `GET /audit-logs` has
+everything a feed would need (real `createdAt`, already sorted desc,
+`actor`/`action`/`entityType`) — but the app has no standalone audit-log
+page to link entries to, only a student-scoped tab buried in
+`StudentDetailPage`. Linking some rows and not others (whichever have an
+obvious destination) was rejected as its own new inconsistency. Revisit
+once a real audit-log page exists.
+
+**Portal accounts (admin) — shipped as a combined total, not a student-
+specific split.** `GET /portal-accounts` has no role filter; an exact
+"X students of Y have logins" count would require paginating every
+account page and filtering client-side — the same brute-force-aggregate
+pattern rejected for publishing-status. Ships instead as "N portal
+accounts provisioned" (STUDENT+PARENT combined, one exact, cheap call)
++ a "Provision →" link. A role-filtered count/total would need a small
+backend query-param addition; deferred.
+
+**"Recently posted" (teacher) — shipped, labeled as a subject-level
+approximation.** Neither `Evaluation` nor `Exam` carries a status field
+of its own (status only exists on subject/student result rows) — so the
+badge next to each recently-created item reads "Subject published"/
+"Subject still draft", NEVER a bare "Published"/"Draft", visibly in the
+badge text itself (not a tooltip). A teacher must never read a per-item
+badge as certifying that one evaluation/exam is published when a
+straggler elsewhere in the same subject is the actual reason it isn't.
+Identity + recency (`createdAt`, real, unlike Step 2's report-card
+types) come from `GET /grades/evaluations`/`GET /exams`, fanned out once
+per subject assignment (bounded by the teacher's own class/subject
+count); the publish approximation comes from one extra
+`GET /class-arms/:id/results` call per distinct class arm.
+
+**Admin dashboard top row replaced, not appended.** The two hand-rolled
+"Active students"/"Current session & term" cards are gone; session/term
+now lives in `PageHeader`'s description line, and the three new
+`StatCard`s (Students/Teachers/Classes) take their place — avoids
+showing the same "active students" number twice. `DashboardPage.test.
+tsx`'s admin assertions were updated for the new labels/layout — a UI-
+relabeling web-test edit, not a backend e2e edit, so it does not signal
+moved behavior.
