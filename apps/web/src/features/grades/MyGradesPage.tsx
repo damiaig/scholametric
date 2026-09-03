@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
+import { Card, CardContent } from "../../components/ui/card";
 import { Label } from "../../components/ui/label";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
@@ -63,7 +64,9 @@ function MyGrades() {
 
   useEffect(() => {
     if (termId || termOptions.length === 0) return;
-    const current = termOptions.find((option) => option.isCurrent) ?? termOptions[termOptions.length - 1];
+    const current =
+      termOptions.find((option) => option.isCurrent) ??
+      termOptions[termOptions.length - 1];
     setTermId(current.id);
     setSessionId(current.sessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -84,14 +87,22 @@ function MyGrades() {
   }
 
   const ready = Boolean(termId && sessionId);
-  const reportCard = useMyReportCard(viewMode === "term" && ready ? { termId, sessionId } : null);
-  const yearExams = useMyYearExams(viewMode === "exams" && sessionId ? { sessionId } : null);
+  const reportCard = useMyReportCard(
+    viewMode === "term" && ready ? { termId, sessionId } : null,
+  );
+  const yearExams = useMyYearExams(
+    viewMode === "exams" && sessionId ? { sessionId } : null,
+  );
   const selectedOption = termOptions.find((option) => option.id === termId);
-  const selectValue = viewMode === "exams" ? `${EXAMS_OPTION_PREFIX}${sessionId}` : termId;
+  const selectValue =
+    viewMode === "exams" ? `${EXAMS_OPTION_PREFIX}${sessionId}` : termId;
 
   return (
     <div>
-      <PageHeader title="Grades" description={profile.data?.currentClassArmLabel ?? user?.school.name} />
+      <PageHeader
+        title="Grades"
+        description={profile.data?.currentClassArmLabel ?? user?.school.name}
+      />
 
       {termOptions.length > 0 && (
         <div className="mb-4 flex flex-col gap-1.5">
@@ -112,7 +123,10 @@ function MyGrades() {
               </option>
             ))}
             {examsOptions.map((option) => (
-              <option key={`${EXAMS_OPTION_PREFIX}${option.sessionId}`} value={`${EXAMS_OPTION_PREFIX}${option.sessionId}`}>
+              <option
+                key={`${EXAMS_OPTION_PREFIX}${option.sessionId}`}
+                value={`${EXAMS_OPTION_PREFIX}${option.sessionId}`}
+              >
                 {option.label}
               </option>
             ))}
@@ -121,9 +135,13 @@ function MyGrades() {
       )}
 
       {!terms.isLoading && termOptions.length === 0 && (
-        <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
-          No terms yet — check back once you've been enrolled this session.
-        </p>
+        <Card>
+          <CardContent className="p-10 text-center">
+            <p className="text-sm text-muted">
+              No terms yet — check back once you've been enrolled this session.
+            </p>
+          </CardContent>
+        </Card>
       )}
 
       {viewMode === "term" && ready && reportCard.isLoading && (
@@ -133,12 +151,24 @@ function MyGrades() {
       )}
 
       {viewMode === "term" && ready && reportCard.isError && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
-          <p className="text-sm text-danger">{getErrorMessage(reportCard.error, "Couldn't load your report card.")}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => reportCard.refetch()}>
-            Try again
-          </Button>
-        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+            <p className="text-sm text-danger">
+              {getErrorMessage(
+                reportCard.error,
+                "Couldn't load your report card.",
+              )}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => reportCard.refetch()}
+            >
+              Try again
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {viewMode === "exams" && sessionId && yearExams.isLoading && (
@@ -148,22 +178,35 @@ function MyGrades() {
       )}
 
       {viewMode === "exams" && sessionId && yearExams.isError && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
-          <p className="text-sm text-danger">{getErrorMessage(yearExams.error, "Couldn't load your exams.")}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => yearExams.refetch()}>
-            Try again
-          </Button>
-        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+            <p className="text-sm text-danger">
+              {getErrorMessage(yearExams.error, "Couldn't load your exams.")}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => yearExams.refetch()}
+            >
+              Try again
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
-      {viewMode === "exams" && sessionId && yearExams.data && <YearExamsView data={yearExams.data} />}
+      {viewMode === "exams" && sessionId && yearExams.data && (
+        <YearExamsView data={yearExams.data} />
+      )}
 
       {viewMode === "term" && ready && reportCard.data && (
         <ReportCardDocument
           data={reportCard.data}
           schoolName={user?.school.name}
           classArmLabel={profile.data?.currentClassArmLabel}
-          termLabel={selectedOption ? formatTermName(selectedOption.termName) : null}
+          termLabel={
+            selectedOption ? formatTermName(selectedOption.termName) : null
+          }
           examsViewer={{ kind: "self" }}
           sessionLabel={selectedOption?.sessionName}
           showTeacherForm={false}
@@ -187,7 +230,12 @@ function ChildGrades() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedChildId = searchParams.get("childId") ?? "";
   const validChildId =
-    requestedChildId && children.data?.children.some((child) => child.studentId === requestedChildId) ? requestedChildId : "";
+    requestedChildId &&
+    children.data?.children.some(
+      (child) => child.studentId === requestedChildId,
+    )
+      ? requestedChildId
+      : "";
   const childId = validChildId || (children.data?.children[0]?.studentId ?? "");
 
   // Once the children list loads, if the URL didn't already name a valid
@@ -200,7 +248,9 @@ function ChildGrades() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [children.data, childId]);
 
-  const selectedChild = children.data?.children.find((child) => child.studentId === childId) ?? null;
+  const selectedChild =
+    children.data?.children.find((child) => child.studentId === childId) ??
+    null;
 
   const terms = useChildTerms(childId || null);
   const [termId, setTermId] = useState("");
@@ -232,7 +282,9 @@ function ChildGrades() {
 
   useEffect(() => {
     if (termId || termOptions.length === 0) return;
-    const current = termOptions.find((option) => option.isCurrent) ?? termOptions[termOptions.length - 1];
+    const current =
+      termOptions.find((option) => option.isCurrent) ??
+      termOptions[termOptions.length - 1];
     setTermId(current.id);
     setSessionId(current.sessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -259,19 +311,30 @@ function ChildGrades() {
   }
 
   const ready = Boolean(childId && termId && sessionId);
-  const reportCard = useChildReportCard(viewMode === "term" && ready ? { childId, termId, sessionId } : null);
-  const yearExams = useChildYearExams(viewMode === "exams" && childId && sessionId ? { childId, sessionId } : null);
+  const reportCard = useChildReportCard(
+    viewMode === "term" && ready ? { childId, termId, sessionId } : null,
+  );
+  const yearExams = useChildYearExams(
+    viewMode === "exams" && childId && sessionId
+      ? { childId, sessionId }
+      : null,
+  );
   const selectedTermOption = termOptions.find((option) => option.id === termId);
-  const selectValue = viewMode === "exams" ? `${EXAMS_OPTION_PREFIX}${sessionId}` : termId;
+  const selectValue =
+    viewMode === "exams" ? `${EXAMS_OPTION_PREFIX}${sessionId}` : termId;
 
   return (
     <div>
       <PageHeader title="Grades" description={user?.school.name} />
 
       {!children.isLoading && (children.data?.children.length ?? 0) === 0 && (
-        <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
-          No children linked to your account yet.
-        </p>
+        <Card>
+          <CardContent className="p-10 text-center">
+            <p className="text-sm text-muted">
+              No children linked to your account yet.
+            </p>
+          </CardContent>
+        </Card>
       )}
 
       {(children.data?.children.length ?? 0) > 0 && (
@@ -291,7 +354,9 @@ function ChildGrades() {
               {children.data?.children.map((child) => (
                 <option key={child.studentId} value={child.studentId}>
                   {child.firstName} {child.lastName}
-                  {child.currentClassArmLabel ? ` — ${child.currentClassArmLabel}` : ""}
+                  {child.currentClassArmLabel
+                    ? ` — ${child.currentClassArmLabel}`
+                    : ""}
                 </option>
               ))}
             </select>
@@ -315,7 +380,10 @@ function ChildGrades() {
                 </option>
               ))}
               {examsOptions.map((option) => (
-                <option key={`${EXAMS_OPTION_PREFIX}${option.sessionId}`} value={`${EXAMS_OPTION_PREFIX}${option.sessionId}`}>
+                <option
+                  key={`${EXAMS_OPTION_PREFIX}${option.sessionId}`}
+                  value={`${EXAMS_OPTION_PREFIX}${option.sessionId}`}
+                >
                   {option.label}
                 </option>
               ))}
@@ -331,12 +399,24 @@ function ChildGrades() {
       )}
 
       {viewMode === "term" && ready && reportCard.isError && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
-          <p className="text-sm text-danger">{getErrorMessage(reportCard.error, "Couldn't load this report card.")}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => reportCard.refetch()}>
-            Try again
-          </Button>
-        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+            <p className="text-sm text-danger">
+              {getErrorMessage(
+                reportCard.error,
+                "Couldn't load this report card.",
+              )}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => reportCard.refetch()}
+            >
+              Try again
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {viewMode === "exams" && childId && sessionId && yearExams.isLoading && (
@@ -346,22 +426,37 @@ function ChildGrades() {
       )}
 
       {viewMode === "exams" && childId && sessionId && yearExams.isError && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
-          <p className="text-sm text-danger">{getErrorMessage(yearExams.error, "Couldn't load exams.")}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => yearExams.refetch()}>
-            Try again
-          </Button>
-        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+            <p className="text-sm text-danger">
+              {getErrorMessage(yearExams.error, "Couldn't load exams.")}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => yearExams.refetch()}
+            >
+              Try again
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
-      {viewMode === "exams" && childId && sessionId && yearExams.data && <YearExamsView data={yearExams.data} />}
+      {viewMode === "exams" && childId && sessionId && yearExams.data && (
+        <YearExamsView data={yearExams.data} />
+      )}
 
       {viewMode === "term" && ready && reportCard.data && (
         <ReportCardDocument
           data={reportCard.data}
           schoolName={user?.school.name}
           classArmLabel={selectedChild?.currentClassArmLabel}
-          termLabel={selectedTermOption ? formatTermName(selectedTermOption.termName) : null}
+          termLabel={
+            selectedTermOption
+              ? formatTermName(selectedTermOption.termName)
+              : null
+          }
           sessionLabel={selectedTermOption?.sessionName}
           showTeacherForm={false}
           showPrincipalForm={false}

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Printer } from "lucide-react";
+import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { Label } from "../../components/ui/label";
@@ -51,21 +52,31 @@ export function ReportCardPage() {
   const myTeaching = useMyTeaching();
   const adminTerm = useAdminCurrentTerm(isConfirmedAdmin);
   const classes = useClasses();
-  const [adminTermId, setAdminTermId] = useState(searchParams.get("termId") ?? "");
+  const [adminTermId, setAdminTermId] = useState(
+    searchParams.get("termId") ?? "",
+  );
   const [viewMode, setViewMode] = useState<"term" | "exams">("term");
 
   // TEACHER is current-term-only, matching StudentResultsTab's existing
   // precedent (SPEC_V0.5.md §2.4 step 6, confirmed) — the backend already
   // permits reading any term's card, but no historical-term picker exists
   // anywhere in the app for a TEACHER yet; deferred, see docs/DECISIONS.md.
-  const termId = isTeacher ? (myTeaching.data?.currentTermId ?? "") : adminTermId || adminTerm.currentTermId || "";
-  const sessionId = isTeacher ? (myTeaching.data?.currentSessionId ?? "") : adminTerm.currentSessionId ?? "";
+  const termId = isTeacher
+    ? (myTeaching.data?.currentTermId ?? "")
+    : adminTermId || adminTerm.currentTermId || "";
+  const sessionId = isTeacher
+    ? (myTeaching.data?.currentSessionId ?? "")
+    : (adminTerm.currentSessionId ?? "");
   const ready = Boolean(id && termId && sessionId);
 
-  const reportCardQuery = useReportCard(viewMode === "term" && ready ? { studentId: id!, termId, sessionId } : null);
+  const reportCardQuery = useReportCard(
+    viewMode === "term" && ready ? { studentId: id!, termId, sessionId } : null,
+  );
   const data = reportCardQuery.data;
   const yearExams = useStudentYearExams(
-    viewMode === "exams" && id && adminTerm.currentSessionId ? { studentId: id, sessionId: adminTerm.currentSessionId } : null,
+    viewMode === "exams" && id && adminTerm.currentSessionId
+      ? { studentId: id, sessionId: adminTerm.currentSessionId }
+      : null,
   );
 
   function handleTermSelectChange(value: string) {
@@ -80,7 +91,12 @@ export function ReportCardPage() {
   const classArmLabel =
     data &&
     (classes.data ?? [])
-      .flatMap((level) => level.arms.map((arm) => ({ id: arm.id, label: `${level.name} ${arm.name}` })))
+      .flatMap((level) =>
+        level.arms.map((arm) => ({
+          id: arm.id,
+          label: `${level.name} ${arm.name}`,
+        })),
+      )
       .find((option) => option.id === data.classArmId)?.label;
 
   const termLabel = isTeacher
@@ -90,7 +106,9 @@ export function ReportCardPage() {
     : adminTerm.terms.find((t) => t.id === termId)
       ? formatTermName(adminTerm.terms.find((t) => t.id === termId)!.name)
       : null;
-  const sessionLabel = isConfirmedAdmin ? adminTerm.sessions.find((s) => s.id === sessionId)?.name : null;
+  const sessionLabel = isConfirmedAdmin
+    ? adminTerm.sessions.find((s) => s.id === sessionId)?.name
+    : null;
 
   // A subject-only TEACHER (any relationship short of class-teacher) gets
   // neither remark form — read-only remark text still renders below,
@@ -101,14 +119,24 @@ export function ReportCardPage() {
   // the form copy below says "Teacher remark," never "write as the class
   // teacher."
   const isClassTeacherHere =
-    isTeacher && data ? (myTeaching.data?.classTeacherOf ?? []).some((c) => c.classArmId === data.classArmId && c.sessionId === data.sessionId) : false;
+    isTeacher && data
+      ? (myTeaching.data?.classTeacherOf ?? []).some(
+          (c) =>
+            c.classArmId === data.classArmId && c.sessionId === data.sessionId,
+        )
+      : false;
   const showTeacherForm = isConfirmedAdmin || isClassTeacherHere;
   const showPrincipalForm = isConfirmedAdmin;
 
   return (
     <div>
       <div className="mb-4 flex flex-col gap-4 print:hidden sm:flex-row sm:items-end sm:justify-between">
-        <Button type="button" variant="outline" size="sm" onClick={() => navigate(-1)}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => navigate(-1)}
+        >
           Back
         </Button>
 
@@ -137,7 +165,12 @@ export function ReportCardPage() {
             </div>
           )}
 
-          <Button type="button" size="sm" disabled={viewMode === "term" ? !data : !yearExams.data} onClick={() => window.print()}>
+          <Button
+            type="button"
+            size="sm"
+            disabled={viewMode === "term" ? !data : !yearExams.data}
+            onClick={() => window.print()}
+          >
             <Printer className="mr-2 h-4 w-4" aria-hidden="true" /> Print
           </Button>
         </div>
@@ -156,12 +189,24 @@ export function ReportCardPage() {
       )}
 
       {viewMode === "term" && ready && reportCardQuery.isError && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center print:hidden">
-          <p className="text-sm text-danger">{getErrorMessage(reportCardQuery.error, "Couldn't load this report card.")}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => reportCardQuery.refetch()}>
-            Try again
-          </Button>
-        </div>
+        <Card className="print:hidden">
+          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+            <p className="text-sm text-danger">
+              {getErrorMessage(
+                reportCardQuery.error,
+                "Couldn't load this report card.",
+              )}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => reportCardQuery.refetch()}
+            >
+              Try again
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {viewMode === "exams" && yearExams.isLoading && (
@@ -171,15 +216,26 @@ export function ReportCardPage() {
       )}
 
       {viewMode === "exams" && yearExams.isError && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center print:hidden">
-          <p className="text-sm text-danger">{getErrorMessage(yearExams.error, "Couldn't load exams.")}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => yearExams.refetch()}>
-            Try again
-          </Button>
-        </div>
+        <Card className="print:hidden">
+          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+            <p className="text-sm text-danger">
+              {getErrorMessage(yearExams.error, "Couldn't load exams.")}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => yearExams.refetch()}
+            >
+              Try again
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
-      {viewMode === "exams" && yearExams.data && <YearExamsView data={yearExams.data} />}
+      {viewMode === "exams" && yearExams.data && (
+        <YearExamsView data={yearExams.data} />
+      )}
 
       {viewMode === "term" && data && (
         <ReportCardDocument

@@ -1,5 +1,6 @@
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
+import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Tabs } from "../../components/ui/tabs";
 import { Spinner } from "../../components/ui/spinner";
@@ -58,12 +59,21 @@ export function ClassGradesPage() {
 
   if (armDetail.isError || !armDetail.data) {
     return (
-      <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
-        <p className="text-sm text-danger">{getErrorMessage(armDetail.error, "Couldn't load this class.")}</p>
-        <Button type="button" variant="outline" size="sm" onClick={() => armDetail.refetch()}>
-          Try again
-        </Button>
-      </div>
+      <Card>
+        <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+          <p className="text-sm text-danger">
+            {getErrorMessage(armDetail.error, "Couldn't load this class.")}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => armDetail.refetch()}
+          >
+            Try again
+          </Button>
+        </CardContent>
+      </Card>
     );
   }
 
@@ -71,7 +81,13 @@ export function ClassGradesPage() {
 
   return (
     <div>
-      <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate(`/classes/arms/${classArmId}`)}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="mb-4"
+        onClick={() => navigate(`/classes/arms/${classArmId}`)}
+      >
         Back to {armLabel}
       </Button>
 
@@ -89,11 +105,21 @@ export function ClassGradesPage() {
         {tab === "results" ? (
           <ResultsTab classArmId={classArmId} />
         ) : subjectId ? (
-          <EnterScoresTab classArmId={classArmId} subjectId={subjectId} track={track} onTrackChange={setTrack} />
+          <EnterScoresTab
+            classArmId={classArmId}
+            subjectId={subjectId}
+            track={track}
+            onTrackChange={setTrack}
+          />
         ) : (
-          <p className="rounded-lg border border-muted/20 bg-card p-10 text-center text-sm text-muted">
-            Pick a subject from this class's subject-teacher list to enter scores.
-          </p>
+          <Card>
+            <CardContent className="p-10 text-center">
+              <p className="text-sm text-muted">
+                Pick a subject from this class's subject-teacher list to enter
+                scores.
+              </p>
+            </CardContent>
+          </Card>
         )}
       </Tabs>
     </div>

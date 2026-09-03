@@ -4812,4 +4812,58 @@ tests across `ClassArmResultsView.test.tsx` (mobile badge parity),
 `ClassGradesPage.test.tsx` (evaluation/exam name in the grid heading).
 Full e2e suite 455/455 before and after, zero `apps/api/` diff, zero
 e2e file edits.
-moved behavior.
+
+## 2026-09-03 — v0.7.1 step 5 (final build step): portal accounts polish + global empty states + consistent card sweep
+
+**Portal accounts — Card wrap, plus one addition.** The provision panel
+(`PortalAccountsSettingsPage.tsx`), the credential-slips flow's three
+panels (`ClassArmCredentialSlipsPage.tsx`: pre-generation, "Nothing to
+print", "Not included (N)"), and `CredentialSlipDocument.tsx` (print
+overrides preserved exactly) all moved from hand-rolled bordered divs to
+`Card`/`CardContent`. The already-changed-password warning callout keeps
+its `TriangleAlert` + amber tone, now via a `Card` with a
+`border-warning/30 bg-warning/5 shadow-none` override — same pattern as
+step 4's `TermLockBanner`. `ReissuePortalAccountDialog.tsx` needed no
+changes (already `Dialog` + `CredentialSlipDocument`).
+
+**`ProvisionResult.alreadyProvisioned` now rendered.** It was already
+returned by `POST /portal-accounts/provision` (no new query) but never
+displayed — a re-run that provisioned nobody new read as an unexplained
+"Created 0". Now shows "N student(s) and M parent/guardian account(s)
+already existed" beneath the created-count line, omitted entirely when
+both counts are zero. Closed a real test gap while on this render path:
+only the `no_guardian` warning type had coverage before; added cases for
+`no_primary_guardian_marked` and `child_not_covered`, confirming all
+three still render through the same uniform, un-branched path (no
+per-type JSX was added — the risk flagged going in).
+
+**Remaining grades-adjacent bare boxes swept.** `MyGradesPage.tsx` (6
+empty/error states across the student and parent views), `ClassGrades
+Page.tsx` (2), `ResultsTab.tsx` (3, not explicitly named in the plan but
+included since it wraps the already-Card-ified `ClassArmResultsView`
+and would have read as an inconsistent leftover), and `ReportCardPage.
+tsx`'s page shell (2) — all converted to `Card`/`CardContent`. Every
+empty-state string was audited against item 16 first: all of them
+already said what to do (`"No evaluations yet — create one."`, `"No
+portal accounts yet. Provision them above."`, `"Pick a subject from
+this class's subject-teacher list to enter scores."`, etc.) — zero copy
+changes were needed; this step's empty-state contribution is wrapper
+consistency, not a text rewrite.
+
+**Deliberately left alone.** `EvaluationPicker.tsx`/`ExamPicker.tsx`'s
+dashed-border empty state and inline (non-boxed) error pattern — a
+distinct, intentional convention (inline create-affordance, not a
+generic card), same call as step 4. `MarkAbsentDialog.tsx`/
+`OverrideGradeDialog.tsx` — no bordered boxes exist in either. `DataTable.
+tsx` (the portal-accounts list itself) — shared infrastructure used by
+Students/Teachers/Personnel list pages far outside this version's
+scope; touching it would ripple across pages this step has no mandate
+to change.
+
+**This is the last SPEC_V0.7.1.md build step (§6).** Every prior step's
+guardrail held: zero `apps/api/` diff across all five steps, the full
+e2e suite green before and after every step with zero e2e edits, and
+every restyle left server-enforced states (closed-term blocks, publish
+gates, RBAC-hidden controls, anonymity walls) rendering exactly as
+before. New web tests only (4 this step) — no existing test needed a
+logic change. Next: the full acceptance walk and tagging v0.7.1.
