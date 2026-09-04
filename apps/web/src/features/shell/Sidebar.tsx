@@ -1,5 +1,15 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Users, UserCog, Layers, IdCard, Settings, GraduationCap, CircleHelp } from "lucide-react";
+import {
+  LayoutDashboard,
+  Users,
+  UserCog,
+  Layers,
+  BookOpen,
+  IdCard,
+  Settings,
+  GraduationCap,
+  CircleHelp,
+} from "lucide-react";
 import { cn } from "../../lib/utils";
 import { isSchoolAdmin } from "../../lib/roles";
 import { useCurrentUser } from "./use-current-user";
@@ -20,8 +30,24 @@ const BASE_NAV_ITEMS = [
   { to: "/help", label: "Help", icon: CircleHelp },
 ];
 
+// v0.7.2 — Grades gets a dedicated sidebar home for TEACHER/STUDENT/PARENT
+// (reverses v0.7.1's "no sidebar item" decision, see docs/DECISIONS.md).
+// TEACHER lands on the new pick-a-class page; STUDENT/PARENT go straight to
+// the existing /me/grades (no new page for them). SCHOOL_ADMIN/PROPRIETOR
+// are deliberately excluded — they already reach grades via Classes → a
+// class → its Grades tab, plus Review & Publish.
+const TEACHER_GRADES_ITEM = { to: "/grades", label: "Grades", icon: BookOpen };
+const PORTAL_GRADES_ITEM = {
+  to: "/me/grades",
+  label: "Grades",
+  icon: BookOpen,
+};
 const PERSONNEL_ITEM = { to: "/personnel", label: "Personnel", icon: IdCard };
-const SETTINGS_ITEM = { to: "/settings/school", label: "Settings", icon: Settings };
+const SETTINGS_ITEM = {
+  to: "/settings/school",
+  label: "Settings",
+  icon: Settings,
+};
 
 interface SidebarProps {
   onNavigate?: () => void;
@@ -41,22 +67,42 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   // label — that route renders "My Classes" instead of the admin dashboard
   // for this role (DashboardPage.tsx).
   const baseItems = isPortalAccount
-    ? BASE_NAV_ITEMS.filter((item) => item.to === "/dashboard" || item.to === "/help")
+    ? [
+        ...BASE_NAV_ITEMS.filter((item) => item.to === "/dashboard"),
+        PORTAL_GRADES_ITEM,
+        ...BASE_NAV_ITEMS.filter((item) => item.to === "/help"),
+      ]
     : user?.role === "TEACHER"
-      ? BASE_NAV_ITEMS.map((item) => (item.to === "/dashboard" ? { ...item, label: "My Classes" } : item))
+      ? [
+          ...BASE_NAV_ITEMS.filter((item) => item.to === "/dashboard").map(
+            (item) => ({ ...item, label: "My Classes" }),
+          ),
+          TEACHER_GRADES_ITEM,
+          ...BASE_NAV_ITEMS.filter((item) => item.to !== "/dashboard"),
+        ]
       : BASE_NAV_ITEMS;
-  const navItems = isSchoolAdmin(user?.role) ? [...baseItems, PERSONNEL_ITEM, SETTINGS_ITEM] : baseItems;
+  const navItems = isSchoolAdmin(user?.role)
+    ? [...baseItems, PERSONNEL_ITEM, SETTINGS_ITEM]
+    : baseItems;
 
   return (
     <div className="flex h-full flex-col gap-6 p-4">
       <div className="flex items-center gap-2 px-2">
-        <GraduationCap className="h-6 w-6 shrink-0 text-primary" aria-hidden="true" />
+        <GraduationCap
+          className="h-6 w-6 shrink-0 text-primary"
+          aria-hidden="true"
+        />
         {isLoading ? (
-          <span className="h-4 w-28 animate-pulse rounded bg-muted/20" aria-label="Loading school name" />
+          <span
+            className="h-4 w-28 animate-pulse rounded bg-muted/20"
+            aria-label="Loading school name"
+          />
         ) : isError ? (
           <span className="text-sm text-muted">Unknown school</span>
         ) : (
-          <span className="truncate text-sm font-semibold text-text">{user?.school.name}</span>
+          <span className="truncate text-sm font-semibold text-text">
+            {user?.school.name}
+          </span>
         )}
       </div>
 
@@ -69,7 +115,9 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             className={({ isActive }) =>
               cn(
                 "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium",
-                isActive ? "bg-primary/10 text-primary" : "text-text hover:bg-background",
+                isActive
+                  ? "bg-primary/10 text-primary"
+                  : "text-text hover:bg-background",
               )
             }
           >

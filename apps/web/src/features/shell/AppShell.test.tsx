@@ -22,7 +22,13 @@ const CURRENT_USER = {
   role: "SCHOOL_ADMIN",
   status: "ACTIVE",
   lastLoginAt: null,
-  school: { id: "s1", name: "Sunrise College", slug: "sunrise", type: "SECONDARY", status: "ACTIVE" },
+  school: {
+    id: "s1",
+    name: "Sunrise College",
+    slug: "sunrise",
+    type: "SECONDARY",
+    status: "ACTIVE",
+  },
 };
 
 function renderShell() {
@@ -45,7 +51,10 @@ describe("AppShell", () => {
   });
 
   it("renders the school name from /auth/me in the sidebar", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -54,11 +63,17 @@ describe("AppShell", () => {
     renderShell();
 
     expect(await screen.findByText("Sunrise College")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/dashboard");
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
   });
 
   it("logging out clears auth state and redirects to /login", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
       if (path.includes("/auth/logout")) return undefined;
@@ -68,7 +83,9 @@ describe("AppShell", () => {
     const user = userEvent.setup();
     renderShell();
 
-    expect(await screen.findByRole("button", { name: "Adaobi Nwachukwu" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Adaobi Nwachukwu" }),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Adaobi Nwachukwu" }));
     await user.click(screen.getByRole("menuitem", { name: "Log out" }));
 
@@ -77,24 +94,38 @@ describe("AppShell", () => {
   });
 
   it("TEACHER: Personnel and Settings are absent from the sidebar; Teachers/Classes are present", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
+      if (path.includes("/auth/me"))
+        return { ...CURRENT_USER, role: "TEACHER" };
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
     renderShell();
 
-    expect(await screen.findByRole("link", { name: "Teachers" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("link", { name: "Teachers" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Classes" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Personnel/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Settings/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Personnel/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Settings/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("TEACHER: the Dashboard nav item reads 'My Classes' (same route); SCHOOL_ADMIN sees 'Dashboard'", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
+      if (path.includes("/auth/me"))
+        return { ...CURRENT_USER, role: "TEACHER" };
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
@@ -102,40 +133,139 @@ describe("AppShell", () => {
 
     const link = await screen.findByRole("link", { name: "My Classes" });
     expect(link).toHaveAttribute("href", "/dashboard");
-    expect(screen.queryByRole("link", { name: "Dashboard" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Dashboard" }),
+    ).not.toBeInTheDocument();
   });
 
   it("PROPRIETOR sees everything SCHOOL_ADMIN does, including Personnel and Settings", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "PROPRIETOR" };
+      if (path.includes("/auth/me"))
+        return { ...CURRENT_USER, role: "PROPRIETOR" };
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
     renderShell();
 
-    expect(await screen.findByRole("link", { name: /Personnel/ })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("link", { name: /Personnel/ }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Settings/ })).toBeInTheDocument();
+  });
+
+  // v0.7.2 — Grades gets a dedicated sidebar home for TEACHER/STUDENT/
+  // PARENT, reversing v0.7.1's "no sidebar item" decision. SCHOOL_ADMIN/
+  // PROPRIETOR are deliberately excluded — they already reach grades via
+  // Classes → a class → its Grades tab, plus Review & Publish.
+  it("TEACHER sees a Grades link pointing at the new pick-a-class page (/grades)", async () => {
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me"))
+        return { ...CURRENT_USER, role: "TEACHER" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: "Grades" })).toHaveAttribute(
+      "href",
+      "/grades",
+    );
+  });
+
+  it("STUDENT sees a Grades link pointing at the existing /me/grades page", async () => {
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me"))
+        return { ...CURRENT_USER, role: "STUDENT" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: "Grades" })).toHaveAttribute(
+      "href",
+      "/me/grades",
+    );
+  });
+
+  it("PARENT sees a Grades link pointing at the existing /me/grades page", async () => {
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "PARENT" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: "Grades" })).toHaveAttribute(
+      "href",
+      "/me/grades",
+    );
+  });
+
+  it("SCHOOL_ADMIN/PROPRIETOR do NOT get a Grades sidebar item — they reach grades via Classes and Review & Publish", async () => {
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return CURRENT_USER;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    await screen.findByRole("link", { name: "Dashboard" });
+    expect(
+      screen.queryByRole("link", { name: "Grades" }),
+    ).not.toBeInTheDocument();
   });
 
   // SPEC_V0.5.1.md §2.7, v0.5.1 step 6 — Help is in BASE_NAV_ITEMS, visible
   // to every role (HelpPage itself branches content by role).
   it("Help is visible in the sidebar for both SCHOOL_ADMIN and TEACHER", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
     renderShell();
-    expect(await screen.findByRole("link", { name: "Help" })).toHaveAttribute("href", "/help");
+    expect(await screen.findByRole("link", { name: "Help" })).toHaveAttribute(
+      "href",
+      "/help",
+    );
 
     cleanup();
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
+      if (path.includes("/auth/me"))
+        return { ...CURRENT_USER, role: "TEACHER" };
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
     renderShell();
-    expect(await screen.findByRole("link", { name: "Help" })).toHaveAttribute("href", "/help");
+    expect(await screen.findByRole("link", { name: "Help" })).toHaveAttribute(
+      "href",
+      "/help",
+    );
   });
 });

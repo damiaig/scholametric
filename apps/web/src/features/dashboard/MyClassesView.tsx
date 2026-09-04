@@ -23,7 +23,12 @@ export function MyClassesView() {
         <p className="text-sm text-danger">
           {getErrorMessage(teaching.error, "Couldn't load your teaching load.")}
         </p>
-        <Button type="button" variant="outline" size="sm" onClick={() => teaching.refetch()}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => teaching.refetch()}
+        >
           Try again
         </Button>
       </div>
@@ -36,7 +41,9 @@ export function MyClassesView() {
     return (
       <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-muted/20 bg-card p-10 text-center">
         <Users className="h-8 w-8 text-muted" aria-hidden="true" />
-        <p className="text-sm text-muted">You have no class assignments yet — your school admin assigns these.</p>
+        <p className="text-sm text-muted">
+          You have no class assignments yet — your school admin assigns these.
+        </p>
       </div>
     );
   }
@@ -44,22 +51,33 @@ export function MyClassesView() {
   return (
     <div className="flex flex-col gap-6">
       <section>
-        <h2 className="mb-2 text-lg font-semibold text-text">Classes I teach</h2>
+        <h2 className="mb-2 text-lg font-semibold text-text">
+          Classes I teach
+        </h2>
         {classTeacherOf.length === 0 ? (
-          <p className="text-sm text-muted">You are not currently a class teacher for any arm.</p>
+          <p className="text-sm text-muted">
+            You are not currently a class teacher for any arm.
+          </p>
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {classTeacherOf.map((entry) => (
-              <Link key={entry.classArmId} to={`/classes/arms/${entry.classArmId}`} className="block">
+              <Link
+                key={entry.classArmId}
+                to={`/classes/arms/${entry.classArmId}`}
+                className="block"
+              >
                 <Card className="transition-colors hover:border-primary/40">
                   <CardContent className="flex items-center gap-4 p-6">
                     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
                       <Users className="h-5 w-5" aria-hidden="true" />
                     </div>
                     <div className="min-w-0">
-                      <p className="truncate font-semibold text-text">{entry.className}</p>
+                      <p className="truncate font-semibold text-text">
+                        {entry.className}
+                      </p>
                       <p className="text-sm text-muted">
-                        {entry.enrollmentCount} student{entry.enrollmentCount === 1 ? "" : "s"}
+                        {entry.enrollmentCount} student
+                        {entry.enrollmentCount === 1 ? "" : "s"}
                       </p>
                     </div>
                   </CardContent>
@@ -71,9 +89,13 @@ export function MyClassesView() {
       </section>
 
       <section>
-        <h2 className="mb-2 text-lg font-semibold text-text">Subjects I teach</h2>
+        <h2 className="mb-2 text-lg font-semibold text-text">
+          Subjects I teach
+        </h2>
         {subjects.length === 0 ? (
-          <p className="text-sm text-muted">No subjects assigned this session.</p>
+          <p className="text-sm text-muted">
+            No subjects assigned this session.
+          </p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-muted/20 bg-card">
             <table className="w-full text-left text-sm">
@@ -81,31 +103,26 @@ export function MyClassesView() {
                 <tr className="border-b border-muted/20">
                   <th className="px-4 py-3 font-medium text-muted">Subject</th>
                   <th className="px-4 py-3 font-medium text-muted">Class</th>
-                  <th className="px-4 py-3 font-medium text-muted">&nbsp;</th>
                 </tr>
               </thead>
               <tbody>
+                {/* v0.7.2 — the per-row "Enter grades · Enter exam scores"
+                    links moved to the new dedicated Grades page (sidebar),
+                    reached from here via the class link below or the
+                    sidebar's own Grades item — nothing here is unreachable,
+                    it just isn't duplicated on the dashboard anymore. */}
                 {subjects.map((entry) => (
-                  <tr key={entry.id} className="border-b border-muted/10 last:border-0">
+                  <tr
+                    key={entry.id}
+                    className="border-b border-muted/10 last:border-0"
+                  >
                     <td className="px-4 py-3 text-text">{entry.subjectName}</td>
                     <td className="px-4 py-3">
-                      <Link to={`/classes/arms/${entry.classArmId}`} className="text-primary hover:underline">
+                      <Link
+                        to={`/classes/arms/${entry.classArmId}`}
+                        className="text-primary hover:underline"
+                      >
                         {entry.className}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <Link
-                        to={`/classes/arms/${entry.classArmId}/grades?tab=enter&subjectId=${entry.subjectId}&track=evaluations`}
-                        className="text-primary hover:underline"
-                      >
-                        Enter grades
-                      </Link>
-                      <span className="mx-2 text-muted">·</span>
-                      <Link
-                        to={`/classes/arms/${entry.classArmId}/grades?tab=enter&subjectId=${entry.subjectId}&track=exams`}
-                        className="text-primary hover:underline"
-                      >
-                        Enter exam scores
                       </Link>
                     </td>
                   </tr>
@@ -121,10 +138,17 @@ export function MyClassesView() {
 
 function MyClassesSkeleton() {
   return (
-    <div className="flex flex-col gap-6" role="status" aria-label="Loading your teaching load">
+    <div
+      className="flex flex-col gap-6"
+      role="status"
+      aria-label="Loading your teaching load"
+    >
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {[0, 1, 2].map((index) => (
-          <div key={index} className="h-20 animate-pulse rounded-lg border border-muted/20 bg-card" />
+          <div
+            key={index}
+            className="h-20 animate-pulse rounded-lg border border-muted/20 bg-card"
+          />
         ))}
       </div>
       <div className="h-40 animate-pulse rounded-lg border border-muted/20 bg-card" />

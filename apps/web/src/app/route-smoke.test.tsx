@@ -63,7 +63,11 @@ const PERSONNEL_ROW = {
   dateEmployed: null,
 };
 
-const TEACHER_DETAIL = { ...PERSONNEL_ROW, classTeacherOf: [], subjectsTaught: [] };
+const TEACHER_DETAIL = {
+  ...PERSONNEL_ROW,
+  classTeacherOf: [],
+  subjectsTaught: [],
+};
 
 const CLASS_LEVEL_OVERVIEW = [
   {
@@ -122,41 +126,49 @@ const DASHBOARD_STATS = {
 };
 
 function mockApi() {
-  mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
-    const method = opts?.method ?? "GET";
+  mockedApiRequest.mockImplementation(
+    async (path: string, opts?: { method?: string }) => {
+      const method = opts?.method ?? "GET";
 
-    if (path === "/api/v1/auth/me") return CURRENT_USER;
-    if (path === "/api/v1/dashboard/stats") return DASHBOARD_STATS;
+      if (path === "/api/v1/auth/me") return CURRENT_USER;
+      if (path === "/api/v1/dashboard/stats") return DASHBOARD_STATS;
 
-    if (path === "/api/v1/students" && method === "GET") return { ...PAGINATED_EMPTY, items: [STUDENT_ROW] };
-    if (path === "/api/v1/students/route-smoke-id") return STUDENT_DETAIL;
-    if (path === "/api/v1/students/route-smoke-id/guardians") return [];
-    if (path === "/api/v1/audit-logs") return PAGINATED_EMPTY;
+      if (path === "/api/v1/students" && method === "GET")
+        return { ...PAGINATED_EMPTY, items: [STUDENT_ROW] };
+      if (path === "/api/v1/students/route-smoke-id") return STUDENT_DETAIL;
+      if (path === "/api/v1/students/route-smoke-id/guardians") return [];
+      if (path === "/api/v1/audit-logs") return PAGINATED_EMPTY;
 
-    if (path === "/api/v1/teachers") return { ...PAGINATED_EMPTY, items: [PERSONNEL_ROW] };
-    if (path === "/api/v1/teachers/route-smoke-id") return TEACHER_DETAIL;
-    if (path === "/api/v1/personnel") return { ...PAGINATED_EMPTY, items: [PERSONNEL_ROW] };
-    if (path === "/api/v1/portal-accounts") return PAGINATED_EMPTY;
+      if (path === "/api/v1/teachers")
+        return { ...PAGINATED_EMPTY, items: [PERSONNEL_ROW] };
+      if (path === "/api/v1/teachers/route-smoke-id") return TEACHER_DETAIL;
+      if (path === "/api/v1/personnel")
+        return { ...PAGINATED_EMPTY, items: [PERSONNEL_ROW] };
+      if (path === "/api/v1/portal-accounts") return PAGINATED_EMPTY;
 
-    if (path === "/api/v1/classes") return CLASS_LEVEL_OVERVIEW;
-    if (path === "/api/v1/class-arms/route-smoke-id") return CLASS_ARM_DETAIL;
-    if (path === "/api/v1/class-arms/route-smoke-id/results") return CLASS_ARM_RESULTS;
-    if (path === "/api/v1/class-arms") return PAGINATED_EMPTY;
-    if (path === "/api/v1/class-levels") return PAGINATED_EMPTY;
-    if (path === "/api/v1/subjects") return PAGINATED_EMPTY;
+      if (path === "/api/v1/classes") return CLASS_LEVEL_OVERVIEW;
+      if (path === "/api/v1/class-arms/route-smoke-id") return CLASS_ARM_DETAIL;
+      if (path === "/api/v1/class-arms/route-smoke-id/results")
+        return CLASS_ARM_RESULTS;
+      if (path === "/api/v1/class-arms") return PAGINATED_EMPTY;
+      if (path === "/api/v1/class-levels") return PAGINATED_EMPTY;
+      if (path === "/api/v1/subjects") return PAGINATED_EMPTY;
 
-    if (path === "/api/v1/sessions") return PAGINATED_EMPTY;
-    if (path === "/api/v1/terms") return PAGINATED_EMPTY;
+      if (path === "/api/v1/sessions") return PAGINATED_EMPTY;
+      if (path === "/api/v1/terms") return PAGINATED_EMPTY;
 
-    // SPEC_V0.7.1.md §3 (item 20) — /me/grades is reachable by any
-    // authenticated role at the URL bar (the real gate is server-side,
-    // same "UX lock, not the security boundary" pattern used everywhere
-    // else in this app); this fixture's fixed SCHOOL_ADMIN user falls to
-    // the PARENT branch (not STUDENT), which calls GET /me/children.
-    if (path === "/api/v1/me/children") return { children: [] };
+      // SPEC_V0.7.1.md §3 (item 20) — /me/grades is reachable by any
+      // authenticated role at the URL bar (the real gate is server-side,
+      // same "UX lock, not the security boundary" pattern used everywhere
+      // else in this app); this fixture's fixed SCHOOL_ADMIN user falls to
+      // the PARENT branch (not STUDENT), which calls GET /me/children.
+      if (path === "/api/v1/me/children") return { children: [] };
 
-    throw new Error(`route-smoke.test.tsx: unexpected apiRequest call: ${method} ${path}`);
-  });
+      throw new Error(
+        `route-smoke.test.tsx: unexpected apiRequest call: ${method} ${path}`,
+      );
+    },
+  );
 }
 
 // Every concrete path a user could actually land on — mirrors App.tsx's
@@ -172,6 +184,7 @@ const ROUTES = [
   "/classes",
   "/classes/arms/route-smoke-id",
   "/classes/arms/route-smoke-id/grades",
+  "/grades",
   "/grades/review",
   "/me/grades",
   "/personnel",
@@ -181,7 +194,10 @@ const ROUTES = [
 ];
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({
+    accessToken: "access-token",
+    refreshToken: "refresh-token",
+  });
   mockApi();
 });
 
@@ -194,7 +210,9 @@ afterEach(() => {
 describe("route smoke test — every registered route renders without throwing", () => {
   it.each(ROUTES)("mounts %s without an uncaught error", async (route) => {
     const queryClient = createTestQueryClient();
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
 
     render(
       <QueryClientProvider client={queryClient}>
@@ -207,7 +225,9 @@ describe("route smoke test — every registered route renders without throwing",
     // Something App-shell-shaped ("Sunrise College" in the sidebar) should
     // show up once the route settles — proof the tree actually rendered
     // rather than the test just timing out.
-    await waitFor(() => expect(screen.getAllByText("Sunrise College").length).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(screen.getAllByText("Sunrise College").length).toBeGreaterThan(0),
+    );
 
     // The route-level RouteErrorBoundary (ProtectedLayout.tsx) turns a
     // render crash into this exact message — its presence, not a thrown

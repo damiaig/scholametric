@@ -20,3 +20,8 @@ export function isSchoolAdmin(role: UserRole | undefined): boolean {
 export function isProprietor(role: UserRole | undefined): boolean {
   return role === "PROPRIETOR";
 }
+
+/** v0.7.2 — RequireTeacher's route guard for the new /grades landing page. */
+export function isTeacher(role: UserRole | undefined): boolean {
+  return role === "TEACHER";
+}

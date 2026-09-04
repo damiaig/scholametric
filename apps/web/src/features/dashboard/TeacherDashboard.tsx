@@ -38,8 +38,18 @@ export function TeacherDashboard() {
 
       {teaching.isError && (
         <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
-          <p className="text-sm text-danger">{getErrorMessage(teaching.error, "Couldn't load your teaching load.")}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => teaching.refetch()}>
+          <p className="text-sm text-danger">
+            {getErrorMessage(
+              teaching.error,
+              "Couldn't load your teaching load.",
+            )}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => teaching.refetch()}
+          >
             Try again
           </Button>
         </div>
@@ -48,9 +58,19 @@ export function TeacherDashboard() {
       {teaching.data && (
         <div className="flex flex-col gap-6">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <StatCard icon={Users} label="Classes I teach" value={classCount} tone="primary" />
-            <StatCard icon={BookOpen} label="Subjects" value={subjectCount} tone="secondary" />
-            <Link to="/classes" className="block">
+            <StatCard
+              icon={Users}
+              label="Classes I teach"
+              value={classCount}
+              tone="primary"
+            />
+            <StatCard
+              icon={BookOpen}
+              label="Subjects"
+              value={subjectCount}
+              tone="secondary"
+            />
+            <Link to="/grades" className="block">
               <Card className="h-full transition-colors hover:border-accent/40">
                 <CardContent className="flex h-full items-center gap-4 p-6">
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent">
@@ -64,7 +84,9 @@ export function TeacherDashboard() {
 
           <Card>
             <CardContent className="p-6">
-              <h2 className="mb-4 text-lg font-semibold text-text">My classes</h2>
+              <h2 className="mb-4 text-lg font-semibold text-text">
+                My classes
+              </h2>
               <MyClassesView />
             </CardContent>
           </Card>
@@ -78,10 +100,17 @@ export function TeacherDashboard() {
 
 function TeacherDashboardSkeleton() {
   return (
-    <div className="flex flex-col gap-6" role="status" aria-label="Loading your dashboard">
+    <div
+      className="flex flex-col gap-6"
+      role="status"
+      aria-label="Loading your dashboard"
+    >
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         {[0, 1, 2].map((index) => (
-          <div key={index} className="h-20 animate-pulse rounded-lg border border-muted/20 bg-card" />
+          <div
+            key={index}
+            className="h-20 animate-pulse rounded-lg border border-muted/20 bg-card"
+          />
         ))}
       </div>
       <div className="h-64 animate-pulse rounded-lg border border-muted/20 bg-card" />

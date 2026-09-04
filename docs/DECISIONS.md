@@ -4867,3 +4867,63 @@ every restyle left server-enforced states (closed-term blocks, publish
 gates, RBAC-hidden controls, anonymity walls) rendering exactly as
 before. New web tests only (4 this step) — no existing test needed a
 logic change. Next: the full acceptance walk and tagging v0.7.1.
+
+## 2026-09-04 — v0.7.2: Grades gets a sidebar home for every role (reverses a v0.7.1 decision)
+
+**Reverses SPEC_V0.7.1.md §3.1's "grades are not a top-level sidebar
+item" call.** That decision was made on paper; seeing it live during the
+acceptance walk, a teacher had no fast path to grades without hunting
+through Classes first, and students/parents had a dashboard Grades card
+but no sidebar entry. Dami changed his mind — this is a UI-only
+correction, not a new feature: same data, same destination pages, just
+reachable a different way.
+
+**Sidebar (`Sidebar.tsx`)** — extended the existing per-role `filter`/
+`map` pattern, not restructured: a `Grades` item inserted as the 2nd
+entry (right after Dashboard/My Classes) for TEACHER (→ `/grades`, new
+page below) and STUDENT/PARENT (→ `/me/grades`, existing page, no new
+route). SCHOOL_ADMIN/PROPRIETOR deliberately excluded — they already
+reach grades via Classes → a class → its Grades tab, plus Review &
+Publish; a 3rd path for them wasn't the problem this fixes.
+
+**New page: `TeacherGradesPage.tsx` (route `/grades`, TEACHER-only).** A
+thin pick-a-class picker — reuses `useMyTeaching()` (the exact query key
+`MyClassesView` already calls, so this is a cache hit, not a second
+fetch) and the existing `/classes/arms/:id/grades` route (`ClassGradesPage`,
+built in v0.7.1 step 1). No new endpoint, no new query param, no rebuild
+of `ClassGradesPage`. Guarded by a new `RequireTeacher` route wrapper,
+mirroring `RequireSchoolAdmin`'s exact shape (loading-aware, redirects
+non-teachers to `/dashboard`) — consistent with this app's existing
+client-side route-guard convention, not a new pattern.
+
+**Design call: the new page's class links go straight to
+`?tab=results`, skipping the class-detail page** (`/classes/arms/:id`)
+that `MyClassesView`'s own class-teacher-of cards still link to. This
+page's whole purpose is being the grades hub, so the direct path was
+the point — approved explicitly rather than assumed.
+
+**`MyClassesView.tsx` — action column removed, not the component.** The
+subjects table's "Enter grades · Enter exam scores" per-row links (the
+"razz clutter" the acceptance walk flagged) are gone; the table is now
+Subject | Class only. Nothing is unreachable: the Class cell still
+links to `/classes/arms/:id` (which has its own Grades button from
+step 1), and the same subject-specific deep-links now live on the new
+`/grades` page instead. `MyClassesView` still renders inside
+`TeacherDashboard`'s "My classes" card, untouched otherwise.
+
+**`TeacherDashboard.tsx`'s "Enter grades →" CTA retargeted** from
+`/classes` to `/grades` — a more direct match for its own label, one-line
+change.
+
+**Test impact — all expected edits, zero logic changes to a
+behavior-proving test:** `TeacherDashboard.test.tsx` (CTA href +
+replaced the per-row-link assertion with a "these links are gone"
+assertion), `AppShell.test.tsx` (4 new cases: Grades present per role
+with correct href, absent for admin — no existing assertion broke,
+since none of them ever asserted an exhaustive nav list), `route-smoke.
+test.tsx` (`/grades` added, redirects cleanly for the fixed non-teacher
+smoke-test user), new `TeacherGradesPage.test.tsx` (4 tests). Zero
+`apps/api/` diff; full e2e suite green before and after with zero e2e
+edits (this is 100% frontend — no endpoint, DTO, service, query, or
+role check touched; the v0.7 published-only walls, analytics, anonymity,
+and teacher-scoping rules never moved).
