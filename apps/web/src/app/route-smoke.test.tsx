@@ -183,7 +183,7 @@ const ROUTES = [
   "/teachers/route-smoke-id",
   "/classes",
   "/classes/arms/route-smoke-id",
-  "/classes/arms/route-smoke-id/grades",
+  "/grades/arms/route-smoke-id",
   "/grades",
   "/grades/review",
   "/me/grades",

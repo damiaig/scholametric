@@ -217,7 +217,12 @@ describe("AppShell", () => {
     );
   });
 
-  it("SCHOOL_ADMIN/PROPRIETOR do NOT get a Grades sidebar item — they reach grades via Classes and Review & Publish", async () => {
+  // v0.7.2 step 2 (SPEC_V0.7.2.md §3) — reverses this file's own earlier
+  // assertion: SCHOOL_ADMIN/PROPRIETOR now DO get the sidebar Grades item,
+  // since the class page no longer hosts any grading UI for them to reach
+  // it through. Same href as TEACHER's — GradesLandingPage forks its own
+  // content by role once there.
+  it("SCHOOL_ADMIN/PROPRIETOR now get a Grades sidebar item too, pointing at /grades", async () => {
     authStore.setTokens({
       accessToken: "access-token",
       refreshToken: "refresh-token",
@@ -230,9 +235,10 @@ describe("AppShell", () => {
     renderShell();
 
     await screen.findByRole("link", { name: "Dashboard" });
-    expect(
-      screen.queryByRole("link", { name: "Grades" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Grades" })).toHaveAttribute(
+      "href",
+      "/grades",
+    );
   });
 
   // SPEC_V0.5.1.md §2.7, v0.5.1 step 6 — Help is in BASE_NAV_ITEMS, visible

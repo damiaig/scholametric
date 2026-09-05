@@ -30,13 +30,16 @@ const BASE_NAV_ITEMS = [
   { to: "/help", label: "Help", icon: CircleHelp },
 ];
 
-// v0.7.2 — Grades gets a dedicated sidebar home for TEACHER/STUDENT/PARENT
-// (reverses v0.7.1's "no sidebar item" decision, see docs/DECISIONS.md).
-// TEACHER lands on the new pick-a-class page; STUDENT/PARENT go straight to
-// the existing /me/grades (no new page for them). SCHOOL_ADMIN/PROPRIETOR
-// are deliberately excluded — they already reach grades via Classes → a
-// class → its Grades tab, plus Review & Publish.
-const TEACHER_GRADES_ITEM = { to: "/grades", label: "Grades", icon: BookOpen };
+// v0.7.2 — Grades gets a dedicated sidebar home for every role (reverses
+// v0.7.1's "no sidebar item" decision, see docs/DECISIONS.md). TEACHER and
+// SCHOOL_ADMIN/PROPRIETOR both land on GradesLandingPage (which forks its
+// own content by role); STUDENT/PARENT go straight to the existing
+// /me/grades (no new page for them). v0.7.2 step 2 (SPEC_V0.7.2.md §3)
+// reverses this file's own earlier "admin excluded" call — that call
+// assumed the class page would keep doing the job of reaching grades; it
+// no longer can (Item 3 strips all grading UI from the class page), so
+// admin now needs this same sidebar entry too.
+const GRADES_ITEM = { to: "/grades", label: "Grades", icon: BookOpen };
 const PORTAL_GRADES_ITEM = {
   to: "/me/grades",
   label: "Grades",
@@ -77,10 +80,16 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           ...BASE_NAV_ITEMS.filter((item) => item.to === "/dashboard").map(
             (item) => ({ ...item, label: "My Classes" }),
           ),
-          TEACHER_GRADES_ITEM,
+          GRADES_ITEM,
           ...BASE_NAV_ITEMS.filter((item) => item.to !== "/dashboard"),
         ]
-      : BASE_NAV_ITEMS;
+      : isSchoolAdmin(user?.role)
+        ? [
+            ...BASE_NAV_ITEMS.filter((item) => item.to === "/dashboard"),
+            GRADES_ITEM,
+            ...BASE_NAV_ITEMS.filter((item) => item.to !== "/dashboard"),
+          ]
+        : BASE_NAV_ITEMS;
   const navItems = isSchoolAdmin(user?.role)
     ? [...baseItems, PERSONNEL_ITEM, SETTINGS_ITEM]
     : baseItems;

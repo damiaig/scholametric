@@ -1,4 +1,9 @@
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import {
+  useNavigate,
+  useParams,
+  useSearchParams,
+  Link,
+} from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -21,10 +26,13 @@ import { ResultsTab } from "./ResultsTab";
 // `subjectId` persists across tab switches (switching to Results and back
 // to Enter scores restores exactly where you were, rather than losing
 // context) — only the "Enter grades"/"Enter exam scores" links themselves
-// ever SET it. Visiting Enter-scores with no subjectId at all (e.g. the
-// class-level "Grades" button, which only ever points at Results) shows a
-// named next step instead of a blank grid — see EnterScoresTab's caller
-// below.
+// ever SET it. v0.7.2 step 2 (SPEC_V0.7.2.md §3): visiting Enter-scores
+// with no subjectId at all (e.g. GradesLandingPage's classTeacherOf/
+// class-browser cards, which only ever point at Results) now shows a
+// clickable subject list instead of a dead-end message — reusing
+// armDetail.data.subjectTeachers, already fetched above, zero new query.
+// This is what makes the admin path work at all now that the class page
+// (ClassArmDetailPage) no longer carries any per-subject grading links.
 export function ClassGradesPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -113,11 +121,47 @@ export function ClassGradesPage() {
           />
         ) : (
           <Card>
-            <CardContent className="p-10 text-center">
-              <p className="text-sm text-muted">
-                Pick a subject from this class's subject-teacher list to enter
-                scores.
-              </p>
+            <CardContent className="p-6">
+              <h2 className="mb-2 text-lg font-semibold text-text">
+                Pick a subject to enter scores
+              </h2>
+              {armDetail.data.subjectTeachers.length === 0 ? (
+                <p className="text-sm text-muted">
+                  No subject teachers assigned this session.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {armDetail.data.subjectTeachers.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-muted/20 p-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-medium text-text">
+                          {entry.subjectName}
+                        </p>
+                        <p className="truncate text-xs text-muted">
+                          {entry.teacherFirstName} {entry.teacherLastName}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-3">
+                        <Link
+                          to={`/grades/arms/${classArmId}?tab=enter&subjectId=${entry.subjectId}&track=evaluations`}
+                          className="text-sm text-primary hover:underline"
+                        >
+                          Enter grades
+                        </Link>
+                        <Link
+                          to={`/grades/arms/${classArmId}?tab=enter&subjectId=${entry.subjectId}&track=exams`}
+                          className="text-sm text-primary hover:underline"
+                        >
+                          Enter exam scores
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

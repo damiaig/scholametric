@@ -3,7 +3,7 @@ import { LoginRoute } from "./app/LoginRoute";
 import { ChangePasswordRoute } from "./app/ChangePasswordRoute";
 import { ProtectedLayout } from "./app/ProtectedLayout";
 import { RequireSchoolAdmin } from "./app/RequireSchoolAdmin";
-import { RequireTeacher } from "./app/RequireTeacher";
+import { RequireGradesAccess } from "./app/RequireGradesAccess";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { StudentsListPage } from "./features/students/StudentsListPage";
 import { NewStudentPage } from "./features/students/NewStudentPage";
@@ -13,7 +13,7 @@ import { TeacherDetailPage } from "./features/teachers/TeacherDetailPage";
 import { ClassesPage } from "./features/classes/ClassesPage";
 import { ClassArmDetailPage } from "./features/classes/ClassArmDetailPage";
 import { ClassGradesPage } from "./features/grades/ClassGradesPage";
-import { TeacherGradesPage } from "./features/grades/TeacherGradesPage";
+import { GradesLandingPage } from "./features/grades/GradesLandingPage";
 import { ReviewPublishPage } from "./features/grades/ReviewPublishPage";
 import { ReportCardPage } from "./features/grades/ReportCardPage";
 import { MyGradesPage } from "./features/grades/MyGradesPage";
@@ -47,7 +47,13 @@ export function AppRoutes() {
         <Route path="/teachers/:id" element={<TeacherDetailPage />} />
         <Route path="/classes" element={<ClassesPage />} />
         <Route path="/classes/arms/:id" element={<ClassArmDetailPage />} />
-        <Route path="/classes/arms/:id/grades" element={<ClassGradesPage />} />
+        {/* v0.7.2 step 2 (SPEC_V0.7.2.md §3, item 2) — moved from
+            /classes/arms/:id/grades: the class page no longer hosts any
+            grading UI, so its grading route moves under /grades too.
+            ClassGradesPage itself is unchanged code, unguarded here same
+            as its predecessor (no client route guard existed on the old
+            path either). */}
+        <Route path="/grades/arms/:id" element={<ClassGradesPage />} />
         <Route path="/help" element={<HelpPage />} />
         <Route
           path="/account/change-password"
@@ -61,10 +67,12 @@ export function AppRoutes() {
           element={<Navigate to="/personnel" replace />}
         />
 
-        {/* v0.7.2 — the pick-a-class Grades landing page, TEACHER-only
-            (mirrors RequireSchoolAdmin's shape below). */}
-        <Route element={<RequireTeacher />}>
-          <Route path="/grades" element={<TeacherGradesPage />} />
+        {/* v0.7.2 step 2 — the Grades landing page: TEACHER's own "my
+            classes" picker, or SCHOOL_ADMIN/PROPRIETOR's school-wide
+            browser (GradesLandingPage forks on role). Mirrors
+            RequireSchoolAdmin's shape below. */}
+        <Route element={<RequireGradesAccess />}>
+          <Route path="/grades" element={<GradesLandingPage />} />
         </Route>
 
         <Route element={<RequireSchoolAdmin />}>

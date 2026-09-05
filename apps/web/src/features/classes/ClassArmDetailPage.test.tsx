@@ -22,7 +22,13 @@ const SCHOOL_ADMIN_USER = {
   role: "SCHOOL_ADMIN",
   status: "ACTIVE",
   lastLoginAt: null,
-  school: { id: "s1", name: "Sunrise College", slug: "sunrise", type: "SECONDARY", status: "ACTIVE" },
+  school: {
+    id: "s1",
+    name: "Sunrise College",
+    slug: "sunrise",
+    type: "SECONDARY",
+    status: "ACTIVE",
+  },
 };
 
 const ARM_DETAIL: ClassArmDetail = {
@@ -31,10 +37,25 @@ const ARM_DETAIL: ClassArmDetail = {
   classLevel: { id: "lvl-1", name: "JSS 1", rank: 1 },
   classTeacher: { userId: "t-1", firstName: "Bola", lastName: "Ogundare" },
   subjectTeachers: [
-    { id: "sta-1", subjectId: "subj-1", subjectName: "Mathematics", teacherUserId: "t-1", teacherFirstName: "Bola", teacherLastName: "Ogundare" },
+    {
+      id: "sta-1",
+      subjectId: "subj-1",
+      subjectName: "Mathematics",
+      teacherUserId: "t-1",
+      teacherFirstName: "Bola",
+      teacherLastName: "Ogundare",
+    },
   ],
   students: {
-    items: [{ id: "st-1", firstName: "Chidi", lastName: "Okoro", admissionNumber: "SUN/2026/0001", status: "ACTIVE" }],
+    items: [
+      {
+        id: "st-1",
+        firstName: "Chidi",
+        lastName: "Okoro",
+        admissionNumber: "SUN/2026/0001",
+        status: "ACTIVE",
+      },
+    ],
     total: 1,
     page: 1,
     pageSize: 20,
@@ -42,7 +63,10 @@ const ARM_DETAIL: ClassArmDetail = {
 };
 
 function renderPage(role: string = "SCHOOL_ADMIN") {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({
+    accessToken: "access-token",
+    refreshToken: "refresh-token",
+  });
   mockedApiRequest.mockImplementation(async (path: string) => {
     if (path.includes("/auth/me")) return { ...SCHOOL_ADMIN_USER, role };
     if (path.includes("/class-arms/arm-1")) return ARM_DETAIL;
@@ -72,42 +96,59 @@ describe("ClassArmDetailPage", () => {
     // fixture; the subject-teachers list also renders twice (mobile card +
     // desktop table, only one visible per breakpoint via CSS) — jsdom
     // doesn't apply media queries, so both exist in the DOM at once.
-    expect(screen.getAllByText("Bola Ogundare").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("Bola Ogundare").length).toBeGreaterThanOrEqual(
+      2,
+    );
     expect(screen.getAllByText("Mathematics").length).toBeGreaterThanOrEqual(1);
     const studentsSection = screen.getByText("Students").closest("section")!;
-    const studentsTable = within(await within(studentsSection).findByRole("table"));
+    const studentsTable = within(
+      await within(studentsSection).findByRole("table"),
+    );
     expect(studentsTable.getByText("Chidi Okoro")).toBeInTheDocument();
     expect(studentsTable.getByText("SUN/2026/0001")).toBeInTheDocument();
   });
 
-  // SPEC_V0.7.1.md §3 (items 5, 7) — grades live inside the class now: one
-  // "Grades" button (Results tab) plus per-subject "Enter grades"/"Enter
-  // exam scores" links, all landing on the SAME unified route, distinguished
-  // only by tab=/track= query params — not three separate old routes.
-  it("Grades button and per-subject Enter-grades/Enter-exam-scores links all point at the unified /classes/arms/:id/grades route", async () => {
+  // v0.7.2 step 2 (SPEC_V0.7.2.md §3, item 3) — the class page is now a
+  // read-only view/hub: zero grade entry or editing anywhere on it. The
+  // "Grades" button, "Review & publish" button, and per-subject "Enter
+  // grades"/"Enter exam scores" links are all gone — that whole workflow
+  // moved to the Grades page (GradesLandingPage/ClassGradesPage). The
+  // subject teachers list itself still renders (Mathematics, above), just
+  // without the grading links attached to it.
+  it("no Grades button, no Review & publish button, and no per-subject Enter-grades/Enter-exam-scores links render anywhere", async () => {
     renderPage();
 
     expect(await screen.findByText("JSS 1 A")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Grades" })).toBeInTheDocument();
-
-    const enterGradesLinks = screen.getAllByRole("link", { name: "Enter grades" });
-    const enterExamLinks = screen.getAllByRole("link", { name: "Enter exam scores" });
-    expect(enterGradesLinks.length).toBeGreaterThan(0);
-    expect(enterExamLinks.length).toBeGreaterThan(0);
-    for (const link of enterGradesLinks) {
-      expect(link).toHaveAttribute("href", "/classes/arms/arm-1/grades?tab=enter&subjectId=subj-1&track=evaluations");
-    }
-    for (const link of enterExamLinks) {
-      expect(link).toHaveAttribute("href", "/classes/arms/arm-1/grades?tab=enter&subjectId=subj-1&track=exams");
-    }
+    expect(
+      screen.queryByRole("button", { name: "Grades" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Review & publish/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Enter grades" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Enter exam scores" }),
+    ).not.toBeInTheDocument();
+    // The staffing/roster affordances stay: assign/change class teacher,
+    // add subject teacher, and remove-assignment controls are unaffected.
+    expect(screen.getByRole("button", { name: "Change" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Add subject teacher/ }),
+    ).toBeInTheDocument();
   });
 
   it("TEACHER: no assign/add/remove controls render", async () => {
     renderPage("TEACHER");
 
     await screen.findByText("JSS 1 A");
-    expect(screen.queryByRole("button", { name: /Change|Assign/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Add subject teacher/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Change|Assign/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Add subject teacher/ }),
+    ).not.toBeInTheDocument();
   });
 
   // SPEC_V0.5.1.md §2.4/v0.5.1 step 2: a teacher opening a class they don't
@@ -115,9 +156,13 @@ describe("ClassArmDetailPage", () => {
   // error branch (used for every other failed load in this app) already
   // surfaces it as a readable sentence, not a crash or blank page.
   it("TEACHER: a class they don't teach shows the backend's 403 message, not a crash", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+    });
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path.includes("/auth/me")) return { ...SCHOOL_ADMIN_USER, role: "TEACHER" };
+      if (path.includes("/auth/me"))
+        return { ...SCHOOL_ADMIN_USER, role: "TEACHER" };
       if (path.includes("/class-arms/arm-1")) {
         const { ApiError } = await import("../../lib/api-client");
         throw new ApiError(403, {
@@ -138,6 +183,8 @@ describe("ClassArmDetailPage", () => {
       { route: "/classes/arms/arm-1" },
     );
 
-    expect(await screen.findByText("You are not assigned to this class.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("You are not assigned to this class."),
+    ).toBeInTheDocument();
   });
 });

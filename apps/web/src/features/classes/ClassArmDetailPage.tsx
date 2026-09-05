@@ -12,7 +12,10 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { getErrorMessage } from "../../lib/api-client";
 import { isSchoolAdmin } from "../../lib/roles";
 import { useCurrentUser } from "../shell/use-current-user";
-import { studentStatusTone, studentStatusLabel } from "../students/student-status";
+import {
+  studentStatusTone,
+  studentStatusLabel,
+} from "../students/student-status";
 import { useClassArmDetail } from "./use-class-arm-detail";
 import { useRemoveClassTeacher } from "./use-class-teacher";
 import { useRemoveSubjectAssignment } from "./use-subject-assignments";
@@ -35,7 +38,9 @@ export function ClassArmDetailPage() {
   const [assignTeacherOpen, setAssignTeacherOpen] = useState(false);
   const [addSubjectOpen, setAddSubjectOpen] = useState(false);
   const [removingClassTeacher, setRemovingClassTeacher] = useState(false);
-  const [removingAssignmentId, setRemovingAssignmentId] = useState<string | null>(null);
+  const [removingAssignmentId, setRemovingAssignmentId] = useState<
+    string | null
+  >(null);
 
   if (armQuery.isLoading) {
     return (
@@ -48,8 +53,15 @@ export function ClassArmDetailPage() {
   if (armQuery.isError || !armQuery.data) {
     return (
       <div className="flex flex-col items-center gap-3 rounded-lg border border-muted/20 bg-card p-10 text-center">
-        <p className="text-sm text-danger">{getErrorMessage(armQuery.error, "Couldn't load this class.")}</p>
-        <Button type="button" variant="outline" size="sm" onClick={() => armQuery.refetch()}>
+        <p className="text-sm text-danger">
+          {getErrorMessage(armQuery.error, "Couldn't load this class.")}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => armQuery.refetch()}
+        >
           Try again
         </Button>
       </div>
@@ -72,39 +84,60 @@ export function ClassArmDetailPage() {
         </div>
       ),
     },
-    { key: "admissionNumber", header: "Admission No.", className: "font-mono", cell: (row) => row.admissionNumber },
+    {
+      key: "admissionNumber",
+      header: "Admission No.",
+      className: "font-mono",
+      cell: (row) => row.admissionNumber,
+    },
     {
       key: "status",
       header: "Status",
-      cell: (row) => <StatusBadge label={studentStatusLabel(row.status)} tone={studentStatusTone(row.status)} />,
+      cell: (row) => (
+        <StatusBadge
+          label={studentStatusLabel(row.status)}
+          tone={studentStatusTone(row.status)}
+        />
+      ),
     },
   ];
 
   return (
     <div>
-      <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate("/classes")}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="mb-4"
+        onClick={() => navigate("/classes")}
+      >
         Back to classes
       </Button>
 
+      {/* v0.7.2 step 2 (SPEC_V0.7.2.md §3, item 3) — the class page is now
+          a read-only view/hub: roster + student profiles + staffing
+          (class teacher / subject teacher assignment). Zero grade entry
+          or editing anywhere here — the "Grades" button, the "Review &
+          publish" button, and the per-subject Enter-grades/Enter-exam-
+          scores links below are all removed; that whole workflow lives
+          on the Grades page now (sidebar → Grades), reached via
+          GradesLandingPage's school-wide class browser for admins. */}
       <PageHeader
         title={armLabel}
         description={`${arm.students.total} student${arm.students.total === 1 ? "" : "s"} enrolled this session`}
         actions={
-          <>
-            <Button type="button" variant="outline" size="sm" onClick={() => navigate(`/classes/arms/${arm.id}/grades?tab=results`)}>
-              Grades
+          canManage && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                navigate(`/classes/arms/${arm.id}/credential-slips`)
+              }
+            >
+              Print credential slips
             </Button>
-            {canManage && (
-              <Button type="button" variant="outline" size="sm" onClick={() => navigate(`/grades/review?classArmId=${arm.id}`)}>
-                Review &amp; publish
-              </Button>
-            )}
-            {canManage && (
-              <Button type="button" variant="outline" size="sm" onClick={() => navigate(`/classes/arms/${arm.id}/credential-slips`)}>
-                Print credential slips
-              </Button>
-            )}
-          </>
+          )
         }
       />
 
@@ -113,8 +146,14 @@ export function ClassArmDetailPage() {
         <div className="flex items-center justify-between rounded-lg border border-muted/20 bg-card p-4">
           {arm.classTeacher ? (
             <div className="flex items-center gap-3">
-              <Avatar firstName={arm.classTeacher.firstName} lastName={arm.classTeacher.lastName} />
-              <Link to={`/teachers/${arm.classTeacher.userId}`} className="text-sm font-medium text-primary hover:underline">
+              <Avatar
+                firstName={arm.classTeacher.firstName}
+                lastName={arm.classTeacher.lastName}
+              />
+              <Link
+                to={`/teachers/${arm.classTeacher.userId}`}
+                className="text-sm font-medium text-primary hover:underline"
+              >
                 {arm.classTeacher.firstName} {arm.classTeacher.lastName}
               </Link>
             </div>
@@ -123,7 +162,12 @@ export function ClassArmDetailPage() {
           )}
           {canManage && (
             <div className="flex gap-2">
-              <Button type="button" variant="outline" size="sm" onClick={() => setAssignTeacherOpen(true)}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setAssignTeacherOpen(true)}
+              >
                 {arm.classTeacher ? "Change" : "Assign"}
               </Button>
               {arm.classTeacher && (
@@ -146,13 +190,21 @@ export function ClassArmDetailPage() {
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-text">Subject teachers</h2>
           {canManage && (
-            <Button type="button" variant="outline" size="sm" onClick={() => setAddSubjectOpen(true)}>
-              <Plus className="mr-2 h-4 w-4" aria-hidden="true" /> Add subject teacher
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setAddSubjectOpen(true)}
+            >
+              <Plus className="mr-2 h-4 w-4" aria-hidden="true" /> Add subject
+              teacher
             </Button>
           )}
         </div>
         {arm.subjectTeachers.length === 0 ? (
-          <p className="text-sm text-muted">No subject teachers assigned this session.</p>
+          <p className="text-sm text-muted">
+            No subject teachers assigned this session.
+          </p>
         ) : (
           <>
             {/* Mobile: cards (CLAUDE.md §6 — tables collapse to cards below sm).
@@ -166,24 +218,15 @@ export function ClassArmDetailPage() {
                 >
                   <div className="min-w-0">
                     <p className="text-text">{entry.subjectName}</p>
-                    <Link to={`/teachers/${entry.teacherUserId}`} className="text-sm text-primary hover:underline">
+                    <Link
+                      to={`/teachers/${entry.teacherUserId}`}
+                      className="text-sm text-primary hover:underline"
+                    >
                       {entry.teacherFirstName} {entry.teacherLastName}
                     </Link>
                   </div>
                   {canManage && (
                     <div className="flex shrink-0 items-center gap-2">
-                      <Link
-                        to={`/classes/arms/${arm.id}/grades?tab=enter&subjectId=${entry.subjectId}&track=evaluations`}
-                        className="text-sm text-primary hover:underline"
-                      >
-                        Enter grades
-                      </Link>
-                      <Link
-                        to={`/classes/arms/${arm.id}/grades?tab=enter&subjectId=${entry.subjectId}&track=exams`}
-                        className="text-sm text-primary hover:underline"
-                      >
-                        Enter exam scores
-                      </Link>
                       <Button
                         type="button"
                         variant="outline"
@@ -204,35 +247,37 @@ export function ClassArmDetailPage() {
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-muted/20">
-                    <th className="px-4 py-3 font-medium text-muted">Subject</th>
-                    <th className="px-4 py-3 font-medium text-muted">Teacher</th>
-                    {canManage && <th className="px-4 py-3 font-medium text-muted" />}
+                    <th className="px-4 py-3 font-medium text-muted">
+                      Subject
+                    </th>
+                    <th className="px-4 py-3 font-medium text-muted">
+                      Teacher
+                    </th>
+                    {canManage && (
+                      <th className="px-4 py-3 font-medium text-muted" />
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {arm.subjectTeachers.map((entry) => (
-                    <tr key={entry.id} className="border-b border-muted/10 last:border-0">
-                      <td className="px-4 py-3 text-text">{entry.subjectName}</td>
+                    <tr
+                      key={entry.id}
+                      className="border-b border-muted/10 last:border-0"
+                    >
+                      <td className="px-4 py-3 text-text">
+                        {entry.subjectName}
+                      </td>
                       <td className="px-4 py-3">
-                        <Link to={`/teachers/${entry.teacherUserId}`} className="text-primary hover:underline">
+                        <Link
+                          to={`/teachers/${entry.teacherUserId}`}
+                          className="text-primary hover:underline"
+                        >
                           {entry.teacherFirstName} {entry.teacherLastName}
                         </Link>
                       </td>
                       {canManage && (
                         <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-3">
-                            <Link
-                              to={`/classes/arms/${arm.id}/grades?tab=enter&subjectId=${entry.subjectId}&track=evaluations`}
-                              className="text-primary hover:underline"
-                            >
-                              Enter grades
-                            </Link>
-                            <Link
-                              to={`/classes/arms/${arm.id}/grades?tab=enter&subjectId=${entry.subjectId}&track=exams`}
-                              className="text-primary hover:underline"
-                            >
-                              Enter exam scores
-                            </Link>
                             <Button
                               type="button"
                               variant="outline"
@@ -279,10 +324,15 @@ export function ClassArmDetailPage() {
                   <p className="font-medium text-text">
                     {row.firstName} {row.lastName}
                   </p>
-                  <p className="font-mono text-xs text-muted">{row.admissionNumber}</p>
+                  <p className="font-mono text-xs text-muted">
+                    {row.admissionNumber}
+                  </p>
                 </div>
               </div>
-              <StatusBadge label={studentStatusLabel(row.status)} tone={studentStatusTone(row.status)} />
+              <StatusBadge
+                label={studentStatusLabel(row.status)}
+                tone={studentStatusTone(row.status)}
+              />
             </div>
           )}
         />
@@ -297,13 +347,19 @@ export function ClassArmDetailPage() {
             open={assignTeacherOpen}
             onClose={() => setAssignTeacherOpen(false)}
           />
-          <AddSubjectTeacherDialog armId={arm.id} open={addSubjectOpen} onClose={() => setAddSubjectOpen(false)} />
+          <AddSubjectTeacherDialog
+            armId={arm.id}
+            open={addSubjectOpen}
+            onClose={() => setAddSubjectOpen(false)}
+          />
 
           <ConfirmDialog
             open={removingClassTeacher}
             onClose={() => setRemovingClassTeacher(false)}
             onConfirm={() => {
-              removeClassTeacher.mutate(arm.id, { onSuccess: () => setRemovingClassTeacher(false) });
+              removeClassTeacher.mutate(arm.id, {
+                onSuccess: () => setRemovingClassTeacher(false),
+              });
             }}
             title="Remove class teacher"
             description={`This unassigns the class teacher for ${armLabel}. It can be reassigned at any time.`}

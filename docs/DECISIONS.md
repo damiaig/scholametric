@@ -4983,3 +4983,78 @@ not diluted by the 10/40 sitting right there in `subjects[]`).
 **Deferred, not built here:** a "class average so far" companion figure
 for the redesigned summary strip (step 3's concern, per Dami's own
 ruling) — step 1 ships only the student's own running average.
+
+## 2026-09-05 — v0.7.2 step 2: all grading moves to the Grades page; class page goes read-only
+
+**Class page (`ClassArmDetailPage.tsx`) is now grading-free, full
+stop.** The "Grades" button, the "Review & publish" button, and every
+per-subject "Enter grades"/"Enter exam scores" link (mobile card and
+desktop table) are gone. Only "Print credential slips" remains in the
+page header; the staffing affordances (assign/change class teacher,
+add/remove subject teacher) are untouched. Admin's separate Review &
+Publish path (its own pickers, the AdminDashboard card) was not
+touched — this only removes the redundant shortcut that used to live
+on the class page.
+
+**Route re-homed, component untouched.** `/classes/arms/:id/grades` →
+`/grades/arms/:id`. `ClassGradesPage`/`EnterScoresTab`/`ResultsTab` are
+the exact same code, reused as-is — they read `classArmId` via
+`useParams`, agnostic to the path prefix. Only the route registration
+in `App.tsx` and the link targets that pointed at it changed.
+
+**Two renames, both because the old names would now lie.**
+`RequireTeacher` → `RequireGradesAccess`: the guard now admits
+`isSchoolAdmin()` too (`lib/roles.ts`'s existing helper — no new
+helper needed), so "Teacher" in the name would be wrong.
+`TeacherGradesPage` → `GradesLandingPage`: no longer teacher-only, so
+"Teacher" in the name would be wrong there too. Both are pure renames
+plus the admin extension below — no unrelated behavior moved.
+
+**`GradesLandingPage` forks by role, not by route.** `<AdminGradesView/>`
+vs `<TeacherGradesView/>`, chosen via `isSchoolAdmin(user?.role)`.
+`TeacherGradesView` is `TeacherGradesPage`'s old body, byte-identical
+except link targets now point at `/grades/arms/:id` instead of
+`/classes/arms/:id/grades`. `AdminGradesView` is new: it calls
+`useClasses()` — the SAME hook/endpoint (`GET /classes`) `ClassesPage`
+already uses — to list every class arm school-wide, grouped by level,
+linking into that arm's Results tab. Reusing `useClasses()` instead of
+inventing a new "classes an admin can grade in" endpoint keeps this
+step's `apps/api/` diff at zero.
+
+**Sidebar reversal, deliberate.** SCHOOL_ADMIN/PROPRIETOR now get the
+"Grades" nav item too (`Sidebar.tsx`'s `TEACHER_GRADES_ITEM` renamed to
+the shared `GRADES_ITEM`). Step 1's exclusion of admin assumed the
+class page still hosted grading, so admin could reach it from there;
+that assumption is gone now that the class page is read-only, so the
+sidebar item is the only path left and admin needs it.
+
+**The one genuine (small) code change beyond routing, flagged and
+approved before building:** `ClassGradesPage`'s static "Pick a
+subject…" placeholder is now a real clickable list built from
+`armDetail.data.subjectTeachers` — data the page already fetches via
+its existing `useClassArmDetail` call, zero new query. This closes the
+admin's only remaining dead end (arriving at a class with no subject
+picked) and also removes a placeholder-only empty state for everyone
+else. Everything else on this page (`EnterScoresTab`, `ResultsTab`,
+the "Back to {armLabel}" link) is unchanged.
+
+**Both navigation loops verified complete, nothing unreachable.**
+Teacher: sidebar Grades → pick class/subject card → enter/results/
+publish. Admin: sidebar Grades → all classes → class → subject list →
+enter/results; Review & Publish stays reachable via its own card.
+
+**Test impact — all expected edits, zero logic changes to an existing
+test's UNRELATED assertions.** Route/href updates across
+`ClassGradesPage.test.tsx` (13 occurrences, `/classes/arms/:id/grades`
+→ `/grades/arms/:id`), `route-smoke.test.tsx`, and
+`GradesLandingPage.test.tsx` (renamed from `TeacherGradesPage.test.tsx`,
+plus 4 new admin-view tests: grouped-by-level rendering, empty state,
+load failure, PROPRIETOR parity). `ClassArmDetailPage.test.tsx`'s old
+"Grades button + per-subject links exist" test was replaced with one
+asserting they're ABSENT (the intended behavior change of this step,
+not an unrelated logic change) while confirming staffing controls
+still render. `AppShell.test.tsx`'s admin-excluded-from-Grades test was
+flipped to admin-included, same reasoning. Zero `apps/api/`/
+`packages/shared/` diff (confirmed via `git diff --stat`); full e2e
+suite still 455/455 before and after, with zero e2e file edits; full
+web suite 289/289 (47 files) after all test-file updates.
