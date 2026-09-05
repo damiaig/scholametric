@@ -12,6 +12,7 @@ const BASE_REPORT_CARD: ReportCardResponse = {
   sessionId: "sess1",
   subjects: [],
   overall: null,
+  runningAverageScore: null,
   remarks: { teacherRemark: null, teacherRemarkBy: null, teacherRemarkAt: null, principalRemark: null, principalRemarkBy: null, principalRemarkAt: null },
 };
 

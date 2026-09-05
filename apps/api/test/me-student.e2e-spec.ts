@@ -295,6 +295,13 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       // A's overall never reached PUBLISHED (subjectY still DRAFT) -> null,
       // never a partial/live computation standing in for it.
       expect(response.body.overall).toBeNull();
+      // v0.7.2 step 1 (SPEC_V0.7.2.md §2) — THE additive proof, in the
+      // SAME response as the assertion above: the official overall stayed
+      // null (untouched), while the NEW runningAverageScore is
+      // simultaneously non-null — 51 from subjectX alone (published);
+      // subjectY's 10 (still DRAFT) contributes nothing. If the draft
+      // subject leaked in, this would be (51+10)/2=30.5, not 51.
+      expect(response.body.runningAverageScore).toBe(51);
       // Remarks gate: no published overall -> no remarks, even though this
       // student could in principle have one written.
       expect(response.body.remarks.teacherRemark).toBeNull();
@@ -321,6 +328,11 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       expect(response.body.overall).not.toBeNull();
       expect(response.body.overall.status).toBe("PUBLISHED");
       expect(response.body.overall.subjectsCount).toBe(1);
+      // v0.7.2 step 1 — B's only subject is published, so the running
+      // average matches the official overall here (46) — the two figures
+      // agreeing once everything IS published is exactly what's expected;
+      // they're independent computations that happen to converge.
+      expect(response.body.runningAverageScore).toBe(46);
 
       expect(response.body.remarks.teacherRemark).toBe("Excellent term overall.");
     });
@@ -360,6 +372,9 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       expect(response.status).toBe(200);
       expect(response.body.subjects).toEqual([]);
       expect(response.body.overall).toBeNull();
+      // v0.7.2 step 1 — zero published subjects -> null, never a real 0
+      // standing in for "nothing to average yet".
+      expect(response.body.runningAverageScore).toBeNull();
     });
 
     it("403s for TEACHER (this route is STUDENT-only)", async () => {

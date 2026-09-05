@@ -367,6 +367,14 @@ export interface ReportCardResponse {
   sessionId: string;
   subjects: ReportCardSubject[];
   overall: ReportCardOverall | null;
+  // v0.7.2 step 1 (SPEC_V0.7.2.md §2) — Pronote-style running average: a
+  // NEW, ADDITIVE, on-read figure over PUBLISHED subjects so far. Kept as
+  // a TOP-LEVEL sibling to `overall`, not nested inside ReportCardOverall,
+  // so the type itself signals independence from term_overall_results —
+  // this can be non-null while `overall` is still null mid-term, and it
+  // never gates or is gated by the official overall/position. null (not
+  // 0) when zero subjects are published yet.
+  runningAverageScore: number | null;
   remarks: ReportCardRemarks;
 }
 

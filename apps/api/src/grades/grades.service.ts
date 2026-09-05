@@ -348,6 +348,14 @@ export interface ReportCardResponse {
   sessionId: string;
   subjects: ReportCardSubject[];
   overall: ReportCardOverall | null;
+  // v0.7.2 step 1 (SPEC_V0.7.2.md §2) — Pronote-style running average: a
+  // NEW, ADDITIVE, on-read figure over PUBLISHED subjects so far. Top-
+  // level sibling to `overall`, not nested inside it, so the type itself
+  // signals independence from term_overall_results — can be non-null
+  // while `overall` is still null mid-term. null (not 0) when zero
+  // subjects are published yet. Mirrored by hand in
+  // packages/shared/src/grades.ts, per this file's own convention.
+  runningAverageScore: number | null;
   remarks: ReportCardRemarks;
 }
 
@@ -1764,6 +1772,21 @@ export class GradesService {
     const generalClassAverage =
       overallClassAvg._avg.averageScore === null ? null : Math.round(Number(overallClassAvg._avg.averageScore) * 100) / 100;
 
+    // v0.7.2 step 1 (SPEC_V0.7.2.md §2/§5 step 1) — Pronote-style running
+    // average: a NEW, ADDITIVE, on-read figure computed from published
+    // subjects so far, entirely independent of term_overall_results. It
+    // is deliberately NOT gated behind `overall` being non-null — that's
+    // the whole point (it's what fills in while `overall` is still null
+    // mid-term). Reuses `subjectResults`, already fetched above with the
+    // same publish gate; for a self-view caller that array is ALREADY
+    // published-only, so this filter is a no-op there and a real
+    // narrowing for staff (who fetch every status) — one code path
+    // covers both, no new query, no write, no touch to
+    // recomputeOverallForClassArm or any of its four call sites.
+    const publishedSubjectResults = subjectResults.filter((r) => r.status === ResultStatus.PUBLISHED);
+    const runningAverageScore =
+      publishedSubjectResults.length > 0 ? computeOverallAverage(publishedSubjectResults.map((r) => Number(r.totalScore))) : null;
+
     const subjects: ReportCardSubject[] = subjectResults
       .map((r) => {
         const eligibleForSubject = publishedOnlyForSelfView ? (eligibleStudentIdsBySubject.get(r.subjectId) ?? new Set<string>()) : null;
@@ -1819,6 +1842,7 @@ export class GradesService {
             generalClassAverage,
           }
         : null,
+      runningAverageScore,
       remarks: {
         teacherRemark: remarksVisibleToCaller ? (remark?.teacherRemark ?? null) : null,
         teacherRemarkBy:

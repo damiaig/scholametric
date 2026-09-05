@@ -250,6 +250,15 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
       // class average with a single data point is just that data point.
       expect(subjB.classAverageScore).toBe(10);
       expect(subjB.evaluations[0]).toMatchObject({ classAverageScore: 10, bestScore: 10, worstScore: 10 });
+
+      // v0.7.2 step 1 (SPEC_V0.7.2.md §2) — staff-view parity: staff sees
+      // BOTH subjectA (published) and subjectB (still DRAFT) in
+      // subjects[] above, but the running average must still only count
+      // the published one. 51, not (51+10)/2=30.5 — proves the
+      // published-only filter is applied uniformly regardless of who's
+      // asking, not just for the self-view caller who never sees the
+      // draft subject at all.
+      expect(response.body.runningAverageScore).toBe(51);
     });
 
     it("partial-term: a student with one published + one still-pending subject has a null overall position", async () => {
@@ -262,6 +271,14 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
       expect(response.body.overall.status).toBe("PENDING_APPROVAL");
       expect(response.body.overall.overallPosition).toBeNull();
       expect(response.body.overall.subjectsCount).toBe(2);
+      // v0.7.2 step 1 — the official overall is PENDING_APPROVAL (mixed
+      // statuses, not null here since staff sees a computed row either
+      // way) while the running average is a DIFFERENT, independent
+      // number: 30 from subjectA alone (published); subjectC's 40 (still
+      // DRAFT) contributes nothing. Proves the two figures diverge
+      // correctly when they should, not just agree when everything's
+      // published (see the other test's 46/51 cases).
+      expect(response.body.runningAverageScore).toBe(30);
     });
 
     it("TEACHER with any relationship to the class arm can read (same rule as the Results tab)", async () => {

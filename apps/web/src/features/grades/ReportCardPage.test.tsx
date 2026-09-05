@@ -143,6 +143,7 @@ const CARD: ReportCardResponse = {
     },
   ],
   overall: null,
+  runningAverageScore: null,
   remarks: {
     teacherRemark: null,
     teacherRemarkBy: null,

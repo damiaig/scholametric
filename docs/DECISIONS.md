@@ -4927,3 +4927,59 @@ smoke-test user), new `TeacherGradesPage.test.tsx` (4 tests). Zero
 edits (this is 100% frontend — no endpoint, DTO, service, query, or
 role check touched; the v0.7 published-only walls, analytics, anonymity,
 and teacher-scoping rules never moved).
+
+## 2026-09-05 — v0.7.2 step 1: Pronote-style running average — additive, on-read, zero writes
+
+**On-read, zero new query.** `GradesService.getReportCard()` already
+fetches `subjectResults` (`termSubjectResult.findMany`, published-only
+for STUDENT/PARENT callers, unfiltered for staff) to build the
+`subjects[]` array. `runningAverageScore` is computed by filtering that
+SAME already-in-memory array down to `status === PUBLISHED` (a no-op
+for self-view callers, a real narrowing for staff) and running it
+through the existing `computeOverallAverage()` — the identical pure
+function `recomputeOverallForClassArm` already uses. No new table, no
+new query, no new cascade.
+
+**`TermOverallResult` untouched — confirmed, not just assumed.** Its
+single writer, the private helper `recomputeOverallForClassArm`, and its
+four mutation call sites (`saveEvaluationScores`, `recompute`,
+`publish`, `unpublish`) were not modified at all. The new field is
+computed purely inside `getReportCard`'s read path from data already in
+memory; it never calls `upsert`, never feeds `computeOverallStatus` or
+the ranking helper. The e2e proof: the SAME test asserting `overall` is
+`null` mid-term ("never a partial/live computation standing in for
+it") now ALSO asserts `runningAverageScore` is simultaneously 51 —
+proving both facts in one response, not two separate claims that could
+drift apart.
+
+**Type lives in two places, both updated.** `grades.service.ts` has its
+OWN local `ReportCardResponse` interface (the actual backend return
+type) — `packages/shared/src/grades.ts`'s copy is a hand-maintained
+mirror for the frontend, per that file's own long-standing header
+comment ("the backend is the source of truth, kept in sync by hand").
+Missing the local copy on the first pass broke `tsc` immediately
+(caught before commit) — both now declare `runningAverageScore: number
+| null` as a top-level sibling to `overall`, never nested inside it.
+
+**Frontend fixtures updated, zero frontend behavior changed.** Two test
+files (`ReportCardPage.test.tsx`, `recent-grades.test.ts`) construct
+`ReportCardResponse`-typed fixtures and needed the new required field
+added (`null`) to keep compiling — no component reads
+`runningAverageScore` yet (that's step 3's job, wiring it into the
+summary strip). Full web suite still 285/285 unchanged.
+
+**e2e coverage — additions to five EXISTING tests, zero new
+describe/it blocks needed**, since the existing fixtures already had
+exactly the shapes required: student A (`me-student.e2e-spec.ts`, one
+published + one draft subject) proves the additive claim AND draft-
+exclusion (51, not (51+10)/2=30.5) in the same response as the existing
+null-overall assertion; student B (single published subject) proves
+convergence when fully published (46 both ways); the empty-state
+student proves null-not-zero; `report-card.e2e-spec.ts`'s two staff-view
+tests (`targetStudentId`, `partialStudentId`) prove the published-only
+filter holds even when staff can see the draft subject too (51 and 30,
+not diluted by the 10/40 sitting right there in `subjects[]`).
+
+**Deferred, not built here:** a "class average so far" companion figure
+for the redesigned summary strip (step 3's concern, per Dami's own
+ruling) — step 1 ships only the student's own running average.
