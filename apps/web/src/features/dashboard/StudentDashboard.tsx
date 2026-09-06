@@ -38,6 +38,15 @@ export function StudentDashboard() {
   const rows = buildGradesBySubject(reportCard.data, currentTermExams);
 
   const overall = reportCard.data?.overall ?? null;
+  // v0.7.2 step 3 (SPEC_V0.7.2.md §2) — while the term is still open,
+  // fall back to the running average (published subjects so far) instead
+  // of a flat dash, so this card doesn't sit on "—" for the whole term
+  // the way it did before the running average existed. Once `overall`
+  // exists (fully published), that stays authoritative, matching the
+  // Grades page summary strip's same precedence.
+  const displayAverage = overall
+    ? overall.averageScore
+    : (reportCard.data?.runningAverageScore ?? null);
 
   return (
     <div>
@@ -58,7 +67,7 @@ export function StudentDashboard() {
       {current && (
         <>
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <StatCard icon={Award} label="Your average /100" value={overall ? formatScore(overall.averageScore) : "—"} tone="primary" />
+            <StatCard icon={Award} label="Your average /100" value={displayAverage !== null ? formatScore(displayAverage) : "—"} tone="primary" />
             <StatCard
               icon={Users}
               label="Class average /100"

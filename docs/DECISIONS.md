@@ -5058,3 +5058,85 @@ flipped to admin-included, same reasoning. Zero `apps/api/`/
 `packages/shared/` diff (confirmed via `git diff --stat`); full e2e
 suite still 455/455 before and after, with zero e2e file edits; full
 web suite 289/289 (47 files) after all test-file updates.
+
+## 2026-09-06 — v0.7.2 step 3: restyled student/parent Grades page, running average wired in
+
+**New `StudentReportCardView.tsx`, `ReportCardDocument.tsx` untouched.**
+The designed page (SPEC_V0.7.2.md §4) is a separate component used only
+by `MyGradesPage.tsx` (student self-view and parent child-view).
+`ReportCardDocument` — the printable document — keeps backing the
+staff view (`ReportCardPage.tsx`, print button, teacher/principal
+remark write-forms) exactly as before. Same underlying data
+(`GET /me/report-card` / `.../me/children/:id/report-card`), same
+published-only wall, same anonymity rule — `ClassAverageLabel`/
+`AssessmentClassStatsLabel`/`SubjectExamsPanel`/`RemarkPanel` are the
+SAME components `ReportCardDocument` uses, reused unchanged. Remarks
+are hardcoded read-only in the new component (both real call sites
+already passed `showTeacherForm={false} showPrincipalForm={false}`, so
+there's no flag left to carry).
+
+**Flag A (class average) — dropped, per Dami's ruling.** The summary
+strip shows running average + position only. Per-subject class
+averages already exist on each subject card. No new backend
+computation added.
+
+**Flag B (unpublished-subject empty state) — page-level, not
+per-subject.** Read `getReportCard()` (grades.service.ts:1633-1790)
+before building: for STUDENT/PARENT callers, `termSubjectResult.
+findMany`'s own `where` filters to `status: PUBLISHED` — an unpublished
+subject is excluded at the query level, never present in `subjects[]`
+at all (no id/name to hang a per-subject placeholder on without a new
+student-facing "all assigned subjects" query, which would be a real
+backend change). The old whole-page empty state ("No results entered
+for this term yet.") is reworded to "Not yet published — results
+appear here once your teacher publishes them." — the same precision
+the cycle's opening live-DB diagnostic (the "still in draft" vs
+"waiting to publish" badge) called for. Pure copy change.
+
+**Flag C (dashboard stat card) — included, per Dami's ruling.**
+`StudentDashboard.tsx`/`ParentDashboard.tsx`'s "Your average /100"
+card now falls back to `runningAverageScore` before showing "—",
+via a `displayAverage = overall ? overall.averageScore :
+(reportCard.data?.runningAverageScore ?? null)` derived value — same
+already-fetched `reportCard.data`, zero new query. Position stays
+untouched ("Not yet ranked" while `overall` is null, unaffected by
+this change).
+
+**Header gains "student · class."** Both `MyGrades()` and
+`ChildGrades()` in `MyGradesPage.tsx` now build the `PageHeader`
+description as `"{firstName} {lastName} · {classArmLabel}"` (falling
+back to the school name before profile/child data loads) — sourced
+from `useMyProfile()`/`useMyChildren()`, both already fetched, no new
+query. This absorbs the identity information `ReportCardDocument`'s
+now-removed internal header block used to show, so nothing is lost —
+just shown once, at the page level, instead of repeated inside the
+card.
+
+**No identity block inside the new component.** Per the approved
+mockup, `StudentReportCardView` starts directly at the summary strip —
+no repeated school name / student name / admission number block. That
+repetition (a "raw printout" reading like a printed document even on
+screen) was exactly what this step's spec called out as the problem.
+
+**Test impact.** New `StudentReportCardView.test.tsx` (6 tests):
+running average + position summary strip, position staying "Not yet
+ranked" while provisional vs. resolving from `overall` once fully
+published, evaluation Abs/—/score three-way with anonymous class
+stats, the empty state's new copy, remarks always read-only,
+`needsTeacherAssignment` badge. `MyGradesPage.test.tsx`: fixture
+gained `runningAverageScore`; the STUDENT/PARENT tests' identity-text
+assertions updated to the new combined header string (expected label
+change, same underlying fact). `StudentDashboard.test.tsx`/
+`ParentDashboard.test.tsx`: one new test each proving the running-average
+fallback (`overall` null, `runningAverageScore` non-null → shows the
+number, not a dash); the existing "both null → dashes" test is
+untouched and still green (its fixture already has zero published
+subjects, so `runningAverageScore` is null there too — no logic
+change). `ReportCardPage.test.tsx`: zero changes, component untouched.
+Zero `apps/api/`/`packages/shared/` diff (confirmed via `git diff
+--stat`); full e2e suite still 455/455 before and after, zero e2e
+edits; full web suite 297/297 (48 files, +8 tests) after all edits.
+
+This closes v0.7.2's frozen four-item scope. Next: the acceptance walk
++ tag v0.7.2 (§5 step 4) — not started here, per the standing "stop at
+the end of the requested step" rule.

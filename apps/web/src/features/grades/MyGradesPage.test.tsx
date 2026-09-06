@@ -50,6 +50,7 @@ const REPORT_CARD = {
     },
   ],
   overall: null,
+  runningAverageScore: 78,
   remarks: {
     teacherRemark: null,
     teacherRemarkBy: null,
@@ -89,7 +90,11 @@ describe("MyGradesPage", () => {
     renderWithProviders(<MyGradesPage />);
 
     expect(await screen.findByText("Mathematics")).toBeInTheDocument();
-    expect(screen.getByText("Chidi Okafor")).toBeInTheDocument();
+    // v0.7.2 step 3 — the restyled page's own identity block is gone
+    // (no more repeated "printed document" header); "student · class" now
+    // lives in the page's PageHeader description instead.
+    expect(screen.getByText("Chidi Okafor · JSS 1 A")).toBeInTheDocument();
+    expect(screen.getByText("Your average so far")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Term" })).toHaveValue(TERM_ID);
     expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();
   });
@@ -111,6 +116,7 @@ describe("MyGradesPage", () => {
     renderWithProviders(<MyGradesPage />);
 
     expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+    expect(screen.getByText("Kemi Okafor · JSS 1 A")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Child" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Term" })).toHaveValue(TERM_ID);
     expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();

@@ -7,7 +7,7 @@ import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
 import { useCurrentUser } from "../shell/use-current-user";
-import { ReportCardDocument } from "./ReportCardDocument";
+import { StudentReportCardView } from "./StudentReportCardView";
 import { YearExamsView } from "./YearExamsView";
 import { useMyReportCard } from "./use-my-report-card";
 import { useChildReportCard } from "./use-child-report-card";
@@ -93,16 +93,23 @@ function MyGrades() {
   const yearExams = useMyYearExams(
     viewMode === "exams" && sessionId ? { sessionId } : null,
   );
-  const selectedOption = termOptions.find((option) => option.id === termId);
   const selectValue =
     viewMode === "exams" ? `${EXAMS_OPTION_PREFIX}${sessionId}` : termId;
+  // v0.7.2 step 3 (SPEC_V0.7.2.md §4) — the approved design's header shows
+  // "student · class", not just class — both fields already come from the
+  // same useMyProfile() call, no new query.
+  const headerDescription = profile.data
+    ? [
+        `${profile.data.firstName} ${profile.data.lastName}`,
+        profile.data.currentClassArmLabel,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : user?.school.name;
 
   return (
     <div>
-      <PageHeader
-        title="Grades"
-        description={profile.data?.currentClassArmLabel ?? user?.school.name}
-      />
+      <PageHeader title="Grades" description={headerDescription} />
 
       {termOptions.length > 0 && (
         <div className="mb-4 flex flex-col gap-1.5">
@@ -200,17 +207,9 @@ function MyGrades() {
       )}
 
       {viewMode === "term" && ready && reportCard.data && (
-        <ReportCardDocument
+        <StudentReportCardView
           data={reportCard.data}
-          schoolName={user?.school.name}
-          classArmLabel={profile.data?.currentClassArmLabel}
-          termLabel={
-            selectedOption ? formatTermName(selectedOption.termName) : null
-          }
           examsViewer={{ kind: "self" }}
-          sessionLabel={selectedOption?.sessionName}
-          showTeacherForm={false}
-          showPrincipalForm={false}
         />
       )}
     </div>
@@ -319,13 +318,22 @@ function ChildGrades() {
       ? { childId, sessionId }
       : null,
   );
-  const selectedTermOption = termOptions.find((option) => option.id === termId);
   const selectValue =
     viewMode === "exams" ? `${EXAMS_OPTION_PREFIX}${sessionId}` : termId;
+  // v0.7.2 step 3 (SPEC_V0.7.2.md §4) — same "student · class" header as
+  // MyGrades above, using the already-fetched selected child, no new query.
+  const headerDescription = selectedChild
+    ? [
+        `${selectedChild.firstName} ${selectedChild.lastName}`,
+        selectedChild.currentClassArmLabel,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : user?.school.name;
 
   return (
     <div>
-      <PageHeader title="Grades" description={user?.school.name} />
+      <PageHeader title="Grades" description={headerDescription} />
 
       {!children.isLoading && (children.data?.children.length ?? 0) === 0 && (
         <Card>
@@ -448,19 +456,9 @@ function ChildGrades() {
       )}
 
       {viewMode === "term" && ready && reportCard.data && (
-        <ReportCardDocument
+        <StudentReportCardView
           data={reportCard.data}
-          schoolName={user?.school.name}
-          classArmLabel={selectedChild?.currentClassArmLabel}
-          termLabel={
-            selectedTermOption
-              ? formatTermName(selectedTermOption.termName)
-              : null
-          }
-          sessionLabel={selectedTermOption?.sessionName}
-          showTeacherForm={false}
-          showPrincipalForm={false}
-          examsViewer={childId ? { kind: "child", childId } : undefined}
+          examsViewer={{ kind: "child", childId }}
         />
       )}
     </div>

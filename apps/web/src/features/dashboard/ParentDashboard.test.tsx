@@ -63,6 +63,7 @@ function reportCardFor(studentId: string, averageScore: number) {
       },
     ],
     overall: { averageScore, averageGrade: "B3", overallPosition: 1, status: "PUBLISHED", subjectsCount: 1, generalClassAverage: 50 },
+    runningAverageScore: averageScore,
     remarks: { teacherRemark: null, teacherRemarkBy: null, teacherRemarkAt: null, principalRemark: null, principalRemarkBy: null, principalRemarkAt: null },
   };
 }
@@ -137,6 +138,27 @@ describe("ParentDashboard", () => {
     expect(await screen.findByText("90")).toBeInTheDocument(); // Tunde's average
     expect(screen.queryByText("60")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View all →" })).toHaveAttribute("href", "/me/grades?childId=child-2");
+  });
+
+  // v0.7.2 step 3 (SPEC_V0.7.2.md §2) — same running-average fallback as
+  // StudentDashboard, for the selected child's card.
+  it("overall still null but the running average has a value: shows the running average, not a dash", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return USER;
+      if (path.includes("/me/children/child-1/terms")) return TERMS;
+      if (path.includes("/me/children/child-1/report-card")) {
+        return { ...reportCardFor("child-1", 60), overall: null, runningAverageScore: 45 };
+      }
+      if (path.includes("/me/children/child-1/year-exams")) return YEAR_EXAMS;
+      if (path.includes("/me/children")) return { children: [CHILDREN.children[0]] };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<ParentDashboard />);
+
+    expect(await screen.findByText("45")).toBeInTheDocument();
+    expect(await screen.findByText("Not yet ranked")).toBeInTheDocument();
   });
 
   it("no linked children shows the empty state, not a crash", async () => {

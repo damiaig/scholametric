@@ -46,6 +46,11 @@ export function ParentDashboard() {
   const currentTermExams = yearExams.data?.terms.find((t) => t.termId === current?.termId);
   const rows = buildGradesBySubject(reportCard.data, currentTermExams);
   const overall = reportCard.data?.overall ?? null;
+  // v0.7.2 step 3 (SPEC_V0.7.2.md §2) — same running-average fallback as
+  // StudentDashboard, for the selected child.
+  const displayAverage = overall
+    ? overall.averageScore
+    : (reportCard.data?.runningAverageScore ?? null);
 
   return (
     <div>
@@ -76,7 +81,7 @@ export function ParentDashboard() {
       {childId && current && (
         <>
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <StatCard icon={Award} label="Average /100" value={overall ? formatScore(overall.averageScore) : "—"} tone="primary" />
+            <StatCard icon={Award} label="Average /100" value={displayAverage !== null ? formatScore(displayAverage) : "—"} tone="primary" />
             <StatCard
               icon={Users}
               label="Class average /100"
