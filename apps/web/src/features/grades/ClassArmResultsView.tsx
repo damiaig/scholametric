@@ -5,6 +5,7 @@ import type {
   ClassArmResultsSubjectRow,
 } from "@scholametric/shared";
 import { Card, CardContent } from "../../components/ui/card";
+import { Button } from "../../components/ui/button";
 import { StatusBadge } from "../../components/StatusBadge";
 import { resultStatusTone, resultStatusLabel } from "./result-status";
 import { formatScore } from "./format-score";
@@ -48,6 +49,18 @@ interface ClassArmResultsViewProps {
   // is a plain boolean, not a three-way permission like OverridePermission.
   canMarkAbsent?: boolean;
   onMarkAbsent?: (target: MarkAbsentTarget) => void;
+  // v0.7.3 step 1 (SPEC_V0.7.3.md §2) — the subjects THIS viewer may
+  // publish/unpublish. Deliberately not a boolean like canMarkAbsent:
+  // a class teacher sees every subject in the class here (including
+  // colleagues'), so which subjects are actionable varies row by row —
+  // the caller (ResultsTab) computes this from its own already-fetched
+  // teaching-assignment data, not from anything this component fetches.
+  // Admin/proprietor pass undefined here — they publish exclusively via
+  // the separate Review & Publish page (SPEC_V0.7.3.md §2 Q6), so this
+  // view never shows the control for them.
+  publishableSubjectIds?: Set<string>;
+  onPublish?: (subject: ClassArmResultsSubject) => void;
+  onUnpublish?: (subject: ClassArmResultsSubject) => void;
 }
 
 function positionLabel(position: number | null): string {
@@ -79,6 +92,9 @@ export function ClassArmResultsView({
   onOverride,
   canMarkAbsent = false,
   onMarkAbsent,
+  publishableSubjectIds,
+  onPublish,
+  onUnpublish,
 }: ClassArmResultsViewProps) {
   if (data.subjects.length === 0) {
     return (
@@ -159,29 +175,63 @@ export function ClassArmResultsView({
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-        {data.subjects.map((subject) => (
-          <Card key={subject.subjectId}>
-            <CardContent className="p-3">
-              <p className="truncate text-sm font-medium text-text">
-                {subject.subjectName}
-              </p>
-              {subject.needsTeacherAssignment && (
-                <StatusBadge
-                  label="Needs a teacher assigned"
-                  tone="warning"
-                  className="mt-1"
-                />
-              )}
-              <p className="text-xs text-muted">Class average</p>
-              <p className="font-mono text-lg text-text">
-                {subject.averageGrade ?? "—"}{" "}
-                <span className="text-xs text-muted">
-                  ({formatScore(subject.averageScore)})
-                </span>
-              </p>
-            </CardContent>
-          </Card>
-        ))}
+        {data.subjects.map((subject) => {
+          const canManagePublish =
+            publishableSubjectIds?.has(subject.subjectId) ?? false;
+          const publishedCount = subject.results.filter(
+            (r) => r.status === "PUBLISHED",
+          ).length;
+          const rosterSize = subject.results.length;
+          return (
+            <Card key={subject.subjectId}>
+              <CardContent className="p-3">
+                <p className="truncate text-sm font-medium text-text">
+                  {subject.subjectName}
+                </p>
+                {subject.needsTeacherAssignment && (
+                  <StatusBadge
+                    label="Needs a teacher assigned"
+                    tone="warning"
+                    className="mt-1"
+                  />
+                )}
+                <p className="text-xs text-muted">Class average</p>
+                <p className="font-mono text-lg text-text">
+                  {subject.averageGrade ?? "—"}{" "}
+                  <span className="text-xs text-muted">
+                    ({formatScore(subject.averageScore)})
+                  </span>
+                </p>
+                {canManagePublish && (onPublish || onUnpublish) && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {onPublish && publishedCount < rosterSize && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        aria-label={`Publish ${subject.subjectName}`}
+                        onClick={() => onPublish(subject)}
+                      >
+                        Publish
+                      </Button>
+                    )}
+                    {onUnpublish && publishedCount > 0 && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="text-danger hover:bg-danger/10"
+                        aria-label={`Unpublish ${subject.subjectName}`}
+                        onClick={() => onUnpublish(subject)}
+                      >
+                        Unpublish
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
       <div className="flex flex-col gap-3 sm:hidden">

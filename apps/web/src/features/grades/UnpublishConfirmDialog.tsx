@@ -3,9 +3,15 @@ import { getErrorMessage } from "../../lib/api-client";
 import { useUnpublishGrades } from "./use-unpublish-grades";
 import type { GradesReviewSubject } from "@scholametric/shared";
 
+// v0.7.3 step 1 (SPEC_V0.7.3.md §2) — same loosening as
+// PublishConfirmDialog: only subjectId/subjectName are ever read here, so
+// a TEACHER's Results tab can reuse this dialog with a
+// ClassArmResultsSubject-shaped object, unchanged for ReviewPublishPage.
+type UnpublishableSubject = Pick<GradesReviewSubject, "subjectId" | "subjectName">;
+
 interface UnpublishConfirmDialogProps {
   classArmName: string;
-  subject: GradesReviewSubject | null;
+  subject: UnpublishableSubject | null;
   classArmId: string;
   termId: string;
   onClose: () => void;

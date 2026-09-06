@@ -182,4 +182,104 @@ describe("ClassArmResultsView", () => {
       expect(screen.queryByLabelText(/Mark absent or correct score/)).not.toBeInTheDocument();
     });
   });
+
+  // v0.7.3 step 1 (SPEC_V0.7.3.md §2) — publishableSubjectIds is how a
+  // class teacher (who sees every subject here, not just their own) only
+  // gets the button on subjects that are actually theirs; the caller
+  // (ResultsTab) computes the set, this component just renders from it.
+  describe("publish/unpublish control visibility", () => {
+    const PARTIAL_DATA: ClassArmResultsResponse = {
+      ...BASE_DATA,
+      subjects: [
+        {
+          ...BASE_DATA.subjects[0],
+          results: [
+            { id: "tsr-draft", studentId: "s1", totalScore: 56, autoGrade: "C5", overrideGrade: null, finalGrade: "C5", subjectPosition: null, status: "DRAFT" },
+            { id: "tsr-published", studentId: "s2", totalScore: 80, autoGrade: "A1", overrideGrade: null, finalGrade: "A1", subjectPosition: 1, status: "PUBLISHED" },
+          ],
+        },
+      ],
+    };
+
+    it("publishableSubjectIds not provided (admin/proprietor, SPEC_V0.7.3.md §2 Q6): no publish/unpublish buttons at all", () => {
+      render(<ClassArmResultsView data={PARTIAL_DATA} onPublish={vi.fn()} onUnpublish={vi.fn()} />);
+      expect(screen.queryByLabelText(/Publish|Unpublish/)).not.toBeInTheDocument();
+    });
+
+    it("subject NOT in publishableSubjectIds (a class teacher viewing a colleague's subject): no buttons, even with handlers provided", () => {
+      render(
+        <ClassArmResultsView
+          data={PARTIAL_DATA}
+          publishableSubjectIds={new Set(["some-other-subject"])}
+          onPublish={vi.fn()}
+          onUnpublish={vi.fn()}
+        />,
+      );
+      expect(screen.queryByLabelText(/Publish|Unpublish/)).not.toBeInTheDocument();
+    });
+
+    it("subject IS in publishableSubjectIds, partially published: BOTH Publish and Unpublish show (some rows still draft, some already published)", () => {
+      render(
+        <ClassArmResultsView
+          data={PARTIAL_DATA}
+          publishableSubjectIds={new Set(["sub1"])}
+          onPublish={vi.fn()}
+          onUnpublish={vi.fn()}
+        />,
+      );
+      expect(screen.getByLabelText("Publish Mathematics")).toBeInTheDocument();
+      expect(screen.getByLabelText("Unpublish Mathematics")).toBeInTheDocument();
+    });
+
+    it("fully published subject: Publish is gone, Unpublish remains", () => {
+      const fullyPublished: ClassArmResultsResponse = {
+        ...PARTIAL_DATA,
+        subjects: [{ ...PARTIAL_DATA.subjects[0], results: PARTIAL_DATA.subjects[0].results.map((r) => ({ ...r, status: "PUBLISHED" })) }],
+      };
+      render(
+        <ClassArmResultsView
+          data={fullyPublished}
+          publishableSubjectIds={new Set(["sub1"])}
+          onPublish={vi.fn()}
+          onUnpublish={vi.fn()}
+        />,
+      );
+      expect(screen.queryByLabelText("Publish Mathematics")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Unpublish Mathematics")).toBeInTheDocument();
+    });
+
+    it("fully draft subject: Publish shows, Unpublish is gone (nothing published yet)", () => {
+      const fullyDraft: ClassArmResultsResponse = {
+        ...PARTIAL_DATA,
+        subjects: [{ ...PARTIAL_DATA.subjects[0], results: PARTIAL_DATA.subjects[0].results.map((r) => ({ ...r, status: "DRAFT" })) }],
+      };
+      render(
+        <ClassArmResultsView
+          data={fullyDraft}
+          publishableSubjectIds={new Set(["sub1"])}
+          onPublish={vi.fn()}
+          onUnpublish={vi.fn()}
+        />,
+      );
+      expect(screen.getByLabelText("Publish Mathematics")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Unpublish Mathematics")).not.toBeInTheDocument();
+    });
+
+    it("clicking Publish/Unpublish calls the handler with the exact subject object", () => {
+      const onPublish = vi.fn();
+      const onUnpublish = vi.fn();
+      render(
+        <ClassArmResultsView
+          data={PARTIAL_DATA}
+          publishableSubjectIds={new Set(["sub1"])}
+          onPublish={onPublish}
+          onUnpublish={onUnpublish}
+        />,
+      );
+      screen.getByLabelText("Publish Mathematics").click();
+      expect(onPublish).toHaveBeenCalledWith(PARTIAL_DATA.subjects[0]);
+      screen.getByLabelText("Unpublish Mathematics").click();
+      expect(onUnpublish).toHaveBeenCalledWith(PARTIAL_DATA.subjects[0]);
+    });
+  });
 });

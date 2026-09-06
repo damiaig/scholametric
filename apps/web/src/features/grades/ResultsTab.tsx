@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import type { ClassArmResultsSubject } from "@scholametric/shared";
 import { Card, CardContent } from "../../components/ui/card";
 import { Label } from "../../components/ui/label";
 import { Spinner } from "../../components/ui/spinner";
@@ -17,6 +18,8 @@ import {
 } from "./ClassArmResultsView";
 import { OverrideGradeDialog } from "./OverrideGradeDialog";
 import { MarkAbsentDialog } from "./MarkAbsentDialog";
+import { PublishConfirmDialog } from "./PublishConfirmDialog";
+import { UnpublishConfirmDialog } from "./UnpublishConfirmDialog";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
@@ -27,6 +30,11 @@ function formatTermName(name: string): string {
 
 interface ResultsTabProps {
   classArmId: string;
+  // v0.7.3 step 1 (SPEC_V0.7.3.md §2) — needed for the publish/unpublish
+  // confirmation dialogs' description text. Passed down from
+  // ClassGradesPage, which already computes it from its own
+  // useClassArmDetail call — no new query here.
+  armLabel: string;
 }
 
 // SPEC_V0.7.1.md §3 (item 5) — carried over from GradesOverviewPage, minus
@@ -37,7 +45,7 @@ interface ResultsTabProps {
 // see docs/DECISIONS.md. Term stays pickable (admin) / fixed-to-current
 // (teacher), exactly as before — nothing about WHICH term's results you
 // can see changed, only which class arm.
-export function ResultsTab({ classArmId }: ResultsTabProps) {
+export function ResultsTab({ classArmId, armLabel }: ResultsTabProps) {
   const currentUserQuery = useCurrentUser();
   const currentUser = currentUserQuery.data;
   const isTeacher = currentUser?.role === "TEACHER";
@@ -50,6 +58,13 @@ export function ResultsTab({ classArmId }: ResultsTabProps) {
   );
   const [markAbsentTarget, setMarkAbsentTarget] =
     useState<MarkAbsentTarget | null>(null);
+  // v0.7.3 step 1 (SPEC_V0.7.3.md §2) — publish/unpublish targets, teacher-
+  // only (SPEC_V0.7.3.md §2 Q6: admin keeps using the separate Review &
+  // Publish page, so these never get set for an admin viewer).
+  const [publishTarget, setPublishTarget] =
+    useState<ClassArmResultsSubject | null>(null);
+  const [unpublishTarget, setUnpublishTarget] =
+    useState<ClassArmResultsSubject | null>(null);
 
   const overridePermission: OverridePermission = isProprietor(currentUser?.role)
     ? "any"
@@ -64,6 +79,27 @@ export function ResultsTab({ classArmId }: ResultsTabProps) {
   const effectiveTermId = isTeacher
     ? (myTeaching.data?.currentTermId ?? "")
     : termId || adminTerm.currentTermId || "";
+
+  // v0.7.3 step 1 — which subjects THIS teacher may publish/unpublish
+  // here: their own assigned subjects in THIS class arm, from the SAME
+  // useMyTeaching() call already fetched for the term picker above — zero
+  // new query. A class teacher sees every subject in ClassArmResultsView
+  // (not just their own), so this cross-reference is what keeps the
+  // button off a colleague's subject. Admin/proprietor never get a
+  // populated set — undefined here means ClassArmResultsView shows the
+  // control for nobody (SPEC_V0.7.3.md §2 Q6).
+  const publishableSubjectIds = useMemo(() => {
+    if (!isTeacher) return undefined;
+    return new Set(
+      (myTeaching.data?.subjects ?? [])
+        .filter((s) => s.classArmId === classArmId)
+        .map((s) => s.subjectId),
+    );
+  }, [isTeacher, myTeaching.data, classArmId]);
+  const publishTermLabel =
+    isTeacher && myTeaching.data?.currentTermName
+      ? formatTermName(myTeaching.data.currentTermName)
+      : "this term";
 
   const ready = Boolean(effectiveTermId);
   const resultsQuery = useClassArmResults(
@@ -144,6 +180,9 @@ export function ResultsTab({ classArmId }: ResultsTabProps) {
           onOverride={setOverrideTarget}
           canMarkAbsent={canMarkAbsent}
           onMarkAbsent={setMarkAbsentTarget}
+          publishableSubjectIds={publishableSubjectIds}
+          onPublish={setPublishTarget}
+          onUnpublish={setUnpublishTarget}
         />
       )}
 
@@ -154,6 +193,21 @@ export function ResultsTab({ classArmId }: ResultsTabProps) {
       <MarkAbsentDialog
         target={markAbsentTarget}
         onClose={() => setMarkAbsentTarget(null)}
+      />
+      <PublishConfirmDialog
+        classArmName={armLabel}
+        termLabel={publishTermLabel}
+        subject={publishTarget}
+        classArmId={classArmId}
+        termId={effectiveTermId}
+        onClose={() => setPublishTarget(null)}
+      />
+      <UnpublishConfirmDialog
+        classArmName={armLabel}
+        subject={unpublishTarget}
+        classArmId={classArmId}
+        termId={effectiveTermId}
+        onClose={() => setUnpublishTarget(null)}
       />
     </div>
   );

@@ -5140,3 +5140,105 @@ edits; full web suite 297/297 (48 files, +8 tests) after all edits.
 This closes v0.7.2's frozen four-item scope. Next: the acceptance walk
 + tag v0.7.2 (§5 step 4) — not started here, per the standing "stop at
 the end of the requested step" rule.
+
+## 2026-09-06 — v0.7.3 step 1: teacher-owned publish/unpublish (evaluations only)
+
+**Role widen, controller level.** `grades.controller.ts`: `publish` gains
+`TEACHER` (now `TEACHER, SCHOOL_ADMIN, PROPRIETOR`); `unpublish` gains
+`TEACHER` (now `TEACHER, PROPRIETOR` — `SCHOOL_ADMIN` stays excluded from
+unpublish, a pre-existing asymmetry with `publish` that this step does
+not touch either way). Exam track (`exams.controller.ts`) is untouched —
+publish stays `SCHOOL_ADMIN, PROPRIETOR`, unpublish stays `PROPRIETOR`;
+confirmed by `exams-publish.e2e-spec.ts`'s existing "403s a TEACHER"
+test, unchanged, still green.
+
+**Teacher-scoping — NOT `assertTeacherAssignment`.** The obvious move —
+reuse the existing helper every other teacher-scoped mutation in this
+file calls — turned out to be wrong and was caught by the e2e baseline:
+`assertTeacherAssignment`'s SCHOOL_ADMIN/PROPRIETOR branch is
+"existence-only" (404 if NO teacher is currently assigned to the
+subject at all), which is correct for score ENTRY but is a real
+**narrowing** for publish/unpublish — before this step, admin/proprietor
+could publish/unpublish a subject's already-existing results regardless
+of current staffing (zero assignment check at all). Reusing the shared
+helper wholesale broke an existing, unrelated test
+(`"409s when nothing is currently published"`, unpublish, PROPRIETOR)
+from 409 to 404. Fixed by adding a new, narrower
+`assertTeacherAssignmentForPublish` (grade-shared.util.ts) that returns
+immediately for any non-TEACHER caller — zero behavior change for
+admin/proprietor — and only scopes a TEACHER caller to their own
+assignment (403 otherwise), same shape as the original helper's TEACHER
+branch. `publish()`/`unpublish()` call this new helper; every other
+existing call site of `assertTeacherAssignment` is untouched.
+
+**Closed-term gate — added, for every role, not just TEACHER.** Traced
+`publish()`/`unpublish()` end to end during planning and found NEITHER
+had a closed-term check at all — unlike every other mutation on this
+data (`saveEvaluationScores`, evaluation create/update/delete), which
+already blocks via `resolveSliceLockState`. This was confirmed as an
+oversight (Dami's ruling) and fixed here: both methods now acquire the
+term lock, re-read the term fresh, and 409 with `termLocked: true` if
+locked — the exact pattern `saveEvaluationScores` already uses. This is
+a genuine, deliberate behavior change beyond the role widen: **a closed
+term now blocks publish/unpublish for admins and proprietors too**, not
+just the new TEACHER path — previously nobody was blocked. Proved by a
+fully isolated scratch session+term (never referenced by any other test
+file), closed once and never reopened (no "reopen" endpoint exists by
+design), so the fix's own test fixture can't leak into any other
+suite's shared seeded state.
+
+**Everything else — completeness gate, edit-lock, ranking,
+`recomputeOverallForClassArm`, the audit log — zero lines touched.** The
+diff inside `publish()`/`unpublish()` beyond the two additions above is
+nothing: `findIncompleteEntries`, `computeStandardCompetitionRanking`,
+the overall cascade, and the audit-log write are byte-for-byte
+unchanged.
+
+**Frontend — reuses the admin's existing dialogs unchanged.**
+`PublishConfirmDialog`/`UnpublishConfirmDialog`'s `subject` prop type
+loosened from `GradesReviewSubject` to `Pick<GradesReviewSubject,
+"subjectId" | "subjectName">` (the only two fields either dialog reads)
+— a type-only widening; `ReviewPublishPage` needs zero changes since
+`GradesReviewSubject` still satisfies the narrower shape. The teacher's
+Grades-page Results tab (`ClassArmResultsView`'s per-subject summary
+card) gains Publish/Unpublish buttons, gated by a new
+`publishableSubjectIds` prop that `ResultsTab` computes by cross-
+referencing each subject's `(subjectId, classArmId)` against the
+already-fetched `useMyTeaching()` data — zero new query. This matters
+because a **class teacher** sees every subject in
+`ClassArmResultsView` (not just their own — confirmed in
+`getClassArmResults`), so the button must not appear on a colleague's
+subject a class teacher merely has read visibility into.
+`armLabel` is threaded down from `ClassGradesPage` (which already
+computes it) to `ResultsTab`, for the dialogs' confirmation text — zero
+new query there either. Admin/proprietor's `ResultsTab` view is
+unchanged — no button; they keep publishing exclusively via the
+existing `ReviewPublishPage` (Dami's ruling, Q6).
+
+**No proactive "not ready yet" grey-out for the teacher (Dami's
+ruling, Q5).** Admin's `canPublish` pre-disable comes from the
+admin-only `GET /grades/review`, which was NOT widened to teachers
+(out of scope). The teacher's Publish button is always clickable when
+something's unpublished; an incomplete-evaluation click hits the exact
+same friendly `PublishConfirmDialog` 409 breakdown admins already see
+on a race.
+
+**Test impact.** `grades-publish.e2e-spec.ts`: the old
+`"403s a TEACHER (categorical...)"` test renamed to
+`"403s a TEACHER not assigned to teach this subject"` (same assertion,
+corrected premise — expected, not a logic change) plus 5 new tests:
+assigned TEACHER can publish/unpublish their own subject (2), TEACHER
+not assigned still 403s on unpublish too (1), and the closed-term gate
+blocking an assigned TEACHER/SCHOOL_ADMIN/PROPRIETOR (3, one shared
+describe block — 4 total incl. the renamed one, 6 new overall).
+`ClassArmResultsView.test.tsx`: 6 new tests for button visibility
+(publishableSubjectIds absent/not-mine/partial/fully-published/
+fully-draft) and click behavior. New `ResultsTab.test.tsx`: end-to-end
+myTeaching cross-ref (own subject gets the button, a class-teacher-
+visible colleague's subject doesn't), SCHOOL_ADMIN gets no button
+anywhere, and both dialogs' full open-confirm-mutate flow.
+`ClassGradesPage.test.tsx`: one existing TEACHER/Results-tab test
+gained 2 additive assertions proving the wiring reaches through the
+real page tree, not just in isolation. Zero `apps/api/exams/` diff,
+zero `packages/shared/` diff. Full e2e suite 461/461 (455 + 6 new)
+after; full web suite 307/307 (49 files, +12 tests) after.

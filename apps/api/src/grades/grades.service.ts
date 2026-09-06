@@ -24,6 +24,7 @@ import {
   resolveTenantScopeSubjectOnly,
   resolveTenantScopeArmTermOnly,
   assertTeacherAssignment,
+  assertTeacherAssignmentForPublish,
 } from "./grade-shared.util";
 import { GetEvaluationScoresQueryDto } from "./dto/get-evaluation-scores-query.dto";
 import { SaveEvaluationScoresDto } from "./dto/save-evaluation-scores.dto";
@@ -997,12 +998,42 @@ export class GradesService {
   async publish(dto: PublishGradesDto, user: AuthenticatedUser): Promise<PublishResponse> {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);
+    // v0.7.3 step 1 (SPEC_V0.7.3.md §2) — a TEACHER may only publish a
+    // subject they're assigned to. Deliberately the narrower
+    // assertTeacherAssignmentForPublish, not assertTeacherAssignment: the
+    // latter's admin/proprietor "existence-only" branch would newly 404
+    // an admin publishing a subject with no CURRENT teacher assignment —
+    // a real narrowing publish() never had before this step (see its
+    // own doc comment).
+    await assertTeacherAssignmentForPublish(this.prisma, schoolId, user, dto.subjectId, dto.classArmId, term.sessionId);
 
+    const termLock = termLockKey(schoolId, dto.termId);
     const subjectLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
     const classArmLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
+        // v0.7.3 step 1 — closed-term gate, previously missing here (an
+        // oversight: every other mutation on this data already blocks a
+        // closed term, publish/unpublish did not). Term lock first, fresh
+        // read, same pattern saveEvaluationScores already uses — a closed
+        // term now blocks publish/unpublish for EVERY role, admin
+        // included, not just the newly-added TEACHER path.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
+        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
+        const { locked } = await resolveSliceLockState(tx, {
+          termId: dto.termId,
+          classArmId: dto.classArmId,
+          subjectId: dto.subjectId,
+          closedAt: freshTerm.closedAt,
+        });
+        if (locked) {
+          throw new ConflictException({
+            message: "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
+            termLocked: true,
+          });
+        }
+
         // Subject-level lock first (same key saveGrid/recompute/override
         // use) — blocks a concurrent score save on this exact grid from
         // racing the publish. Always acquired before the broader
@@ -1125,18 +1156,42 @@ export class GradesService {
   // Clears subject_position/published_at as part of the same recompute.
   // This is the confirmed "existing path" for adding a new evaluation to
   // an already-published subject: unpublish first, add it, re-publish.
-  // PROPRIETOR only (owner authority). 409 if nothing is currently
-  // published for this subject — symmetric with publish()'s "nothing to
-  // do" rejection.
+  // PROPRIETOR (owner authority), or a TEACHER unpublishing their OWN
+  // assigned subject (v0.7.3 step 1, SPEC_V0.7.3.md §2 Q1) — SCHOOL_ADMIN
+  // is still excluded, unchanged. 409 if nothing is currently published
+  // for this subject — symmetric with publish()'s "nothing to do"
+  // rejection.
   async unpublish(dto: UnpublishGradesDto, user: AuthenticatedUser): Promise<UnpublishResponse> {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);
+    // v0.7.3 step 1 — same teacher-scoping as publish() above, same
+    // assertTeacherAssignmentForPublish (not assertTeacherAssignment) for
+    // the identical reason: no new existence-check for admin/proprietor.
+    await assertTeacherAssignmentForPublish(this.prisma, schoolId, user, dto.subjectId, dto.classArmId, term.sessionId);
 
+    const termLock = termLockKey(schoolId, dto.termId);
     const subjectLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
     const classArmLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
+        // v0.7.3 step 1 — closed-term gate, previously missing (see
+        // publish()'s identical comment above).
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
+        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
+        const { locked } = await resolveSliceLockState(tx, {
+          termId: dto.termId,
+          classArmId: dto.classArmId,
+          subjectId: dto.subjectId,
+          closedAt: freshTerm.closedAt,
+        });
+        if (locked) {
+          throw new ConflictException({
+            message: "This term is closed. Ask your principal/proprietor to unlock this class and subject before editing.",
+            termLocked: true,
+          });
+        }
+
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjectLockKey}))`;
 
         const published = await tx.termSubjectResult.findMany({

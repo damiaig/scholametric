@@ -107,3 +107,28 @@ export async function assertTeacherAssignment(
     throw new NotFoundException("No teacher is assigned to teach this subject for this class.");
   }
 }
+
+// v0.7.3 step 1 (SPEC_V0.7.3.md §2) — publish()/unpublish()'s teacher
+// scoping. Deliberately NOT assertTeacherAssignment above: that helper's
+// SCHOOL_ADMIN/PROPRIETOR branch requires SOME teacher to be currently
+// assigned (404 otherwise) — correct for score ENTRY, but publish/
+// unpublish had NO assignment-existence requirement for admin/proprietor
+// before this step (they could always publish/unpublish any subject's
+// already-existing results regardless of current staffing), and this
+// step must not narrow that. Only TEACHER gets scoped here; SCHOOL_ADMIN/
+// PROPRIETOR pass through with zero check, unchanged from before v0.7.3.
+export async function assertTeacherAssignmentForPublish(
+  prisma: PrismaService,
+  schoolId: string,
+  user: AuthenticatedUser,
+  subjectId: string,
+  classArmId: string,
+  sessionId: string,
+): Promise<void> {
+  if (user.role !== UserRole.TEACHER) return;
+  const assignedSubjects = await getAssignedSubjectMap(prisma, { schoolId, classArmId, sessionId });
+  const assignment = assignedSubjects.get(subjectId);
+  if (!assignment || assignment.teacherUserId !== user.userId) {
+    throw new ForbiddenException("You are not assigned to teach this subject for this class.");
+  }
+}

@@ -510,6 +510,15 @@ describe("ClassGradesPage — Results tab", () => {
     await screen.findAllByText("Mathematics");
     expect(screen.queryByLabelText("Term")).not.toBeInTheDocument();
     expect(screen.getByText("First term")).toBeInTheDocument();
+    // v0.7.3 step 1 (SPEC_V0.7.3.md §2) — end-to-end proof that ResultsTab's
+    // myTeaching cross-ref reaches all the way through the real page: this
+    // fixture's TEACHER teaches sub1/arm1 (TEACHING above), so the Publish
+    // control appears on Mathematics here (RESULTS's one row is still
+    // PENDING_APPROVAL, not PUBLISHED, so Unpublish does not).
+    expect(screen.getByLabelText("Publish Mathematics")).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Unpublish Mathematics"),
+    ).not.toBeInTheDocument();
   });
 
   it("switching from Results back to Enter scores via the tab bar re-shows the subject context", async () => {

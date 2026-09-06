@@ -380,13 +380,53 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       expect(second.body.subjectPositions).toHaveLength(1);
     });
 
-    it("403s a TEACHER (categorical — publish is director/owner only)", async () => {
+    // v0.7.3 step 1 (SPEC_V0.7.3.md §2) — publish is no longer director/
+    // owner-only, but a TEACHER with no assignment for this exact subject
+    // still 403s, unchanged from before this step (assertTeacherAssignment,
+    // same helper/shape as every other teacher-scoped mutation).
+    it("403s a TEACHER not assigned to teach this subject", async () => {
       const subjectId = await createScratchSubject("E2E Publish TeacherReject");
       const response = await request(app.getHttpServer())
         .post("/api/v1/grades/publish")
         .set(auth(sunriseTeacherToken))
         .send({ classArmId: scratchArmId, subjectId, termId: sunriseTermId });
       expect(response.status).toBe(403);
+    });
+
+    // v0.7.3 step 1 — the actual new capability: an assigned TEACHER can
+    // publish their own subject without an admin, with identical ranking/
+    // audit-log behavior to an admin-triggered publish.
+    it("an assigned TEACHER can publish their own subject — same ranking/audit-log behavior as an admin-triggered publish", async () => {
+      const subjectId = await createScratchSubject("E2E Publish TeacherOwn");
+      const [s0, s1] = await createScratchStudents(2, "TeacherOwn");
+      const evaluationIds = await createEvaluationsForSubject(subjectId, scratchArmId);
+      // scoreTotal's ensureAssignment already wires this subject to
+      // teacherUserId (sunriseTeacherToken's own user) — the same teacher
+      // publishing it below.
+      await scoreTotal(sunriseTeacherToken, subjectId, evaluationIds, [
+        { studentId: s0, total: 70 },
+        { studentId: s1, total: 50 },
+      ]);
+
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/publish")
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId: scratchArmId, subjectId, termId: sunriseTermId });
+
+      expect(response.status).toBe(200);
+      expect(response.body.publishedCount).toBe(2);
+      const persisted = await prisma.termSubjectResult.findMany({ where: { subjectId } });
+      expect(persisted).toHaveLength(2);
+      for (const row of persisted) {
+        expect(row.status).toBe("PUBLISHED");
+        expect(row.publishedAt).not.toBeNull();
+      }
+
+      const auditLog = await prisma.auditLog.findFirst({
+        where: { schoolId: sunriseId, action: "grades.publish", entityId: scratchArmId, actorUserId: teacherUserId },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(auditLog).not.toBeNull();
     });
 
     it("rejects unauthenticated requests", async () => {
@@ -463,6 +503,43 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       expect(response.body.message).toMatch(/nothing to unpublish/i);
     });
 
+    // v0.7.3 step 1 (SPEC_V0.7.3.md §2 Q1) — a TEACHER may unpublish their
+    // OWN assigned subject (to correct it, then re-publish) without an
+    // admin. SCHOOL_ADMIN remains excluded (see the happy-path test above)
+    // — this only ever adds a TEACHER-when-assigned branch.
+    it("an assigned TEACHER can unpublish their own subject", async () => {
+      const subjectId = await createScratchSubject("E2E Unpublish TeacherOwn");
+      const [s0] = await createScratchStudents(1, "UnpubTeacherOwn");
+      const evaluationIds = await createEvaluationsForSubject(subjectId, scratchArmId);
+      await scoreTotal(sunriseTeacherToken, subjectId, evaluationIds, [{ studentId: s0, total: 65 }]);
+      const publishRes = await request(app.getHttpServer())
+        .post("/api/v1/grades/publish")
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId: scratchArmId, subjectId, termId: sunriseTermId });
+      expect(publishRes.status).toBe(200);
+
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/unpublish")
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId: scratchArmId, subjectId, termId: sunriseTermId });
+
+      expect(response.status).toBe(200);
+      expect(response.body.unpublishedCount).toBe(1);
+      const reverted = await prisma.termSubjectResult.findUniqueOrThrow({
+        where: { studentId_subjectId_termId_sessionId: { studentId: s0, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
+      });
+      expect(reverted.status).toBe("DRAFT");
+    });
+
+    it("403s a TEACHER not assigned to teach this subject", async () => {
+      const subjectId = await createScratchSubject("E2E Unpublish TeacherReject");
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/unpublish")
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId: scratchArmId, subjectId, termId: sunriseTermId });
+      expect(response.status).toBe(403);
+    });
+
     it("404s (not 403) cross-tenant, both directions", async () => {
       const a = await request(app.getHttpServer())
         .post("/api/v1/grades/unpublish")
@@ -475,6 +552,116 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         .set(auth(hillcrestProprietorToken))
         .send({ classArmId: scratchArmId, subjectId: sunriseId, termId: sunriseTermId });
       expect(b.status).toBe(404);
+    });
+  });
+
+  // v0.7.3 step 1 (SPEC_V0.7.3.md §2, Finding 1 from the plan) — publish()/
+  // unpublish() had NO closed-term check at all before this step (unlike
+  // every other mutation on this data, which already blocked a closed
+  // term). This was an oversight, not a deliberate gap, and is fixed here
+  // for EVERY role, not just the newly-added TEACHER path — the diff for
+  // this fix is the same two-line pattern (term lock + resolveSliceLockState)
+  // saveEvaluationScores already used, just previously missing on these two
+  // methods. A fully isolated scratch session+term (never referenced by any
+  // other test file) is used so closing it can never affect anything else
+  // in the shared seeded database this whole e2e run reuses.
+  describe("Closed-term gate on publish/unpublish (v0.7.3 step 1 fix)", () => {
+    let closedTermSessionId: string;
+    let closedTermId: string;
+
+    beforeAll(async () => {
+      const session = await prisma.academicSession.create({
+        data: { schoolId: sunriseId, name: `E2E-ClosedTerm-${Date.now()}`, startsOn: new Date("2030-01-01"), endsOn: new Date("2030-12-31"), isCurrent: false },
+      });
+      closedTermSessionId = session.id;
+      const term = await prisma.term.create({
+        data: {
+          schoolId: sunriseId,
+          sessionId: closedTermSessionId,
+          name: "FIRST",
+          startsOn: new Date("2030-01-01"),
+          endsOn: new Date("2030-04-01"),
+          isCurrent: false,
+          closedAt: new Date(),
+        },
+      });
+      closedTermId = term.id;
+    });
+
+    afterAll(async () => {
+      // Explicit, ahead of the outer describe's own afterAll (which also
+      // cleans these same createdSubjectIds up, but only AFTER this block's
+      // afterAll already runs) — deleting the term/session first would
+      // otherwise 23503 against the FK these child rows still hold.
+      await prisma.termSubjectResult.deleteMany({ where: { sessionId: closedTermSessionId } });
+      await prisma.subjectTeacherAssignment.deleteMany({ where: { sessionId: closedTermSessionId } });
+      await prisma.term.delete({ where: { id: closedTermId } });
+      await prisma.academicSession.delete({ where: { id: closedTermSessionId } });
+    });
+
+    it("blocks an assigned TEACHER's publish — this gate did not exist for anyone before this fix", async () => {
+      const subjectId = await createScratchSubject("E2E ClosedTerm Publish Teacher");
+      await prisma.subjectTeacherAssignment.create({
+        data: { schoolId: sunriseId, subjectId, classArmId: scratchArmId, sessionId: closedTermSessionId, teacherUserId },
+      });
+
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/publish")
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId: scratchArmId, subjectId, termId: closedTermId });
+
+      expect(response.status).toBe(409);
+      expect(response.body.termLocked).toBe(true);
+    });
+
+    it("blocks SCHOOL_ADMIN's publish too — the fix applies to every role, not just the new TEACHER path", async () => {
+      const subjectId = await createScratchSubject("E2E ClosedTerm Publish Admin");
+      await prisma.subjectTeacherAssignment.create({
+        data: { schoolId: sunriseId, subjectId, classArmId: scratchArmId, sessionId: closedTermSessionId, teacherUserId },
+      });
+
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/publish")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: scratchArmId, subjectId, termId: closedTermId });
+
+      expect(response.status).toBe(409);
+      expect(response.body.termLocked).toBe(true);
+    });
+
+    it("blocks PROPRIETOR's unpublish too, on a result published before the term was closed", async () => {
+      const subjectId = await createScratchSubject("E2E ClosedTerm Unpublish");
+      await prisma.subjectTeacherAssignment.create({
+        data: { schoolId: sunriseId, subjectId, classArmId: scratchArmId, sessionId: closedTermSessionId, teacherUserId },
+      });
+      const [s0] = await createScratchStudents(1, "ClosedUnpub");
+      // Simulates "published while the term was still open, then the term
+      // was closed afterward" — publish() can never reach PUBLISHED under
+      // an already-closed term after this fix, so this row is created
+      // directly, matching this file's own established direct-Prisma
+      // fixture precedent (see gap-2-TWIN's setup above).
+      await prisma.termSubjectResult.create({
+        data: {
+          schoolId: sunriseId,
+          studentId: s0,
+          subjectId,
+          classArmId: scratchArmId,
+          termId: closedTermId,
+          sessionId: closedTermSessionId,
+          totalScore: 80,
+          finalGrade: "A1",
+          status: "PUBLISHED",
+          publishedAt: new Date(),
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/grades/unpublish")
+        .set(auth(sunriseProprietorToken))
+        .send({ classArmId: scratchArmId, subjectId, termId: closedTermId });
+
+      expect(response.status).toBe(409);
+      expect(response.body.termLocked).toBe(true);
     });
   });
 

@@ -4,10 +4,18 @@ import { usePublishGrades } from "./use-publish-grades";
 import { useEvaluations } from "./use-evaluations";
 import type { GradesReviewSubject } from "@scholametric/shared";
 
+// v0.7.3 step 1 (SPEC_V0.7.3.md §2) — loosened from `GradesReviewSubject`
+// to the two fields this dialog actually reads, so a TEACHER's Results
+// tab (ClassArmResultsSubject, no review-only fields like canPublish)
+// can reuse this exact dialog unchanged, same as the admin Review &
+// Publish page already does. GradesReviewSubject still satisfies this
+// shape structurally, so ReviewPublishPage needs no changes.
+type PublishableSubject = Pick<GradesReviewSubject, "subjectId" | "subjectName">;
+
 interface PublishConfirmDialogProps {
   classArmName: string;
   termLabel: string;
-  subject: GradesReviewSubject | null;
+  subject: PublishableSubject | null;
   classArmId: string;
   termId: string;
   onClose: () => void;

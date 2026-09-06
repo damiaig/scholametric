@@ -85,16 +85,23 @@ export class GradesController {
     return this.gradesService.recompute(dto);
   }
 
-  // Director-or-owner: SCHOOL_ADMIN and PROPRIETOR may both publish.
-  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  // Director-or-owner, or a TEACHER publishing a subject they're assigned
+  // to (v0.7.3 step 1, SPEC_V0.7.3.md §2) — the fine-grained "assigned to
+  // THIS subject" scoping lives in GradesService.publish() itself
+  // (assertTeacherAssignment), same discipline as every other route here;
+  // this decorator only admits the role coarsely.
+  @Roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
   @Post("publish")
   @HttpCode(HttpStatus.OK)
   publish(@Body() dto: PublishGradesDto, @CurrentUser() user: AuthenticatedUser) {
     return this.gradesService.publish(dto, user);
   }
 
-  // Owner-only: unpublishing is PROPRIETOR-only, unlike publish.
-  @Roles(UserRole.PROPRIETOR)
+  // Owner, or a TEACHER unpublishing their OWN assigned subject (v0.7.3
+  // step 1, SPEC_V0.7.3.md §2 Q1) — SCHOOL_ADMIN is still excluded here,
+  // unchanged from before this step (that asymmetry with publish() is
+  // pre-existing and not part of this widening).
+  @Roles(UserRole.TEACHER, UserRole.PROPRIETOR)
   @Post("unpublish")
   @HttpCode(HttpStatus.OK)
   unpublish(@Body() dto: UnpublishGradesDto, @CurrentUser() user: AuthenticatedUser) {
