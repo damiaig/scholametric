@@ -375,6 +375,18 @@ export interface ReportCardResponse {
   // never gates or is gated by the official overall/position. null (not
   // 0) when zero subjects are published yet.
   runningAverageScore: number | null;
+  // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — the class-wide companion figures
+  // to runningAverageScore above: the mean of every published-so-far
+  // student's OWN running average (same "≥1 subject published" bar,
+  // same top-level independence from `overall`), and this student's
+  // provisional rank within that same ≥1-published cohort. Both null
+  // when nobody/this student hasn't published anything yet.
+  // runningPosition ranks a DIFFERENT, looser cohort than
+  // overall.overallPosition (which requires EVERY subject published) —
+  // the two can legitimately diverge for the same student; that's the
+  // correct consequence of ranking a partial term, not a bug.
+  runningClassAverageScore: number | null;
+  runningPosition: number | null;
   remarks: ReportCardRemarks;
 }
 

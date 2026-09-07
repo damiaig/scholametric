@@ -64,6 +64,8 @@ function reportCardFor(studentId: string, averageScore: number) {
     ],
     overall: { averageScore, averageGrade: "B3", overallPosition: 1, status: "PUBLISHED", subjectsCount: 1, generalClassAverage: 50 },
     runningAverageScore: averageScore,
+    runningClassAverageScore: 50,
+    runningPosition: 1,
     remarks: { teacherRemark: null, teacherRemarkBy: null, teacherRemarkAt: null, principalRemark: null, principalRemarkBy: null, principalRemarkAt: null },
   };
 }
@@ -148,7 +150,7 @@ describe("ParentDashboard", () => {
       if (path.includes("/auth/me")) return USER;
       if (path.includes("/me/children/child-1/terms")) return TERMS;
       if (path.includes("/me/children/child-1/report-card")) {
-        return { ...reportCardFor("child-1", 60), overall: null, runningAverageScore: 45 };
+        return { ...reportCardFor("child-1", 60), overall: null, runningAverageScore: 45, runningClassAverageScore: null, runningPosition: null };
       }
       if (path.includes("/me/children/child-1/year-exams")) return YEAR_EXAMS;
       if (path.includes("/me/children")) return { children: [CHILDREN.children[0]] };
@@ -159,6 +161,28 @@ describe("ParentDashboard", () => {
 
     expect(await screen.findByText("45")).toBeInTheDocument();
     expect(await screen.findByText("Not yet ranked")).toBeInTheDocument();
+  });
+
+  // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — same gap closed for the OTHER two
+  // cards on the selected child's card, mirroring StudentDashboard.
+  it("overall still null but the running class average and running position have values: shows both, not a dash/unranked", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return USER;
+      if (path.includes("/me/children/child-1/terms")) return TERMS;
+      if (path.includes("/me/children/child-1/report-card")) {
+        return { ...reportCardFor("child-1", 60), overall: null, runningAverageScore: 45, runningClassAverageScore: 39, runningPosition: 3 };
+      }
+      if (path.includes("/me/children/child-1/year-exams")) return YEAR_EXAMS;
+      if (path.includes("/me/children")) return { children: [CHILDREN.children[0]] };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<ParentDashboard />);
+
+    expect(await screen.findByText("39")).toBeInTheDocument();
+    expect(await screen.findByText("#3")).toBeInTheDocument();
+    expect(screen.queryByText("Not yet ranked")).not.toBeInTheDocument();
   });
 
   it("no linked children shows the empty state, not a crash", async () => {

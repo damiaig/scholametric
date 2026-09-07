@@ -302,6 +302,15 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       // subjectY's 10 (still DRAFT) contributes nothing. If the draft
       // subject leaked in, this would be (51+10)/2=30.5, not 51.
       expect(response.body.runningAverageScore).toBe(51);
+      // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — SAME response, SAME additive
+      // proof extended: the class-wide pool is {A: 51, B: 46} — C has
+      // nothing published, D's 100/100/100 on subjectX was NEVER published
+      // (straggler) so it contributes nothing. mean(51, 46) = 48.5 — if
+      // D's draft leaked in it'd be mean(51,46,100)=65.67, not 48.5.
+      // A leads that pool (51 > 46) -> running position 1, even though
+      // A's OFFICIAL overall (asserted null above) isn't ranked at all yet.
+      expect(response.body.runningClassAverageScore).toBe(48.5);
+      expect(response.body.runningPosition).toBe(1);
       // Remarks gate: no published overall -> no remarks, even though this
       // student could in principle have one written.
       expect(response.body.remarks.teacherRemark).toBeNull();
@@ -314,6 +323,11 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       const serialized = JSON.stringify(response.body);
       expect(serialized).not.toContain(subjectYEvalId);
       expect(serialized).not.toContain(subjectY);
+      // v0.7.3 step 2 — the new class-wide queries read B's and D's rows
+      // server-side to compute runningClassAverageScore/runningPosition;
+      // confirm neither student's id ever reaches A's serialized response.
+      expect(serialized).not.toContain(studentBId);
+      expect(serialized).not.toContain(studentDraftId);
     });
 
     it("published OVERALL position matches the report card once every subject is published, and remarks appear", async () => {
@@ -333,6 +347,17 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       // agreeing once everything IS published is exactly what's expected;
       // they're independent computations that happen to converge.
       expect(response.body.runningAverageScore).toBe(46);
+      // B is the ONLY student whose OFFICIAL overall reached PUBLISHED
+      // (A's hasn't; C/D have none) -> alone in that pool -> position 1.
+      expect(response.body.overall.overallPosition).toBe(1);
+
+      // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — the DIVERGENCE, by design: the
+      // running pool is looser (≥1 published) and includes A too, whose
+      // running average (51) beats B's (46) — so B's running position is
+      // 2, even though B's OFFICIAL position (just asserted) is 1. Same
+      // class-wide figure as A's response: mean(51, 46) = 48.5.
+      expect(response.body.runningClassAverageScore).toBe(48.5);
+      expect(response.body.runningPosition).toBe(2);
 
       expect(response.body.remarks.teacherRemark).toBe("Excellent term overall.");
     });
@@ -375,6 +400,14 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       // v0.7.2 step 1 — zero published subjects -> null, never a real 0
       // standing in for "nothing to average yet".
       expect(response.body.runningAverageScore).toBeNull();
+      // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — the CLASS figure is independent
+      // of C's own state: A and B are still in the pool, so C sees the
+      // same 48.5 as everyone else. But C themselves has zero published
+      // subjects, so they're not IN that pool -> runningPosition null,
+      // same "excluded, not ranked on partial" rule the official position
+      // already uses, just with a looser bar (≥1, not every subject).
+      expect(response.body.runningClassAverageScore).toBe(48.5);
+      expect(response.body.runningPosition).toBeNull();
     });
 
     it("403s for TEACHER (this route is STUDENT-only)", async () => {

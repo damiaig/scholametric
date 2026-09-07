@@ -59,13 +59,23 @@ export function StudentReportCardView({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Card className="border-muted/20 border-l-4 border-l-primary bg-card shadow-none">
           <CardContent className="p-4">
-            <p className="text-sm text-muted">Your average so far</p>
+            <p className="text-sm text-muted">Your average</p>
             <p className="text-2xl font-semibold text-primary">
               {data.runningAverageScore !== null
                 ? formatScore(data.runningAverageScore)
+                : "—"}
+            </p>
+          </CardContent>
+        </Card>
+        <Card className="border-muted/20 bg-card shadow-none">
+          <CardContent className="p-4">
+            <p className="text-sm text-muted">Class average</p>
+            <p className="text-2xl font-semibold text-text">
+              {data.runningClassAverageScore !== null
+                ? formatScore(data.runningClassAverageScore)
                 : "—"}
             </p>
           </CardContent>
@@ -76,7 +86,9 @@ export function StudentReportCardView({
             <p className="text-2xl font-semibold text-text">
               {data.overall
                 ? positionLabel(data.overall.overallPosition)
-                : "Not yet ranked"}
+                : data.runningPosition !== null
+                  ? positionLabel(data.runningPosition)
+                  : "Not yet ranked"}
             </p>
           </CardContent>
         </Card>

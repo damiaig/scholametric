@@ -51,6 +51,8 @@ const REPORT_CARD = {
   ],
   overall: null,
   runningAverageScore: 78,
+  runningClassAverageScore: 70,
+  runningPosition: 1,
   remarks: {
     teacherRemark: null,
     teacherRemarkBy: null,
@@ -94,7 +96,7 @@ describe("MyGradesPage", () => {
     // (no more repeated "printed document" header); "student · class" now
     // lives in the page's PageHeader description instead.
     expect(screen.getByText("Chidi Okafor · JSS 1 A")).toBeInTheDocument();
-    expect(screen.getByText("Your average so far")).toBeInTheDocument();
+    expect(screen.getByText("Your average")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Term" })).toHaveValue(TERM_ID);
     expect(screen.queryByRole("textbox", { name: "Teacher remark" })).not.toBeInTheDocument();
   });

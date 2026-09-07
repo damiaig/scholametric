@@ -5242,3 +5242,96 @@ gained 2 additive assertions proving the wiring reaches through the
 real page tree, not just in isolation. Zero `apps/api/exams/` diff,
 zero `packages/shared/` diff. Full e2e suite 461/461 (455 + 6 new)
 after; full web suite 307/307 (49 files, +12 tests) after.
+
+## 2026-09-07 — v0.7.3 step 2: running class average + running position
+
+**Both additive, on-read, top-level siblings of `overall` — same
+discipline as `runningAverageScore`.** `runningClassAverageScore` and
+`runningPosition` (`ReportCardResponse`, mirrored by hand in
+`grades.service.ts` per this file's own dual-mirror-type convention)
+never touch `TermOverallResult`, `recomputeOverallForClassArm`, or the
+official `overallPosition` — confirmed by the diff (only `getReportCard`
+changed) and the additive-proof e2e (official `overall`/`overallPosition`
+unchanged in the SAME response the new fields are non-null in).
+
+**One new query, unavoidable — reusing the gate, not the shape.**
+`getReportCard` already had per-subject class aggregates
+(`classAveragesBySubject`, a `groupBy`) and a per-student official
+aggregate (`overallClassAvg`, from `term_overall_results`), but neither
+gives raw per-student-per-subject rows for the whole class arm — needed
+because "the class's average across published subjects so far" means
+mean-of-each-student's-own-running-average (mirroring how
+`generalClassAverage` is a mean of each student's official average, not
+a flat pool of every subject row), which requires grouping by student
+BEFORE averaging. One new `termSubjectResult.findMany({ status:
+PUBLISHED })` for the whole class arm/term, folded into the method's
+existing `Promise.all` batch. The gate itself — unconditional
+`status: PUBLISHED`, not the `publishedOnlyForSelfView`-branched kind —
+is identical to `runningAverageScore`'s own gate: an unpublished
+subject/classmate is never fetched, structurally, not filtered
+post-hoc.
+
+**Zero new pure logic — `computeOverallAverage` and
+`computeStandardCompetitionRanking` reused, not reinvented.** Per-student
+running average = `computeOverallAverage` over that student's published
+totals (same function `runningAverageScore` itself calls). Class average
+= `computeOverallAverage` AGAIN, over the list of those per-student
+figures (one tiny pure function, called twice, no new arithmetic).
+Running position = `computeStandardCompetitionRanking` (the same
+function `publish()`/`recomputeOverallForClassArm` already use) over
+that same per-student map, then a lookup for this student's own
+position. `null`/`null` when nobody/this student hasn't published
+anything.
+
+**The running-position pool is deliberately looser than, and separate
+from, the official one — divergence is correct, not a bug.** Running:
+≥1 subject published. Official (`recomputeOverallForClassArm`, untouched):
+every subject published. Proved in `me-student.e2e-spec.ts`: student B's
+official `overallPosition` is 1 (alone in the fully-published pool —
+A's overall isn't published yet), while B's `runningPosition` is 2 (A's
+running average of 51 beats B's 46 in the ≥1-published pool, which
+includes A). Both figures are correct simultaneously; not "fixed."
+
+**Anonymity — the per-student breakdown never serializes.** The
+grouped-by-student map (`totalsByStudent`/`runningAverageByStudent`)
+is discarded after producing the two scalar fields; no student id/name
+from that computation ever reaches the response. Proved by extending
+student A's existing additive-proof test's `JSON.stringify` check to
+also assert student B's and D's (the unpublished "straggler") ids never
+leak into A's response, despite the new queries reading their rows
+server-side.
+
+**Frontend — the 3-card summary strip v0.7.2 step 3 deferred, now
+built.** `StudentReportCardView.tsx`'s grid goes from 2 to 3 columns:
+"Your average" (label's "so far" dropped per Dami's call — terse
+labels, not the `#`-prefix on Position, which is unchanged) + new
+"Class average" + "Position" (now resolving `overall` then
+`runningPosition` then "Not yet ranked", same precedence pattern as the
+average card). `StudentDashboard.tsx`/`ParentDashboard.tsx`'s "Class
+average /100" and "Position" stat cards get the identical
+official-then-running fallback the average card already had from step
+3 — closing the same "Grades page shows a live number, dashboard shows
+a dash" gap for the two cards that weren't fixed then.
+
+**Test impact.** `me-student.e2e-spec.ts`: 3 existing tests (student
+A's additive-proof, student B's fully-published, student C's
+empty-state) gain the two new fields' assertions in their SAME
+responses (48.5 class average throughout; positions 1/2/null
+respectively) — additive, not new test blocks. `report-card.e2e-spec.ts`:
+spot-checked, zero edits needed (targeted property assertions, no
+whole-body equality to break). Frontend: `StudentReportCardView.test.tsx`
+gained a new-field-carrying fixture, a label-text update, and a new
+test for the running-position-before-official-exists case; the
+"once fully published" test extended to assert official position wins
+even when `runningPosition` is set to a deliberately different value
+(4) — proving precedence, not just presence.
+`StudentDashboard.test.tsx`/`ParentDashboard.test.tsx` each gained one
+new additive test (class average + position both resolving from the
+running fields while `overall` stays null) alongside required fixture
+updates to the two existing null-overall tests (explicit
+`runningClassAverageScore`/`runningPosition: null` overrides, else
+they'd inherit the base fixture's now-non-null values and break their
+own "dashes"/"Not yet ranked" assertions). Zero `apps/api/exams/` diff,
+zero new e2e test blocks (455 baseline + 6 already-added in step 1 =
+461 before and after this step); full web suite 310/310 (49 files, +3
+tests) after.

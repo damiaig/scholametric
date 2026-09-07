@@ -357,6 +357,14 @@ export interface ReportCardResponse {
   // subjects are published yet. Mirrored by hand in
   // packages/shared/src/grades.ts, per this file's own convention.
   runningAverageScore: number | null;
+  // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — class-wide companions to
+  // runningAverageScore: the mean of every published-so-far student's
+  // OWN running average, and this student's provisional rank in that
+  // same ≥1-published cohort (a DIFFERENT, looser pool than
+  // overall.overallPosition's fully-published-only one — the two can
+  // legitimately diverge). Mirrored by hand in packages/shared/src/grades.ts.
+  runningClassAverageScore: number | null;
+  runningPosition: number | null;
   remarks: ReportCardRemarks;
 }
 
@@ -1764,7 +1772,17 @@ export class GradesService {
     // resolved as a studentId allow-list per subject first, then applied
     // in JS via computeAssessmentClassStats. `null` allow-list (staff)
     // means every classmate's row counts regardless of publish state.
-    const [classAveragesBySubject, publishedRowsForEligibility, allEvaluationScores, overallClassAvg] = await Promise.all([
+    // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — every PUBLISHED term_subject_result
+    // in this class arm/term, unfiltered by subject and not grouped by the
+    // DB: runningClassAverageScore/runningPosition need each STUDENT's own
+    // running average first (group-by-student, then average/rank those),
+    // which no existing groupBy/aggregate query here can produce — those
+    // all operate per-subject or across the whole class arm at once, never
+    // per-student. Same unconditional `status: PUBLISHED` gate every other
+    // class figure in this method uses (not the publishedOnlyForSelfView-
+    // branched kind) — an unpublished subject/classmate is never fetched,
+    // structurally, matching runningAverageScore's own gate above.
+    const [classAveragesBySubject, publishedRowsForEligibility, allEvaluationScores, overallClassAvg, allPublishedResultsForArm] = await Promise.all([
       visibleSubjectIds.length > 0
         ? this.prisma.termSubjectResult.groupBy({
             by: ["subjectId"],
@@ -1808,6 +1826,10 @@ export class GradesService {
         },
         _avg: { averageScore: true },
       }),
+      this.prisma.termSubjectResult.findMany({
+        where: { schoolId, classArmId: enrollment.classArmId, termId: query.termId, sessionId: query.sessionId, status: ResultStatus.PUBLISHED },
+        select: { studentId: true, totalScore: true },
+      }),
     ]);
     const classAverageBySubjectId = new Map(
       classAveragesBySubject.map((c) => [c.subjectId, c._avg.totalScore === null ? null : Math.round(Number(c._avg.totalScore) * 100) / 100]),
@@ -1841,6 +1863,34 @@ export class GradesService {
     const publishedSubjectResults = subjectResults.filter((r) => r.status === ResultStatus.PUBLISHED);
     const runningAverageScore =
       publishedSubjectResults.length > 0 ? computeOverallAverage(publishedSubjectResults.map((r) => Number(r.totalScore))) : null;
+
+    // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — the class-wide companions:
+    // group the whole class arm's PUBLISHED rows (fetched above) by
+    // student, run each student's own totals through the SAME
+    // computeOverallAverage runningAverageScore itself uses (one pure
+    // function, reused twice — once per student, once again across
+    // students), then rank that same per-student map with the SAME
+    // computeStandardCompetitionRanking publish()/recomputeOverallForClassArm
+    // already use. This pool is "≥1 subject published" — deliberately
+    // looser than, and entirely separate from, recomputeOverallForClassArm's
+    // fully-published-only pool that feeds the official overallPosition;
+    // neither reads nor writes term_overall_results.
+    const totalsByStudent = new Map<string, number[]>();
+    for (const row of allPublishedResultsForArm) {
+      const arr = totalsByStudent.get(row.studentId) ?? [];
+      arr.push(Number(row.totalScore));
+      totalsByStudent.set(row.studentId, arr);
+    }
+    const runningAverageByStudent = new Map<string, number>(
+      [...totalsByStudent.entries()].map(([sid, totals]) => [sid, computeOverallAverage(totals)]),
+    );
+    const runningClassAverageScore =
+      runningAverageByStudent.size > 0 ? computeOverallAverage([...runningAverageByStudent.values()]) : null;
+    const runningRanking = computeStandardCompetitionRanking(
+      [...runningAverageByStudent.entries()],
+      ([, avg]) => avg,
+    );
+    const runningPosition = runningRanking.find(({ item: [sid] }) => sid === studentId)?.position ?? null;
 
     const subjects: ReportCardSubject[] = subjectResults
       .map((r) => {
@@ -1898,6 +1948,8 @@ export class GradesService {
           }
         : null,
       runningAverageScore,
+      runningClassAverageScore,
+      runningPosition,
       remarks: {
         teacherRemark: remarksVisibleToCaller ? (remark?.teacherRemark ?? null) : null,
         teacherRemarkBy:

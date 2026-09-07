@@ -13,6 +13,8 @@ const BASE_REPORT_CARD: ReportCardResponse = {
   subjects: [],
   overall: null,
   runningAverageScore: null,
+  runningClassAverageScore: null,
+  runningPosition: null,
   remarks: { teacherRemark: null, teacherRemarkBy: null, teacherRemarkAt: null, principalRemark: null, principalRemarkBy: null, principalRemarkAt: null },
 };
 

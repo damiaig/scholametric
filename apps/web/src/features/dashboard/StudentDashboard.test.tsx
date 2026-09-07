@@ -61,6 +61,8 @@ const REPORT_CARD = {
   ],
   overall: { averageScore: 65, averageGrade: "B3", overallPosition: 2, status: "PUBLISHED", subjectsCount: 1, generalClassAverage: 58 },
   runningAverageScore: 65,
+  runningClassAverageScore: 58,
+  runningPosition: 2,
   remarks: { teacherRemark: null, teacherRemarkBy: null, teacherRemarkAt: null, principalRemark: null, principalRemarkBy: null, principalRemarkAt: null },
 };
 
@@ -134,7 +136,9 @@ describe("StudentDashboard", () => {
       if (path.includes("/auth/me")) return USER;
       if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" };
       if (path.includes("/me/terms")) return TERMS;
-      if (path.includes("/me/report-card")) return { ...REPORT_CARD, subjects: [], overall: null, runningAverageScore: null };
+      if (path.includes("/me/report-card")) {
+        return { ...REPORT_CARD, subjects: [], overall: null, runningAverageScore: null, runningClassAverageScore: null, runningPosition: null };
+      }
       if (path.includes("/me/year-exams")) return { ...YEAR_EXAMS, terms: [] };
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -157,7 +161,9 @@ describe("StudentDashboard", () => {
       if (path.includes("/auth/me")) return USER;
       if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" };
       if (path.includes("/me/terms")) return TERMS;
-      if (path.includes("/me/report-card")) return { ...REPORT_CARD, overall: null, runningAverageScore: 42 };
+      if (path.includes("/me/report-card")) {
+        return { ...REPORT_CARD, overall: null, runningAverageScore: 42, runningClassAverageScore: null, runningPosition: null };
+      }
       if (path.includes("/me/year-exams")) return YEAR_EXAMS;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -166,6 +172,30 @@ describe("StudentDashboard", () => {
 
     expect(await screen.findByText("42")).toBeInTheDocument();
     expect(screen.getByText("Not yet ranked")).toBeInTheDocument();
+  });
+
+  // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — same gap, now closed for the OTHER
+  // two cards: Class average and Position were ALSO stuck on "—"/"Not yet
+  // ranked" all term (only the average card got the running-figure
+  // treatment in step 3). `overall` stays null throughout.
+  it("overall still null but the running class average and running position have values: shows both, not a dash/unranked", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return USER;
+      if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" };
+      if (path.includes("/me/terms")) return TERMS;
+      if (path.includes("/me/report-card")) {
+        return { ...REPORT_CARD, overall: null, runningAverageScore: 42, runningClassAverageScore: 39, runningPosition: 3 };
+      }
+      if (path.includes("/me/year-exams")) return YEAR_EXAMS;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<StudentDashboard />);
+
+    expect(await screen.findByText("39")).toBeInTheDocument();
+    expect(screen.getByText("#3")).toBeInTheDocument();
+    expect(screen.queryByText("Not yet ranked")).not.toBeInTheDocument();
   });
 
   it("'Your grades' shows the most recent evaluation and exam per subject, with class average, and links to /me/grades", async () => {

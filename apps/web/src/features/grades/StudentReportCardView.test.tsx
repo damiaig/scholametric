@@ -52,6 +52,8 @@ const CARD: ReportCardResponse = {
   ],
   overall: null,
   runningAverageScore: 55,
+  runningClassAverageScore: 52,
+  runningPosition: null,
   remarks: {
     teacherRemark: null,
     teacherRemarkBy: null,
@@ -88,13 +90,28 @@ describe("StudentReportCardView", () => {
 
     renderWithProviders(<StudentReportCardView data={CARD} examsViewer={{ kind: "self" }} />);
 
-    expect(screen.getByText("Your average so far")).toBeInTheDocument();
+    // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — "so far" dropped from the label
+    // (Dami's call: terse labels, the # prefix stays for an actual rank).
+    expect(screen.getByText("Your average")).toBeInTheDocument();
     expect(screen.getByText("55")).toBeInTheDocument();
+    expect(screen.getByText("Class average")).toBeInTheDocument();
+    expect(screen.getByText("52")).toBeInTheDocument();
     expect(screen.getByText("Not yet ranked")).toBeInTheDocument();
     expect(screen.getByText("Mathematics")).toBeInTheDocument();
     expect(screen.getByText("Published")).toBeInTheDocument();
     expect(screen.getByText("B3")).toBeInTheDocument();
     expect(screen.getByText("Class avg 58")).toBeInTheDocument();
+  });
+
+  it("running position shows as a plain #N once available, before the official overall exists", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockApi();
+    const withRunningPosition: ReportCardResponse = { ...CARD, runningPosition: 1 };
+
+    renderWithProviders(<StudentReportCardView data={withRunningPosition} examsViewer={{ kind: "self" }} />);
+
+    expect(screen.getByText("#1")).toBeInTheDocument();
+    expect(screen.queryByText("Not yet ranked")).not.toBeInTheDocument();
   });
 
   it("evaluation rows show the Abs/—/score three-way and anonymous class avg/best/worst, never a classmate name", async () => {
@@ -110,24 +127,36 @@ describe("StudentReportCardView", () => {
     expect(screen.getByRole("button", { name: "Show exams" })).toBeInTheDocument();
   });
 
-  it("once fully published, position resolves from overall (not the running average)", async () => {
+  it("once fully published, position resolves from overall (not the running position, even when both are present and disagree)", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockApi();
     const fullyPublished: ReportCardResponse = {
       ...CARD,
+      // Deliberately DIFFERENT from overallPosition below — proves official
+      // wins, not merely that it's present (SPEC_V0.7.3.md §3: the two
+      // pools can legitimately diverge for the same student).
+      runningPosition: 4,
       overall: { averageScore: 60, averageGrade: "B3", overallPosition: 2, status: "PUBLISHED", subjectsCount: 1, generalClassAverage: 58 },
     };
 
     renderWithProviders(<StudentReportCardView data={fullyPublished} examsViewer={{ kind: "self" }} />);
 
     expect(screen.getByText("#2")).toBeInTheDocument();
+    expect(screen.queryByText("#4")).not.toBeInTheDocument();
     expect(screen.queryByText("Not yet ranked")).not.toBeInTheDocument();
   });
 
   it("zero published subjects: shows the honest 'not yet published' empty state, not a raw 'no results entered' printout message", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockApi();
-    const empty: ReportCardResponse = { ...CARD, subjects: [], overall: null, runningAverageScore: null };
+    const empty: ReportCardResponse = {
+      ...CARD,
+      subjects: [],
+      overall: null,
+      runningAverageScore: null,
+      runningClassAverageScore: null,
+      runningPosition: null,
+    };
 
     renderWithProviders(<StudentReportCardView data={empty} examsViewer={{ kind: "self" }} />);
 

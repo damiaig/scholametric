@@ -47,6 +47,17 @@ export function StudentDashboard() {
   const displayAverage = overall
     ? overall.averageScore
     : (reportCard.data?.runningAverageScore ?? null);
+  // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — same official-then-running
+  // precedence for the two cards that were ALSO stuck on "—"/"Not yet
+  // ranked" all term: overall.generalClassAverage/overallPosition only
+  // ever exist once every subject is published; runningClassAverageScore/
+  // runningPosition fill the gap before then.
+  const displayClassAverage = overall
+    ? (overall.generalClassAverage ?? null)
+    : (reportCard.data?.runningClassAverageScore ?? null);
+  const displayPosition = overall
+    ? overall.overallPosition
+    : (reportCard.data?.runningPosition ?? null);
 
   return (
     <div>
@@ -71,10 +82,10 @@ export function StudentDashboard() {
             <StatCard
               icon={Users}
               label="Class average /100"
-              value={overall?.generalClassAverage != null ? formatScore(overall.generalClassAverage) : "—"}
+              value={displayClassAverage !== null ? formatScore(displayClassAverage) : "—"}
               tone="secondary"
             />
-            <StatCard icon={Trophy} label="Position" value={positionLabel(overall?.overallPosition ?? null)} tone="accent" />
+            <StatCard icon={Trophy} label="Position" value={positionLabel(displayPosition)} tone="accent" />
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
