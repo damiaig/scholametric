@@ -21,15 +21,22 @@ const GRID: EvaluationScoresResponse = {
   subjectId: "sub1",
   evaluationId: "comp1",
   termId: "term1",
+  evaluationStatus: "DRAFT",
   termClosed: false,
   locked: false,
   unlockReason: null,
   rows: [
-    { studentId: "s1", firstName: "Ada", lastName: "Bello", admissionNumber: "SUN/0001", rawScore: null, isAbsent: false, status: "DRAFT" },
-    { studentId: "s2", firstName: "Bola", lastName: "Coker", admissionNumber: "SUN/0002", rawScore: null, isAbsent: false, status: "DRAFT" },
-    { studentId: "s3", firstName: "Chidi", lastName: "Danjuma", admissionNumber: "SUN/0003", rawScore: null, isAbsent: false, status: "PUBLISHED" },
+    { studentId: "s1", firstName: "Ada", lastName: "Bello", admissionNumber: "SUN/0001", rawScore: null, isAbsent: false },
+    { studentId: "s2", firstName: "Bola", lastName: "Coker", admissionNumber: "SUN/0002", rawScore: null, isAbsent: false },
+    { studentId: "s3", firstName: "Chidi", lastName: "Danjuma", admissionNumber: "SUN/0003", rawScore: null, isAbsent: false },
   ],
 };
+
+// v0.7.4 step 1 (SPEC_V0.7.4.md §2) — publish is now atomic across an
+// evaluation's whole roster (one `evaluationStatus`, not a per-row
+// status), so the "already-published, locked from load" scenario is a
+// separate whole-grid fixture, not one mixed-status row inside GRID.
+const PUBLISHED_GRID: EvaluationScoresResponse = { ...GRID, evaluationStatus: "PUBLISHED" };
 
 function savedResponse(scores: { studentId: string; rawScore: number | null; isAbsent?: boolean }[]): SaveEvaluationScoresResponse {
   return {
@@ -65,14 +72,14 @@ afterEach(() => {
 });
 
 describe("ScoreEntryGrid", () => {
-  it("renders the roster and marks the already-published row locked from load, not reactively", async () => {
+  it("renders the roster and marks every row locked from load when the evaluation is already published, not reactively", async () => {
     mockedApiRequest.mockImplementation(async (path, options) => {
-      if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return GRID;
+      if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return PUBLISHED_GRID;
       throw new Error("unexpected call");
     });
     renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);
 
-    expect(await screen.findByLabelText("Score for Ada Bello")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Score for Ada Bello")).toBeDisabled();
     expect(screen.getByLabelText("Score for Chidi Danjuma")).toBeDisabled();
   });
 
@@ -455,9 +462,9 @@ describe("ScoreEntryGrid", () => {
       await waitFor(() => expect(putCalls().length).toBeGreaterThanOrEqual(1));
     });
 
-    it("a locked (PUBLISHED) cell ignores the A shortcut entirely", async () => {
+    it("a locked (PUBLISHED evaluation) cell ignores the A shortcut entirely", async () => {
       mockedApiRequest.mockImplementation(async (path, options) => {
-        if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return GRID;
+        if (path === "/api/v1/grades/evaluation-scores" && (options as { method?: string })?.method !== "PUT") return PUBLISHED_GRID;
         throw new Error("unexpected call");
       });
       renderWithProviders(<ScoreEntryGrid params={PARAMS} canManageTermLock={false} saveQueueTiming={{ debounceMs: 20, maxWaitMs: 500 }} />);

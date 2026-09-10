@@ -6,23 +6,22 @@ import { Label } from "../../components/ui/label";
 import { Spinner } from "../../components/ui/spinner";
 import { Button } from "../../components/ui/button";
 import { getErrorMessage } from "../../lib/api-client";
-import { isProprietor } from "../../lib/roles";
 import { StatusBadge, type BadgeTone } from "../../components/StatusBadge";
-import { useCurrentUser } from "../shell/use-current-user";
 import { useClasses } from "../classes/use-classes";
 import { useAdminCurrentTerm } from "./use-admin-current-term";
 import { useGradesReview } from "./use-grades-review";
 import { formatScore } from "./format-score";
-import { PublishConfirmDialog } from "./PublishConfirmDialog";
-import { UnpublishConfirmDialog } from "./UnpublishConfirmDialog";
 import type { GradesReviewSubject } from "@scholametric/shared";
 
 // v0.7.1 step 4 (SPEC_V0.7.1.md §4.2, item 10) — a per-subject "at a
 // glance" rollup, entirely derived from fields GET /grades/review ALREADY
-// returns (publishedCount/rosterSize/canPublish) — no new query, no
-// school-wide fan-out (that's the admin-dashboard card we explicitly held,
-// see docs/DECISIONS.md). This is the legitimate per-subject version of
-// the same three-tier language.
+// returns (publishedCount/rosterSize) — no new query, no school-wide
+// fan-out (that's the admin-dashboard card we explicitly held, see
+// docs/DECISIONS.md). v0.7.4 step 1 (SPEC_V0.7.4.md §2): this page is now
+// pure read-only oversight (publish/unpublish moved to the evaluation
+// surface), so the tier describes CURRENT STATE only — no more
+// canPublish-driven "Waiting to publish" tier, since there's no action
+// this page offers to wait for.
 function subjectPublishTier(subject: GradesReviewSubject): {
   label: string;
   tone: BadgeTone;
@@ -31,8 +30,8 @@ function subjectPublishTier(subject: GradesReviewSubject): {
     return { label: "No students", tone: "neutral" };
   if (subject.publishedCount === subject.rosterSize)
     return { label: "Published", tone: "success" };
-  if (subject.canPublish)
-    return { label: "Waiting to publish", tone: "warning" };
+  if (subject.publishedCount > 0)
+    return { label: "Partially published", tone: "warning" };
   return { label: "Still in draft", tone: "neutral" };
 }
 
@@ -49,19 +48,19 @@ function formatTermName(name: string): string {
 // docs/DECISIONS.md): the nav link to this page is admin/owner-only, and
 // a direct hit by anyone else 403s from the API and renders through the
 // same error state as any other failed load.
+//
+// v0.7.4 step 1 (SPEC_V0.7.4.md §2) — pure read-only oversight now.
+// Publish/unpublish happens at the evaluation surface (EnterScoresTab's
+// EvaluationsTrack), not here — neither the old Publish nor Unpublish
+// button targeted a still-existing action once publish moved to the
+// individual evaluation, so both are removed rather than re-pointed.
 export function ReviewPublishPage() {
-  const { data: currentUser } = useCurrentUser();
   const [searchParams] = useSearchParams();
-  const canUnpublish = isProprietor(currentUser?.role);
 
   const [classArmId, setClassArmId] = useState(
     searchParams.get("classArmId") ?? "",
   );
   const [termId, setTermId] = useState("");
-  const [publishTarget, setPublishTarget] =
-    useState<GradesReviewSubject | null>(null);
-  const [unpublishTarget, setUnpublishTarget] =
-    useState<GradesReviewSubject | null>(null);
 
   const classes = useClasses();
   const adminTerm = useAdminCurrentTerm(true);
@@ -77,12 +76,6 @@ export function ReviewPublishPage() {
       ),
     [classes.data],
   );
-  const classArmName =
-    classArmOptions.find((option) => option.id === classArmId)?.label ??
-    "this class";
-  const termLabel = adminTerm.terms.find(
-    (term) => term.id === effectiveTermId,
-  )?.name;
 
   const ready = Boolean(classArmId && effectiveTermId);
   const reviewQuery = useGradesReview(
@@ -227,55 +220,12 @@ export function ReviewPublishPage() {
                       </span>
                     </p>
                   </div>
-
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={!subject.canPublish}
-                      title={
-                        subject.canPublish
-                          ? undefined
-                          : "Nothing eligible to publish yet — either no scores are pending approval, or some students still have a blank component."
-                      }
-                      onClick={() => setPublishTarget(subject)}
-                    >
-                      Publish
-                    </Button>
-                    {canUnpublish && subject.publishedCount > 0 && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="text-danger hover:bg-danger/10"
-                        onClick={() => setUnpublishTarget(subject)}
-                      >
-                        Unpublish
-                      </Button>
-                    )}
-                  </div>
                 </CardContent>
               </Card>
             );
           })}
         </div>
       )}
-
-      <PublishConfirmDialog
-        classArmName={classArmName}
-        termLabel={termLabel ? formatTermName(termLabel) : "this term"}
-        subject={publishTarget}
-        classArmId={classArmId}
-        termId={effectiveTermId}
-        onClose={() => setPublishTarget(null)}
-      />
-      <UnpublishConfirmDialog
-        classArmName={classArmName}
-        subject={unpublishTarget}
-        classArmId={classArmId}
-        termId={effectiveTermId}
-        onClose={() => setUnpublishTarget(null)}
-      />
     </div>
   );
 }

@@ -5335,3 +5335,121 @@ own "dashes"/"Not yet ranked" assertions). Zero `apps/api/exams/` diff,
 zero new e2e test blocks (455 baseline + 6 already-added in step 1 =
 461 before and after this step); full web suite 310/310 (49 files, +3
 tests) after.
+
+## 2026-09-10 — v0.7.4 step 1: per-evaluation publish, subject status derived (Q1/Q2)
+
+**Publish moves from the subject to the individual `Evaluation`.**
+`Evaluation` gains its own `status`/`publishedAt` (migration
+`20260909044846_v0_7_4_evaluation_publish_status`, additive-only —
+every existing row defaults `DRAFT`). `POST /grades/publish`/
+`POST /grades/unpublish` are removed; `POST /grades/evaluations/:id/publish`/
+`.../unpublish` replace them, role shapes unchanged from v0.7.3
+(SCHOOL_ADMIN/PROPRIETOR/assigned-TEACHER publish; TEACHER/PROPRIETOR
+unpublish). `prisma migrate diff` again proposed dropping the two
+hand-added trigram indexes on `students` — same known false positive
+every prior migration here has hit; removed from the SQL file, not
+reintroduced.
+
+**Subject status/total are now derived, not stored-by-action.**
+`recomputeStudents()` rewritten: a subject counts `PUBLISHED` once a
+student has ≥1 decided (score-or-absent) row among the subject's
+*currently-published* evaluations only; `total_score` is the average of
+published evaluations only (`computeEvaluationAverage`, itself
+unchanged — just fed a filtered input set). Consequence, confirmed and
+blessed by Dami before starting: **saving a score on an unpublished
+evaluation no longer moves the subject total** — the total reflects
+published evaluations only, live-figures-until-declared-final
+("Pronote-style"), not the old instant-move-on-every-save behavior.
+
+**The leak fix (security centerpiece).** `getReportCard()`'s
+evaluations query gains `status: PUBLISHED` for self-view
+(`publishedOnlyForSelfView`), mirroring the filter `subjectResults`
+already applied one level up. Before this, a visible (derived-published)
+subject with one published + one still-draft evaluation would leak the
+draft sibling's id/name/scores to a student/parent. Proven directly in
+`me-student.e2e-spec.ts` via a dedicated fixture (subjectZ, one
+published + one draft evaluation) asserting both structural absence
+(`evaluations` array length) and a `JSON.stringify` scan confirming the
+draft evaluation's id/name appear nowhere in the response.
+
+**`recomputeOverallForClassArm`/`computeOverallStatus`: byte-for-byte
+unchanged.** Proven by non-modification (git diff shows zero touches),
+per Dami's own non-negotiable guardrail — the official overall's
+integrity comes from inheriting the new subject-derivation semantics
+purely from upstream, not from any change to the overall logic itself.
+
+**Straggler philosophy changed — an intended improvement, not a
+regression.** Pre-v0.7.4: a student scored after subject-publish stayed
+`DRAFT` forever (a quirk of subject being the only publish unit).
+Now: since publish is per-evaluation and the admin/proprietor bypass
+lock (unchanged from v0.7.3) allows editing an already-published
+evaluation, a straggler decided on an already-published evaluation
+immediately derives `PUBLISHED` for that subject too. Reproducing a
+genuine "stays draft" straggler in a test now requires a dedicated
+never-published extra evaluation.
+
+**Unpublish is now per-evaluation, not whole-subject-revert.** Old
+`unpublish()` reverted an entire subject to `DRAFT`. New
+`unpublishEvaluation()` reverts only the targeted evaluation; a subject
+with other still-published evaluations **stays derived-`PUBLISHED`**,
+just with a recalculated total excluding the unpublished one — only a
+subject with no other published evaluations reverts to `DRAFT` as a
+side effect.
+
+**Authoring gates re-scoped from subject to evaluation.** Create no
+longer blocks on a sibling evaluation being published (adding CA3 while
+CA1 is already published is now the normal case). Edit/delete now check
+THIS evaluation's own `PUBLISHED` state, not the subject's.
+
+**`recompute()` bug found and fixed via testing (not part of the
+original plan).** Removing the old subject-level `lockedStudentIds` 409
+block (per the approved plan — recompute no longer protects an
+externally-declared subject-publish, since none exists anymore) exposed
+a real gap: `recomputeStudents()` always nulls `subjectPosition`, and
+`recompute()` never re-ranked afterward. Harmless under the old model
+(recompute could never touch a published subject); a real regression
+once unblocked (would silently wipe already-published students'
+positions). Fixed by adding the same "re-rank the entire currently-
+published set" step `publishEvaluation()`/`unpublishEvaluation()`
+already have.
+
+**`seed.ts` inconsistency found and fixed.** `seedSubjectGrades()` wrote
+`TermSubjectResult.status = PUBLISHED` directly (bypassing the real
+publish endpoint) but never touched the underlying evaluations' own
+`status` — so seeded "published" demo subjects had evaluations still
+defaulting to `DRAFT` after the migration, silently allowing writes that
+should have been blocked. Fixed: `seedSubjectGrades()` now sets each
+evaluation's `status`/`publishedAt` to match the `publish` flag too, on
+both create and (new) update paths.
+
+**v0.7.3's per-subject Publish/Unpublish UI is removed**; publish/
+unpublish now lives on the evaluation surface (`EnterScoresTab`'s
+`EvaluationsTrack`, gated the same `canPublish`/`canUnpublish` way the
+exam track's UI already was). `ReviewPublishPage` becomes pure read-only
+oversight — no action buttons, `canPublish` removed from
+`GradesReviewSubject`.
+
+**Test impact — the roster-wide completeness gate was the single
+biggest ripple.** `findIncompleteStudentsForEvaluation()` checks against
+the FULL current roster, not just students with an existing row (the
+old subject-level gate's carve-out) — publishing any evaluation now
+requires the entire class arm decided on it. Broke many shared-fixture
+e2e tests across `grades-publish`, `evaluations-authoring`,
+`evaluations-engine`, `me-student`, `me-parent`, `report-card`,
+`class-arm-results`, `mark-absent-after-publish`, `grades-review`,
+`exams-engine`, and `student-results` specs — fixed via three patterns
+depending on context: fresh per-test class arms, reordering student
+enrollment to after a subject's publish, or a dedicated
+never-published extra evaluation for straggler fixtures. Separately,
+the "unpublished evaluations contribute 0 to the total" change broke
+dozens of assertions that scored but never published an evaluation —
+adjusted to expect 0/F9 or added the missing publish call. Full backend
+e2e suite: 462/462 (38 suites) after — net +1 over the 461 baseline
+(2 `canPublish`-dependent tests removed from `grades-review.e2e-spec.ts`,
+1 new leak-fix test added to `me-student.e2e-spec.ts`, plus assorted
+redesigns). Full web suite: 296/296 (48 files) after — the v0.7.3
+publish-button test blocks (`ResultsTab.test.tsx` deleted entirely,
+`ClassArmResultsView.test.tsx`'s publish-visibility describe removed,
+`ReviewPublishPage.test.tsx` rewritten for read-only) net out against
+new coverage added for `EnterScoresTab`'s evaluation-level publish UI
+and `EvaluationPicker`'s status badge.

@@ -179,12 +179,27 @@ export function useScoreEntrySaveQueue(
       // "sticky" per student (updated reactively only via the save
       // queue's own 409 handling), term-lock is grid-wide and must track
       // the current query data exactly.
-      rows: grid.rows.map((row) => ({
-        studentId: row.studentId,
-        rawScore: row.rawScore,
-        isAbsent: row.isAbsent,
-        locked: row.status === "PUBLISHED",
-      })),
+      //
+      // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — evaluations moved their
+      // PUBLISHED-lock to a single top-level `evaluationStatus` field
+      // (publish is now atomic across an evaluation's whole roster, so
+      // there's no per-row variance left to represent); exams are
+      // untouched this step and still carry a per-row `status` (subject-
+      // level, can genuinely vary row to row). Narrowed on `grid` itself
+      // (not a hoisted boolean) so each branch's row type stays correct.
+      rows: "evaluationId" in grid
+        ? grid.rows.map((row) => ({
+            studentId: row.studentId,
+            rawScore: row.rawScore,
+            isAbsent: row.isAbsent,
+            locked: grid.evaluationStatus === "PUBLISHED",
+          }))
+        : grid.rows.map((row) => ({
+            studentId: row.studentId,
+            rawScore: row.rawScore,
+            isAbsent: row.isAbsent,
+            locked: row.status === "PUBLISHED",
+          })),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [grid, params.classArmId, params.subjectId, entryId(params), params.termId]);
@@ -231,8 +246,24 @@ export function useScoreEntrySaveQueue(
           response.rows.map((row) => [row.studentId, { value: row.rawScore, isAbsent: row.isAbsent }]),
         );
         dispatch({ type: "FLUSH_SUCCESS", sent, results });
+        // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — branched on the discriminant
+        // (`evaluationId` vs `examId`) rather than a single generic
+        // `old.rows.map`, same reasoning as the HYDRATE effect above: the
+        // two row types diverged once evaluations dropped their per-row
+        // `status`, so a union-wide map can no longer produce a value
+        // that's still assignable back to EvaluationScoresResponse |
+        // ExamScoresResponse.
         queryClient.setQueryData<EvaluationScoresResponse | ExamScoresResponse>(scoresQueryKey(paramsRef.current), (old) => {
           if (!old) return old;
+          if ("evaluationId" in old) {
+            return {
+              ...old,
+              rows: old.rows.map((row) => {
+                const result = results.get(row.studentId);
+                return result ? { ...row, rawScore: result.value, isAbsent: result.isAbsent } : row;
+              }),
+            };
+          }
           return {
             ...old,
             rows: old.rows.map((row) => {

@@ -25,8 +25,8 @@ const TARGET: MarkAbsentTarget = {
 };
 
 const EVALUATIONS: Evaluation[] = [
-  { id: "c1", name: "CA 1", description: "CA 1", createdAt: "t", createdBy: "u1" },
-  { id: "exam", name: "Exam", description: "Exam", createdAt: "t", createdBy: "u1" },
+  { id: "c1", name: "CA 1", description: "CA 1", status: "PUBLISHED", publishedAt: "t", createdAt: "t", createdBy: "u1" },
+  { id: "exam", name: "Exam", description: "Exam", status: "PUBLISHED", publishedAt: "t", createdAt: "t", createdBy: "u1" },
 ];
 
 function evaluationsListResponse(): EvaluationsListResponse {
@@ -39,11 +39,12 @@ function gridResponse(overrides: Partial<EvaluationScoresResponse["rows"][number
     subjectId: "sub1",
     evaluationId: "exam",
     termId: "term1",
+    evaluationStatus: "PUBLISHED",
     termClosed: false,
     locked: false,
     unlockReason: null,
     rows: [
-      { studentId: "st1", firstName: "Chidi", lastName: "Okoro", admissionNumber: "SUN/0001", rawScore: 100, isAbsent: false, status: "PUBLISHED", ...overrides },
+      { studentId: "st1", firstName: "Chidi", lastName: "Okoro", admissionNumber: "SUN/0001", rawScore: 100, isAbsent: false, ...overrides },
     ],
   };
 }

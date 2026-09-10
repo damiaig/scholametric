@@ -115,7 +115,13 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
 
     targetStudentId = await enroll("Target", 0);
     partialStudentId = await enroll("Partial", 1);
-    remarksStudentId = await enroll("Remarks", 2);
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q2) — remarksStudentId is enrolled
+    // AFTER subjectA publishes below (not here alongside target/partial):
+    // the completeness gate is roster-wide (every CURRENTLY ENROLLED
+    // student), so publishing while remarksStudentId is already
+    // enrolled-but-unscored would 409. Its whole fixture purpose is
+    // "dedicated, score-free" — enrolling it post-publish keeps that
+    // premise intact.
 
     const teacherClass = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher2@sunrise.test" } });
     await prisma.classTeacherAssignment.create({
@@ -146,13 +152,18 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
     await score(subjectA, aEval1, [{ studentId: targetStudentId, rawScore: 18 }, { studentId: partialStudentId, rawScore: 15 }]);
     await score(subjectA, aEval2, [{ studentId: targetStudentId, isAbsent: true }, { studentId: partialStudentId, rawScore: 0 }]);
     await score(subjectA, aEval3, [{ studentId: targetStudentId, rawScore: 84 }, { studentId: partialStudentId, rawScore: 75 }]);
-    const publishRes = await request(app.getHttpServer())
-      .post("/api/v1/grades/publish")
-      .set(auth(sunriseAdminToken))
-      .send({ classArmId: studentArmId, subjectId: subjectA, termId: sunriseTermId });
-    if (publishRes.status !== 200) {
-      throw new Error(`publish failed: ${publishRes.status} ${JSON.stringify(publishRes.body)}`);
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — publish moved to the individual
+    // evaluation; all three of subjectA's evaluations are published so its
+    // total is the average across all of them, matching this fixture's
+    // hand-verified 51/30 figures.
+    for (const evaluationId of [aEval1, aEval2, aEval3]) {
+      const publishRes = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseAdminToken));
+      if (publishRes.status !== 200) {
+        throw new Error(`publish failed for ${evaluationId}: ${publishRes.status} ${JSON.stringify(publishRes.body)}`);
+      }
     }
+
+    remarksStudentId = await enroll("Remarks", 2);
 
     // subjectB: target only, one evaluation scored, others genuinely never
     // touched (blank) -> DRAFT, never published. The blank-vs-absent proof.
@@ -246,9 +257,16 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
       expect(subjB.status).toBe("DRAFT");
       expect(subjB.evaluations).toHaveLength(1);
       expect(subjB.evaluations[0]).toMatchObject({ name: "CA 1", description: "CA 1", rawScore: 10, isAbsent: false });
-      // Only one student (target) has ever been scored on subjectB — the
-      // class average with a single data point is just that data point.
-      expect(subjB.classAverageScore).toBe(10);
+      // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — subjectB's SUBJECT-level
+      // total is the average of its PUBLISHED evaluations only; bEval1 is
+      // never published, so every roster student's subjectB totalScore
+      // stays 0 (unaffected by publish-state for the STUDENT-eligibility
+      // filter, which is a separate axis — this is about whether an
+      // unpublished evaluation's raw score counts toward the stored
+      // total at all, and it doesn't). The PER-EVALUATION stats below are
+      // unaffected: they read evaluation_scores directly, not the derived
+      // subject total.
+      expect(subjB.classAverageScore).toBe(0);
       expect(subjB.evaluations[0]).toMatchObject({ classAverageScore: 10, bestScore: 10, worstScore: 10 });
 
       // v0.7.2 step 1 (SPEC_V0.7.2.md §2) — staff-view parity: staff sees

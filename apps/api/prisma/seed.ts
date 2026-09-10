@@ -657,25 +657,37 @@ async function seedSubjectGrades(params: {
     absentStudentEvaluations = [],
   } = params;
 
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — publish is now per-evaluation;
+  // a subject's term_subject_result.status is DERIVED from its
+  // evaluations' own status. This seed writes term_subject_results
+  // directly (bypassing the real publish endpoint, per this function's
+  // own doc comment above), so it must ALSO set each evaluation's own
+  // status/publishedAt to match `publish` — otherwise demo data marked
+  // "PUBLISHED" at the subject level would have evaluations that are
+  // still DRAFT underneath, an inconsistent state the real app can never
+  // produce (evaluation.status now gates both the score-entry write-lock
+  // and whether a score counts toward the total at all).
   const evaluationIds: string[] = [];
+  const evaluationStatusData = publish ? { status: "PUBLISHED" as const, publishedAt: new Date() } : {};
   for (const evaluationDef of CONTINUOUS_EVALUATIONS) {
     const existing = await prisma.evaluation.findFirst({
       where: { schoolId, classArmId, subjectId, termId, name: evaluationDef.name, deletedAt: null },
     });
-    const evaluation =
-      existing ??
-      (await prisma.evaluation.create({
-        data: {
-          schoolId,
-          classArmId,
-          subjectId,
-          sessionId,
-          termId,
-          name: evaluationDef.name,
-          description: `Continuous assessment: ${evaluationDef.name}`,
-          createdBy: enteredByUserId,
-        },
-      }));
+    const evaluation = existing
+      ? await prisma.evaluation.update({ where: { id: existing.id }, data: evaluationStatusData })
+      : await prisma.evaluation.create({
+          data: {
+            schoolId,
+            classArmId,
+            subjectId,
+            sessionId,
+            termId,
+            name: evaluationDef.name,
+            description: `Continuous assessment: ${evaluationDef.name}`,
+            createdBy: enteredByUserId,
+            ...evaluationStatusData,
+          },
+        });
     evaluationIds.push(evaluation.id);
   }
 

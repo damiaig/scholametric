@@ -1136,24 +1136,39 @@ out-of-scope line).
 
 ---
 
-## Evaluations — authoring & score entry (v0.7 steps 1-2, SPEC_V0.7.md §2/§3/§5)
+## Evaluations — authoring & score entry (v0.7 steps 1-2, SPEC_V0.7.md §2/§3/§5; publish model replaced v0.7.4 step 1, SPEC_V0.7.4.md §2)
 
 v0.7 replaces v0.4's fixed CA1/CA2/Exam weighted-component model with
 teacher-created **evaluations** — arbitrarily many per (class arm,
 subject, term), each scored natively **out of 100** (no weights, no
-per-evaluation `maxScore`). A subject's `term_subject_result.total_score`
-is the plain average of every evaluation's decided score (a real score or
-an explicit absence both count as "decided"; a never-touched evaluation
-silently contributes nothing — never averaged in as a 0). There is no
-`PENDING_APPROVAL` tier at the subject level any more: a row is `DRAFT`
-until `POST /grades/publish` declares it final, full stop (docs/
-DECISIONS.md). `term_overall_results.status` can still read
-`PENDING_APPROVAL` — that's a **cross-subject** aggregate over a mix of
-`DRAFT`/`PUBLISHED` subject rows, unrelated to the retired per-subject
-tier.
+per-evaluation `maxScore`).
 
-Step 1 shipped the engine + score-entry endpoint; step 2 (below) adds
-creating/editing/deleting an `Evaluation` itself, plus the authoring UI.
+**v0.7.4 step 1 replaced subject-level publish with per-evaluation
+publish** (docs/DECISIONS.md) — `Evaluation` now carries its own
+`status`/`publishedAt`, and a subject's `term_subject_result.status`/
+`total_score` are **derived**, not directly set: a subject counts as
+`PUBLISHED` once a student has ≥1 decided (score-or-absent) row among the
+subject's *currently-published* evaluations, and `total_score` is the
+average of published evaluations only — a real score or an explicit
+absence on an evaluation that isn't published yet contributes nothing to
+the total (this is a live-figures-until-declared-final model, "Pronote-
+style": saving a score on an unpublished evaluation no longer moves the
+subject total the way it did pre-v0.7.4). There is no `PENDING_APPROVAL`
+tier at the subject level any more: a subject is `DRAFT` until at least
+one of its evaluations is published, full stop. `term_overall_results.status`
+can still read `PENDING_APPROVAL` — that's a **cross-subject** aggregate
+over a mix of `DRAFT`/`PUBLISHED` subject rows, unrelated to the retired
+per-subject tier, and is unaffected by this change
+(`recomputeOverallForClassArm`/`computeOverallStatus` are byte-for-byte
+unchanged — they simply inherit the new subject-derivation semantics from
+upstream).
+
+Step 1 (v0.7) shipped the engine + score-entry endpoint; step 2 (v0.7)
+added creating/editing/deleting an `Evaluation` itself, plus the authoring
+UI. v0.7.4 step 1 then moved publish/unpublish from the subject to the
+individual evaluation (see `POST /grades/evaluations/:id/publish`/
+`.../unpublish` below) and re-scoped the authoring gates and edit-lock to
+match.
 
 `TEACHER`: only their own `subject_teacher_assignments` (checked at the
 session level — assignments carry no `term_id`; `termId` in these requests
@@ -1174,23 +1189,27 @@ evaluation (`null` if unentered). Unpaginated (CLAUDE.md §5 exception — a
 class arm is bounded ~150, SPEC_V0.4.md §2 says return all rather than
 paginate).
 
-Each row also carries `status`: `"DRAFT" | "PENDING_APPROVAL" | "PUBLISHED"`
-(the middle value is never actually set for a subject row any more, kept
-only for shape stability), sourced from the student's `term_subject_results`
-row for this subject/term (defaults to `"DRAFT"` if none exists yet). This
-is **subject-level, not evaluation-level** — the same value repeats across
-every evaluation's grid for a given student/subject/term, and can be
-genuinely mixed within one response (e.g. one student published, another
-still draft). Also carries the slice's term-lock state (SPEC_V0.5.md §2.3,
-carried forward unchanged): `termClosed`, `locked`, `unlockReason`.
+Carries a top-level `evaluationStatus`: `"DRAFT" | "PENDING_APPROVAL" |
+"PUBLISHED"` (the middle value is never actually set any more, kept only
+for shape stability) — **v0.7.4 step 1** (SPEC_V0.7.4.md §2): publish is
+now per-`Evaluation`, so this is the evaluation's own `status` column, one
+value for the whole grid, not a per-row field sourced from
+`term_subject_results`. Before v0.7.4 this repeated per-row and could be
+genuinely mixed (one student published, another still draft); it can't any
+more — the completeness gate means an evaluation is either published for
+its entire roster or for no one. Also carries the slice's term-lock state
+(SPEC_V0.5.md §2.3, carried forward unchanged): `termClosed`, `locked`,
+`unlockReason` — orthogonal to `evaluationStatus`: that's the publish lock,
+this is the term-close lock, either can be true independent of the other.
 
 **Response `200`**
 ```json
 {
   "classArmId": "...", "subjectId": "...", "evaluationId": "...", "termId": "...",
+  "evaluationStatus": "DRAFT",
   "termClosed": false, "locked": false, "unlockReason": null,
   "rows": [
-    { "studentId": "...", "firstName": "...", "lastName": "...", "admissionNumber": "SUN/2026/0001", "rawScore": 17, "isAbsent": false, "status": "DRAFT" }
+    { "studentId": "...", "firstName": "...", "lastName": "...", "admissionNumber": "SUN/2026/0001", "rawScore": 17, "isAbsent": false }
   ]
 }
 ```
@@ -1228,15 +1247,22 @@ on `(schoolId, subjectId, classArmId, termId)` serializes concurrent
 saves to the same grid.
 
 Recomputes each affected student's `term_subject_results` row at the end
-of the same transaction — re-derived from **all** of that student's
-current scores across every active evaluation for this subject/term, not
-just the one this call wrote (`grades/grade-computation.ts`'s
-`computeEvaluationAverage`): `total_score`, `auto_grade`, `final_grade`
-(`override_grade` is preserved only for an admin/proprietor correction to
-an already-published row — see the published-lock note below; cleared
-otherwise). `status` is always `DRAFT` for a freshly recomputed row —
-only `POST /grades/publish` ever sets `PUBLISHED`. Positions and
-`term_overall_results` are untouched here (computed at publish time).
+of the same transaction — re-derived (**v0.7.4 step 1**: from only the
+subject's *currently-published* evaluations, not every active one; see
+the section intro above) from all of that student's current scores across
+those published evaluations for this subject/term, not just the one this
+call wrote (`grades/grade-computation.ts`'s `computeEvaluationAverage`):
+`total_score`, `auto_grade`, `final_grade` (`override_grade` is preserved
+only for an admin/proprietor correction to an already-published row — see
+the published-lock note below; cleared otherwise). `status` is usually
+`DRAFT` for a freshly-saved (unpublished) evaluation, but **not always**:
+if this student already has a *different*, already-`PUBLISHED` evaluation
+for the same subject/term, the subject stays derived-`PUBLISHED` — this
+call only ever writes the evaluation it targets, which stays `DRAFT`
+regardless (only `POST /grades/evaluations/:id/publish` sets an
+evaluation's own `status`); the subject-level `status` this recompute
+writes is a separate, derived value. Positions and `term_overall_results`
+are untouched here (computed at publish time).
 
 **Response `200`**: the touched rows only (not the whole roster — the
 frontend already has the rest from `GET`), each with its saved `rawScore`/
@@ -1256,14 +1282,15 @@ frontend already has the rest from `GET`), each with its saved `rawScore`/
 this class arm's current-session roster.
 
 **Response `409`**: the term is closed for this class+subject with no
-active unlock (`{ termLocked: true }` — SPEC_V0.5.md §2.3), **or** any
-affected student's `term_subject_results` for this subject/term is
-already `PUBLISHED` (`{ lockedStudentIds: [...] }`). `SCHOOL_ADMIN`/
-`PROPRIETOR` may bypass the published-lock specifically to correct an
-already-published score/absence (SPEC_V0.5.1.md §2.5) — `TEACHER` 409s
-unconditionally either way. The closed-term lock has no such bypass; it
-requires the principal's unlock flow (`POST /terms/:id/unlock`) first,
-regardless of role.
+active unlock (`{ termLocked: true }` — SPEC_V0.5.md §2.3), **or** this
+evaluation is already `PUBLISHED` (`{ lockedStudentIds: [...] }` — v0.7.4
+step 1: keyed to the evaluation, not the subject, so `lockedStudentIds` is
+always the entire roster, never a partial subset — one evaluation is
+published for everyone or no one). `SCHOOL_ADMIN`/`PROPRIETOR` may bypass
+the published-lock specifically to correct an already-published score/
+absence (SPEC_V0.5.1.md §2.5) — `TEACHER` 409s unconditionally either way.
+The closed-term lock has no such bypass; it requires the principal's
+unlock flow (`POST /terms/:id/unlock`) first, regardless of role.
 
 **Response `403`/`404`**: same rules as `GET /grades/evaluation-scores` above.
 
@@ -1277,10 +1304,10 @@ bypass above, so that sensitive path stays traceable).
 The authoring surface — teacher-created evaluations. `TEACHER` (must hold
 the `subject_teacher_assignment`)/`SCHOOL_ADMIN`/`PROPRIETOR` — same role
 list as scoring (confirmed: an admin stepping in for a teacher may author
-too). An `Evaluation` carries no status/publish field of its own; "is this
-subject published" is read fresh off `term_subject_results` at the moment
-of each authoring action, never cached, so it can't drift from the real
-gate the scoring/publish endpoints already enforce.
+too). **v0.7.4 step 1** (SPEC_V0.7.4.md §2): an `Evaluation` now carries its
+OWN `status`/`publishedAt` columns — publish is per-evaluation, so
+authoring gates below check THIS evaluation's own status, not a
+subject-wide `term_subject_results` lookup the way pre-v0.7.4 did.
 
 **`GET`** — query: `classArmId`, `subjectId`, `termId`. Returns every
 active (non-deleted) evaluation for that exact slice, oldest first, plus
@@ -1294,7 +1321,7 @@ form, not as a bare `409` after submitting.
   "classArmId": "...", "subjectId": "...", "termId": "...",
   "termClosed": false, "locked": false, "unlockReason": null,
   "evaluations": [
-    { "id": "...", "name": "CA 1", "description": "Fractions quiz", "createdAt": "...", "createdBy": "..." }
+    { "id": "...", "name": "CA 1", "description": "Fractions quiz", "status": "DRAFT", "publishedAt": null, "createdAt": "...", "createdBy": "..." }
   ]
 }
 ```
@@ -1303,57 +1330,64 @@ form, not as a bare `409` after submitting.
 `name` (1-200 chars) and `description` (1-2000 chars) are both required
 (SPEC_V0.7.md §3 — no optional description). classArmId/subjectId/termId
 are fixed at creation — there is no "move this evaluation to another
-term" operation.
+term" operation. Always created `DRAFT`.
 
 - **`409` `{ termLocked: true }`**: the term is closed for this class+
   subject with no active unlock — same shared term lock the scoring
   endpoints use (closing a term blocks editing either track).
-- **`409`**: this subject's results are already `PUBLISHED` for this term
-  — the evaluation set is frozen once published (confirmed in step 1);
-  unpublish first, then create.
 - **`403`**: `TEACHER` not assigned to this subject/class.
 - **`404`**: any id doesn't resolve within the caller's tenant, or no
   `subject_teacher_assignment` exists at all for this (subject, class arm,
   session) — same "hidden, not forbidden" rule as scoring.
 
-**Response `200`/`201`**: the created/listed evaluation(s) — `{ id, name, description, createdAt, createdBy }`.
+**No published-subject gate any more** (v0.7.4 step 1 — removed): a
+sibling evaluation of the same subject being `PUBLISHED` has no bearing on
+creating a new one. Adding CA3 while CA1 is already published is the
+normal case now — CA3 starts as its own fresh, unpublished evaluation and
+doesn't disturb CA1's already-derived contribution to the subject total.
+
+**Response `200`/`201`**: the created/listed evaluation(s) — `{ id, name, description, status, publishedAt, createdAt, createdBy }`.
 
 Audited (`evaluation.create`, standard `@Audit()`/`AuditInterceptor`).
 
-### `PATCH /grades/evaluations/:id` (v0.7 step 2)
+### `PATCH /grades/evaluations/:id` (v0.7 step 2, re-scoped v0.7.4 step 1)
 
 Body: `{ name?, description? }` — at least one required (`400` if both
 omitted). Name/description only; re-scoping isn't in scope.
 
 - Freely editable by `TEACHER` (assigned)/`SCHOOL_ADMIN`/`PROPRIETOR`
-  while this subject's results are `DRAFT`.
-- **`403`** once this subject has ANY `PUBLISHED` result: only
-  `PROPRIETOR` may edit from that point — the same data-dependent
-  role-narrowing shape `PUT /grades/override` already uses.
+  while **this evaluation** is `DRAFT`.
+- **`403`** once **this evaluation** is `PUBLISHED`: only `PROPRIETOR` may
+  edit from that point — the same data-dependent role-narrowing shape
+  `PUT /grades/override` already uses, re-scoped from "the subject" (pre-
+  v0.7.4) to "this evaluation" — a sibling evaluation's publish state has
+  no bearing on this one any more.
 - Same term-lock `409` as create.
 - No recompute — name/description never feed the average.
 
 Audited (`evaluation.update`).
 
-### `DELETE /grades/evaluations/:id` (v0.7 step 2)
+### `DELETE /grades/evaluations/:id` (v0.7 step 2, re-scoped v0.7.4 step 1)
 
 `PROPRIETOR` only, categorical — enforced at the route (mirrors
-`POST /grades/unpublish` exactly, not data-dependent).
+`POST /grades/evaluations/:id/unpublish` exactly, not data-dependent).
 
-- **`409`**: this subject's results are already `PUBLISHED` for this term.
-  Blocks outright — confirmed no force-delete-through-published path.
-  Unpublish first, then delete.
+- **`409`**: **this evaluation** is already `PUBLISHED`. Blocks outright —
+  confirmed no force-delete-through-published path. Unpublish first, then
+  delete. (Re-scoped from "this subject's results" to "this evaluation" —
+  a sibling evaluation's publish state has no bearing here.)
 - Same term-lock `409` as create/edit.
 - Otherwise: soft-deletes (`deleted_at`) and recomputes every affected
   student's `term_subject_result` for this class arm/subject/term — the
   deleted evaluation is automatically excluded from every future average/
   completeness check (every recompute already filters `deleted_at: null`,
   zero new branching). No cross-subject overall cascade runs here: because
-  delete is blocked while anything's published, every affected row is
-  guaranteed `DRAFT` at delete-time, so no student's overall could already
-  be counting on this subject, and no first-ever-row case can arise
-  (docs/DECISIONS.md — a future change allowing force-delete through a
-  published state must add that cascade back).
+  delete is blocked while THIS evaluation is published, it's guaranteed
+  `DRAFT` at delete-time, so deleting it can only ever remove a
+  (non-counting) contribution, never flip anyone's derived subject/overall
+  status, and no first-ever-row case can arise (docs/DECISIONS.md — a
+  future change allowing force-delete through a published evaluation must
+  add that cascade back).
 
 **Response `200`**: `{ id }`. **Response `404`**: doesn't resolve within the caller's tenant.
 
@@ -1366,80 +1400,114 @@ assignment) — `200`, not the `POST` default `201`.
 
 Body: `{ classArmId, subjectId, termId }` (no `evaluationId` — re-derives
 `term_subject_results` for every student in the roster from whatever
-`evaluation_scores` currently exist across all active evaluations, e.g.
-after a roster fix). Same recompute path `PUT /grades/evaluation-scores`
-triggers internally, just manually re-run; same `409` lock if any target
-result is already `PUBLISHED`; not audited (a derived-state refresh, not
-a source-of-truth write).
+`evaluation_scores`/evaluation-publish-state currently exist across all
+active evaluations, e.g. after a roster fix). Same recompute path
+`PUT /grades/evaluation-scores` triggers internally, just manually re-run;
+not audited (a derived-state refresh, not a source-of-truth write).
+
+**v0.7.4 step 1**: the old "409 if any student's row is already
+`PUBLISHED`" block is **removed** — that block protected a subject-level
+publish declaration a recompute could otherwise silently overwrite; there's
+no such externally-declared state left to protect, since recompute never
+touches `evaluation_scores` or any evaluation's own `status`, only
+re-derives the same way a publish/unpublish/save already would. A
+necessary consequence, found and fixed during this step (not a pre-planned
+change): `recomputeStudents()` always nulls `subjectPosition` (ranking is
+the caller's job), so now that recompute can run against an
+already-published subject, it re-ranks the currently-`PUBLISHED` set
+afterward itself — the same re-rank `publishEvaluation()`/
+`unpublishEvaluation()` below already do — instead of silently wiping
+already-published students' positions.
 
 **Response `200`**: `{ "recomputedCount": 6 }`.
 
-### `POST /grades/publish`
+### `POST /grades/evaluations/:id/publish` (v0.7.4 step 1, SPEC_V0.7.4.md §2 — replaces `POST /grades/publish`)
 
-`SCHOOL_ADMIN` or `PROPRIETOR` (director-or-owner). `200`, not `201`.
+Publish moved from the subject to the individual `Evaluation` — the route
+param carries the evaluation id (it already knows its own
+`classArmId`/`subjectId`/`termId`), no request body. `200`, not `201`.
+Role shape carried over unchanged from v0.7.3: `SCHOOL_ADMIN`/`PROPRIETOR`
+(director-or-owner), or a `TEACHER` publishing an evaluation of a subject
+they're assigned to.
 
-Body: `{ classArmId, subjectId, termId }`. Transitions every currently
-`DRAFT` `term_subject_results` row for that subject/class/term to
-`PUBLISHED` (`published_at = now`), then computes `subject_position`
-(standard competition ranking — ties share a rank, the next rank skips)
-across the **entire** now-published set for that subject/class/term.
-Re-publishing an already-fully-published subject is an idempotent `200`
-(`publishedCount: 0`, positions reconfirmed). Then recomputes
+Sets **this evaluation's own** `status: PUBLISHED`/`publishedAt = now`,
+then re-derives `term_subject_results` for the whole class-arm roster from
+whichever evaluations are now published for that subject/term
+(`recomputeStudents()` — a subject counts `PUBLISHED` once a student has
+≥1 decided row among the subject's currently-published evaluations; its
+`totalScore` is the average of published evaluations only), then computes
+`subject_position` (standard competition ranking) across the entire
+currently-published set for that subject/class/term, then recomputes
 `term_overall_results` for every student in the class arm/term.
 
-Completeness gate (SPEC_V0.5.md §2.2, carried into v0.7): rejects (409)
-if **any** candidate transitioning in this call has a blank evaluation —
-no `evaluation_scores` row at all, or a row with neither `rawScore` nor
-`isAbsent: true`. Checked over **every active `Evaluation` that currently
-exists** for the subject/term at the moment of the call (not a frozen
-expected-set from whenever the candidate started) — so a candidate can
-become newly incomplete if a teacher adds a fresh evaluation before
-publishing. Absent is a decided outcome, not blank.
+**Completeness gate** (SPEC_V0.5.md §2.2, re-scoped v0.7.4 step 1 —
+**simpler than the old subject-scoped gate it replaces**): rejects (`409`)
+unless **every** roster student for this class arm has a decided
+(score-or-absent) row for **this one evaluation** — not the whole
+subject's evaluation set. This is roster-wide, not limited to students who
+already have some row: publishing evaluation X requires the entire
+currently-enrolled class arm to be decided on X, full stop.
 
 **Response `200`**
 ```json
 {
-  "classArmId": "...", "subjectId": "...", "termId": "...",
-  "publishedCount": 2,
+  "evaluationId": "...", "classArmId": "...", "subjectId": "...", "termId": "...",
+  "publishedCount": 24,
   "subjectPositions": [
     { "studentId": "...", "totalScore": 80, "finalGrade": "A1", "subjectPosition": 1 }
   ],
   "overallPublishedCount": 1
 }
 ```
+`publishedCount` is always the whole roster's size (the completeness gate
+means every student is decided by the time this succeeds) — not a count of
+newly-transitioned rows the way the old subject-level `publishedCount`
+was.
 
-**Response `409`**: nothing to publish (zero `DRAFT` rows and zero already
-`PUBLISHED`), **or** the completeness gate above:
+**Response `409`**: this evaluation is already `PUBLISHED` (re-publishing
+is a hard `409` now, not an idempotent replay — unlike the old subject-
+publish, which allowed a no-op re-publish), the term is closed with no
+active unlock (`{ termLocked: true }`), **or** the completeness gate above:
 ```json
-{ "statusCode": 409, "message": "Cannot publish: 1 student(s) have at least one evaluation that's neither scored nor marked absent.", "error": "Conflict", "path": "...", "timestamp": "...", "incompleteEntries": [{ "studentId": "...", "evaluationId": "..." }] }
+{ "statusCode": 409, "message": "Cannot publish: 1 student(s) don't have a score or absence recorded for this evaluation yet.", "error": "Conflict", "path": "...", "timestamp": "...", "incompleteStudentIds": ["..."] }
 ```
 
 **Response `403`/`404`**: same rules as the rest of `/grades/*`.
 
-Audited (`grades.publish`, `entityId` = `classArmId`, metadata carries
-`subjectId`/`termId`/`publishedCount`).
+Audited (`grades.publishEvaluation`, `entityId` = `classArmId`, metadata
+carries `subjectId`/`evaluationId`/`termId`/`publishedCount`).
 
-### `POST /grades/unpublish`
+### `POST /grades/evaluations/:id/unpublish` (v0.7.4 step 1 — replaces `POST /grades/unpublish`)
 
-`PROPRIETOR` only (owner authority — `SCHOOL_ADMIN` 403s here even though
-it can publish). `200`, not `201`.
+`TEACHER` (assigned to the evaluation's subject) or `PROPRIETOR` —
+`SCHOOL_ADMIN` still excluded, same asymmetry with publish carried over
+from v0.7.3. `200`, not `201`. No request body — the route param carries
+the evaluation id.
 
-Body: `{ classArmId, subjectId, termId }`. Reverts every currently
-`PUBLISHED` row for that subject/class/term — deterministically back to
-`DRAFT` (no more `PENDING_APPROVAL` intermediate; score writes are blocked
-while `PUBLISHED`, so nothing could have changed underneath), clearing
-`subject_position`/`published_at`/`override_grade`. Then recomputes
-`term_overall_results` for the whole class arm/term. This is the
-confirmed path for adding a new evaluation to an already-published
-subject: unpublish, add the evaluation, re-publish.
+Reverts **this evaluation** (only) to `DRAFT`, clearing its own
+`publishedAt`, then re-derives `term_subject_results` from whichever
+**other** evaluations remain published for the subject/term. **Unlike the
+old subject-wide unpublish** (which reverted the whole subject to `DRAFT`,
+since subject was the only publish unit): a subject with other still-
+published evaluations **stays derived-`PUBLISHED`** here, just with a
+recalculated total that no longer includes this one — only a subject with
+*no other* published evaluations reverts to `DRAFT` as a side effect. Then
+re-ranks whatever's still published for the subject, and recomputes
+`term_overall_results` for the class arm/term. This is the confirmed path
+for adding a new evaluation to an already-published subject: unpublish the
+evaluation blocking it (or just add the new one — creation is no longer
+gated on a sibling's publish state, see above), score it, re-publish.
 
-**Response `200`**: `{ classArmId, subjectId, termId, unpublishedCount, overallRevertedCount }`.
+**Response `200`**: `{ evaluationId, classArmId, subjectId, termId, overallRevertedCount }`.
+No `unpublishedCount` — unlike the old subject-wide response, this always
+reverts exactly one evaluation for the whole roster, so the count is never
+ambiguous or partial.
 
-**Response `409`**: nothing is currently published for this subject.
+**Response `409`**: this evaluation isn't currently published.
 
 **Response `403`/`404`**: same shape as publish.
 
-Audited (`grades.unpublish`).
+Audited (`grades.unpublishEvaluation`).
 
 ### `PUT /grades/override`
 
@@ -1476,9 +1544,13 @@ records `studentId`/`subjectId`/`classArmId`/`termId` plus
 
 ### Locking (publish/unpublish/override, alongside `PUT /grades/evaluation-scores`)
 
-All four acquire the same per-subject `pg_advisory_xact_lock` keyed on
-`(school_id, subject_id, class_arm_id, term_id)` before touching
-`term_subject_results`/`evaluation_scores` for that grid. Publish and
+All four (`publishEvaluation`/`unpublishEvaluation`/`override`/
+`saveEvaluationScores`) acquire the same per-subject `pg_advisory_xact_lock`
+keyed on `(school_id, subject_id, class_arm_id, term_id)` before touching
+`term_subject_results`/`evaluation_scores` for that grid — unchanged by
+v0.7.4 step 1's move to per-evaluation publish: the lock key is still
+subject-shaped, since a publish/unpublish still recomputes the whole
+subject's derived state, not just one evaluation's row. Publish and
 unpublish additionally acquire a **second, broader** lock — keyed on
 `(school_id, class_arm_id, term_id)`, no `subject_id` — before recomputing
 `term_overall_results`. Both locks are always acquired in the same order
@@ -1501,16 +1573,27 @@ isAbsent: false` is blank/not-entered, distinct from `isAbsent: true`
 ("Abs" on the printed card, excluded from `totalScore`'s average, never
 averaged in as a 0) — same three-way distinction the score-entry grid uses.
 
-**The published-only wall:** `Evaluation`/`EvaluationScore` carry no
-publish state of their own — only `term_subject_results.status` does. The
-`subjectResults` query already filters to `status: PUBLISHED` for
-`STUDENT`/`PARENT` inside its own `where` (unchanged since v0.6); the
-evaluations query is then scoped to exactly the `subjectId`s that survived
-that filter. An unpublished subject's evaluations are therefore **never
-queried at all** for a self-view caller — not fetched and then hidden.
-Staff (`TEACHER`/`SCHOOL_ADMIN`/`PROPRIETOR`) see every subject's
-evaluations regardless of publish state, same as every other field on
-this response.
+**The published-only wall, two layers (v0.7.4 step 1 tightened this —
+SPEC_V0.7.4.md §2, "the leak fix"):** the `subjectResults` query already
+filters to `status: PUBLISHED` for `STUDENT`/`PARENT` inside its own
+`where` (unchanged since v0.6) — a whole unpublished subject's evaluations
+are still **never queried at all** for a self-view caller, not fetched
+and then hidden. But since v0.7.4 a subject's `term_subject_results.status`
+is *derived* from whichever of its evaluations are individually published
+(a subject can be derived-`PUBLISHED` while one sibling evaluation stays
+`DRAFT`, e.g. the teacher hasn't finished CA2 yet) — so the evaluations
+query for a **visible** subject now ALSO carries
+`status: PUBLISHED` (`Evaluation`'s own column) for `STUDENT`/`PARENT`,
+mirroring the pattern the `subjectResults` filter above already used one
+level up. Without this second filter, a student viewing a subject with one
+published + one still-draft evaluation would have seen the draft
+sibling's id/name/scores too — proven directly by a dedicated e2e test
+(`me-student.e2e-spec.ts`) asserting both structural absence
+(`evaluations` array length) and a `JSON.stringify` scan confirming the
+draft evaluation's id/name appear nowhere in the response. Staff
+(`TEACHER`/`SCHOOL_ADMIN`/`PROPRIETOR`) see every subject's evaluations
+regardless of either subject's or evaluation's publish state, same as
+every other field on this response.
 
 ```json
 {
@@ -1541,16 +1624,21 @@ Okafor: 92").
    `GET /students/:id/results` already used for staff, extended with the
    `status: PUBLISHED` filter that method never needed (it's staff-only).
 2. **Per-evaluation/per-exam best/worst** — `evaluation_scores`/
-   `exam_scores` carry **no** publish state of their own, and publishing
-   is **per-student-per-subject** (classmates can genuinely be a mix of
-   `DRAFT`/`PUBLISHED` for the same subject). So there's no column to
-   `groupBy` on directly: the caller first resolves which classmates'
-   subject-level row is `PUBLISHED` (STUDENT/PARENT only — staff skips
-   this and sees everyone), then applies that allow-list in application
-   code (`computeAssessmentClassStats`, `grade-computation.ts`) over every
-   score row for that evaluation/exam. Absences are excluded from the
-   average AND best/worst, same rule as the average itself. All three are
-   `null` (never `0`) when nothing decided survives the filter.
+   `exam_scores` carry no publish state of their own; `exam_scores` never
+   have (publishing is subject-level for exams), and — for the grades
+   track specifically — `Evaluation` gained its own `status` in v0.7.4
+   step 1, but a self-view caller never even reaches an unpublished
+   evaluation's score row: the same `Evaluation.status: PUBLISHED` filter
+   the report-card breakdown above applies already excludes it before this
+   stats computation runs. So there's still no column to `groupBy` on
+   directly for the remaining (published) rows: the caller first resolves
+   which classmates' subject-level row is `PUBLISHED` (STUDENT/PARENT
+   only — staff skips this and sees everyone), then applies that allow-list
+   in application code (`computeAssessmentClassStats`, `grade-computation.ts`)
+   over every surviving score row for that evaluation/exam. Absences are
+   excluded from the average AND best/worst, same rule as the average
+   itself. All three are `null` (never `0`) when nothing decided survives
+   the filter.
 
 **Anonymity is structural**: a student id is used only to build the
 eligibility set server-side; it is never selected into the response
@@ -1578,16 +1666,23 @@ class arm + session first, unlike every other level above.
 
 ### `GET /grades/review?classArmId=&termId=&status=` (v0.4 step 5, SPEC_V0.4.md §2)
 
-Director/owner publish-readiness view — `SCHOOL_ADMIN`/`PROPRIETOR` only,
-no `TEACHER` path exists on this route at all. One row per subject that
-has at least one `term_subject_result` in this class arm/term.
+Director/owner **read-only oversight** view — `SCHOOL_ADMIN`/`PROPRIETOR`
+only, no `TEACHER` path exists on this route at all. One row per subject
+that has at least one `term_subject_result` in this class arm/term.
+**v0.7.4 step 1** (SPEC_V0.7.4.md §2): this route no longer drives any
+action — publish/unpublish moved to the evaluation surface
+(`POST /grades/evaluations/:id/publish`/`.../unpublish` above, exposed in
+the score-entry UI, not here), so the response carries no `canPublish`
+field any more; this endpoint exists purely to show where a class arm's
+subjects currently stand.
 
-A subject's state is returned as **counts**, not one status:
-`saveEvaluationScores`'s per-student `PUBLISHED` lock means stragglers can
-land in `DRAFT` after their classmates are already `PUBLISHED` for the
-very same subject, so draft/published can genuinely coexist for one
-subject. `pendingApprovalCount` is always `0` now (kept for shape
-stability only — no subject row can reach that status any more).
+A subject's state is returned as **counts**, not one status: a subject's
+derived status can genuinely be a mix across its roster (a straggler
+scored on a never-published evaluation stays `DRAFT` while classmates
+decided on an already-published one derive `PUBLISHED`), so draft/
+published can coexist for one subject. `pendingApprovalCount` is always
+`0` now (kept for shape stability only — no subject row can reach that
+status any more).
 
 ```json
 {
@@ -1596,18 +1691,14 @@ stability only — no subject row can reach that status any more).
     {
       "subjectId": "...", "subjectName": "Mathematics", "needsTeacherAssignment": false,
       "rosterSize": 20, "draftCount": 7, "pendingApprovalCount": 0, "publishedCount": 13,
-      "averageScore": 68.8, "averageGrade": "B3",
-      "canPublish": true
+      "averageScore": 68.8, "averageGrade": "B3"
     }
   ]
 }
 ```
 
 `averageScore`/`averageGrade` cover every student with a row (draft too,
-not published-only). `canPublish` mirrors `POST /grades/publish`'s own
-condition: `(draftCount > 0 && every DRAFT candidate is complete) ||
-publishedCount > 0` — so the UI can disable the Publish button instead of
-offering an action that will just `409`.
+not published-only).
 
 The optional `status=` query filters to subjects with **at least one**
 student in that status.
@@ -1650,10 +1741,16 @@ Same shape as `POST /grades/recompute`, retargeted to the exam track.
 
 ### `POST /exams/publish`
 
-Same shape/gate as `POST /grades/publish`, but the response carries no
-`subjectPositions` (none exist at this level). Cascades upward through
-**two** more aggregates, both purely derived (no separate publish action
-of their own):
+`SCHOOL_ADMIN`/`PROPRIETOR`. **Unaffected by v0.7.4 step 1** — the exam
+track was never re-scoped to per-evaluation publish, only the grades track
+was; this remains the same **subject-level** publish model the grades
+track itself used before v0.7.4: body `{ classArmId, subjectId, termId }`,
+transitions every currently-`DRAFT` `term_subject_exam_results` row for
+that subject/class/term to `PUBLISHED`, same completeness gate shape
+(every candidate must have a decided score/absence on every active `Exam`
+for the subject/term), but the response carries no `subjectPositions`
+(none exist at this level). Cascades upward through **two** more
+aggregates, both purely derived (no separate publish action of their own):
 
 - **`term_exam_results`** (Q6 ranking (b)) — per student+term, the
   average across every subject they've been exam-scored in this term.
@@ -1671,10 +1768,12 @@ of their own):
 
 ### `POST /exams/unpublish`
 
-`PROPRIETOR` only, same shape as `POST /grades/unpublish` — reverts to
-`DRAFT` and cascades the same two aggregates above (a student dropping
-out of a fully-published term also drops out of that term's ranking, and
-the year-level average recomputes without their now-unpublished term).
+`PROPRIETOR` only. Same subject-level model as publish above (unaffected
+by v0.7.4 step 1) — reverts every currently-`PUBLISHED` row for the
+subject/class/term back to `DRAFT` and cascades the same two aggregates
+above (a student dropping out of a fully-published term also drops out of
+that term's ranking, and the year-level average recomputes without their
+now-unpublished term).
 
 **Response `200`**: `{ classArmId, subjectId, termId, unpublishedCount, termExamRevertedCount, yearExamRecomputedCount }`.
 

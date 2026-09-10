@@ -54,6 +54,21 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
     return evaluation.id;
   }
 
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q2) — the completeness gate is now
+  // roster-wide (every CURRENTLY ENROLLED student, not just "candidates"
+  // with an existing row) — jss2AArmId is a REAL seeded class arm with a
+  // full roster, so any test that publishes an evaluation there needs the
+  // WHOLE roster decided, not just the one student the test cares about.
+  async function scoreEntireRoster(evaluationId: string, subjectId: string, classArmId: string, termId: string, rawScore: number) {
+    const response = await request(app.getHttpServer())
+      .put("/api/v1/grades/evaluation-scores")
+      .set(auth(sunriseAdminToken))
+      .send({ classArmId, subjectId, evaluationId, termId, scores: jss2ARoster.map((s) => ({ studentId: s.id, rawScore })) });
+    if (response.status !== 200) {
+      throw new Error(`scoreEntireRoster failed: ${response.status} ${JSON.stringify(response.body)}`);
+    }
+  }
+
   interface ScratchBundle {
     sessionId: string;
     termId: string;
@@ -373,7 +388,13 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
       expect(b.status).toBe(404);
     });
 
-    it("409s creating a new evaluation once this subject's results are already published — unpublish-first", async () => {
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — replaces the old 409: publish
+    // moved to the individual evaluation, so a sibling evaluation of an
+    // already-published subject is no longer a blocked "late addition" —
+    // it's the normal case (a teacher adding a new CA after publishing an
+    // earlier one). createEvaluation() no longer checks subject-wide
+    // publish state at all.
+    it("201s creating a new evaluation even once a sibling evaluation of this subject is already published", async () => {
       const publishSubject = await prisma.subject.create({
         data: { schoolId: sunriseId, name: "E2E Eval Authoring Publish Probe", code: "E2EEAP" },
       });
@@ -382,22 +403,17 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
           data: { schoolId: sunriseId, subjectId: publishSubject.id, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacherId },
         });
         const evaluationId = await createEvaluation(publishSubject.id, jss2AArmId, sunriseTermId, sunriseSessionId);
-        const [student] = jss2ARoster;
-        await request(app.getHttpServer())
-          .put("/api/v1/grades/evaluation-scores")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, evaluationId, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 80 }] });
+        await scoreEntireRoster(evaluationId, publishSubject.id, jss2AArmId, sunriseTermId, 80);
         const publishRes = await request(app.getHttpServer())
-          .post("/api/v1/grades/publish")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, termId: sunriseTermId });
+          .post(`/api/v1/grades/evaluations/${evaluationId}/publish`)
+          .set(auth(sunriseAdminToken));
         expect(publishRes.status).toBe(200);
 
         const response = await request(app.getHttpServer())
           .post("/api/v1/grades/evaluations")
           .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, termId: sunriseTermId, name: "Late addition", description: "Should be blocked" });
-        expect(response.status).toBe(409);
+          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, termId: sunriseTermId, name: "Late addition", description: "No longer blocked" });
+        expect(response.status).toBe(201);
       } finally {
         await prisma.evaluationScore.deleteMany({ where: { evaluation: { subjectId: publishSubject.id } } });
         await prisma.evaluation.deleteMany({ where: { subjectId: publishSubject.id } });
@@ -472,15 +488,10 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
           data: { schoolId: sunriseId, subjectId: publishSubject.id, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacherId },
         });
         const evaluationId = await createEvaluation(publishSubject.id, jss2AArmId, sunriseTermId, sunriseSessionId);
-        const [student] = jss2ARoster;
-        await request(app.getHttpServer())
-          .put("/api/v1/grades/evaluation-scores")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, evaluationId, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 60 }] });
+        await scoreEntireRoster(evaluationId, publishSubject.id, jss2AArmId, sunriseTermId, 60);
         const publishRes = await request(app.getHttpServer())
-          .post("/api/v1/grades/publish")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, termId: sunriseTermId });
+          .post(`/api/v1/grades/evaluations/${evaluationId}/publish`)
+          .set(auth(sunriseAdminToken));
         expect(publishRes.status).toBe(200);
 
         const teacherRes = await request(app.getHttpServer())
@@ -532,7 +543,18 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
       }
     });
 
-    it("PROPRIETOR deletes a DRAFT evaluation: soft-deletes, recomputes, and excludes it from every subsequent average", async () => {
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — under the new model a
+    // subject's total is the average of its PUBLISHED evaluations only;
+    // a DRAFT evaluation's score never counts toward it in the first
+    // place (unlike the old model, where publish() read across every
+    // evaluation regardless of its own publish state). So "delete
+    // excludes it from the average" is only meaningful relative to a
+    // PUBLISHED sibling — "Keep" is published (counts), "Remove" stays
+    // DRAFT (never counted, and its deletion changes nothing) — proving
+    // deletion doesn't corrupt the published sibling's already-correct
+    // total, and only a DRAFT evaluation is even deletable in the first
+    // place (deleteEvaluation blocks outright on a PUBLISHED one).
+    it("PROPRIETOR deletes a DRAFT evaluation: soft-deletes; a published sibling's total is unaffected since the DRAFT one never counted", async () => {
       const deleteSubject = await prisma.subject.create({
         data: { schoolId: sunriseId, name: "E2E Eval Authoring Delete Recompute", code: "E2EEAD" },
       });
@@ -544,19 +566,23 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
         const removeId = await createEvaluation(deleteSubject.id, jss2AArmId, sunriseTermId, sunriseSessionId, "Remove");
         const [student] = jss2ARoster;
 
-        await request(app.getHttpServer())
-          .put("/api/v1/grades/evaluation-scores")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: deleteSubject.id, evaluationId: keepId, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 20 }] });
+        // "Keep" needs the WHOLE roster decided to publish; "Remove" is
+        // never published, so only the one student we assert on matters.
+        await scoreEntireRoster(keepId, deleteSubject.id, jss2AArmId, sunriseTermId, 20);
         await request(app.getHttpServer())
           .put("/api/v1/grades/evaluation-scores")
           .set(auth(sunriseAdminToken))
           .send({ classArmId: jss2AArmId, subjectId: deleteSubject.id, evaluationId: removeId, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 10 }] });
 
+        const publishKeepRes = await request(app.getHttpServer())
+          .post(`/api/v1/grades/evaluations/${keepId}/publish`)
+          .set(auth(sunriseAdminToken));
+        expect(publishKeepRes.status).toBe(200);
+
         const before = await prisma.termSubjectResult.findUniqueOrThrow({
           where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: deleteSubject.id, termId: sunriseTermId, sessionId: sunriseSessionId } },
         });
-        expect(Number(before.totalScore)).toBe(15); // (20 + 10) / 2
+        expect(Number(before.totalScore)).toBe(20); // only "Keep" (published) counts — "Remove" is still DRAFT
 
         const deleteRes = await request(app.getHttpServer())
           .delete(`/api/v1/grades/evaluations/${removeId}`)
@@ -569,10 +595,10 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
         const after = await prisma.termSubjectResult.findUniqueOrThrow({
           where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: deleteSubject.id, termId: sunriseTermId, sessionId: sunriseSessionId } },
         });
-        // Only "Keep" (20) counts now — the deleted evaluation's score no
-        // longer contributes at all, not just to this call but to every
-        // subsequent recompute (deletedAt: null is already the filter every
-        // recompute/completeness function applies).
+        // Unchanged — "Remove" never contributed, so deleting it doesn't
+        // move the total at all, not just for this call but for every
+        // subsequent recompute (deletedAt: null is already the filter
+        // every recompute/completeness function applies).
         expect(Number(after.totalScore)).toBe(20);
 
         const recomputeRes = await request(app.getHttpServer())
@@ -593,7 +619,7 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
       }
     });
 
-    it("409s deleting while this subject's results are published, even for PROPRIETOR — no force-delete-through-published path", async () => {
+    it("409s deleting while this evaluation is published, even for PROPRIETOR — no force-delete-through-published path", async () => {
       const publishSubject = await prisma.subject.create({
         data: { schoolId: sunriseId, name: "E2E Eval Authoring Delete-While-Published", code: "E2EEADP" },
       });
@@ -602,15 +628,10 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
           data: { schoolId: sunriseId, subjectId: publishSubject.id, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacherId },
         });
         const evaluationId = await createEvaluation(publishSubject.id, jss2AArmId, sunriseTermId, sunriseSessionId);
-        const [student] = jss2ARoster;
-        await request(app.getHttpServer())
-          .put("/api/v1/grades/evaluation-scores")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, evaluationId, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 70 }] });
+        await scoreEntireRoster(evaluationId, publishSubject.id, jss2AArmId, sunriseTermId, 70);
         const publishRes = await request(app.getHttpServer())
-          .post("/api/v1/grades/publish")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, termId: sunriseTermId });
+          .post(`/api/v1/grades/evaluations/${evaluationId}/publish`)
+          .set(auth(sunriseAdminToken));
         expect(publishRes.status).toBe(200);
 
         const response = await request(app.getHttpServer())

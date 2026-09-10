@@ -126,16 +126,18 @@ describe("GET /students/:id/results (e2e)", () => {
       data: { schoolId: sunriseId, subjectId: otherSubjectId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: teacherClass.id },
     });
 
-    // Target: eval1=52, eval2=60 -> total (52+60)/2=56 (C5, 55-59).
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — neither evaluation is
+    // published here (publish's own effect on totals is already
+    // exhaustively covered in grades-publish.e2e-spec.ts), so both
+    // students' stored totals/finalGrade/classAverageScore stay 0/F9
+    // regardless of what's entered — the DRAFT-state shape this test
+    // actually proves now.
     const eval1 = await createEvaluation(subjectId, "CA 1", teacherSubject.id);
     const eval2 = await createEvaluation(subjectId, "CA 2", teacherSubject.id);
     await score(subjectId, eval1, [{ studentId: targetStudentId, rawScore: 52 }]);
     await score(subjectId, eval2, [{ studentId: targetStudentId, rawScore: 60 }]);
-    // Classmate: eval1=10 only, eval2 never entered -> total 10 (F9).
+    // Classmate: eval1=10 only, eval2 never entered.
     await score(subjectId, eval1, [{ studentId: classmateId, rawScore: 10 }]);
-    // Class average for this subject = (56 + 10) / 2 = 33 -> F9 — distinct
-    // from the target's own finalGrade (C5), proving this is a real
-    // class-wide average, not an echo of the student's own grade.
 
     // Target also touched otherSubjectId, taught only by teacherSubject's
     // colleague (nobody assigned here) — this row must still appear for
@@ -172,16 +174,16 @@ describe("GET /students/:id/results (e2e)", () => {
     await app.close();
   });
 
-  it("ADMIN sees the student's full results with a hand-verified class average grade", async () => {
+  it("ADMIN sees the student's full results, DRAFT totals correctly reflecting nothing published yet", async () => {
     const response = await request(app.getHttpServer())
       .get(`/api/v1/students/${targetStudentId}/results`)
       .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
       .set(auth(sunriseAdminToken));
     expect(response.status).toBe(200);
     const subject = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
-    expect(subject.totalScore).toBe(56);
-    expect(subject.finalGrade).toBe("C5");
-    expect(subject.classAverageScore).toBe(33);
+    expect(subject.totalScore).toBe(0);
+    expect(subject.finalGrade).toBe("F9");
+    expect(subject.classAverageScore).toBe(0);
     expect(subject.classAverageGrade).toBe("F9");
     expect(response.body.subjects).toHaveLength(2); // subjectId + otherSubjectId
   });

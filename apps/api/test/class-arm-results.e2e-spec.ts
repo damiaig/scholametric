@@ -198,19 +198,27 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     await app.close();
   });
 
-  it("ADMIN sees the full shape: all subjects, per-subject class average as a hand-verified letter grade, overall present", async () => {
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — neither evaluation is published
+  // here (publishing would require the WHOLE roster decided on it, which
+  // would then also give s2/s3 a row here, breaking this test's OTHER
+  // point — that a never-scored student has no row at all). A subject's
+  // total is now the average of its PUBLISHED evaluations only, so while
+  // everything stays DRAFT, s0/s1's totals are 0/F9 regardless of what's
+  // entered — the "hand-verified" fact this test proves is now that
+  // exact DRAFT-state shape, not a specific nonzero average. Publish's
+  // OWN effect on totals is already exhaustively covered in
+  // grades-publish.e2e-spec.ts.
+  it("ADMIN sees the full shape: all subjects, per-subject class average correctly excludes never-scored students, overall present", async () => {
     const subjectId = await createSubject("E2E CAR HandVerified");
     const [eval1, eval2] = await createEvaluations(subjectId, resultsArmId);
-    // s0: eval1=52, eval2=60 -> total (52+60)/2=56 (C5, 55-59).
     await score(sunriseAdminToken, subjectId, eval1, [
       { studentId: resultsStudentIds[s0], rawScore: 52 },
       { studentId: resultsStudentIds[s1], rawScore: 10 },
     ], resultsArmId);
     await score(sunriseAdminToken, subjectId, eval2, [{ studentId: resultsStudentIds[s0], rawScore: 60 }], resultsArmId);
-    // s1 stays eval1-only: total 10 (F9) — eval2 excluded (not entered, not
-    // absent, silently contributes nothing — computeEvaluationAverage).
-    // average = (56 + 10) / 2 = 33 -> F9 (0-39), hand-verified against the
-    // seeded WAEC scale (prisma/seed.ts's WAEC_GRADE_BOUNDARIES).
+    // s1 stays eval1-only — eval2 excluded (not entered, not absent,
+    // silently contributes nothing — computeEvaluationAverage). Neither
+    // evaluation is published, so both students' stored totals are 0.
 
     const response = await request(app.getHttpServer())
       .get(`/api/v1/class-arms/${resultsArmId}/results`)
@@ -222,7 +230,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     const subject = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
     expect(subject).toBeDefined();
     expect(subject.results).toHaveLength(2); // s2/s3 excluded — never scored
-    expect(subject.averageScore).toBe(33);
+    expect(subject.averageScore).toBe(0);
     expect(subject.averageGrade).toBe("F9");
     expect(response.body.overall).not.toBeNull();
 
@@ -230,9 +238,9 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     // dialog needs — not just the collapsed finalGrade.
     const s0Row = subject.results.find((r: { studentId: string }) => r.studentId === resultsStudentIds[s0]);
     expect(typeof s0Row.id).toBe("string");
-    expect(s0Row.autoGrade).toBe("C5");
+    expect(s0Row.autoGrade).toBe("F9");
     expect(s0Row.overrideGrade).toBeNull();
-    expect(s0Row.finalGrade).toBe("C5");
+    expect(s0Row.finalGrade).toBe("F9");
   });
 
   it("TEACHER assigned to exactly one subject sees ONLY that subject, and no overall column", async () => {
@@ -315,10 +323,13 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     // array, not rows stuck at a null position.
     expect(beforePublish.body.overall).toEqual([]);
 
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — publish moved to the individual
+    // evaluation. Publishing just pubEval1 is enough: both evaluations
+    // carry the SAME score per student, so the derived total already
+    // matches with only one of them published.
     const publishRes = await request(app.getHttpServer())
-      .post("/api/v1/grades/publish")
-      .set(auth(sunriseAdminToken))
-      .send({ classArmId: partialArmId, subjectId: publishedSubjectId, termId: sunriseTermId });
+      .post(`/api/v1/grades/evaluations/${pubEval1}/publish`)
+      .set(auth(sunriseAdminToken));
     expect(publishRes.status).toBe(200);
     expect(publishRes.body.publishedCount).toBe(2); // both p0 and p1 were complete
 

@@ -21,6 +21,7 @@ describe("GET /grades/review (e2e)", () => {
   let sunriseId: string;
   let sunriseSessionId: string;
   let sunriseTermId: string;
+  let jss2LevelId: string;
   let reviewArmId: string;
   let studentIds: string[];
 
@@ -89,6 +90,7 @@ describe("GET /grades/review (e2e)", () => {
     sunriseTermId = (await prisma.term.findFirstOrThrow({ where: { sessionId: sunriseSessionId, name: "FIRST" } })).id;
 
     const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
+    jss2LevelId = jss2.id;
     reviewArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss2.id, name: `E2E-Review-${Date.now()}` } })).id;
 
     studentIds = [];
@@ -144,17 +146,20 @@ describe("GET /grades/review (e2e)", () => {
     const subjectId = await createSubject("E2E Review Mixed");
     const [ca1, ca2, ca3] = await createEvaluations(subjectId);
     // s0: all 3 evaluations scored -> DRAFT (v0.7: no PENDING_APPROVAL
-    // hop — everything not yet published is DRAFT), total (20+60+40)/3=40.
+    // hop — everything not yet published is DRAFT).
     await score(subjectId, ca1, [{ studentId: studentIds[0], rawScore: 20 }]);
     await score(subjectId, ca2, [{ studentId: studentIds[0], rawScore: 60 }]);
     await score(subjectId, ca3, [{ studentId: studentIds[0], rawScore: 40 }]);
-    // s1: all 3 evaluations scored too (kept complete, so it doesn't block
-    // canPublish below) -> DRAFT, total 10.
+    // s1: all 3 evaluations scored too -> DRAFT.
     await score(subjectId, ca1, [{ studentId: studentIds[1], rawScore: 10 }]);
     await score(subjectId, ca2, [{ studentId: studentIds[1], rawScore: 10 }]);
     await score(subjectId, ca3, [{ studentId: studentIds[1], rawScore: 10 }]);
     // s2, s3: untouched entirely.
-    // average = (40 + 10) / 2 = 25 -> F9 (0-39).
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — averageScore reads
+    // term_subject_result.totalScore, which is now the average of
+    // PUBLISHED evaluations only. Nothing is published here, so both
+    // students' totals stay 0 regardless of what they're scored —
+    // average = (0 + 0) / 2 = 0 -> F9 (0-39).
 
     const response = await request(app.getHttpServer())
       .get("/api/v1/grades/review")
@@ -166,99 +171,77 @@ describe("GET /grades/review (e2e)", () => {
     expect(subject.draftCount).toBe(2);
     expect(subject.pendingApprovalCount).toBe(0); // v0.7: always 0 now — kept for shape stability only
     expect(subject.publishedCount).toBe(0);
-    expect(subject.averageScore).toBe(25);
+    expect(subject.averageScore).toBe(0);
     expect(subject.averageGrade).toBe("F9");
-    expect(subject.canPublish).toBe(true); // draftCount > 0 AND both candidates are complete
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — this page is pure read-only
+    // oversight now; canPublish is gone from the response entirely
+    // (publish/unpublish happens at the evaluation surface). The old
+    // canPublish-vs-real-publish() 409 tests are removed along with it —
+    // the underlying evaluation completeness gate is already covered
+    // exhaustively in grades-publish.e2e-spec.ts's own suite.
   });
 
-  it("canPublish: false is verified against the REAL publish() 409, not just asserted in isolation", async () => {
-    const subjectId = await createSubject("E2E Review CanPublishFalse");
-    const [ca1] = await createEvaluations(subjectId);
-    // Only CA1 scored, CA2/CA3 left blank -> DRAFT, but incomplete.
-    await score(subjectId, ca1, [{ studentId: studentIds[0], rawScore: 10 }]);
-
-    const reviewRes = await request(app.getHttpServer())
-      .get("/api/v1/grades/review")
-      .query({ classArmId: reviewArmId, termId: sunriseTermId })
-      .set(auth(sunriseAdminToken));
-    const subject = reviewRes.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
-    expect(subject.canPublish).toBe(false);
-
-    const publishRes = await request(app.getHttpServer())
-      .post("/api/v1/grades/publish")
-      .set(auth(sunriseAdminToken))
-      .send({ classArmId: reviewArmId, subjectId, termId: sunriseTermId });
-    expect(publishRes.status).toBe(409);
-  });
-
-  it("canPublish: false when a DRAFT candidate has a blank evaluation, true once resolved — both verified against the REAL publish() outcome", async () => {
-    const subjectId = await createSubject("E2E Review CanPublishBlank");
-    const [ca1, ca2, ca3] = await createEvaluations(subjectId);
-    // CA1 + CA2 scored, but CA3 is genuinely blank (never entered, never
-    // marked absent) — exactly the gap SPEC_V0.5.md §2.2 closes, carried
-    // into v0.7: completeness is checked over EVERY active evaluation
-    // currently existing for the subject/term, not a frozen expected-set.
-    await score(subjectId, ca1, [{ studentId: studentIds[0], rawScore: 20 }]);
-    await score(subjectId, ca2, [{ studentId: studentIds[0], rawScore: 60 }]);
-
-    const blankReview = await request(app.getHttpServer())
-      .get("/api/v1/grades/review")
-      .query({ classArmId: reviewArmId, termId: sunriseTermId })
-      .set(auth(sunriseAdminToken));
-    const blankSubject = blankReview.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
-    expect(blankSubject.canPublish).toBe(false);
-
-    const blockedPublish = await request(app.getHttpServer())
-      .post("/api/v1/grades/publish")
-      .set(auth(sunriseAdminToken))
-      .send({ classArmId: reviewArmId, subjectId, termId: sunriseTermId });
-    expect(blockedPublish.status).toBe(409);
-    expect(blockedPublish.body.incompleteEntries).toEqual([{ studentId: studentIds[0], evaluationId: ca3 }]);
-
-    // Resolve the blank with a real score — canPublish flips, and the
-    // SAME publish() call that just 409'd now genuinely succeeds.
-    await score(subjectId, ca3, [{ studentId: studentIds[0], rawScore: 5 }]);
-
-    const resolvedReview = await request(app.getHttpServer())
-      .get("/api/v1/grades/review")
-      .query({ classArmId: reviewArmId, termId: sunriseTermId })
-      .set(auth(sunriseAdminToken));
-    const resolvedSubject = resolvedReview.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectId);
-    expect(resolvedSubject.canPublish).toBe(true);
-
-    const allowedPublish = await request(app.getHttpServer())
-      .post("/api/v1/grades/publish")
-      .set(auth(sunriseAdminToken))
-      .send({ classArmId: reviewArmId, subjectId, termId: sunriseTermId });
-    expect(allowedPublish.status).toBe(200);
-    expect(allowedPublish.body.publishedCount).toBe(1);
-  });
-
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q2) — the completeness gate is now
+  // roster-wide (every CURRENTLY ENROLLED student in the class arm), so
+  // this test uses its OWN small, dedicated class arm rather than the
+  // shared reviewArmId (whose rosterSize must stay constant at 4 for the
+  // other tests in this file, and whose OTHER 3 students are never
+  // scored on this subject).
   it("status= filter: 'at least one student in this status'", async () => {
+    const statusFilterArm = await prisma.classArm.create({
+      data: { schoolId: sunriseId, classLevelId: jss2LevelId, name: `E2E-ReviewStatusFilter-${Date.now()}` },
+    });
+    const statusFilterStudent = await prisma.student.create({
+      data: {
+        schoolId: sunriseId,
+        admissionNumber: `E2E-REV/StatusFilter-${Date.now()}`,
+        firstName: "ReviewStatusFilter",
+        lastName: "Student",
+        gender: Gender.FEMALE,
+        dateOfBirth: new Date(Date.UTC(2012, 0, 1)),
+        guardianName: "E2E Guardian",
+        guardianPhone: `+2348029${String(Date.now()).slice(-6)}`,
+      },
+    });
+    await prisma.studentEnrollment.create({ data: { schoolId: sunriseId, studentId: statusFilterStudent.id, classArmId: statusFilterArm.id, sessionId: sunriseSessionId } });
+
     const subjectId = await createSubject("E2E Review StatusFilter");
-    const [ca1, ca2, ca3] = await createEvaluations(subjectId);
-    await score(subjectId, ca1, [{ studentId: studentIds[0], rawScore: 20 }]);
-    await score(subjectId, ca2, [{ studentId: studentIds[0], rawScore: 60 }]);
-    await score(subjectId, ca3, [{ studentId: studentIds[0], rawScore: 0 }]); // completeness gate — 0 is decided, not blank
-    const publishRes = await request(app.getHttpServer())
-      .post("/api/v1/grades/publish")
+    const ca1 = await prisma.evaluation.create({
+      data: { schoolId: sunriseId, classArmId: statusFilterArm.id, subjectId, sessionId: sunriseSessionId, termId: sunriseTermId, name: "CA 1", description: "CA 1", createdBy: teacherUserId },
+    });
+    await prisma.subjectTeacherAssignment.create({
+      data: { schoolId: sunriseId, subjectId, classArmId: statusFilterArm.id, sessionId: sunriseSessionId, teacherUserId },
+    });
+    const scoreRes = await request(app.getHttpServer())
+      .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send({ classArmId: reviewArmId, subjectId, termId: sunriseTermId });
+      .send({ classArmId: statusFilterArm.id, subjectId, evaluationId: ca1.id, termId: sunriseTermId, scores: [{ studentId: statusFilterStudent.id, rawScore: 20 }] });
+    expect(scoreRes.status).toBe(200);
+    const publishRes = await request(app.getHttpServer())
+      .post(`/api/v1/grades/evaluations/${ca1.id}/publish`)
+      .set(auth(sunriseAdminToken));
     expect(publishRes.status).toBe(200);
-    // Now this subject has 1 PUBLISHED + 3 never-touched (no rows at all,
-    // so they don't count toward draft/pending/published either).
 
     const publishedOnly = await request(app.getHttpServer())
       .get("/api/v1/grades/review")
-      .query({ classArmId: reviewArmId, termId: sunriseTermId, status: "PUBLISHED" })
+      .query({ classArmId: statusFilterArm.id, termId: sunriseTermId, status: "PUBLISHED" })
       .set(auth(sunriseAdminToken));
     expect(publishedOnly.body.subjects.some((s: { subjectId: string }) => s.subjectId === subjectId)).toBe(true);
 
     const draftOnly = await request(app.getHttpServer())
       .get("/api/v1/grades/review")
-      .query({ classArmId: reviewArmId, termId: sunriseTermId, status: "DRAFT" })
+      .query({ classArmId: statusFilterArm.id, termId: sunriseTermId, status: "DRAFT" })
       .set(auth(sunriseAdminToken));
     expect(draftOnly.body.subjects.some((s: { subjectId: string }) => s.subjectId === subjectId)).toBe(false);
+
+    await prisma.evaluationScore.deleteMany({ where: { evaluationId: ca1.id } });
+    await prisma.evaluation.delete({ where: { id: ca1.id } });
+    await prisma.termSubjectResult.deleteMany({ where: { subjectId } });
+    await prisma.termOverallResult.deleteMany({ where: { studentId: statusFilterStudent.id } });
+    await prisma.studentEnrollment.deleteMany({ where: { studentId: statusFilterStudent.id } });
+    await prisma.student.delete({ where: { id: statusFilterStudent.id } });
+    await prisma.subjectTeacherAssignment.deleteMany({ where: { classArmId: statusFilterArm.id } });
+    await prisma.classArm.delete({ where: { id: statusFilterArm.id } });
   });
 
   it("403s a TEACHER categorically — no teacher path exists on this route", async () => {

@@ -350,10 +350,15 @@ describe("Exam scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
         .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, evaluationId: evaluation.id, termId: bundle.termId, scores: [{ studentId, rawScore: 55 }] });
       expect(evalSave.status).toBe(200);
 
+      // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — the evaluation is never
+      // published here, so its total stays 0 (average of PUBLISHED
+      // evaluations only) regardless of the raw score entered — that's
+      // orthogonal to this test's actual point, which is that the exam
+      // write below doesn't change this value AT ALL, whatever it is.
       const beforeExam = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId, subjectId: bundle.subjectId, termId: bundle.termId, sessionId: bundle.sessionId } },
       });
-      expect(Number(beforeExam.totalScore)).toBe(55);
+      expect(Number(beforeExam.totalScore)).toBe(0);
 
       // Now score a wildly different exam value for the SAME student/
       // subject/term — the evaluation-track total must be untouched.
@@ -363,7 +368,7 @@ describe("Exam scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
       const afterExam = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId, subjectId: bundle.subjectId, termId: bundle.termId, sessionId: bundle.sessionId } },
       });
-      expect(Number(afterExam.totalScore)).toBe(55); // unchanged by the exam write
+      expect(Number(afterExam.totalScore)).toBe(0); // unchanged by the exam write
 
       const examResult = await prisma.termSubjectExamResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId, subjectId: bundle.subjectId, termId: bundle.termId, sessionId: bundle.sessionId } },

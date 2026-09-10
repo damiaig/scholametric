@@ -554,18 +554,29 @@ model StudentGuardian {
 // frozen once published (adding a new one requires unpublish-first, the
 // existing path) — enforced by Step 2's authoring endpoints, not here.
 model Evaluation {
-  id          String    @id @default(uuid(7)) @db.Uuid
-  schoolId    String    @map("school_id") @db.Uuid
-  classArmId  String    @map("class_arm_id") @db.Uuid
-  subjectId   String    @map("subject_id") @db.Uuid
-  sessionId   String    @map("session_id") @db.Uuid
-  termId      String    @map("term_id") @db.Uuid
+  id          String       @id @default(uuid(7)) @db.Uuid
+  schoolId    String       @map("school_id") @db.Uuid
+  classArmId  String       @map("class_arm_id") @db.Uuid
+  subjectId   String       @map("subject_id") @db.Uuid
+  sessionId   String       @map("session_id") @db.Uuid
+  termId      String       @map("term_id") @db.Uuid
   name        String
   description String
-  createdBy   String    @map("created_by") @db.Uuid
-  deletedAt   DateTime? @map("deleted_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  createdBy   String       @map("created_by") @db.Uuid
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — publish moves to the individual
+  // evaluation; the subject no longer has its own publish action. A
+  // subject's term_subject_result.status/total_score are now DERIVED from
+  // its evaluations' own status (GradesService.recomputeStudents), not set
+  // by a separate subject-level publish() call. Same DRAFT/PUBLISHED
+  // contract term_subject_results already used (PENDING_APPROVAL unused
+  // here, same as that table) — mirrors its publishedAt shape, no
+  // publishedBy column (the audit log already captures who via
+  // actorUserId, same convention).
+  status      ResultStatus @default(DRAFT)
+  publishedAt DateTime?    @map("published_at")
+  deletedAt   DateTime?    @map("deleted_at")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
 
   school        School            @relation(fields: [schoolId], references: [id])
   classArm      ClassArm          @relation(fields: [classArmId], references: [id])

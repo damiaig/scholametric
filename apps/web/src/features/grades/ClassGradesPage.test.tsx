@@ -110,6 +110,8 @@ const EVALUATIONS_OPEN: EvaluationsListResponse = {
       id: "c1",
       name: "CA 1",
       description: "First continuous assessment",
+      status: "DRAFT",
+      publishedAt: null,
       createdAt: "t",
       createdBy: "u1",
     },
@@ -510,14 +512,12 @@ describe("ClassGradesPage — Results tab", () => {
     await screen.findAllByText("Mathematics");
     expect(screen.queryByLabelText("Term")).not.toBeInTheDocument();
     expect(screen.getByText("First term")).toBeInTheDocument();
-    // v0.7.3 step 1 (SPEC_V0.7.3.md §2) — end-to-end proof that ResultsTab's
-    // myTeaching cross-ref reaches all the way through the real page: this
-    // fixture's TEACHER teaches sub1/arm1 (TEACHING above), so the Publish
-    // control appears on Mathematics here (RESULTS's one row is still
-    // PENDING_APPROVAL, not PUBLISHED, so Unpublish does not).
-    expect(screen.getByLabelText("Publish Mathematics")).toBeInTheDocument();
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the v0.7.3 subject-level
+    // Publish/Unpublish buttons on the Results tab are gone; publish moved
+    // to the evaluation surface (EnterScoresTab), so this tab is read-only
+    // for every role now, including a TEACHER on their own subject.
     expect(
-      screen.queryByLabelText("Unpublish Mathematics"),
+      screen.queryByLabelText(/Publish|Unpublish/),
     ).not.toBeInTheDocument();
   });
 

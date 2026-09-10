@@ -17,10 +17,6 @@ export interface EvaluationScoresRow {
   // SPEC_V0.5.md §2.1 — mutually exclusive with rawScore (never both set).
   // null+false = blank/not-entered; null+true = "Abs".
   isAbsent: boolean;
-  // Subject-level status (not evaluation-level) — a PUBLISHED row is
-  // read-only regardless of which evaluation this grid is viewing. Can be
-  // genuinely mixed within one grid (staggered scoring/publishing).
-  status: ResultStatus;
 }
 
 export interface EvaluationScoresResponse {
@@ -28,11 +24,19 @@ export interface EvaluationScoresResponse {
   subjectId: string;
   evaluationId: string;
   termId: string;
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the evaluation's OWN status, one
+  // top-level field, not a per-row one. Publish is per-evaluation and
+  // atomic across its whole roster (the completeness gate means every
+  // student is decided before publish succeeds), so a PUBLISHED
+  // evaluation is read-only for every row on this grid at once — there's
+  // no "genuinely mixed" case left to represent per-row.
+  evaluationStatus: ResultStatus;
   // SPEC_V0.5.md §2.3, v0.5 step 5, carried into v0.7 — lets the grid
   // render locked/read-only FROM LOAD, not reactively on a save 409.
   // termClosed=false always implies locked=false. unlockReason is
   // populated only when termClosed && !locked (an active unlock exists
-  // for this exact class-arm+subject).
+  // for this exact class-arm+subject). Orthogonal to evaluationStatus
+  // above: this is the TERM-close lock, that is the PUBLISH lock.
   termClosed: boolean;
   locked: boolean;
   unlockReason: string | null;
@@ -64,14 +68,18 @@ export interface EvaluationScoreItem {
   isAbsent?: boolean;
 }
 
-// v0.7 step 2 (SPEC_V0.7.md §3) — the authoring surface. An evaluation
-// carries no status/publish field of its own: "is this subject published"
-// is derived fresh from term_subject_results at the moment of each
-// authoring action, never cached here.
+// v0.7 step 2 (SPEC_V0.7.md §3) — the authoring surface. v0.7.4 step 1
+// (SPEC_V0.7.4.md §2): the evaluation now carries its OWN status/
+// publishedAt — publish is per-evaluation, so this is this row's own
+// field (the picker's badge, the score-entry grid's lock, the
+// completeness gate all read it directly), not derived from
+// term_subject_results at read time.
 export interface Evaluation {
   id: string;
   name: string;
   description: string;
+  status: ResultStatus;
+  publishedAt: string | null;
   createdAt: string;
   createdBy: string;
 }
@@ -107,25 +115,6 @@ export interface CreateEvaluationInput extends EvaluationFormInput {
 
 export type UpdateEvaluationInput = Partial<EvaluationFormInput>;
 
-// The publish() 409's own structured field (SPEC_V0.5.md §2.2, v0.5 step
-// 2) — parallel to ApiErrorBody.lockedStudentIds but a different meaning:
-// locked = already published, blocking further writes; incomplete = not
-// yet publishable (a candidate has a blank evaluation).
-export interface IncompleteEntry {
-  studentId: string;
-  evaluationId: string;
-}
-
-// Mirrors GradesService.publish()/unpublish()/override() (v0.4 step 3 —
-// no web consumer existed until step 5).
-export interface PublishGradesInput {
-  classArmId: string;
-  subjectId: string;
-  termId: string;
-}
-
-export type UnpublishGradesInput = PublishGradesInput;
-
 export interface SubjectPositionRow {
   studentId: string;
   totalScore: number;
@@ -133,7 +122,11 @@ export interface SubjectPositionRow {
   subjectPosition: number;
 }
 
-export interface PublishResponse {
+// v0.7.4 step 1 — replaces subject-level PublishResponse/PublishGradesInput.
+// No request body: the route param carries the evaluation id, which
+// already knows its own classArmId/subjectId/termId.
+export interface PublishEvaluationResponse {
+  evaluationId: string;
   classArmId: string;
   subjectId: string;
   termId: string;
@@ -142,11 +135,12 @@ export interface PublishResponse {
   overallPublishedCount: number;
 }
 
-export interface UnpublishResponse {
+// v0.7.4 step 1 — replaces subject-level UnpublishResponse/UnpublishGradesInput.
+export interface UnpublishEvaluationResponse {
+  evaluationId: string;
   classArmId: string;
   subjectId: string;
   termId: string;
-  unpublishedCount: number;
   overallRevertedCount: number;
 }
 
@@ -217,6 +211,10 @@ export interface ClassArmResultsResponse {
   overall: ClassArmResultsOverallRow[] | null;
 }
 
+// v0.7.4 step 1 (SPEC_V0.7.4.md §2) — this is now a pure read-only
+// oversight view. Publish/unpublish happens at the evaluation surface
+// (EnterScoresTab), not here — there is no action this response's shape
+// needs to drive, hence no canPublish.
 export interface GradesReviewSubject {
   subjectId: string;
   subjectName: string;
@@ -227,9 +225,6 @@ export interface GradesReviewSubject {
   publishedCount: number;
   averageScore: number;
   averageGrade: string | null;
-  // Mirrors publish()'s own "nothing to do" 409 condition — disable the
-  // Publish button when false instead of offering an action that 409s.
-  canPublish: boolean;
 }
 
 export interface GradesReviewResponse {

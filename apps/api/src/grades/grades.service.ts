@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma, ResultStatus, UserRole, type Evaluation, type Term, type TermSubjectResult } from "@prisma/client";
+import { Prisma, ResultStatus, UserRole, type Evaluation, type Term } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
@@ -32,8 +32,6 @@ import { GetEvaluationsQueryDto } from "./dto/get-evaluations-query.dto";
 import { CreateEvaluationDto } from "./dto/create-evaluation.dto";
 import { UpdateEvaluationDto } from "./dto/update-evaluation.dto";
 import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
-import { PublishGradesDto } from "./dto/publish-grades.dto";
-import { UnpublishGradesDto } from "./dto/unpublish-grades.dto";
 import { OverrideGradeDto } from "./dto/override-grade.dto";
 import { GetGradesReviewQueryDto } from "./dto/get-grades-review-query.dto";
 import { GetClassArmResultsQueryDto } from "./dto/get-class-arm-results-query.dto";
@@ -47,13 +45,6 @@ export interface EvaluationScoresRow {
   admissionNumber: string;
   rawScore: number | null;
   isAbsent: boolean;
-  // The student's SUBJECT-level status (term_subject_result), not
-  // evaluation-level — independent of which evaluation this grid is
-  // currently viewing. A student with no term_subject_result row yet
-  // (nothing scored in this subject at all) reads as DRAFT. Lets the UI
-  // render a PUBLISHED row read-only from load, not reactively on the
-  // first 409 (status can genuinely be mixed across one grid's roster).
-  status: ResultStatus;
 }
 
 export interface EvaluationScoresResponse {
@@ -61,13 +52,25 @@ export interface EvaluationScoresResponse {
   subjectId: string;
   evaluationId: string;
   termId: string;
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the evaluation's OWN status, read
+  // once at the top level rather than per-row. Pre-v0.7.4 this was a
+  // per-student `status` sourced from term_subject_result (subject-level
+  // publish could leave stragglers mid-roster mid-publish); now that
+  // publish is per-evaluation and atomic across its whole roster (the
+  // completeness gate means every student is decided before publish
+  // succeeds), one evaluation is either published for everyone on this
+  // grid or for no one — a single top-level field is the accurate shape,
+  // not a per-row one.
+  evaluationStatus: ResultStatus;
   // SPEC_V0.5.md §2.3, v0.5 step 5, carried into v0.7 unchanged — lets the
   // grid render locked/read-only FROM LOAD, not reactively on a save 409.
   // termClosed=false always implies locked=false. unlockReason is
   // populated only when termClosed && !locked (an active unlock exists
   // for this exact class-arm+subject) — same lock-state resolution the
   // save path enforces (resolveSliceLockState), so the two can never
-  // drift on what "locked" means.
+  // drift on what "locked" means. Orthogonal to evaluationStatus above:
+  // this is the TERM-close lock, that is the PUBLISH lock — either can
+  // be true independent of the other.
   termClosed: boolean;
   locked: boolean;
   unlockReason: string | null;
@@ -93,16 +96,18 @@ export interface SaveEvaluationScoresResponse {
   rows: SavedEvaluationScoreRow[];
 }
 
-// v0.7 step 2 (SPEC_V0.7.md §3) — the authoring surface. An evaluation
-// carries no status/publish field of its own: "is this subject published"
-// is read fresh off term_subject_results at the moment of each authoring
-// action (create/update/delete), never cached on the Evaluation row
-// itself, so it can never drift from the real gate saveEvaluationScores/
-// publish/unpublish already enforce.
+// v0.7 step 2 (SPEC_V0.7.md §3) — the authoring surface. v0.7.4 step 1
+// (SPEC_V0.7.4.md §2): the evaluation now carries its OWN status/
+// publishedAt — publish is per-evaluation, so this is no longer "read
+// fresh off term_subject_results," it's this row's own field, the
+// single source every consumer (the picker's badge, the lock in
+// saveEvaluationScores, the completeness gate) reads directly.
 export interface EvaluationResponse {
   id: string;
   name: string;
   description: string;
+  status: ResultStatus;
+  publishedAt: Date | null;
   createdAt: Date;
   createdBy: string;
 }
@@ -140,7 +145,12 @@ export interface SubjectPositionRow {
   subjectPosition: number;
 }
 
-export interface PublishResponse {
+// v0.7.4 step 1 (SPEC_V0.7.4.md §2) — replaces subject-level PublishResponse.
+// publishedCount is the whole roster's size (the completeness gate means
+// every student is decided by the time this succeeds), not a count of
+// newly-published rows.
+export interface PublishEvaluationResponse {
+  evaluationId: string;
   classArmId: string;
   subjectId: string;
   termId: string;
@@ -149,11 +159,15 @@ export interface PublishResponse {
   overallPublishedCount: number;
 }
 
-export interface UnpublishResponse {
+// v0.7.4 step 1 — replaces subject-level UnpublishResponse. No
+// unpublishedCount: unlike the old subject-wide unpublish, this always
+// reverts exactly one evaluation for the whole roster, so the count is
+// never ambiguous or partial.
+export interface UnpublishEvaluationResponse {
+  evaluationId: string;
   classArmId: string;
   subjectId: string;
   termId: string;
-  unpublishedCount: number;
   overallRevertedCount: number;
 }
 
@@ -225,6 +239,10 @@ export interface ClassArmResultsResponse {
   overall: ClassArmResultsOverallRow[] | null;
 }
 
+// v0.7.4 step 1 (SPEC_V0.7.4.md §2) — pure read-only oversight now.
+// Publish/unpublish happens at the evaluation surface (EnterScoresTab),
+// not here — no action this response's shape needs to drive, hence no
+// canPublish.
 export interface GradesReviewSubject {
   subjectId: string;
   subjectName: string;
@@ -235,10 +253,6 @@ export interface GradesReviewSubject {
   publishedCount: number;
   averageScore: number;
   averageGrade: string | null;
-  // Mirrors publish()'s own "nothing to do" 409 condition exactly
-  // (pendingApprovalCount > 0 OR publishedCount > 0) so the UI can disable
-  // the Publish button instead of offering an action that will just 409.
-  canPublish: boolean;
 }
 
 export interface GradesReviewResponse {
@@ -391,15 +405,12 @@ export class GradesService {
 
   async getEvaluationScores(query: GetEvaluationScoresQueryDto, user: AuthenticatedUser): Promise<EvaluationScoresResponse> {
     const schoolId = this.tenantContext.schoolId;
-    const { term } = await this.resolveTenantScopeWithEvaluation(schoolId, query);
+    const { term, evaluation } = await this.resolveTenantScopeWithEvaluation(schoolId, query);
     await assertTeacherAssignment(this.prisma, schoolId, user, query.subjectId, query.classArmId, term.sessionId);
 
-    const [students, scores, subjectResults, lockState] = await Promise.all([
+    const [students, scores, lockState] = await Promise.all([
       getRoster(this.prisma, schoolId, query.classArmId, term.sessionId),
       this.prisma.evaluationScore.findMany({ where: { evaluationId: query.evaluationId } }),
-      this.prisma.termSubjectResult.findMany({
-        where: { schoolId, subjectId: query.subjectId, termId: query.termId, sessionId: term.sessionId },
-      }),
       resolveSliceLockState(this.prisma, {
         termId: query.termId,
         classArmId: query.classArmId,
@@ -409,13 +420,13 @@ export class GradesService {
     ]);
     const rawByStudent = new Map(scores.map((s) => [s.studentId, s.rawScore === null ? null : Number(s.rawScore)]));
     const absentByStudent = new Map(scores.map((s) => [s.studentId, s.isAbsent]));
-    const statusByStudent = new Map(subjectResults.map((r) => [r.studentId, r.status]));
 
     return {
       classArmId: query.classArmId,
       subjectId: query.subjectId,
       evaluationId: query.evaluationId,
       termId: query.termId,
+      evaluationStatus: evaluation.status,
       termClosed: term.closedAt !== null,
       locked: lockState.locked,
       unlockReason: lockState.unlockReason,
@@ -426,7 +437,6 @@ export class GradesService {
         admissionNumber: s.admissionNumber,
         rawScore: rawByStudent.get(s.id) ?? null,
         isAbsent: absentByStudent.get(s.id) ?? false,
-        status: statusByStudent.get(s.id) ?? ResultStatus.DRAFT,
       })),
     };
   }
@@ -502,6 +512,23 @@ export class GradesService {
         // lost update on the derived total_score.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
 
+        // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the lock is now the
+        // EVALUATION's own published state, not a per-student subject-
+        // level status: evaluation-publish is atomic across its whole
+        // roster, so there's no per-student Set anymore, just one
+        // boolean. SCHOOL_ADMIN/PROPRIETOR may still bypass to correct an
+        // already-published evaluation (SPEC_V0.5.1.md §2.5's original
+        // reasoning carried over, just re-scoped); TEACHER still 409s
+        // unconditionally. The term-closed check above is untouched and
+        // still applies to everyone, admin included.
+        const evaluationRow = await tx.evaluation.findUniqueOrThrow({ where: { id: dto.evaluationId } });
+        const isEvaluationPublished = evaluationRow.status === ResultStatus.PUBLISHED;
+        const isPublishedBypassAllowed = user.role === UserRole.SCHOOL_ADMIN || user.role === UserRole.PROPRIETOR;
+        if (isEvaluationPublished && !isPublishedBypassAllowed) {
+          throw this.publishedLockException("save scores", affectedStudentIds);
+        }
+        const isBypassedPublishedEdit = isEvaluationPublished && isPublishedBypassAllowed;
+
         const existingResults = await tx.termSubjectResult.findMany({
           where: {
             studentId: { in: affectedStudentIds },
@@ -510,28 +537,13 @@ export class GradesService {
             sessionId: term.sessionId,
           },
         });
-        const lockedStudentIds = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).map((r) => r.studentId);
-        // SPEC_V0.5.1.md §2.5, v0.5.1 step 4: SCHOOL_ADMIN/PROPRIETOR may
-        // pass this gate — the real case is correcting an is_absent flag
-        // (either direction) discovered after publishing. TEACHER still
-        // 409s here unconditionally. This is the ONLY change to this gate;
-        // the term-closed check above is untouched and still applies to
-        // everyone, admin included — the published-lock bypass must never
-        // leak into the closed-term gate (docs/DECISIONS.md).
-        const isPublishedBypassAllowed = user.role === UserRole.SCHOOL_ADMIN || user.role === UserRole.PROPRIETOR;
-        if (lockedStudentIds.length > 0 && !isPublishedBypassAllowed) {
-          throw this.publishedLockException("save scores", lockedStudentIds);
-        }
-        const bypassedPublishedStudentIds = new Set<string>(isPublishedBypassAllowed ? lockedStudentIds : []);
 
         // Gap #2 (docs/DECISIONS.md): a student's overall can only be
         // PUBLISHED if every subject they've been scored in so far is
-        // itself PUBLISHED — and a student whose row for THIS subject is
-        // already PUBLISHED already 409'd above. So the only way this
-        // save can strand a stale overall is by creating a genuinely NEW
-        // subject-result (no existing row) for a student whose overall is
-        // currently PUBLISHED — editing an existing row can never reach
-        // this.
+        // itself PUBLISHED. So the only way an ORDINARY save can strand a
+        // stale overall is by creating a genuinely NEW subject-result (no
+        // existing row) for a student whose overall is currently
+        // PUBLISHED.
         const studentsWithNoExistingRow = affectedStudentIds.filter(
           (id) => !existingResults.some((r) => r.studentId === id),
         );
@@ -542,11 +554,12 @@ export class GradesService {
           });
           needsOverallRecompute = overallRows.some((r) => r.status === ResultStatus.PUBLISHED);
         }
-        // A bypassed published row's total is about to change — that
+        // A bypassed edit to an already-published evaluation changes
+        // scores that currently DO count toward the subject total — that
         // student's overall (and, once the subject re-ranks below,
         // possibly every other published student's overall too) needs the
         // same cross-subject cascade gap #2 already triggers this lock for.
-        if (bypassedPublishedStudentIds.size > 0) {
+        if (isBypassedPublishedEdit) {
           needsOverallRecompute = true;
         }
 
@@ -583,18 +596,17 @@ export class GradesService {
           tx,
           { schoolId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, classArmId: dto.classArmId },
           affectedStudentIds,
-          bypassedPublishedStudentIds,
         );
 
-        // A bypassed student's total just moved, which can shift the
+        // A bypassed edit's total just moved, which can shift the
         // relative rank of every OTHER already-published student in this
-        // subject too, not just theirs — same re-rank publish() itself
-        // does after transitioning students to PUBLISHED (identical
-        // computeStandardCompetitionRanking call), just triggered here by
-        // a correction instead of a fresh publish. Still under the subject
-        // lock already held above; no new lock needed for a single
-        // subject's own rows.
-        if (bypassedPublishedStudentIds.size > 0) {
+        // subject too, not just the ones just saved — same re-rank
+        // publishEvaluation() itself does after transitioning an
+        // evaluation to PUBLISHED (identical computeStandardCompetitionRanking
+        // call), just triggered here by a correction instead of a fresh
+        // publish. Still under the subject lock already held above; no
+        // new lock needed for a single subject's own rows.
+        if (isBypassedPublishedEdit) {
           const publishedRows = await tx.termSubjectResult.findMany({
             where: { schoolId, classArmId: dto.classArmId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, status: ResultStatus.PUBLISHED },
           });
@@ -634,11 +646,11 @@ export class GradesService {
               termId: dto.termId,
               scoreCount: dto.scores.length,
               // Empty for every ordinary save — only non-empty when
-              // admin/proprietor corrected an already-PUBLISHED student's
-              // score/absence, so this specific sensitive path stays
-              // traceable in the same audit row rather than a silent
-              // side effect of a routine save.
-              publishedBypassStudentIds: [...bypassedPublishedStudentIds],
+              // admin/proprietor corrected an already-published
+              // evaluation's score/absence, so this specific sensitive
+              // path stays traceable in the same audit row rather than a
+              // silent side effect of a routine save.
+              publishedBypassStudentIds: isBypassedPublishedEdit ? affectedStudentIds : [],
             },
           },
         });
@@ -705,10 +717,15 @@ export class GradesService {
   // Create: TEACHER (must hold the assignment)/SCHOOL_ADMIN/PROPRIETOR,
   // matching the scoring endpoint's own role list (confirmed — an admin
   // stepping in for a teacher can author too). Term-lock first (shared
-  // with the exam track, same key order as saveEvaluationScores), then
-  // the confirmed Step 1 rule enforced here for the first time: a subject
-  // whose results are already PUBLISHED has its evaluation set frozen —
-  // creating a new one requires unpublish-first, the existing path.
+  // with the exam track, same key order as saveEvaluationScores).
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the old "subject already
+  // published blocks creating a new evaluation" gate is REMOVED: that
+  // was a consequence of subject-publish being the only publish unit
+  // (adding an evaluation to an already-published subject meant
+  // resurrecting a declared-final state). With publish per-evaluation,
+  // this is now the normal case — add CA3 while CA1 is already published
+  // and visible; CA3 just starts as its own fresh, unpublished evaluation
+  // and doesn't disturb CA1's derived contribution at all.
   async createEvaluation(dto: CreateEvaluationDto, user: AuthenticatedUser): Promise<EvaluationResponse> {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);
@@ -737,22 +754,6 @@ export class GradesService {
 
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
 
-        const publishedCount = await tx.termSubjectResult.count({
-          where: {
-            schoolId,
-            classArmId: dto.classArmId,
-            subjectId: dto.subjectId,
-            termId: dto.termId,
-            sessionId: term.sessionId,
-            status: ResultStatus.PUBLISHED,
-          },
-        });
-        if (publishedCount > 0) {
-          throw new ConflictException(
-            "Cannot create: this subject's results are already published for this term — unpublish first to add a new evaluation.",
-          );
-        }
-
         const evaluation = await tx.evaluation.create({
           data: {
             schoolId,
@@ -773,11 +774,13 @@ export class GradesService {
   }
 
   // Edit name/description only (classArmId/subjectId/termId are immutable
-  // — re-scoping isn't a "fix a typo" edit). Freely editable while this
-  // subject's results are DRAFT; once ANY row is PUBLISHED for this
-  // subject/term, only PROPRIETOR may edit — the same data-dependent
-  // role-narrowing shape override() already uses, confirmed. No recompute
-  // needed: name/description never feed the average.
+  // — re-scoping isn't a "fix a typo" edit). Freely editable while THIS
+  // evaluation is DRAFT; once IT is PUBLISHED, only PROPRIETOR may edit —
+  // same data-dependent role-narrowing shape override() already uses,
+  // just re-scoped from "the subject" to "this evaluation" (v0.7.4 step 1,
+  // SPEC_V0.7.4.md §2/§6): a sibling evaluation's publish state has no
+  // bearing on this one anymore. No recompute needed: name/description
+  // never feed the average.
   async updateEvaluation(evaluationId: string, dto: UpdateEvaluationDto, user: AuthenticatedUser): Promise<EvaluationResponse> {
     if (dto.name === undefined && dto.description === undefined) {
       throw new BadRequestException("At least one of name or description must be provided.");
@@ -812,18 +815,9 @@ export class GradesService {
 
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
 
-      const publishedCount = await tx.termSubjectResult.count({
-        where: {
-          schoolId,
-          classArmId: evaluation.classArmId,
-          subjectId: evaluation.subjectId,
-          termId: evaluation.termId,
-          sessionId: evaluation.sessionId,
-          status: ResultStatus.PUBLISHED,
-        },
-      });
-      if (publishedCount > 0 && user.role !== UserRole.PROPRIETOR) {
-        throw new ForbiddenException("Only the school owner (PROPRIETOR) may edit an evaluation once this subject's results are published.");
+      const freshEvaluation = await tx.evaluation.findUniqueOrThrow({ where: { id: evaluationId } });
+      if (freshEvaluation.status === ResultStatus.PUBLISHED && user.role !== UserRole.PROPRIETOR) {
+        throw new ForbiddenException("Only the school owner (PROPRIETOR) may edit an evaluation once it's published.");
       }
 
       const updated = await tx.evaluation.update({
@@ -839,15 +833,17 @@ export class GradesService {
   }
 
   // PROPRIETOR only, categorical (enforced at the controller, mirrors
-  // unpublish() exactly — not data-dependent). Blocks outright (409) while
-  // this subject's results are PUBLISHED — confirmed: no force-delete-
-  // through-published cascade. This is why the recompute below can be a
-  // plain recomputeStudents() call with no gap-2/overall cascade: every
-  // affected term_subject_result is guaranteed DRAFT at delete-time (the
-  // block above), so no student's overall could already be PUBLISHED on
-  // the strength of this subject, and no first-ever-row/gap-2 case can
-  // arise either. A future change that allows force-deleting a PUBLISHED
-  // evaluation MUST add that cascade back (docs/DECISIONS.md).
+  // unpublishEvaluation() exactly — not data-dependent). Blocks outright
+  // (409) while THIS evaluation is PUBLISHED — confirmed: no force-delete-
+  // through-published cascade (v0.7.4 step 1: re-scoped from "the
+  // subject" to "this evaluation" — a sibling's publish state has no
+  // bearing here). This is why the recompute below can be a plain
+  // recomputeStudents() call with no gap-2/overall cascade: this
+  // evaluation is guaranteed DRAFT at delete-time (the block above), so
+  // deleting it can only ever REMOVE a (non-counting) contribution, never
+  // flip anyone's derived status. A future change that allows force-
+  // deleting a PUBLISHED evaluation MUST add that cascade back
+  // (docs/DECISIONS.md).
   async deleteEvaluation(evaluationId: string): Promise<{ id: string }> {
     const schoolId = this.tenantContext.schoolId;
     const evaluation = await this.prisma.evaluation.findFirst({ where: forSchool(schoolId, { id: evaluationId, deletedAt: null }) });
@@ -881,18 +877,9 @@ export class GradesService {
 
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
 
-        const publishedCount = await tx.termSubjectResult.count({
-          where: {
-            schoolId,
-            classArmId: evaluation.classArmId,
-            subjectId: evaluation.subjectId,
-            termId: evaluation.termId,
-            sessionId: evaluation.sessionId,
-            status: ResultStatus.PUBLISHED,
-          },
-        });
-        if (publishedCount > 0) {
-          throw new ConflictException("Cannot delete: this subject's results are already published for this term — unpublish first.");
+        const freshEvaluation = await tx.evaluation.findUniqueOrThrow({ where: { id: evaluationId } });
+        if (freshEvaluation.status === ResultStatus.PUBLISHED) {
+          throw new ConflictException("Cannot delete: this evaluation is already published — unpublish it first.");
         }
 
         await tx.evaluation.update({ where: { id: evaluationId }, data: { deletedAt: new Date() } });
@@ -916,15 +903,31 @@ export class GradesService {
       id: evaluation.id,
       name: evaluation.name,
       description: evaluation.description,
+      status: evaluation.status,
+      publishedAt: evaluation.publishedAt,
       createdAt: evaluation.createdAt,
       createdBy: evaluation.createdBy,
     };
   }
 
   // Admin-only manual re-trigger — re-derives term_subject_results for a
-  // whole class arm + subject + term from whatever evaluation_scores
-  // currently exist, e.g. after a roster fix. No new computation logic:
-  // same recomputeStudents() saveEvaluationScores() already uses.
+  // whole class arm + subject + term from whatever evaluation_scores/
+  // evaluation publish-state currently exist, e.g. after a roster fix.
+  // No new computation logic: same recomputeStudents() saveEvaluationScores()
+  // already uses. v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the old "409 if any
+  // student's row is already published" block is REMOVED: that block
+  // existed because a recompute could otherwise silently overwrite a
+  // deliberately-declared-final subject-publish. There's no such
+  // externally-declared state left to protect — recompute never touches
+  // evaluation_scores or any evaluation's own publish status, it only
+  // re-derives the SAME way a publish/unpublish/save already would, so
+  // it's always safe to re-run regardless of current status. A necessary
+  // consequence of that unblocking: recomputeStudents() always nulls
+  // subjectPosition (ranking is the caller's job) — now that this can run
+  // against an already-published subject, recompute() must re-rank the
+  // currently-published set afterward itself, the same way
+  // publishEvaluation()/unpublishEvaluation() do, or a manual re-trigger
+  // would silently wipe every published student's position.
   //
   // Gap-2-twin (SPEC_V0.5.md §3): carried the same latent gap #2
   // saveEvaluationScores() is fixed for. Mirrors that fix exactly:
@@ -954,10 +957,6 @@ export class GradesService {
         const existingResults = await tx.termSubjectResult.findMany({
           where: { studentId: { in: studentIds }, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId },
         });
-        const lockedStudentIds = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).map((r) => r.studentId);
-        if (lockedStudentIds.length > 0) {
-          throw this.publishedLockException("recompute", lockedStudentIds);
-        }
 
         const studentsWithNoExistingRow = studentIds.filter((id) => !existingResults.some((r) => r.studentId === id));
         let needsOverallRecompute = false;
@@ -972,6 +971,20 @@ export class GradesService {
           tx,
           { schoolId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, classArmId: dto.classArmId },
           studentIds,
+        );
+
+        // Re-rank the ENTIRE currently-published set for this subject —
+        // same as publishEvaluation()/unpublishEvaluation() do, and for
+        // the same reason: recomputeStudents() always nulls
+        // subjectPosition, so anyone currently published needs a fresh
+        // rank or they'd silently lose their position. A no-op (zero
+        // rows) when nothing's published.
+        const publishedRows = await tx.termSubjectResult.findMany({
+          where: { schoolId, classArmId: dto.classArmId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, status: ResultStatus.PUBLISHED },
+        });
+        const ranking = computeStandardCompetitionRanking(publishedRows, (row) => Number(row.totalScore));
+        await Promise.all(
+          ranking.map(({ item, position }) => tx.termSubjectResult.update({ where: { id: item.id }, data: { subjectPosition: position } })),
         );
 
         if (needsOverallRecompute) {
@@ -990,49 +1003,43 @@ export class GradesService {
     );
   }
 
-  // Transitions a subject's DRAFT results to PUBLISHED and computes
-  // subject_position (SPEC_V0.4.md §2/§1, v0.7 step 1: no more
-  // PENDING_APPROVAL hop — publishing itself is what declares a subject
-  // final, confirmed). Re-ranks the ENTIRE currently-published set for
-  // this subject/class/term, not just the newly-transitioning rows —
-  // publishing can legitimately happen more than once as stragglers'
-  // evaluations land, and a second call must produce positions consistent
-  // with the first batch, not a scale disconnected from it. Rejects (409)
-  // only when there is truly nothing to do — no DRAFT rows AND none
-  // already published — so a director's misclick against an untouched
-  // subject gets a clear answer rather than a silent no-op; re-publishing
-  // an already-fully-published subject is a legitimate idempotent 200
-  // (nothing new transitions, positions reconfirmed).
-  async publish(dto: PublishGradesDto, user: AuthenticatedUser): Promise<PublishResponse> {
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — replaces subject-level publish().
+  // Publishing THIS evaluation makes its scores visible to students/
+  // parents (getReportCard's evaluations query, self-view, filters to
+  // status: PUBLISHED) and re-derives every roster student's subject
+  // total/status from whichever evaluations are currently published
+  // (recomputeStudents) — the subject itself has no publish action of
+  // its own anymore; re-ranks the ENTIRE currently-published set for this
+  // subject, same as old publish() did, since one evaluation publishing
+  // can shift everyone's relative total. Role shape carried over
+  // unchanged from v0.7.3 (Item 4's admin-narrowing is a later step, not
+  // this one): TEACHER (assigned) + SCHOOL_ADMIN + PROPRIETOR.
+  async publishEvaluation(evaluationId: string, user: AuthenticatedUser): Promise<PublishEvaluationResponse> {
     const schoolId = this.tenantContext.schoolId;
-    const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);
-    // v0.7.3 step 1 (SPEC_V0.7.3.md §2) — a TEACHER may only publish a
-    // subject they're assigned to. Deliberately the narrower
-    // assertTeacherAssignmentForPublish, not assertTeacherAssignment: the
-    // latter's admin/proprietor "existence-only" branch would newly 404
-    // an admin publishing a subject with no CURRENT teacher assignment —
-    // a real narrowing publish() never had before this step (see its
-    // own doc comment).
-    await assertTeacherAssignmentForPublish(this.prisma, schoolId, user, dto.subjectId, dto.classArmId, term.sessionId);
+    const evaluation = await this.prisma.evaluation.findFirst({ where: forSchool(schoolId, { id: evaluationId, deletedAt: null }) });
+    if (!evaluation) {
+      throw new NotFoundException("Evaluation not found.");
+    }
+    await assertTeacherAssignmentForPublish(this.prisma, schoolId, user, evaluation.subjectId, evaluation.classArmId, evaluation.sessionId);
 
-    const termLock = termLockKey(schoolId, dto.termId);
-    const subjectLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
-    const classArmLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
+    // Fetched before the transaction — same established convention as
+    // deleteEvaluation (roster doesn't change within one request's
+    // lifetime; getRoster is typed for PrismaService, not a tx client).
+    const students = await getRoster(this.prisma, schoolId, evaluation.classArmId, evaluation.sessionId);
+    const studentIds = students.map((s) => s.id);
+
+    const termLock = termLockKey(schoolId, evaluation.termId);
+    const subjectLockKey = buildSubjectLockKey(schoolId, evaluation.subjectId, evaluation.classArmId, evaluation.termId);
+    const classArmLockKey = buildClassArmLockKey(schoolId, evaluation.classArmId, evaluation.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
-        // v0.7.3 step 1 — closed-term gate, previously missing here (an
-        // oversight: every other mutation on this data already blocks a
-        // closed term, publish/unpublish did not). Term lock first, fresh
-        // read, same pattern saveEvaluationScores already uses — a closed
-        // term now blocks publish/unpublish for EVERY role, admin
-        // included, not just the newly-added TEACHER path.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
-        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
+        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: evaluation.termId } });
         const { locked } = await resolveSliceLockState(tx, {
-          termId: dto.termId,
-          classArmId: dto.classArmId,
-          subjectId: dto.subjectId,
+          termId: evaluation.termId,
+          classArmId: evaluation.classArmId,
+          subjectId: evaluation.subjectId,
           closedAt: freshTerm.closedAt,
         });
         if (locked) {
@@ -1042,107 +1049,86 @@ export class GradesService {
           });
         }
 
-        // Subject-level lock first (same key saveGrid/recompute/override
-        // use) — blocks a concurrent score save on this exact grid from
-        // racing the publish. Always acquired before the broader
-        // class-arm lock below, never the reverse, so no caller can
-        // deadlock against another (SPEC_V0.4.md §5 resolution).
+        // Subject-level lock first (same key saveEvaluationScores/
+        // recompute/override use) — blocks a concurrent score save on
+        // this exact grid from racing the publish. Always before the
+        // broader class-arm lock below, never the reverse (SPEC_V0.4.md §5).
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjectLockKey}))`;
 
-        const existing = await tx.termSubjectResult.findMany({
-          where: { schoolId, classArmId: dto.classArmId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId },
-        });
-        // v0.7 step 1 (confirmed): no auto-status-flip — a subject's row
-        // stays DRAFT until this very call declares it final. There is no
-        // more PENDING_APPROVAL hop for the evaluation track (unlike v0.4's
-        // approval-required-component gate); every not-yet-published row is
-        // DRAFT, and completeness is checked ONLY here, over whatever
-        // evaluations exist for this subject/term at this exact moment.
-        const toPublish = existing.filter((r) => r.status === ResultStatus.DRAFT);
-        const alreadyPublished = existing.filter((r) => r.status === ResultStatus.PUBLISHED);
-
-        if (toPublish.length === 0 && alreadyPublished.length === 0) {
-          throw new ConflictException("Nothing to publish for this subject: no scores have been entered yet.");
+        const freshEvaluation = await tx.evaluation.findUniqueOrThrow({ where: { id: evaluationId } });
+        if (freshEvaluation.status === ResultStatus.PUBLISHED) {
+          throw new ConflictException("This evaluation is already published.");
         }
 
-        // Completeness gate (SPEC_V0.5.md §2.2, carried into v0.7): no
-        // silent blanks that quietly count as 0. Scoped to `toPublish`
-        // CANDIDATES only — the students actually transitioning DRAFT ->
-        // PUBLISHED in THIS call — not the whole roster and not
-        // `alreadyPublished` (they passed this same gate when first
-        // published and can't have regressed, since score writes are
-        // blocked once PUBLISHED). Same definition of "complete" that
-        // getReview()'s canPublish uses (findIncompleteEntries), so the two
-        // can never drift apart. Confirmed: the evaluation SET is frozen
-        // once published — adding a new evaluation to an already-published
-        // subject requires unpublish-first, the existing path.
-        if (toPublish.length > 0) {
-          const incompleteEntries = await this.findIncompleteEntries(
-            tx,
-            { schoolId, termId: dto.termId, sessionId: term.sessionId },
-            toPublish.map((row) => ({ subjectId: dto.subjectId, studentId: row.studentId })),
-          );
-          if (incompleteEntries.length > 0) {
-            const incompleteStudentCount = new Set(incompleteEntries.map((e) => e.studentId)).size;
-            throw new ConflictException({
-              message: `Cannot publish: ${incompleteStudentCount} student(s) have at least one evaluation that's neither scored nor marked absent.`,
-              incompleteEntries: incompleteEntries.map(({ studentId, evaluationId }) => ({ studentId, evaluationId })),
-            });
-          }
+        // Completeness gate (Q2) — every roster student needs a decided
+        // (score-or-absent) row for THIS evaluation, not every evaluation
+        // for the subject. Simpler than the old subject-scoped check it
+        // replaces: one evaluation, the whole roster.
+        const incompleteStudentIds = await this.findIncompleteStudentsForEvaluation(tx, evaluationId, studentIds);
+        if (incompleteStudentIds.length > 0) {
+          throw new ConflictException({
+            message: `Cannot publish: ${incompleteStudentIds.length} student(s) don't have a score or absence recorded for this evaluation yet.`,
+            incompleteStudentIds,
+          });
         }
 
-        const now = new Date();
-        await Promise.all(
-          toPublish.map((row) =>
-            tx.termSubjectResult.update({
-              where: { id: row.id },
-              data: { status: ResultStatus.PUBLISHED, publishedAt: now },
-            }),
-          ),
+        await tx.evaluation.update({ where: { id: evaluationId }, data: { status: ResultStatus.PUBLISHED, publishedAt: new Date() } });
+
+        await this.recomputeStudents(
+          tx,
+          { schoolId, subjectId: evaluation.subjectId, termId: evaluation.termId, sessionId: evaluation.sessionId, classArmId: evaluation.classArmId },
+          studentIds,
         );
 
-        const published: TermSubjectResult[] = [
-          ...toPublish.map((row) => ({ ...row, status: ResultStatus.PUBLISHED, publishedAt: now })),
-          ...alreadyPublished,
-        ];
-        const ranking = computeStandardCompetitionRanking(published, (row) => Number(row.totalScore));
+        // Re-rank the ENTIRE currently-published set for this subject —
+        // mirrors old publish()'s own re-rank exactly, just triggered by
+        // an evaluation publishing instead of a subject-publish action.
+        const publishedRows = await tx.termSubjectResult.findMany({
+          where: {
+            schoolId,
+            classArmId: evaluation.classArmId,
+            subjectId: evaluation.subjectId,
+            termId: evaluation.termId,
+            sessionId: evaluation.sessionId,
+            status: ResultStatus.PUBLISHED,
+          },
+        });
+        const ranking = computeStandardCompetitionRanking(publishedRows, (row) => Number(row.totalScore));
         await Promise.all(
-          ranking.map(({ item, position }) =>
-            tx.termSubjectResult.update({ where: { id: item.id }, data: { subjectPosition: position } }),
-          ),
+          ranking.map(({ item, position }) => tx.termSubjectResult.update({ where: { id: item.id }, data: { subjectPosition: position } })),
         );
 
         await tx.auditLog.create({
           data: {
             schoolId,
             actorUserId: user.userId,
-            action: "grades.publish",
+            action: "grades.publishEvaluation",
             entityType: "grades",
-            entityId: dto.classArmId,
-            metadata: { subjectId: dto.subjectId, termId: dto.termId, publishedCount: toPublish.length },
+            entityId: evaluation.classArmId,
+            metadata: { subjectId: evaluation.subjectId, evaluationId, termId: evaluation.termId, publishedCount: studentIds.length },
           },
         });
 
-        // Broader lock for the cross-subject overall recompute — a
-        // second, concurrent publish() for a DIFFERENT subject of this
-        // same class arm/term would otherwise be able to read this
-        // student's term_subject_results before this transaction commits,
-        // independently concluding "not all published yet," and neither
-        // call would ever correctly flip the student's overall to
-        // PUBLISHED (a genuine lost update, not just a display quirk).
+        // Broader lock for the cross-subject overall recompute — same
+        // reasoning old publish() used: a concurrent publish for a
+        // DIFFERENT subject of this same class arm/term could otherwise
+        // read stale term_subject_results and miss flipping a student's
+        // overall. Unconditional (not gap-2-gated) — publishing an
+        // evaluation always has the potential to change subject statuses.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${classArmLockKey}))`;
         const overall = await this.recomputeOverallForClassArm(tx, {
           schoolId,
-          classArmId: dto.classArmId,
-          termId: dto.termId,
-          sessionId: term.sessionId,
+          classArmId: evaluation.classArmId,
+          termId: evaluation.termId,
+          sessionId: evaluation.sessionId,
         });
 
         return {
-          classArmId: dto.classArmId,
-          subjectId: dto.subjectId,
-          termId: dto.termId,
-          publishedCount: toPublish.length,
+          evaluationId,
+          classArmId: evaluation.classArmId,
+          subjectId: evaluation.subjectId,
+          termId: evaluation.termId,
+          publishedCount: studentIds.length,
           subjectPositions: ranking.map(({ item, position }) => ({
             studentId: item.studentId,
             totalScore: Number(item.totalScore),
@@ -1152,45 +1138,44 @@ export class GradesService {
           overallPublishedCount: overall.publishedCount,
         };
       },
-      { timeout: 20000 }, // two locks + a class-arm-wide read/write phase — generous safety valve, not the e2e proof's ceiling
+      { timeout: 20000 },
     );
   }
 
-  // Reverts a subject's PUBLISHED results — deterministically back to
-  // DRAFT (v0.7: no more PENDING_APPROVAL hop), since score writes are
-  // blocked while PUBLISHED, so nothing could have changed underneath
-  // (reuses recomputeStudents rather than hardcoding the status literal,
-  // so this stays correct even if that invariant is ever violated).
-  // Clears subject_position/published_at as part of the same recompute.
-  // This is the confirmed "existing path" for adding a new evaluation to
-  // an already-published subject: unpublish first, add it, re-publish.
-  // PROPRIETOR (owner authority), or a TEACHER unpublishing their OWN
-  // assigned subject (v0.7.3 step 1, SPEC_V0.7.3.md §2 Q1) — SCHOOL_ADMIN
-  // is still excluded, unchanged. 409 if nothing is currently published
-  // for this subject — symmetric with publish()'s "nothing to do"
-  // rejection.
-  async unpublish(dto: UnpublishGradesDto, user: AuthenticatedUser): Promise<UnpublishResponse> {
+  // v0.7.4 step 1 — replaces subject-level unpublish(). Reverts THIS
+  // evaluation to DRAFT and re-derives the subject's total/status from
+  // whichever OTHER evaluations remain published — unlike old unpublish()
+  // (which reverted the whole subject to DRAFT, since it was the only
+  // publish unit), a subject with other published evaluations STAYS
+  // derived-PUBLISHED here, just with a recalculated total that no
+  // longer includes this one. Role shape carried over unchanged from
+  // v0.7.3: TEACHER (assigned) + PROPRIETOR — SCHOOL_ADMIN still
+  // excluded, unchanged asymmetry with publish.
+  async unpublishEvaluation(evaluationId: string, user: AuthenticatedUser): Promise<UnpublishEvaluationResponse> {
     const schoolId = this.tenantContext.schoolId;
-    const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);
-    // v0.7.3 step 1 — same teacher-scoping as publish() above, same
-    // assertTeacherAssignmentForPublish (not assertTeacherAssignment) for
-    // the identical reason: no new existence-check for admin/proprietor.
-    await assertTeacherAssignmentForPublish(this.prisma, schoolId, user, dto.subjectId, dto.classArmId, term.sessionId);
+    const evaluation = await this.prisma.evaluation.findFirst({ where: forSchool(schoolId, { id: evaluationId, deletedAt: null }) });
+    if (!evaluation) {
+      throw new NotFoundException("Evaluation not found.");
+    }
+    await assertTeacherAssignmentForPublish(this.prisma, schoolId, user, evaluation.subjectId, evaluation.classArmId, evaluation.sessionId);
 
-    const termLock = termLockKey(schoolId, dto.termId);
-    const subjectLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
-    const classArmLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
+    // Fetched before the transaction — same convention as
+    // publishEvaluation/deleteEvaluation.
+    const students = await getRoster(this.prisma, schoolId, evaluation.classArmId, evaluation.sessionId);
+    const studentIds = students.map((s) => s.id);
+
+    const termLock = termLockKey(schoolId, evaluation.termId);
+    const subjectLockKey = buildSubjectLockKey(schoolId, evaluation.subjectId, evaluation.classArmId, evaluation.termId);
+    const classArmLockKey = buildClassArmLockKey(schoolId, evaluation.classArmId, evaluation.termId);
 
     return this.prisma.$transaction(
       async (tx) => {
-        // v0.7.3 step 1 — closed-term gate, previously missing (see
-        // publish()'s identical comment above).
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
-        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
+        const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: evaluation.termId } });
         const { locked } = await resolveSliceLockState(tx, {
-          termId: dto.termId,
-          classArmId: dto.classArmId,
-          subjectId: dto.subjectId,
+          termId: evaluation.termId,
+          classArmId: evaluation.classArmId,
+          subjectId: evaluation.subjectId,
           closedAt: freshTerm.closedAt,
         });
         if (locked) {
@@ -1202,51 +1187,62 @@ export class GradesService {
 
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjectLockKey}))`;
 
-        const published = await tx.termSubjectResult.findMany({
+        const freshEvaluation = await tx.evaluation.findUniqueOrThrow({ where: { id: evaluationId } });
+        if (freshEvaluation.status !== ResultStatus.PUBLISHED) {
+          throw new ConflictException("Nothing to unpublish: this evaluation isn't published.");
+        }
+
+        await tx.evaluation.update({ where: { id: evaluationId }, data: { status: ResultStatus.DRAFT, publishedAt: null } });
+
+        await this.recomputeStudents(
+          tx,
+          { schoolId, subjectId: evaluation.subjectId, termId: evaluation.termId, sessionId: evaluation.sessionId, classArmId: evaluation.classArmId },
+          studentIds,
+        );
+
+        // Re-rank whatever's STILL published for this subject after
+        // removing this evaluation's contribution — the subject may
+        // remain PUBLISHED (other evaluations still published) with a
+        // shifted total, not necessarily revert to DRAFT entirely.
+        const publishedRows = await tx.termSubjectResult.findMany({
           where: {
             schoolId,
-            classArmId: dto.classArmId,
-            subjectId: dto.subjectId,
-            termId: dto.termId,
-            sessionId: term.sessionId,
+            classArmId: evaluation.classArmId,
+            subjectId: evaluation.subjectId,
+            termId: evaluation.termId,
+            sessionId: evaluation.sessionId,
             status: ResultStatus.PUBLISHED,
           },
         });
-        if (published.length === 0) {
-          throw new ConflictException("Nothing to unpublish: this subject has no published results.");
-        }
-
-        const studentIds = published.map((row) => row.studentId);
-        await this.recomputeStudents(
-          tx,
-          { schoolId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, classArmId: dto.classArmId },
-          studentIds,
+        const ranking = computeStandardCompetitionRanking(publishedRows, (row) => Number(row.totalScore));
+        await Promise.all(
+          ranking.map(({ item, position }) => tx.termSubjectResult.update({ where: { id: item.id }, data: { subjectPosition: position } })),
         );
 
         await tx.auditLog.create({
           data: {
             schoolId,
             actorUserId: user.userId,
-            action: "grades.unpublish",
+            action: "grades.unpublishEvaluation",
             entityType: "grades",
-            entityId: dto.classArmId,
-            metadata: { subjectId: dto.subjectId, termId: dto.termId, unpublishedCount: studentIds.length },
+            entityId: evaluation.classArmId,
+            metadata: { subjectId: evaluation.subjectId, evaluationId, termId: evaluation.termId },
           },
         });
 
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${classArmLockKey}))`;
         const overall = await this.recomputeOverallForClassArm(tx, {
           schoolId,
-          classArmId: dto.classArmId,
-          termId: dto.termId,
-          sessionId: term.sessionId,
+          classArmId: evaluation.classArmId,
+          termId: evaluation.termId,
+          sessionId: evaluation.sessionId,
         });
 
         return {
-          classArmId: dto.classArmId,
-          subjectId: dto.subjectId,
-          termId: dto.termId,
-          unpublishedCount: studentIds.length,
+          evaluationId,
+          classArmId: evaluation.classArmId,
+          subjectId: evaluation.subjectId,
+          termId: evaluation.termId,
           overallRevertedCount: overall.revertedCount,
         };
       },
@@ -1439,19 +1435,19 @@ export class GradesService {
     };
   }
 
-  // Director/owner publish-readiness view (SPEC_V0.4.md §2). A subject's
-  // state is deliberately returned as COUNTS, not one status: saveEvaluationScores'
-  // per-student PUBLISHED lock means stragglers can land in DRAFT after
-  // their classmates are already PUBLISHED for the very same subject (see
-  // publish()'s own doc comment — publishing can legitimately happen more
-  // than once), so draft/published can genuinely coexist for one subject.
-  // canPublish mirrors publish()'s own "nothing to do" 409 condition
-  // exactly, so the UI never has to reimplement that rule to decide
-  // whether the button should be enabled. No TEACHER path at all —
-  // SCHOOL_ADMIN/PROPRIETOR only, enforced by @Roles() at the controller.
-  // pendingApprovalCount is always 0 for the evaluation track now (v0.7:
-  // no auto-status-flip) — the field is kept for shape stability, not
-  // removed, since PENDING_APPROVAL is still meaningful at the
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2, §8 of the approved plan) — Director/
+  // owner READ-ONLY oversight view (SPEC_V0.4.md §2's original purpose,
+  // narrowed): no more `canPublish`/publish button — there is no subject-
+  // level publish action to gate anymore. Publish/unpublish now happens
+  // per evaluation, on the Grades-page Enter-scores surface, not here.
+  // A subject's state is still returned as COUNTS, not one status:
+  // recomputeStudents' per-student derivation means stragglers can stay
+  // DRAFT after their classmates are already PUBLISHED for the very same
+  // subject, so draft/published can genuinely coexist for one subject.
+  // No TEACHER path at all — SCHOOL_ADMIN/PROPRIETOR only, enforced by
+  // @Roles() at the controller. pendingApprovalCount is always 0 for the
+  // evaluation track (unchanged from before this step) — kept for shape
+  // stability, since PENDING_APPROVAL is still meaningful at the
   // cross-subject term_overall_results level (computeOverallStatus).
   async getReview(query: GetGradesReviewQueryDto): Promise<GradesReviewResponse> {
     const schoolId = this.tenantContext.schoolId;
@@ -1477,19 +1473,6 @@ export class GradesService {
     }
 
     const bySubjectEntries = [...bySubject.entries()];
-    // One batched completeness check across EVERY subject's DRAFT
-    // candidates at once (SPEC_V0.4.md §5 — no per-subject query), using
-    // the exact same definition publish() enforces (findIncompleteEntries)
-    // so canPublish can never promise a publish that would then 409.
-    const draftCandidates = bySubjectEntries.flatMap(([subjectId, { rows }]) =>
-      rows.filter((r) => r.status === ResultStatus.DRAFT).map((r) => ({ subjectId, studentId: r.studentId })),
-    );
-    const incompleteEntries = await this.findIncompleteEntries(
-      this.prisma,
-      { schoolId, termId: query.termId, sessionId: term.sessionId },
-      draftCandidates,
-    );
-    const incompleteSubjectIds = new Set(incompleteEntries.map((e) => e.subjectId));
 
     let subjects: GradesReviewSubject[] = bySubjectEntries.map(([subjectId, { name, rows }]) => {
       const draftCount = rows.filter((r) => r.status === ResultStatus.DRAFT).length;
@@ -1506,13 +1489,6 @@ export class GradesService {
         publishedCount,
         averageScore,
         averageGrade: resolveGradeBand(averageScore, boundaryInputs),
-        // Mirrors publish()'s ACTUAL condition exactly, including the
-        // completeness gate: draftCount > 0 alone is no longer sufficient
-        // — those candidates must also be complete, or publish() would
-        // 409. When draftCount is 0, completeness is moot (nothing new is
-        // transitioning) — matches publish()'s own
-        // `if (toPublish.length > 0)` guard around the gate.
-        canPublish: (draftCount > 0 && !incompleteSubjectIds.has(subjectId)) || publishedCount > 0,
       };
     });
 
@@ -1733,18 +1709,36 @@ export class GradesService {
     const remarksVisibleToCaller = !publishedOnlyForSelfView || overall !== null;
 
     // v0.7 step 4 (SPEC_V0.7.md §4) — the published-only wall for the
-    // evaluation breakdown. `Evaluation`/`EvaluationScore` carry no publish
-    // state of their own; the wall above (the `status: PUBLISHED` filter
+    // evaluation breakdown. The wall above (the `status: PUBLISHED` filter
     // baked into subjectResults' own `where`, not a post-fetch check) has
     // ALREADY decided which subjectIds a STUDENT/PARENT caller is allowed
     // to see. Scoping this query to exactly those surviving subjectIds
     // means an unpublished subject's evaluations are never queried at all —
     // there is no row to leak, not a row that's fetched and then hidden.
+    //
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — THE LEAK FIX. Pre-v0.7.4,
+    // `Evaluation` carried no publish state of its own, so subject-level
+    // scoping alone was sufficient: every evaluation under a visible
+    // subject was itself implicitly "published" (publish was a subject-wide
+    // action). Now that publish is per-evaluation and a subject counts as
+    // PUBLISHED once it has >=1 published evaluation, a visible subject can
+    // still have an UNPUBLISHED sibling evaluation — without this filter,
+    // that sibling's scores would leak to the student/parent the moment
+    // any one of its subject's evaluations goes live. Same conditional
+    // `status: PUBLISHED` gate as every other publishedOnlyForSelfView
+    // branch in this method.
     const visibleSubjectIds = subjectResults.map((r) => r.subjectId);
     const evaluations =
       visibleSubjectIds.length > 0
         ? await this.prisma.evaluation.findMany({
-            where: { schoolId, classArmId: enrollment.classArmId, subjectId: { in: visibleSubjectIds }, termId: query.termId, deletedAt: null },
+            where: {
+              schoolId,
+              classArmId: enrollment.classArmId,
+              subjectId: { in: visibleSubjectIds },
+              termId: query.termId,
+              deletedAt: null,
+              ...(publishedOnlyForSelfView ? { status: ResultStatus.PUBLISHED } : {}),
+            },
             orderBy: { createdAt: "asc" },
           })
         : [];
@@ -2057,43 +2051,33 @@ export class GradesService {
   // non-preserved row, same as before — publish() is the only place that
   // sets them, directly, after this function returns.
   //
-  // override_grade is preserved across a recompute UNLESS the row is
-  // reverting to DRAFT, in which case it's cleared here too — not just
-  // blocked at the override endpoint. Reachable via unpublish(), and
-  // without this, a previously-set override would silently keep applying
-  // to a total that's no longer final (override_grade is non-null only
-  // once published).
-  //
-  // `preservePublishedStudentIds` (SPEC_V0.5.1.md §2.5, v0.5.1 step 4):
-  // normally this function's whole point is that a recomputed row can
-  // never be PUBLISHED (only publish() itself sets that) — a save always
-  // reverts to DRAFT and clears subjectPosition/publishedAt, because
-  // normally nothing can even reach a recompute while PUBLISHED
-  // (saveEvaluationScores' own lock blocks it). The one exception is an
-  // admin/proprietor correcting an already-published row's absence/score:
-  // that row stays PUBLISHED with its ORIGINAL publishedAt (this corrects
-  // the data, it isn't a new publish event) and a freshly-computed total —
-  // subjectPosition is still nulled here and re-ranked by the caller
-  // immediately after, same as every other student. Every other caller
-  // (saveEvaluationScores' normal path, recompute()) passes nothing here
-  // and gets the exact same behavior as before this step.
-  private async recomputeStudents(
-    tx: Prisma.TransactionClient,
-    ctx: RecomputeContext,
-    studentIds: string[],
-    preservePublishedStudentIds?: Set<string>,
-  ): Promise<RecomputedRow[]> {
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2, Q1) — status/total are now DERIVED
+  // from the subject's PUBLISHED evaluations, not passed in by the
+  // caller. Only evaluations with their own status===PUBLISHED
+  // contribute to the average — scoring a still-draft evaluation no
+  // longer moves the subject total at all (the redesign's whole point:
+  // the number reflects exactly what's been shown to the student).
+  // A student counts PUBLISHED once they have at least one DECIDED
+  // (real score or absent) row among those published evaluations — same
+  // straggler philosophy subject-publish always had (a student with
+  // zero decided rows among what's published stays DRAFT even while
+  // classmates are PUBLISHED). override_grade is cleared whenever the
+  // row is DRAFT, same as before. subjectPosition is always nulled here
+  // and re-ranked by the caller immediately after (publishEvaluation/
+  // unpublishEvaluation, or saveEvaluationScores' bypass path) — this
+  // function's only job is deriving total/status/grade, never ranking.
+  private async recomputeStudents(tx: Prisma.TransactionClient, ctx: RecomputeContext, studentIds: string[]): Promise<RecomputedRow[]> {
     const [evaluations, boundaries, existingRows] = await Promise.all([
       tx.evaluation.findMany({
         where: { schoolId: ctx.schoolId, classArmId: ctx.classArmId, subjectId: ctx.subjectId, termId: ctx.termId, deletedAt: null },
-        select: { id: true },
+        select: { id: true, status: true },
       }),
       tx.gradeBoundary.findMany({ where: { schoolId: ctx.schoolId }, orderBy: { sortOrder: "asc" } }),
       tx.termSubjectResult.findMany({
         where: { studentId: { in: studentIds }, subjectId: ctx.subjectId, termId: ctx.termId, sessionId: ctx.sessionId },
       }),
     ]);
-    const evaluationIds = evaluations.map((e) => e.id);
+    const publishedEvaluationIds = evaluations.filter((e) => e.status === ResultStatus.PUBLISHED).map((e) => e.id);
     const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({
       grade: b.grade,
       minScore: b.minScore,
@@ -2102,11 +2086,12 @@ export class GradesService {
     const existingOverrideByStudent = new Map(existingRows.map((r) => [r.studentId, r.overrideGrade]));
     const existingPublishedAtByStudent = new Map(existingRows.map((r) => [r.studentId, r.publishedAt]));
 
-    // One batched query across every evaluation for this subject/term at
-    // once (not one query per student) — grouped by studentId in memory.
+    // One batched query across every PUBLISHED evaluation for this
+    // subject/term at once (not one query per student) — grouped by
+    // studentId in memory.
     const allScores =
-      evaluationIds.length > 0
-        ? await tx.evaluationScore.findMany({ where: { evaluationId: { in: evaluationIds }, studentId: { in: studentIds } } })
+      publishedEvaluationIds.length > 0
+        ? await tx.evaluationScore.findMany({ where: { evaluationId: { in: publishedEvaluationIds }, studentId: { in: studentIds } } })
         : [];
     const scoresByStudent = new Map<string, typeof allScores>();
     for (const score of allScores) {
@@ -2122,12 +2107,17 @@ export class GradesService {
         rawScore: s.rawScore === null ? null : Number(s.rawScore),
         isAbsent: s.isAbsent,
       }));
+      const hasDecidedPublishedRow = scoreInputs.some((s) => s.isAbsent || s.rawScore !== null);
+      const status = hasDecidedPublishedRow ? ResultStatus.PUBLISHED : ResultStatus.DRAFT;
       const totalScore = computeEvaluationAverage(scoreInputs);
-      const preservePublished = preservePublishedStudentIds?.has(studentId) ?? false;
-      const status = preservePublished ? ResultStatus.PUBLISHED : ResultStatus.DRAFT;
       const autoGrade = resolveGradeBand(totalScore, boundaryInputs);
       const overrideGrade = status === ResultStatus.DRAFT ? null : (existingOverrideByStudent.get(studentId) ?? null);
       const finalGrade = resolveFinalGrade(autoGrade, overrideGrade);
+      // Preserve the ORIGINAL first-published timestamp across
+      // subsequent recomputes (e.g. a second evaluation publishing
+      // later) rather than resetting it every time; null once reverted
+      // to DRAFT.
+      const publishedAt = status === ResultStatus.PUBLISHED ? (existingPublishedAtByStudent.get(studentId) ?? new Date()) : null;
 
       const saved = await tx.termSubjectResult.upsert({
         where: {
@@ -2146,7 +2136,7 @@ export class GradesService {
           classArmId: ctx.classArmId,
           overrideGrade,
           subjectPosition: null,
-          publishedAt: preservePublished ? (existingPublishedAtByStudent.get(studentId) ?? null) : null,
+          publishedAt,
         },
         create: {
           schoolId: ctx.schoolId,
@@ -2159,6 +2149,7 @@ export class GradesService {
           autoGrade,
           finalGrade,
           status,
+          publishedAt,
         },
       });
       results.push({
@@ -2266,71 +2257,42 @@ export class GradesService {
     return { publishedCount, revertedCount };
   }
 
-  // Batched completeness check (SPEC_V0.5.md §2.2), shared by publish()'s
-  // enforcement and getReview()'s canPublish preview — one definition of
-  // "complete," not two that can silently drift apart. For each given
-  // (subjectId, studentId) publish-candidate, checks every active
-  // Evaluation that CURRENTLY EXISTS for that subject/term (confirmed:
-  // completeness enforced only at the publish gate over whatever
-  // evaluations exist at that moment, not a frozen expected-set): "blank"
-  // = no evaluation_scores row, or a row with rawScore IS NULL AND
-  // isAbsent = false (both indistinguishable — both silently contribute
-  // nothing to the average). Absent is NOT blank. One batched
-  // evaluationScore query across every candidate (and, for getReview(),
-  // every subject at once) — no per-student or per-subject query.
-  private async findIncompleteEntries(
-    tx: Prisma.TransactionClient | PrismaService,
-    ctx: { schoolId: string; termId: string; sessionId: string },
-    candidates: Array<{ subjectId: string; studentId: string }>,
-  ): Promise<Array<{ subjectId: string; studentId: string; evaluationId: string }>> {
-    if (candidates.length === 0) return [];
-
-    const subjectIds = [...new Set(candidates.map((c) => c.subjectId))];
-    const studentIds = [...new Set(candidates.map((c) => c.studentId))];
-
-    const evaluations = await tx.evaluation.findMany({
-      where: { schoolId: ctx.schoolId, termId: ctx.termId, sessionId: ctx.sessionId, subjectId: { in: subjectIds }, deletedAt: null },
-      select: { id: true, subjectId: true },
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2, Q2) — the completeness gate moved
+  // to evaluation granularity: replaces the old subject-scoped
+  // findIncompleteEntries (which checked "every evaluation for a
+  // subject, every candidate student"). This is simpler than what it
+  // replaces — one evaluation, every roster student — because publish
+  // is now per-evaluation, not per-subject. "Blank" = no evaluation_scores
+  // row, or a row with rawScore IS NULL AND isAbsent = false (both
+  // indistinguishable — both silently contribute nothing to the
+  // average). Absent is NOT blank.
+  private async findIncompleteStudentsForEvaluation(
+    tx: Prisma.TransactionClient,
+    evaluationId: string,
+    studentIds: string[],
+  ): Promise<string[]> {
+    if (studentIds.length === 0) return [];
+    const scores = await tx.evaluationScore.findMany({
+      where: { evaluationId, studentId: { in: studentIds } },
     });
-    const evaluationsBySubject = new Map<string, string[]>();
-    for (const e of evaluations) {
-      const arr = evaluationsBySubject.get(e.subjectId) ?? [];
-      arr.push(e.id);
-      evaluationsBySubject.set(e.subjectId, arr);
-    }
-    const allEvaluationIds = evaluations.map((e) => e.id);
-
-    const scores = allEvaluationIds.length
-      ? await tx.evaluationScore.findMany({
-          where: { evaluationId: { in: allEvaluationIds }, studentId: { in: studentIds } },
-        })
-      : [];
     const decided = new Set(
-      scores
-        .filter((s) => (s.rawScore !== null && s.rawScore !== undefined) || s.isAbsent)
-        .map((s) => `${s.evaluationId}:${s.studentId}`),
+      scores.filter((s) => (s.rawScore !== null && s.rawScore !== undefined) || s.isAbsent).map((s) => s.studentId),
     );
-
-    const incomplete: Array<{ subjectId: string; studentId: string; evaluationId: string }> = [];
-    for (const { subjectId, studentId } of candidates) {
-      const subjectEvaluationIds = evaluationsBySubject.get(subjectId) ?? [];
-      for (const evaluationId of subjectEvaluationIds) {
-        if (!decided.has(`${evaluationId}:${studentId}`)) {
-          incomplete.push({ subjectId, studentId, evaluationId });
-        }
-      }
-    }
-    return incomplete;
+    return studentIds.filter((id) => !decided.has(id));
   }
 
-  // Structured, not just a count: the caller (a director/owner UI) needs
-  // to know exactly WHICH students are locked, not just how many.
-  // AllExceptionsFilter passes any extra fields on the exception's
-  // response payload through the standard error envelope alongside
-  // statusCode/message/error/path/timestamp.
+  // v0.7.4 step 1 — now exclusively saveEvaluationScores' lock (recompute()
+  // no longer blocks on published status, see its own doc comment).
+  // Structured, not just a count: the frontend's reactive fallback
+  // (use-score-entry-save-queue.ts) needs to know exactly WHICH rows to
+  // mark locked on a race, not just how many. Since evaluation-publish is
+  // atomic across its whole roster, `lockedStudentIds` is always the
+  // entire affected batch, not a filtered subset. AllExceptionsFilter
+  // passes any extra fields on the exception's response payload through
+  // the standard error envelope alongside statusCode/message/error/path/timestamp.
   private publishedLockException(action: string, lockedStudentIds: string[]): ConflictException {
     return new ConflictException({
-      message: `Cannot ${action}: this subject's result is already PUBLISHED for ${lockedStudentIds.length} student(s) — unpublish first.`,
+      message: `Cannot ${action}: this evaluation's results are already published — unpublish it first.`,
       lockedStudentIds,
     });
   }
@@ -2338,7 +2300,7 @@ export class GradesService {
   private async resolveTenantScopeWithEvaluation(
     schoolId: string,
     ids: { classArmId: string; subjectId: string; evaluationId: string; termId: string },
-  ): Promise<{ term: Term }> {
+  ): Promise<{ term: Term; evaluation: Evaluation }> {
     const [classArm, subject, term, evaluation] = await Promise.all([
       this.prisma.classArm.findFirst({ where: forSchool(schoolId, { id: ids.classArmId }) }),
       this.prisma.subject.findFirst({ where: forSchool(schoolId, { id: ids.subjectId, deletedAt: null }) }),
@@ -2357,7 +2319,7 @@ export class GradesService {
     if (!subject) throw new NotFoundException("Subject not found.");
     if (!term) throw new NotFoundException("Term not found.");
     if (!evaluation) throw new NotFoundException("Evaluation not found.");
-    return { term };
+    return { term, evaluation };
   }
 
 }

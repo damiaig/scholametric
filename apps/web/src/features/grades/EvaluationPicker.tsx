@@ -4,11 +4,13 @@ import { cn } from "../../lib/utils";
 import { Label } from "../../components/ui/label";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
+import { StatusBadge } from "../../components/StatusBadge";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { getErrorMessage } from "../../lib/api-client";
 import { useDeleteEvaluation, useEvaluations } from "./use-evaluations";
 import { EvaluationFormDialog } from "./EvaluationFormDialog";
 import { TermLockBanner } from "./TermLockBanner";
+import { resultStatusLabel, resultStatusTone } from "./result-status";
 
 interface EvaluationPickerProps {
   classArmId: string;
@@ -153,7 +155,10 @@ export function EvaluationPicker({
                     isSelected ? "border-primary bg-primary/5" : "border-muted/20 bg-card hover:border-muted/40",
                   )}
                 >
-                  <span className="text-sm font-medium text-text">{evaluation.name}</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-sm font-medium text-text">{evaluation.name}</span>
+                    <StatusBadge label={resultStatusLabel(evaluation.status)} tone={resultStatusTone(evaluation.status)} />
+                  </span>
                   {evaluation.description && <span className="text-xs text-muted">{evaluation.description}</span>}
                 </button>
               );

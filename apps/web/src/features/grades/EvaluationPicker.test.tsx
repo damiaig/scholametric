@@ -21,7 +21,7 @@ const OPEN: EvaluationsListResponse = {
   termClosed: false,
   locked: false,
   unlockReason: null,
-  evaluations: [{ id: "e1", name: "CA 1", description: "First continuous assessment", createdAt: "t", createdBy: "u1" }],
+  evaluations: [{ id: "e1", name: "CA 1", description: "First continuous assessment", status: "DRAFT", publishedAt: null, createdAt: "t", createdBy: "u1" }],
 };
 
 const CLOSED_LOCKED: EvaluationsListResponse = { ...OPEN, termClosed: true, locked: true, unlockReason: null };

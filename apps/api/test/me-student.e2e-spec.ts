@@ -25,19 +25,33 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
   let sunriseTermId: string;
   let studentArmId: string;
   let studentArmCreated = false;
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q2) — THE LEAK FIX's own dedicated
+  // class arm, isolated from studentArmId's shared roster (A/B/C/Draft) so
+  // publishing subjectZ's evaluation only ever requires studentLeakId
+  // decided, never rippling into anyone else's subjects[] array.
+  let leakArmId: string;
 
   let subjectX: string; // published for both A and B, different scores -> distinct positions
   let subjectY: string; // A only, left DRAFT -> keeps A's overall from completing
   let subjectYEvalId: string; // v0.7 step 4 — the finer-grained-wall belt-and-suspenders check below
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — THE LEAK FIX's own dedicated
+  // subject: two evaluations, only one published. Deliberately a
+  // SEPARATE student/subject from A/subjectX above, not mixed in — so
+  // this fixture never ripples into any of subjectX's own assertions
+  // (subject count, running-average math, etc.).
+  let subjectZ: string;
+  let zEvalDraftId: string;
 
   let studentAId: string; // "Mixed": subjectX published + subjectY draft -> overall stays non-published
   let studentBId: string; // "Full": subjectX published, only subject -> overall PUBLISHED
   let studentCId: string; // "Empty": enrolled, nothing entered this term
   let studentDraftId: string; // v0.7 step 5 — extreme, unpublished classmate score on subjectX (the class-analytics exclusion proof)
+  let studentLeakId: string; // THE LEAK FIX's own dedicated student, scored on subjectZ only
 
   let tokenA: string;
   let tokenB: string;
   let tokenC: string;
+  let tokenLeak: string;
 
   let hillcrestId: string;
   let hillcrestStudentId: string;
@@ -58,42 +72,51 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
 
   // v0.7 step 1 (SPEC_V0.7.md §2/§5): evaluations replace the fixed
   // CA1/CA2/Exam components — created directly via Prisma (no
-  // create-evaluation HTTP endpoint yet, Step 2).
-  async function createEvaluation(subjectId: string, name: string): Promise<string> {
+  // create-evaluation HTTP endpoint yet, Step 2). classArmId defaults to
+  // the shared studentArmId; THE LEAK FIX's dedicated fixture below uses
+  // its OWN class arm instead, since the completeness gate is now
+  // roster-wide (SPEC_V0.7.4.md §2 Q2) — publishing an evaluation in the
+  // shared arm would require every OTHER student enrolled there decided
+  // too, rippling into their own subjects[] arrays.
+  async function createEvaluation(subjectId: string, name: string, classArmId: string = studentArmId): Promise<string> {
     const subjectTeacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
     const evaluation = await prisma.evaluation.create({
-      data: { schoolId: sunriseId, classArmId: studentArmId, subjectId, sessionId: sunriseSessionId, termId: sunriseTermId, name, description: name, createdBy: subjectTeacher.id },
+      data: { schoolId: sunriseId, classArmId, subjectId, sessionId: sunriseSessionId, termId: sunriseTermId, name, description: name, createdBy: subjectTeacher.id },
     });
     return evaluation.id;
   }
 
-  async function score(subjectId: string, evaluationId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[]) {
+  async function score(subjectId: string, evaluationId: string, scores: { studentId: string; rawScore?: number; isAbsent?: boolean }[], classArmId: string = studentArmId) {
     const subjectTeacher = await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } });
     await prisma.subjectTeacherAssignment.upsert({
-      where: { subjectId_classArmId_sessionId: { subjectId, classArmId: studentArmId, sessionId: sunriseSessionId } },
+      where: { subjectId_classArmId_sessionId: { subjectId, classArmId, sessionId: sunriseSessionId } },
       update: {},
-      create: { schoolId: sunriseId, subjectId, classArmId: studentArmId, sessionId: sunriseSessionId, teacherUserId: subjectTeacher.id },
+      create: { schoolId: sunriseId, subjectId, classArmId, sessionId: sunriseSessionId, teacherUserId: subjectTeacher.id },
     });
     const response = await request(app.getHttpServer())
       .put("/api/v1/grades/evaluation-scores")
       .set(auth(sunriseAdminToken))
-      .send({ classArmId: studentArmId, subjectId, evaluationId, termId: sunriseTermId, scores });
+      .send({ classArmId, subjectId, evaluationId, termId: sunriseTermId, scores });
     if (response.status !== 200) {
       throw new Error(`score failed: ${response.status} ${JSON.stringify(response.body)}`);
     }
   }
 
-  async function publish(subjectId: string) {
-    const response = await request(app.getHttpServer())
-      .post("/api/v1/grades/publish")
-      .set(auth(sunriseAdminToken))
-      .send({ classArmId: studentArmId, subjectId, termId: sunriseTermId });
-    if (response.status !== 200) {
-      throw new Error(`publish failed: ${response.status} ${JSON.stringify(response.body)}`);
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — publish moved to the individual
+  // evaluation; a subject counts as published once >=1 of its evaluations
+  // is. Callers that need the WHOLE subject published (matching the old
+  // subject-level publish()'s effect) pass every one of its evaluation
+  // ids here.
+  async function publishEvaluations(evaluationIds: string[]) {
+    for (const evaluationId of evaluationIds) {
+      const response = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseAdminToken));
+      if (response.status !== 200) {
+        throw new Error(`publish failed for ${evaluationId}: ${response.status} ${JSON.stringify(response.body)}`);
+      }
     }
   }
 
-  async function enrollSunrise(prefix: string, index: number): Promise<string> {
+  async function enrollSunrise(prefix: string, index: number, classArmId: string = studentArmId): Promise<string> {
     const student = await prisma.student.create({
       data: {
         schoolId: sunriseId,
@@ -107,7 +130,7 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       },
     });
     await prisma.studentEnrollment.create({
-      data: { schoolId: sunriseId, studentId: student.id, classArmId: studentArmId, sessionId: sunriseSessionId },
+      data: { schoolId: sunriseId, studentId: student.id, classArmId, sessionId: sunriseSessionId },
     });
     createdStudentIds.push(student.id);
     return student.id;
@@ -148,10 +171,17 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     const jss3 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 3" } });
     studentArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss3.id, name: `E2E-MeStudent-${Date.now()}` } })).id;
     studentArmCreated = true;
+    leakArmId = (await prisma.classArm.create({ data: { schoolId: sunriseId, classLevelId: jss3.id, name: `E2E-MeStudentLeak-${Date.now()}` } })).id;
 
     studentAId = await enrollSunrise("MeA", 0);
     studentBId = await enrollSunrise("MeB", 1);
-    studentCId = await enrollSunrise("MeC", 2);
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q2) — studentCId is enrolled AFTER
+    // subjectX's evaluations publish below (not here alongside A/B): the
+    // completeness gate is roster-wide (every CURRENTLY ENROLLED student),
+    // so publishing while C is already enrolled-but-unscored would 409.
+    // C's whole fixture purpose is "enrolled with nothing entered at all"
+    // (the empty-state test) — enrolling them post-publish keeps that
+    // premise intact without needing a fabricated score/absence mark.
 
     subjectX = await createSunriseSubject("E2E MeStudent SubjectX");
     subjectY = await createSunriseSubject("E2E MeStudent SubjectY");
@@ -171,19 +201,27 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     await score(subjectX, xEval2, [{ studentId: studentAId, isAbsent: true }, { studentId: studentBId, isAbsent: true }]);
     await score(subjectX, xEval3, [{ studentId: studentAId, rawScore: 84 }, { studentId: studentBId, rawScore: 80 }]);
     // A: (18+84)/2=51 (eval2 absent, excluded). B: (12+80)/2=46.
-    await publish(subjectX);
+    await publishEvaluations([xEval1, xEval2, xEval3]);
+
+    studentCId = await enrollSunrise("MeC", 2);
 
     // v0.7 step 5 (SPEC_V0.7.md §4) — a THIRD student added to subjectX
-    // AFTER publish() already ran: this is the "straggler" case GET
-    // /grades/review documents (a fresh term_subject_result starts, and
-    // stays, DRAFT — publish() doesn't retroactively sweep new students
-    // in). Deliberately extreme (100 on every evaluation, decided not
-    // absent) so a broken published-only filter on the class analytics
-    // is unmissable, not a subtle few-point drift.
+    // AFTER publish already ran: the "straggler" case GET /grades/review
+    // documents. v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1): under the
+    // per-evaluation model, a student decided on an ALREADY-PUBLISHED
+    // evaluation derives PUBLISHED for that subject too — there's no more
+    // "silently stays draft forever despite a decided score on a
+    // published evaluation" loophole (that's the intended, more
+    // consistent behavior; absent now covers the "doesn't apply to this
+    // student" case a stale straggler used to). To keep studentDraftId a
+    // genuine straggler here, their extreme score lives on a FOURTH,
+    // dedicated evaluation of subjectX that's deliberately never
+    // published — A/B are never scored on it, so it doesn't touch their
+    // own totals, and studentDraftId is never decided on xEval1/2/3, so
+    // their subjectX row stays DRAFT (total 0).
     studentDraftId = await enrollSunrise("MeDraft", 3);
-    await score(subjectX, xEval1, [{ studentId: studentDraftId, rawScore: 100 }]);
-    await score(subjectX, xEval2, [{ studentId: studentDraftId, rawScore: 100 }]);
-    await score(subjectX, xEval3, [{ studentId: studentDraftId, rawScore: 100 }]);
+    const xEval4 = await createEvaluation(subjectX, "CA 4 (Never Published)");
+    await score(subjectX, xEval4, [{ studentId: studentDraftId, rawScore: 100 }]);
 
     // subjectY: A only, one evaluation scored -> DRAFT, never published.
     // This is what keeps A's OVERALL from ever reaching PUBLISHED
@@ -191,6 +229,26 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     // coupling verified in grade-computation.ts before building.
     subjectYEvalId = await createEvaluation(subjectY, "CA 1");
     await score(subjectY, subjectYEvalId, [{ studentId: studentAId, rawScore: 10 }]);
+
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — THE LEAK FIX's own dedicated
+    // fixture: subjectZ has TWO evaluations, only ONE published. The
+    // subject is visible to studentLeakId (>=1 published evaluation), but
+    // the DRAFT sibling's own score must never reach their response —
+    // the safety centerpiece this step's diff review is built around.
+    // studentLeakId is enrolled in its OWN dedicated leakArmId (not the
+    // shared studentArmId) precisely so the roster-wide completeness gate
+    // (SPEC_V0.7.4.md §2 Q2) only ever requires studentLeakId decided,
+    // never rippling A/B/C/Draft's own subjects[] arrays.
+    studentLeakId = await enrollSunrise("MeLeak", 4, leakArmId);
+    subjectZ = await createSunriseSubject("E2E MeStudent SubjectZ");
+    const [zEvalPublished, zEvalDraft] = await Promise.all([
+      createEvaluation(subjectZ, "Z Published", leakArmId),
+      createEvaluation(subjectZ, "Z Draft Sibling", leakArmId),
+    ]);
+    zEvalDraftId = zEvalDraft;
+    await score(subjectZ, zEvalPublished, [{ studentId: studentLeakId, rawScore: 70 }], leakArmId);
+    await score(subjectZ, zEvalDraft, [{ studentId: studentLeakId, rawScore: 33 }], leakArmId);
+    await publishEvaluations([zEvalPublished]); // zEvalDraft stays DRAFT deliberately
 
     // B has ONLY subjectX, which is published -> computeOverallStatus sees
     // a single PUBLISHED status -> B's overall reaches PUBLISHED too, via
@@ -207,9 +265,11 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     await makePortalStudent(studentAId, "E2EMESTUDENTA");
     await makePortalStudent(studentBId, "E2EMESTUDENTB");
     await makePortalStudent(studentCId, "E2EMESTUDENTC");
+    await makePortalStudent(studentLeakId, "E2EMESTUDENTLEAK");
     tokenA = await loginAs(app, "E2EMESTUDENTA", "sunrise");
     tokenB = await loginAs(app, "E2EMESTUDENTB", "sunrise");
     tokenC = await loginAs(app, "E2EMESTUDENTC", "sunrise");
+    tokenLeak = await loginAs(app, "E2EMESTUDENTLEAK", "sunrise");
 
     // A dedicated Hillcrest student (no academic structure needed — only
     // /me/profile is exercised cross-tenant, and profile has no grades).
@@ -249,6 +309,9 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
     await prisma.student.deleteMany({ where: { id: { in: [...createdStudentIds, hillcrestStudentId] } } });
     if (studentArmCreated) {
       await prisma.classArm.delete({ where: { id: studentArmId } });
+    }
+    if (leakArmId) {
+      await prisma.classArm.delete({ where: { id: leakArmId } });
     }
     await app.close();
   });
@@ -462,19 +525,64 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
       expect(serialized).not.toContain("E2E-MESTUDENT/MeDraft");
       expect(serialized).not.toContain(studentDraftId);
 
-      // Staff sees the real, unfiltered class — the extreme value included.
+      // Staff sees the real, unfiltered class — including studentDraftId's
+      // DRAFT subjectX row (total 0, since none of xEval1-3 are decided
+      // for them — their extreme 100 lives on the never-published xEval4,
+      // SPEC_V0.7.4.md §2 Q1: a student decided on an already-published
+      // evaluation would derive published too, so a genuine straggler's
+      // extreme score can only live on an evaluation they're never
+      // decided-and-published on).
       const staffView = await request(app.getHttpServer())
         .get(`/api/v1/students/${studentAId}/report-card`)
         .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
         .set(auth(sunriseAdminToken));
       expect(staffView.status).toBe(200);
       const staffSubj = staffView.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectX);
-      // avg(51, 46, 100) = 65.666... -> 65.67.
-      expect(staffSubj.classAverageScore).toBeCloseTo(65.67, 2);
+      // avg(51, 46, 0) = 32.333... -> 32.33 — staff has no eligibility
+      // filter, so studentDraftId's DRAFT row (0) counts, unlike A's
+      // self-view (48.5, asserted above) which excludes it entirely.
+      expect(staffSubj.classAverageScore).toBeCloseTo(32.33, 2);
       const staffCa2 = staffSubj.evaluations.find((e: { name: string }) => e.name === "CA 2");
-      // Staff has no eligibility filter — studentDraftId's 100 is the ONLY
-      // decided CA2 score (A and B are both absent), so it stands alone.
-      expect(staffCa2).toMatchObject({ classAverageScore: 100, bestScore: 100, worstScore: 100 });
+      // CA2: A and B are both absent, and studentDraftId was never scored
+      // on this evaluation at all (only on xEval4) — nothing decided,
+      // null for staff exactly as for self-view.
+      expect(staffCa2).toMatchObject({ classAverageScore: null, bestScore: null, worstScore: null });
+    });
+
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — THE LEAK FIX, proven directly.
+    // subjectZ is visible to studentLeakId (>=1 published evaluation),
+    // but its DRAFT sibling evaluation's id/name/score must never reach
+    // this response — not filtered client-side, structurally never
+    // fetched (getReportCard's evaluations query gains the same
+    // conditional status: PUBLISHED filter every other self-view query in
+    // that method already uses).
+    it("THE LEAK FIX: a visible subject's UNPUBLISHED sibling evaluation never reaches the student — its id, name, and score appear nowhere in the response", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/me/report-card")
+        .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
+        .set(auth(tokenLeak));
+      expect(response.status).toBe(200);
+
+      const subj = response.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectZ);
+      expect(subj).toBeDefined(); // subjectZ IS visible — it has >=1 published evaluation
+      expect(subj.status).toBe("PUBLISHED");
+      // Total is the average of PUBLISHED evaluations only (70), NOT
+      // averaged with the draft sibling's 33 — a leak would make this
+      // (70+33)/2=51.5, not 70.
+      expect(subj.totalScore).toBe(70);
+
+      // Only the published evaluation appears — the draft sibling is
+      // structurally absent, not a hidden/flagged row.
+      expect(subj.evaluations).toHaveLength(1);
+      expect(subj.evaluations[0].name).toBe("Z Published");
+
+      // Belt-and-suspenders: the draft sibling's id and name appear
+      // NOWHERE in the response, not just absent from subjects[] (a raw
+      // "33" substring check is skipped — too easy to false-positive
+      // against an unrelated UUID elsewhere in the response).
+      const serialized = JSON.stringify(response.body);
+      expect(serialized).not.toContain(zEvalDraftId);
+      expect(serialized).not.toContain("Z Draft Sibling");
     });
   });
 

@@ -138,13 +138,22 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
     }
   }
 
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — publish moved to the individual
+  // evaluation; publishing the WHOLE subject now means publishing every
+  // one of its evaluations (scoreAll gives each student a DIFFERENT value
+  // per evaluation, so the derived total genuinely needs all of them
+  // published, unlike a uniform-score fixture). Returns the LAST call's
+  // response — its subjectPositions/publishedCount reflect the
+  // fully-settled state, since recomputeStudents/re-rank always re-derive
+  // from whichever evaluations are CURRENTLY published.
   async function publishSubject(bundle: ScratchBundle) {
-    const res = await request(app.getHttpServer())
-      .post("/api/v1/grades/publish")
-      .set(auth(sunriseAdminToken))
-      .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, termId: bundle.termId });
-    if (res.status !== 200) throw new Error(`publish failed: ${res.status} ${JSON.stringify(res.body)}`);
-    return res.body;
+    let body: unknown;
+    for (const evaluationId of bundle.evaluationIds) {
+      const res = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseAdminToken));
+      if (res.status !== 200) throw new Error(`publish failed for ${evaluationId}: ${res.status} ${JSON.stringify(res.body)}`);
+      body = res.body;
+    }
+    return body;
   }
 
   async function resultFor(bundle: ScratchBundle, studentId: string) {
@@ -422,15 +431,16 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
       }
     }
 
+    // subjectB's evaluations are all scored uniformly (60 for everyone),
+    // so publishing just the first one is enough for the derived total.
     const [correctionRes, publishBRes] = await Promise.all([
       request(app.getHttpServer())
         .put("/api/v1/grades/evaluation-scores")
         .set(auth(sunriseAdminToken))
         .send(scoreBody(bundle, bundle.evaluationIds[2], high, { isAbsent: true })),
       request(app.getHttpServer())
-        .post("/api/v1/grades/publish")
-        .set(auth(sunriseAdminToken))
-        .send({ classArmId: bundle.classArmId, subjectId: subjectB.id, termId: bundle.termId }),
+        .post(`/api/v1/grades/evaluations/${subjectBEvaluationIds[0]}/publish`)
+        .set(auth(sunriseAdminToken)),
     ]);
 
     expect(correctionRes.status).toBe(200);

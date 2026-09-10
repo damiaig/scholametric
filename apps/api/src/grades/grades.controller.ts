@@ -8,8 +8,6 @@ import { GradesService } from "./grades.service";
 import { GetEvaluationScoresQueryDto } from "./dto/get-evaluation-scores-query.dto";
 import { SaveEvaluationScoresDto } from "./dto/save-evaluation-scores.dto";
 import { RecomputeGradesDto } from "./dto/recompute-grades.dto";
-import { PublishGradesDto } from "./dto/publish-grades.dto";
-import { UnpublishGradesDto } from "./dto/unpublish-grades.dto";
 import { OverrideGradeDto } from "./dto/override-grade.dto";
 import { GetGradesReviewQueryDto } from "./dto/get-grades-review-query.dto";
 import { GetEvaluationsQueryDto } from "./dto/get-evaluations-query.dto";
@@ -85,27 +83,30 @@ export class GradesController {
     return this.gradesService.recompute(dto);
   }
 
-  // Director-or-owner, or a TEACHER publishing a subject they're assigned
-  // to (v0.7.3 step 1, SPEC_V0.7.3.md §2) — the fine-grained "assigned to
-  // THIS subject" scoping lives in GradesService.publish() itself
-  // (assertTeacherAssignment), same discipline as every other route here;
-  // this decorator only admits the role coarsely.
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — replaces POST /grades/publish.
+  // Publish moved from the subject to the individual evaluation; the
+  // route param carries the evaluation id (it already knows its own
+  // classArmId/subjectId/termId), no request body needed. Role shape
+  // carried over unchanged from v0.7.3: director-or-owner, or a TEACHER
+  // publishing an evaluation of a subject they're assigned to (fine-
+  // grained scoping lives in GradesService.publishEvaluation() itself,
+  // same discipline as every other route here).
   @Roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
-  @Post("publish")
+  @Post("evaluations/:id/publish")
   @HttpCode(HttpStatus.OK)
-  publish(@Body() dto: PublishGradesDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.gradesService.publish(dto, user);
+  publishEvaluation(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.publishEvaluation(id, user);
   }
 
-  // Owner, or a TEACHER unpublishing their OWN assigned subject (v0.7.3
-  // step 1, SPEC_V0.7.3.md §2 Q1) — SCHOOL_ADMIN is still excluded here,
-  // unchanged from before this step (that asymmetry with publish() is
-  // pre-existing and not part of this widening).
+  // v0.7.4 step 1 — replaces POST /grades/unpublish. Owner, or a TEACHER
+  // unpublishing their OWN assigned subject's evaluation — SCHOOL_ADMIN
+  // still excluded here, unchanged asymmetry with publish carried over
+  // from v0.7.3.
   @Roles(UserRole.TEACHER, UserRole.PROPRIETOR)
-  @Post("unpublish")
+  @Post("evaluations/:id/unpublish")
   @HttpCode(HttpStatus.OK)
-  unpublish(@Body() dto: UnpublishGradesDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.gradesService.unpublish(dto, user);
+  unpublishEvaluation(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.gradesService.unpublishEvaluation(id, user);
   }
 
   // Both roles may reach this route; the PUBLISHED-result PROPRIETOR-only

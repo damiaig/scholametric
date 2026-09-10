@@ -86,13 +86,17 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
     }
   }
 
-  async function publish(subjectId: string) {
-    const response = await request(app.getHttpServer())
-      .post("/api/v1/grades/publish")
-      .set(auth(sunriseAdminToken))
-      .send({ classArmId: studentArmId, subjectId, termId: sunriseTermId });
-    if (response.status !== 200) {
-      throw new Error(`publish failed: ${response.status} ${JSON.stringify(response.body)}`);
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — publish moved to the individual
+  // evaluation; a subject counts as published once >=1 of its evaluations
+  // is. Callers that need the WHOLE subject published (matching the old
+  // subject-level publish()'s effect) pass every one of its evaluation
+  // ids here.
+  async function publishEvaluations(evaluationIds: string[]) {
+    for (const evaluationId of evaluationIds) {
+      const response = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseAdminToken));
+      if (response.status !== 200) {
+        throw new Error(`publish failed for ${evaluationId}: ${response.status} ${JSON.stringify(response.body)}`);
+      }
     }
   }
 
@@ -173,8 +177,12 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
 
     studentAId = await enrollSunrise("PA", 0);
     studentBId = await enrollSunrise("PB", 1);
-    notCoveredStudentId = await enrollSunrise("PNotCovered", 2);
-    otherFamilyStudentId = await enrollSunrise("POtherFamily", 3);
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q2) — notCoveredStudentId/
+    // otherFamilyStudentId are enrolled AFTER subjectX's evaluations
+    // publish below (not here alongside A/B): the completeness gate is
+    // roster-wide (every CURRENTLY ENROLLED student), so publishing while
+    // they're already enrolled-but-unscored would 409. Neither needs any
+    // subjectX data for this file's own assertions.
 
     subjectX = await createSunriseSubject("E2E MeParent SubjectX");
     subjectY = await createSunriseSubject("E2E MeParent SubjectY");
@@ -191,17 +199,25 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
     await score(subjectX, xEval2, [{ studentId: studentAId, isAbsent: true }, { studentId: studentBId, isAbsent: true }]);
     await score(subjectX, xEval3, [{ studentId: studentAId, rawScore: 84 }, { studentId: studentBId, rawScore: 80 }]);
     // A: (18+84)/2=51. B: (12+80)/2=46.
-    await publish(subjectX);
+    await publishEvaluations([xEval1, xEval2, xEval3]);
 
-    // v0.7 step 5 (SPEC_V0.7.md §4) — a THIRD student added to subjectX
-    // AFTER publish() already ran (the "straggler" case): their
-    // term_subject_result starts, and stays, DRAFT. Deliberately extreme
-    // (100 on every evaluation, decided not absent) so a broken
-    // published-only filter on the class analytics is unmissable.
+    notCoveredStudentId = await enrollSunrise("PNotCovered", 2);
+    otherFamilyStudentId = await enrollSunrise("POtherFamily", 3);
+
+    // v0.7 step 5 (SPEC_V0.7.md §4) — a student added to subjectX AFTER
+    // its evaluations already published (the "straggler" case). v0.7.4
+    // step 1 (SPEC_V0.7.4.md §2 Q1): under the per-evaluation model, a
+    // student decided on an ALREADY-PUBLISHED evaluation derives PUBLISHED
+    // for that subject too — there's no more "silently stays draft
+    // forever" loophole. To keep studentDraftId a genuine straggler here,
+    // their extreme score lives on a FOURTH, dedicated evaluation of
+    // subjectX that's deliberately never published — A/B are never scored
+    // on it, so it doesn't touch their own totals, and studentDraftId is
+    // never decided on xEval1/2/3, so their subjectX row stays DRAFT
+    // (total 0).
     studentDraftId = await enrollSunrise("PDraft", 4);
-    await score(subjectX, xEval1, [{ studentId: studentDraftId, rawScore: 100 }]);
-    await score(subjectX, xEval2, [{ studentId: studentDraftId, rawScore: 100 }]);
-    await score(subjectX, xEval3, [{ studentId: studentDraftId, rawScore: 100 }]);
+    const xEval4 = await createEvaluation(subjectX, "CA 4 (Never Published)");
+    await score(subjectX, xEval4, [{ studentId: studentDraftId, rawScore: 100 }]);
 
     // subjectY: A only, one evaluation scored -> DRAFT, never published.
     // Keeps A's overall from ever reaching PUBLISHED.
@@ -432,16 +448,24 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
       expect(serialized).not.toContain("E2E-MEPARENT/PDraft");
       expect(serialized).not.toContain(studentDraftId);
 
-      // Staff sees the real, unfiltered class — the extreme value included.
+      // Staff sees the real, unfiltered class — including studentDraftId's
+      // DRAFT subjectX row (total 0, since none of xEval1-3 are decided
+      // for them — their extreme 100 lives on the never-published xEval4,
+      // SPEC_V0.7.4.md §2 Q1).
       const staffView = await request(app.getHttpServer())
         .get(`/api/v1/students/${studentAId}/report-card`)
         .query({ termId: sunriseTermId, sessionId: sunriseSessionId })
         .set(auth(sunriseAdminToken));
       expect(staffView.status).toBe(200);
       const staffSubj = staffView.body.subjects.find((s: { subjectId: string }) => s.subjectId === subjectX);
-      expect(staffSubj.classAverageScore).toBeCloseTo(65.67, 2);
+      // avg(51, 46, 0) = 32.333... — staff has no eligibility filter, so
+      // studentDraftId's DRAFT row (0) counts, unlike the parent's
+      // self-view (48.5, asserted above) which excludes it entirely.
+      expect(staffSubj.classAverageScore).toBeCloseTo(32.33, 2);
       const staffCa2 = staffSubj.evaluations.find((e: { name: string }) => e.name === "CA 2");
-      expect(staffCa2).toMatchObject({ classAverageScore: 100, bestScore: 100, worstScore: 100 });
+      // studentDraftId was never scored on CA2 at all (only on xEval4) —
+      // A and B both absent, so nothing decided, null for staff too.
+      expect(staffCa2).toMatchObject({ classAverageScore: null, bestScore: null, worstScore: null });
     });
   });
 

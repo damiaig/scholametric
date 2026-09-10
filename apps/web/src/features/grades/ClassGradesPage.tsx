@@ -111,7 +111,7 @@ export function ClassGradesPage() {
         ]}
       >
         {tab === "results" ? (
-          <ResultsTab classArmId={classArmId} armLabel={armLabel} />
+          <ResultsTab classArmId={classArmId} />
         ) : subjectId ? (
           <EnterScoresTab
             classArmId={classArmId}

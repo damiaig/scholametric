@@ -5,7 +5,7 @@ import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { Tabs } from "../../components/ui/tabs";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { getErrorMessage } from "../../lib/api-client";
+import { ApiError, getErrorMessage } from "../../lib/api-client";
 import { isProprietor } from "../../lib/roles";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useMyTeaching } from "../dashboard/use-my-teaching";
@@ -18,6 +18,8 @@ import { useExams } from "./use-exams";
 import { ScoreEntryGrid } from "./ScoreEntryGrid";
 import { usePublishExamGrades } from "./use-publish-exam-grades";
 import { useUnpublishExamGrades } from "./use-unpublish-exam-grades";
+import { usePublishEvaluation } from "./use-publish-evaluation";
+import { useUnpublishEvaluation } from "./use-unpublish-evaluation";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
@@ -69,6 +71,19 @@ export function EnterScoresTab({
   const armLabel = armDetail.data
     ? `${armDetail.data.classLevel.name} ${armDetail.data.name}`
     : "";
+
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — which evaluation-track
+  // publish/unpublish this TEACHER may use here: only their own assigned
+  // (classArmId, subjectId), from the same useMyTeaching() call already
+  // fetched for the term picker above (zero new query). A class teacher
+  // can navigate to a colleague's subject via this same tab (item 5's
+  // "own subjects only" filter is a later step), so this keeps the
+  // control off a subject that isn't theirs.
+  const canManageAsTeacher =
+    isTeacher &&
+    (myTeaching.data?.subjects ?? []).some(
+      (s) => s.classArmId === classArmId && s.subjectId === subjectId,
+    );
 
   if (armDetail.isLoading) {
     return (
@@ -169,6 +184,7 @@ export function EnterScoresTab({
             subjectLabel={subjectLabel}
             isConfirmedAdmin={isConfirmedAdmin}
             isProprietorRole={isProprietor(currentUser?.role)}
+            canManageAsTeacher={canManageAsTeacher}
           />
         ) : (
           <ExamsTrack
@@ -194,6 +210,7 @@ interface EvaluationsTrackProps {
   subjectLabel: string;
   isConfirmedAdmin: boolean;
   isProprietorRole: boolean;
+  canManageAsTeacher: boolean;
 }
 
 function EvaluationsTrack({
@@ -204,12 +221,18 @@ function EvaluationsTrack({
   subjectLabel,
   isConfirmedAdmin,
   isProprietorRole,
+  canManageAsTeacher,
 }: EvaluationsTrackProps) {
   const [evaluationId, setEvaluationId] = useState("");
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [unpublishOpen, setUnpublishOpen] = useState(false);
+  const publishEvaluation = usePublishEvaluation();
+  const unpublishEvaluation = useUnpublishEvaluation();
   // v0.7.1 step 4 (item 11) — same queryKey EvaluationPicker's own
   // useEvaluations call already uses, so this is a cache hit, not a second
-  // network request; only the selected evaluation's NAME is read here, to
-  // label the grid heading below.
+  // network request; only the selected evaluation's NAME/status is read
+  // here, to label the grid heading and drive the publish/unpublish
+  // buttons below.
   const evaluationsQuery = useEvaluations({ classArmId, subjectId, termId });
   const selectedEvaluation = evaluationsQuery.data?.evaluations.find(
     (e) => e.id === evaluationId,
@@ -221,18 +244,56 @@ function EvaluationsTrack({
     setEvaluationId("");
   }, [termId]);
 
+  // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — replaces the v0.7.3 subject-level
+  // Publish/Unpublish buttons that used to live on the Results tab. Publish
+  // is now per-evaluation, so the controls live here, next to the picker,
+  // scoped to whichever evaluation is currently selected — mirroring
+  // ExamsTrack's own inline ConfirmDialog pattern. Role shape carried over
+  // unchanged from v0.7.3: TEACHER (assigned) + SCHOOL_ADMIN + PROPRIETOR
+  // may publish; TEACHER (assigned) + PROPRIETOR may unpublish (SCHOOL_ADMIN
+  // excluded, same pre-existing asymmetry).
+  const canPublish = isConfirmedAdmin || canManageAsTeacher;
+  const canUnpublish = isProprietorRole || canManageAsTeacher;
+  const incompleteStudentCount =
+    publishEvaluation.error instanceof ApiError && publishEvaluation.error.status === 409
+      ? publishEvaluation.error.body?.incompleteStudentIds?.length
+      : undefined;
+
   return (
     <div className="flex flex-col gap-4">
-      <EvaluationPicker
-        classArmId={classArmId}
-        subjectId={subjectId}
-        termId={termId}
-        value={evaluationId}
-        onChange={setEvaluationId}
-        allowManage
-        canManageTermLock={isConfirmedAdmin}
-        canDelete={isProprietorRole}
-      />
+      <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
+        <EvaluationPicker
+          classArmId={classArmId}
+          subjectId={subjectId}
+          termId={termId}
+          value={evaluationId}
+          onChange={setEvaluationId}
+          allowManage
+          canManageTermLock={isConfirmedAdmin}
+          canDelete={isProprietorRole}
+        />
+
+        {selectedEvaluation && (canPublish || canUnpublish) && (
+          <div className="flex items-center gap-2">
+            {canPublish && selectedEvaluation.status === "DRAFT" && (
+              <Button type="button" size="sm" onClick={() => setPublishOpen(true)}>
+                Publish
+              </Button>
+            )}
+            {canUnpublish && selectedEvaluation.status === "PUBLISHED" && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="text-danger hover:bg-danger/10"
+                onClick={() => setUnpublishOpen(true)}
+              >
+                Unpublish
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
 
       {evaluationId ? (
         <ScoreEntryGrid
@@ -256,6 +317,57 @@ function EvaluationsTrack({
           </CardContent>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={publishOpen}
+        onClose={() => setPublishOpen(false)}
+        onConfirm={() =>
+          publishEvaluation.mutate(evaluationId, { onSuccess: () => setPublishOpen(false) })
+        }
+        title="Publish evaluation"
+        description={
+          selectedEvaluation
+            ? `This publishes "${selectedEvaluation.name}" (${armLabel} · ${subjectLabel}) — its scores become visible to students and parents, and the subject total updates to include it.`
+            : undefined
+        }
+        confirmLabel="Publish"
+        isConfirming={publishEvaluation.isPending}
+      >
+        {publishEvaluation.isError && !incompleteStudentCount && (
+          <p role="alert" className="text-sm text-danger">
+            {getErrorMessage(publishEvaluation.error)}
+          </p>
+        )}
+        {incompleteStudentCount ? (
+          <p role="alert" className="text-sm text-danger">
+            {incompleteStudentCount} student{incompleteStudentCount === 1 ? "" : "s"} don't have a score or absence
+            recorded for this evaluation yet — open the grid to resolve.
+          </p>
+        ) : null}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={unpublishOpen}
+        onClose={() => setUnpublishOpen(false)}
+        onConfirm={() =>
+          unpublishEvaluation.mutate(evaluationId, { onSuccess: () => setUnpublishOpen(false) })
+        }
+        title="Unpublish evaluation"
+        description={
+          selectedEvaluation
+            ? `This reverts "${selectedEvaluation.name}" (${armLabel} · ${subjectLabel}) to draft and recomputes the subject total and overall positions for the whole class — other students' standings may shift, not just this evaluation.`
+            : undefined
+        }
+        confirmLabel="Unpublish"
+        confirmTone="danger"
+        isConfirming={unpublishEvaluation.isPending}
+      >
+        {unpublishEvaluation.isError && (
+          <p role="alert" className="text-sm text-danger">
+            {getErrorMessage(unpublishEvaluation.error)}
+          </p>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

@@ -167,12 +167,19 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
       expect(response.body.rows.find((r: { studentId: string }) => r.studentId === student.id)?.rawScore).toBe(9);
     });
 
-    it("returns each row's subject-level status, correctly mixed within one grid", async () => {
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — replaces the old per-row status
+    // test: publish is now per-EVALUATION and atomic across its whole
+    // roster (the completeness gate means every student is decided
+    // before publish succeeds), so "mixed within one grid" — one student
+    // published, another still draft-scored, another never scored — is
+    // no longer a reachable state. The grid's lock/status is now a single
+    // top-level `evaluationStatus` field, uniform for every row.
+    it("returns a single top-level evaluationStatus, uniform across every row — not a mixed per-row status", async () => {
       // A dedicated, self-contained scratch subject — not the shared
       // scratchSubjectId every other test in this file writes to. This
-      // test PUBLISHES a student, and publish's write-lock (409) would
-      // poison every later "write to the whole roster" test that reuses
-      // the shared subject.
+      // test PUBLISHES the evaluation, and publish's write-lock (409)
+      // would poison every later "write to the whole roster" test that
+      // reuses the shared subject.
       const statusSubject = await prisma.subject.create({
         data: { schoolId: sunriseId, name: "E2E Evaluations Status", code: "E2ESTA" },
       });
@@ -181,36 +188,32 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
       });
       const evaluationId = await createEvaluation(statusSubject.id, jss2AArmId);
       try {
-        const [published, draftScored, neverScored] = jss2ARoster.slice(0, 3);
-
-        await request(app.getHttpServer())
-          .put("/api/v1/grades/evaluation-scores")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, evaluationId, termId: sunriseTermId, scores: [{ studentId: published.id, rawScore: 75 }] });
-        const publishRes = await request(app.getHttpServer())
-          .post("/api/v1/grades/publish")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, termId: sunriseTermId });
-        expect(publishRes.status).toBe(200);
-
-        // draftScored: scored but never published -> DRAFT.
-        await request(app.getHttpServer())
-          .put("/api/v1/grades/evaluation-scores")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, evaluationId, termId: sunriseTermId, scores: [{ studentId: draftScored.id, rawScore: 10 }] });
-
-        // neverScored: no evaluation_scores row at all for this subject -> DRAFT (default).
-
-        const response = await request(app.getHttpServer())
+        const draftResponse = await request(app.getHttpServer())
           .get("/api/v1/grades/evaluation-scores")
           .query({ classArmId: jss2AArmId, subjectId: statusSubject.id, evaluationId, termId: sunriseTermId })
           .set(auth(sunriseAdminToken));
-        expect(response.status).toBe(200);
+        expect(draftResponse.status).toBe(200);
+        expect(draftResponse.body.evaluationStatus).toBe("DRAFT");
+        expect(draftResponse.body.rows.every((r: object) => !("status" in r))).toBe(true);
 
-        const byStudent = new Map(response.body.rows.map((r: { studentId: string; status: string }) => [r.studentId, r.status]));
-        expect(byStudent.get(published.id)).toBe("PUBLISHED");
-        expect(byStudent.get(draftScored.id)).toBe("DRAFT");
-        expect(byStudent.get(neverScored.id)).toBe("DRAFT");
+        // The completeness gate requires the WHOLE roster decided before
+        // this evaluation can publish.
+        const scoreRes = await request(app.getHttpServer())
+          .put("/api/v1/grades/evaluation-scores")
+          .set(auth(sunriseAdminToken))
+          .send({ classArmId: jss2AArmId, subjectId: statusSubject.id, evaluationId, termId: sunriseTermId, scores: jss2ARoster.map((s) => ({ studentId: s.id, rawScore: 75 })) });
+        expect(scoreRes.status).toBe(200);
+        const publishRes = await request(app.getHttpServer())
+          .post(`/api/v1/grades/evaluations/${evaluationId}/publish`)
+          .set(auth(sunriseAdminToken));
+        expect(publishRes.status).toBe(200);
+
+        const publishedResponse = await request(app.getHttpServer())
+          .get("/api/v1/grades/evaluation-scores")
+          .query({ classArmId: jss2AArmId, subjectId: statusSubject.id, evaluationId, termId: sunriseTermId })
+          .set(auth(sunriseAdminToken));
+        expect(publishedResponse.status).toBe(200);
+        expect(publishedResponse.body.evaluationStatus).toBe("PUBLISHED");
       } finally {
         await prisma.evaluationScore.deleteMany({ where: { evaluationId } });
         await prisma.evaluation.delete({ where: { id: evaluationId } });
@@ -314,7 +317,12 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
       expect(response.body.rows).toHaveLength(3);
       for (const row of response.body.rows) {
         expect(row.rawScore).toBe(14);
-        expect(row.totalScore).toBe(14); // one evaluation, native /100 — average of one value is itself
+        // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — the subject total is now
+        // the average of its PUBLISHED evaluations only; scratchEvaluationId
+        // is never published in this file (publishing it would lock it for
+        // every other test reusing this shared subject), so the raw score
+        // persists but doesn't move the total yet.
+        expect(row.totalScore).toBe(0);
         expect(row.status).toBe("DRAFT");
       }
 
@@ -349,7 +357,15 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
       expect((log?.metadata as { subjectId: string }).subjectId).toBe(scratchSubjectId);
     });
 
-    it("a second, unscored evaluation contributes nothing — not rescaled", async () => {
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — the subject total is now the
+    // average of PUBLISHED evaluations only. Neither scratchEvaluationId
+    // nor secondEvaluationId is published here (publishing the shared
+    // scratchEvaluationId would lock it for every other test reusing this
+    // subject), so both a scored-but-unpublished evaluation AND a never-
+    // touched one contribute nothing — this still exercises
+    // recomputeStudents with an entirely-empty published set and a
+    // never-scored sibling evaluation in the mix, without erroring.
+    it("an unpublished evaluation and a never-scored sibling both contribute nothing to the total", async () => {
       const [student] = jss2ARoster.slice(4, 5);
       const secondEvaluationId = await createEvaluation(scratchSubjectId, jss2AArmId, "E2E Unscored");
       try {
@@ -369,12 +385,8 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
             studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: scratchSubjectId, termId: sunriseTermId, sessionId: sunriseSessionId },
           },
         });
-        // Only scratchEvaluationId has a score (15) — secondEvaluationId is
-        // entirely unscored for this student and contributes nothing, not
-        // a rescale to the scored one's full weight.
-        expect(Number(result.totalScore)).toBe(15);
+        expect(Number(result.totalScore)).toBe(0);
         expect(result.status).toBe("DRAFT");
-        expect(result.autoGrade).toBe("F9"); // WAEC: 0-39
       } finally {
         await prisma.evaluation.delete({ where: { id: secondEvaluationId } });
       }
@@ -526,28 +538,34 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
     // SPEC_V0.5.1.md §2.5, v0.5.1 step 4, carried into v0.7: SCHOOL_ADMIN/
     // PROPRIETOR pass this gate (see mark-absent-after-publish.e2e-spec.ts
     // for that full flow) — TEACHER still 409s here unconditionally.
-    it("409s a TEACHER's write against the real, seeded PUBLISHED JSS 1 A English result, leaving it unchanged", async () => {
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the write-lock is now scoped to
+    // the EVALUATION's own status, not the subject's. A brand-new
+    // evaluation created here (DRAFT by construction) would NOT be locked
+    // even though the subject shows PUBLISHED overall — so this targets
+    // one of the real, seeded, ALREADY-PUBLISHED evaluations directly
+    // (the seed script marks CA 1/2/3 PUBLISHED to match English's
+    // published subject result, SPEC_V0.7.4.md §2 consistency note).
+    it("409s a TEACHER's write against a real, seeded PUBLISHED JSS 1 A English evaluation, leaving it unchanged", async () => {
       const [student] = jss1ARoster;
       const before = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: englishId, termId: sunriseTermId, sessionId: sunriseSessionId } },
       });
       expect(before.status).toBe("PUBLISHED");
 
-      const englishEvaluation = await createEvaluation(englishId, jss1AArmId, "E2E Locked Probe");
-      try {
-        const response = await request(app.getHttpServer())
-          .put("/api/v1/grades/evaluation-scores")
-          .set(auth(sunriseEnglishTeacherToken))
-          .send({
-            classArmId: jss1AArmId, subjectId: englishId, evaluationId: englishEvaluation, termId: sunriseTermId,
-            scores: [{ studentId: student.id, rawScore: 1 }],
-          });
-        expect(response.status).toBe(409);
-        expect(response.body.lockedStudentIds).toEqual([student.id]);
-      } finally {
-        await prisma.evaluationScore.deleteMany({ where: { evaluationId: englishEvaluation } });
-        await prisma.evaluation.delete({ where: { id: englishEvaluation } });
-      }
+      const englishEvaluation = await prisma.evaluation.findFirstOrThrow({
+        where: { schoolId: sunriseId, classArmId: jss1AArmId, subjectId: englishId, termId: sunriseTermId, name: "CA 1", deletedAt: null },
+      });
+      expect(englishEvaluation.status).toBe("PUBLISHED");
+
+      const response = await request(app.getHttpServer())
+        .put("/api/v1/grades/evaluation-scores")
+        .set(auth(sunriseEnglishTeacherToken))
+        .send({
+          classArmId: jss1AArmId, subjectId: englishId, evaluationId: englishEvaluation.id, termId: sunriseTermId,
+          scores: [{ studentId: student.id, rawScore: 1 }],
+        });
+      expect(response.status).toBe(409);
+      expect(response.body.lockedStudentIds).toEqual([student.id]);
 
       const after = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: englishId, termId: sunriseTermId, sessionId: sunriseSessionId } },
@@ -578,12 +596,26 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
         expect(responseA.status).toBe(200);
         expect(responseB.status).toBe(200);
 
+        // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — neither evaluation is
+        // published, so term_subject_result.totalScore stays 0 regardless
+        // (publishing scratchEvaluationId would lock it for every other
+        // test reusing this shared subject). The real thing under test —
+        // that concurrent writes to two DIFFERENT evaluations of the same
+        // subject/student don't lose an update — is proven at the
+        // evaluation_scores level directly: both raw scores must persist,
+        // not whichever transaction happened to write last.
+        const [scoreA, scoreB] = await Promise.all([
+          prisma.evaluationScore.findUniqueOrThrow({ where: { evaluationId_studentId: { evaluationId: scratchEvaluationId, studentId: student.id } } }),
+          prisma.evaluationScore.findUniqueOrThrow({ where: { evaluationId_studentId: { evaluationId: secondEvaluationId, studentId: student.id } } }),
+        ]);
+        expect(Number(scoreA.rawScore)).toBe(12);
+        expect(Number(scoreB.rawScore)).toBe(8);
+
         const result = await prisma.termSubjectResult.findUniqueOrThrow({
           where: { studentId_subjectId_termId_sessionId: { studentId: student.id, subjectId: scratchSubjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
         });
-        // (12 + 8) / 2 = 10 — both writes must be reflected, not whichever
-        // transaction happened to read evaluation_scores last.
-        expect(Number(result.totalScore)).toBe(10);
+        expect(Number(result.totalScore)).toBe(0);
+        expect(result.status).toBe("DRAFT");
       } finally {
         await prisma.evaluationScore.deleteMany({ where: { evaluationId: secondEvaluationId } });
         await prisma.evaluation.delete({ where: { id: secondEvaluationId } });
@@ -609,10 +641,14 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
         const row = absentRes.body.rows[0];
         expect(row.rawScore).toBeNull();
         expect(row.isAbsent).toBe(true);
-        // Total excludes the absent evaluation entirely: only the first
-        // evaluation counts (15) — NOT a 0 and NOT rescaled.
+        // v0.7.4 step 1 (SPEC_V0.7.4.md §2 Q1) — neither evaluation is
+        // published (publishing scratchEvaluationId would lock it for
+        // every other test reusing this shared subject), so the total
+        // stays 0 regardless of the absent mark — this still proves the
+        // absent write itself persists correctly (rawScore null, isAbsent
+        // true), which is the actual point of this test.
         expect(row.status).toBe("DRAFT");
-        expect(row.totalScore).toBe(15);
+        expect(row.totalScore).toBe(0);
 
         const persisted = await prisma.evaluationScore.findUniqueOrThrow({
           where: { evaluationId_studentId: { evaluationId: secondEvaluationId, studentId: student.id } },
@@ -780,13 +816,36 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
       expect(response.status).toBe(404);
     });
 
-    it("409s against the real, seeded PUBLISHED JSS 1 A English result, naming every locked student", async () => {
+    // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — recompute()'s old "blocked while
+    // published" check is gone: it re-derives from whichever evaluations
+    // are CURRENTLY published, never touches evaluation_scores or any
+    // evaluation's own status, so it's always safe to re-run regardless
+    // of publish state. Re-deriving the real, seeded PUBLISHED JSS 1 A
+    // English result from the SAME (now-published) evaluations should be
+    // a pure no-op — identical totals/status/positions, not a 409.
+    it("200s and safely re-derives the real, seeded PUBLISHED JSS 1 A English result — recompute is no longer blocked by publish state", async () => {
+      const before = await prisma.termSubjectResult.findMany({
+        where: { schoolId: sunriseId, classArmId: jss1AArmId, subjectId: englishId, termId: sunriseTermId, sessionId: sunriseSessionId },
+      });
+      expect(before.length).toBe(jss1ARoster.length);
+
       const response = await request(app.getHttpServer())
         .post("/api/v1/grades/recompute")
         .set(auth(sunriseAdminToken))
         .send({ classArmId: jss1AArmId, subjectId: englishId, termId: sunriseTermId });
-      expect(response.status).toBe(409);
-      expect(new Set(response.body.lockedStudentIds)).toEqual(new Set(jss1ARoster.map((s) => s.id)));
+      expect(response.status).toBe(200);
+      expect(response.body.recomputedCount).toBe(jss1ARoster.length);
+
+      const after = await prisma.termSubjectResult.findMany({
+        where: { schoolId: sunriseId, classArmId: jss1AArmId, subjectId: englishId, termId: sunriseTermId, sessionId: sunriseSessionId },
+      });
+      const beforeByStudent = new Map(before.map((r) => [r.studentId, r]));
+      for (const row of after) {
+        const prior = beforeByStudent.get(row.studentId)!;
+        expect(Number(row.totalScore)).toBe(Number(prior.totalScore));
+        expect(row.status).toBe(prior.status);
+        expect(row.subjectPosition).toBe(prior.subjectPosition);
+      }
     });
   });
 });
