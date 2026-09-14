@@ -8,11 +8,14 @@ import { ExamsService } from "./exams.service";
 import { GetExamScoresQueryDto } from "./dto/get-exam-scores-query.dto";
 import { SaveExamScoresDto } from "./dto/save-exam-scores.dto";
 import { RecomputeExamGradesDto } from "./dto/recompute-exam-grades.dto";
-import { PublishExamGradesDto } from "./dto/publish-exam-grades.dto";
+import { SubmitExamForApprovalDto } from "./dto/submit-exam-for-approval.dto";
+import { ApproveExamDto } from "./dto/approve-exam.dto";
+import { RejectExamDto } from "./dto/reject-exam.dto";
 import { UnpublishExamGradesDto } from "./dto/unpublish-exam-grades.dto";
 import { GetExamsQueryDto } from "./dto/get-exams-query.dto";
 import { CreateExamDto } from "./dto/create-exam.dto";
 import { UpdateExamDto } from "./dto/update-exam.dto";
+import { GetExamsReviewQueryDto } from "./dto/get-exams-review-query.dto";
 
 // Mirrors GradesController's role split exactly (SPEC_V0.7.md §2, "same
 // publish model as v0.4" applied to the exam track): TEACHER for score
@@ -71,11 +74,33 @@ export class ExamsController {
     return this.examsService.recompute(dto);
   }
 
-  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
-  @Post("publish")
+  // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — replaces POST /exams/publish.
+  // TEACHER-only, categorical — no SCHOOL_ADMIN/PROPRIETOR in this list at
+  // all: admin's route to PUBLISHED is exclusively approve() below, never
+  // submit, so there is no self-submit-self-approve shape even
+  // temporarily (confirmed).
+  @Roles(UserRole.TEACHER)
+  @Post("submit-for-approval")
   @HttpCode(HttpStatus.OK)
-  publish(@Body() dto: PublishExamGradesDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.examsService.publish(dto, user);
+  submitForApproval(@Body() dto: SubmitExamForApprovalDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.examsService.submitForApproval(dto, user);
+  }
+
+  // v0.7.4 step 2 — the only path to PUBLISHED now. SCHOOL_ADMIN +
+  // PROPRIETOR both (Item 4's "Admin/proprietor KEEP: approve exams").
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  @Post("approve")
+  @HttpCode(HttpStatus.OK)
+  approve(@Body() dto: ApproveExamDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.examsService.approve(dto, user);
+  }
+
+  // v0.7.4 step 2 — PENDING_APPROVAL -> DRAFT, same role list as approve.
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  @Post("reject")
+  @HttpCode(HttpStatus.OK)
+  reject(@Body() dto: RejectExamDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.examsService.reject(dto, user);
   }
 
   @Roles(UserRole.PROPRIETOR)
@@ -83,5 +108,14 @@ export class ExamsController {
   @HttpCode(HttpStatus.OK)
   unpublish(@Body() dto: UnpublishExamGradesDto, @CurrentUser() user: AuthenticatedUser) {
     return this.examsService.unpublish(dto, user);
+  }
+
+  // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — the admin pending-approvals
+  // surface. SCHOOL_ADMIN/PROPRIETOR only, no TEACHER path — mirrors
+  // GradesController.getReview() exactly.
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  @Get("review")
+  getReview(@Query() query: GetExamsReviewQueryDto) {
+    return this.examsService.getReview(query);
   }
 }

@@ -1,6 +1,6 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Link } from "react-router-dom";
-import { CircleAlert, Users, GraduationCap, School, ClipboardCheck, KeyRound } from "lucide-react";
+import { CircleAlert, Users, GraduationCap, School, ClipboardCheck, FileCheck, KeyRound } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -97,7 +97,7 @@ function AdminDashboard() {
             />
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <Link to="/grades/review" className="block">
               <Card className="h-full transition-colors hover:border-primary/40">
                 <CardContent className="flex h-full items-center gap-4 p-6">
@@ -105,6 +105,17 @@ function AdminDashboard() {
                     <ClipboardCheck className="h-5 w-5" aria-hidden="true" />
                   </div>
                   <p className="font-semibold text-text">Review &amp; Publish →</p>
+                </CardContent>
+              </Card>
+            </Link>
+
+            <Link to="/grades/exam-approvals" className="block">
+              <Card className="h-full transition-colors hover:border-primary/40">
+                <CardContent className="flex h-full items-center gap-4 p-6">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <FileCheck className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                  <p className="font-semibold text-text">Exam approvals →</p>
                 </CardContent>
               </Card>
             </Link>

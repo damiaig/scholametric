@@ -16,10 +16,13 @@ import { ExamPicker } from "./ExamPicker";
 import { useEvaluations } from "./use-evaluations";
 import { useExams } from "./use-exams";
 import { ScoreEntryGrid } from "./ScoreEntryGrid";
-import { usePublishExamGrades } from "./use-publish-exam-grades";
+import { useSubmitExamForApproval } from "./use-submit-exam-for-approval";
 import { useUnpublishExamGrades } from "./use-unpublish-exam-grades";
 import { usePublishEvaluation } from "./use-publish-evaluation";
 import { useUnpublishEvaluation } from "./use-unpublish-evaluation";
+import { useExamScores } from "./use-exam-scores";
+import { resultStatusLabel, resultStatusTone } from "./result-status";
+import { StatusBadge } from "../../components/StatusBadge";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-56";
@@ -195,6 +198,7 @@ export function EnterScoresTab({
             subjectLabel={subjectLabel}
             isConfirmedAdmin={isConfirmedAdmin}
             isProprietorRole={isProprietor(currentUser?.role)}
+            canManageAsTeacher={canManageAsTeacher}
           />
         )}
       </Tabs>
@@ -380,8 +384,14 @@ interface ExamsTrackProps {
   subjectLabel: string;
   isConfirmedAdmin: boolean;
   isProprietorRole: boolean;
+  canManageAsTeacher: boolean;
 }
 
+// v0.7.4 step 2 (SPEC_V0.7.4.md §3) — the admin-only direct "Publish"
+// button is gone. TEACHER (own assignment) submits for approval instead;
+// PUBLISHED is now reached exclusively via the admin ExamApprovalsPage's
+// Approve action, never from here. Unpublish (PROPRIETOR, PUBLISHED ->
+// DRAFT safety valve) is unchanged and stays inline.
 function ExamsTrack({
   classArmId,
   subjectId,
@@ -390,17 +400,27 @@ function ExamsTrack({
   subjectLabel,
   isConfirmedAdmin,
   isProprietorRole,
+  canManageAsTeacher,
 }: ExamsTrackProps) {
   const [examId, setExamId] = useState("");
-  const [publishOpen, setPublishOpen] = useState(false);
+  const [submitOpen, setSubmitOpen] = useState(false);
   const [unpublishOpen, setUnpublishOpen] = useState(false);
-  const publishExam = usePublishExamGrades();
+  const submitExam = useSubmitExamForApproval();
   const unpublishExam = useUnpublishExamGrades();
   // v0.7.1 step 4 (item 11) — same queryKey ExamPicker's own useExams call
   // already uses (cache hit, no new fetch); only the selected exam's NAME
   // is read here, to label the grid heading below.
   const examsQuery = useExams({ classArmId, subjectId, termId });
   const selectedExam = examsQuery.data?.exams.find((e) => e.id === examId);
+
+  // v0.7.4 step 2 — the subject-level status badge, same queryKey the
+  // grid below ends up using once an exam is selected (cache hit, no
+  // extra request once ScoreEntryGrid mounts; a standalone request only
+  // when the badge renders before the grid does). Status lives on
+  // term_subject_exam_result, not on the Exam itself, so this is the only
+  // place to read it — any row carries the same subject-level value.
+  const examScoresQuery = useExamScores(examId ? { classArmId, subjectId, examId, termId } : null);
+  const subjectStatus = examScoresQuery.data?.rows[0]?.status;
 
   // Exams are scoped per term (SPEC_V0.7.md §3) — same reasoning as evaluations.
   useEffect(() => {
@@ -410,44 +430,40 @@ function ExamsTrack({
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
-        <ExamPicker
-          classArmId={classArmId}
-          subjectId={subjectId}
-          termId={termId}
-          value={examId}
-          onChange={setExamId}
-          allowManage
-          canManageTermLock={isConfirmedAdmin}
-          canDelete={isProprietorRole}
-        />
+        <div className="flex flex-wrap items-end gap-2">
+          <ExamPicker
+            classArmId={classArmId}
+            subjectId={subjectId}
+            termId={termId}
+            value={examId}
+            onChange={setExamId}
+            allowManage
+            canManageTermLock={isConfirmedAdmin}
+            canDelete={isProprietorRole}
+          />
+          {subjectStatus && (
+            <StatusBadge label={resultStatusLabel(subjectStatus)} tone={resultStatusTone(subjectStatus)} />
+          )}
+        </div>
 
-        {/* v0.7.1 step 4 (item 12) — Publish made prominent (solid/primary,
-            matching Review & Publish's evaluations-track button), not the
-            easy-to-miss outline style this had before; Unpublish stays
-            danger-outline, both hidden (not disabled) per role exactly as
-            before. */}
-        {isConfirmedAdmin && (
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2">
+          {canManageAsTeacher && (
+            <Button type="button" size="sm" onClick={() => setSubmitOpen(true)}>
+              Submit for approval
+            </Button>
+          )}
+          {isProprietorRole && (
             <Button
               type="button"
+              variant="outline"
               size="sm"
-              onClick={() => setPublishOpen(true)}
+              className="text-danger hover:bg-danger/10"
+              onClick={() => setUnpublishOpen(true)}
             >
-              Publish
+              Unpublish
             </Button>
-            {isProprietorRole && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="text-danger hover:bg-danger/10"
-                onClick={() => setUnpublishOpen(true)}
-              >
-                Unpublish
-              </Button>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {examId ? (
@@ -474,22 +490,22 @@ function ExamsTrack({
       )}
 
       <ConfirmDialog
-        open={publishOpen}
-        onClose={() => setPublishOpen(false)}
+        open={submitOpen}
+        onClose={() => setSubmitOpen(false)}
         onConfirm={() =>
-          publishExam.mutate(
+          submitExam.mutate(
             { classArmId, subjectId, termId },
-            { onSuccess: () => setPublishOpen(false) },
+            { onSuccess: () => setSubmitOpen(false) },
           )
         }
-        title="Publish exam results"
-        description={`This publishes ${armLabel} ${subjectLabel} exam results for this term — students' exam scores and averages become final and visible on their report card.`}
-        confirmLabel="Publish"
-        isConfirming={publishExam.isPending}
+        title="Submit exam results for approval"
+        description={`This submits ${armLabel} ${subjectLabel} exam results for admin approval — scores are locked from further edits until the admin approves or rejects.`}
+        confirmLabel="Submit for approval"
+        isConfirming={submitExam.isPending}
       >
-        {publishExam.isError && (
+        {submitExam.isError && (
           <p role="alert" className="text-sm text-danger">
-            {getErrorMessage(publishExam.error)}
+            {getErrorMessage(submitExam.error)}
           </p>
         )}
       </ConfirmDialog>

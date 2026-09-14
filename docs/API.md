@@ -1708,24 +1708,31 @@ don't resolve within the caller's tenant.
 
 ---
 
-## Exams — authoring, score entry, publish & the two exam views (v0.7 steps 1-3, SPEC_V0.7.md §2/§3/§4/§5)
+## Exams — authoring, score entry, approval workflow & the two exam views (v0.7 steps 1-3, SPEC_V0.7.md §2/§3/§4/§5; publish model replaced v0.7.4 step 2, SPEC_V0.7.4.md §3)
 
 Track B: exams are a **separate track** from evaluations above, scored
 against `Exam`/`exam_scores` (native /100, same absence semantics) and
 published into their own `term_subject_exam_results` — they **never**
 contribute to `term_subject_results`/`term_overall_results`. Role rules,
 lock ordering, completeness-gate shape, and audit-log discipline all
-mirror the evaluation track above exactly ("same publish model as v0.4,"
-confirmed) — only the target tables differ. `term_subject_exam_results`
-has neither `subjectPosition` nor `overrideGrade` (Q6: exams rank only at
-the per-term/whole-year levels below, never per-subject).
+mirror the evaluation track above closely — only the target tables
+differ, and (since v0.7.4 step 2) the exam track keeps **subject-level**
+publish granularity, unlike evaluations' per-evaluation model.
+`term_subject_exam_results` has neither `subjectPosition` nor
+`overrideGrade` (Q6: exams rank only at the per-term/whole-year levels
+below, never per-subject).
 
-Step 1 shipped the engine + score-entry/publish endpoints; step 3 (below)
-adds creating/editing/deleting an `Exam` itself, plus the two read views
-(`GET .../exams` and `GET .../year-exams`) that surface what the engine
-computes. There is still no `GET /exams/review` — publishing from the UI
-is a minimal action on the scoring page, not a second review-list surface
-(confirmed, out of scope this step).
+Step 1 shipped the engine + score-entry/publish endpoints; step 3 added
+creating/editing/deleting an `Exam` itself, plus the two read views
+(`GET .../exams` and `GET .../year-exams`). **v0.7.4 step 2 replaced
+direct admin publish with a two-step approval workflow** (below): a
+TEACHER submits a subject's exam results for approval; SCHOOL_ADMIN/
+PROPRIETOR approves (→ visible) or rejects (→ back to draft). No schema
+migration was needed — `term_subject_exam_results.status` already had
+`PENDING_APPROVAL` in its `ResultStatus` enum since v0.7, simply unused
+until now. `GET /exams/review` (new this step) is the admin's
+pending-approvals surface — the "out of scope this step" note from step
+3 is superseded.
 
 ### `GET` / `PUT /exams/scores`
 
@@ -1735,22 +1742,84 @@ evaluation track uses (closing a term blocks both); the subject/class-arm
 locks use the `exams:...` namespace, distinct from `grades:...`, so the
 two tracks never contend with each other.
 
+`PUT /exams/scores`' write-lock (**v0.7.4 step 2**, widened from
+`PUBLISHED`-only): blocks a `TEACHER` write when the subject's row is
+either `PUBLISHED` **or** `PENDING_APPROVAL` — a subject sitting in the
+admin's approval queue must not be editable out from under them (an
+unblocked edit would silently un-submit it, since the recompute that
+follows every save defaults to `DRAFT` unless told to preserve a locked
+status). `SCHOOL_ADMIN`/`PROPRIETOR` may still bypass either lock tier to
+correct a score (same convention as the evaluation track); a bypassed edit
+preserves whichever status already applied — it doesn't jump
+`PENDING_APPROVAL` straight to `PUBLISHED`.
+
 ### `POST /exams/recompute`
 
 Same shape as `POST /grades/recompute`, retargeted to the exam track.
+`SCHOOL_ADMIN`/`PROPRIETOR` only. **v0.7.4 step 2**: blocked (`409`, same
+`lockedStudentIds` shape) while any target row is `PUBLISHED` **or**
+`PENDING_APPROVAL` — widened from the old `PUBLISHED`-only check so a
+manual recompute can't silently un-submit a subject sitting in the
+approval queue (`recomputeExamStudents` always derives `DRAFT` unless told
+to preserve a status, and this route never passes a preserve set — a
+full categorical block, no bypass).
 
-### `POST /exams/publish`
+### `POST /exams/submit-for-approval` (v0.7.4 step 2, SPEC_V0.7.4.md §3 — replaces `POST /exams/publish`)
 
-`SCHOOL_ADMIN`/`PROPRIETOR`. **Unaffected by v0.7.4 step 1** — the exam
-track was never re-scoped to per-evaluation publish, only the grades track
-was; this remains the same **subject-level** publish model the grades
-track itself used before v0.7.4: body `{ classArmId, subjectId, termId }`,
-transitions every currently-`DRAFT` `term_subject_exam_results` row for
-that subject/class/term to `PUBLISHED`, same completeness gate shape
-(every candidate must have a decided score/absence on every active `Exam`
-for the subject/term), but the response carries no `subjectPositions`
-(none exist at this level). Cascades upward through **two** more
-aggregates, both purely derived (no separate publish action of their own):
+`TEACHER` only, categorical — no `SCHOOL_ADMIN`/`PROPRIETOR` path at all,
+confirmed: admin's route to `PUBLISHED` is exclusively `POST /exams/approve`
+below, never submit, so there is no self-submit-self-approve shape even
+temporarily. Must hold the `subject_teacher_assignment` for this exact
+(subject, class arm, session).
+
+Body: `{ classArmId, subjectId, termId }`. Transitions every currently
+`DRAFT` `term_subject_exam_results` row for that subject/class/term to
+`PENDING_APPROVAL`. **No cascade** — `term_exam_results`/`year_exam_results`
+only ever count `PUBLISHED` rows, and `PENDING_APPROVAL` isn't `PUBLISHED`,
+so there's nothing for either aggregate to do until approval.
+
+**Completeness gate — ROSTER-WIDE** (SPEC_V0.7.4.md §3 Q5, reusing the
+evaluation track's Step 1 shape): every **currently enrolled** student in
+the class arm must have a decided (score-or-absent) row on **every active
+`Exam`** for this subject/term, not just students who already happen to
+have a `term_subject_exam_results` row (the old carve-out this replaces).
+
+**Response `200`**: `{ classArmId, subjectId, termId, submittedCount }`.
+`submittedCount` is always the whole roster's size (the completeness gate
+means every student is decided by the time this succeeds).
+
+**Response `409`**: nothing to submit (no exam scores entered at all),
+this subject is already submitted/published, the term is closed
+(`{ termLocked: true }`), or the completeness gate:
+```json
+{ "statusCode": 409, "message": "Cannot submit: 1 student(s) don't have a score or absence recorded for every exam yet.", "error": "Conflict", "path": "...", "timestamp": "...", "incompleteStudentIds": ["..."] }
+```
+
+**Response `403`**: `SCHOOL_ADMIN`/`PROPRIETOR` (categorical — role, not
+assignment), or a `TEACHER` not assigned to this subject/class.
+
+**Response `404`**: same tenant/no-assignment-at-all rules as the rest of
+`/exams/*` — checked before the role/assignment check above, so a
+cross-tenant probe (even with a real `TEACHER` token from another school)
+404s uniformly.
+
+Audited (`exams.submitForApproval`, `entityId` = `classArmId`, metadata
+carries `subjectId`/`termId`/`submittedCount`).
+
+### `POST /exams/approve` (v0.7.4 step 2)
+
+`SCHOOL_ADMIN`/`PROPRIETOR` (Item 4's "Admin/proprietor KEEP: approve
+exams" — both roles). The **only** path to `PUBLISHED` now. Body:
+`{ classArmId, subjectId, termId }`.
+
+Transitions every currently `PENDING_APPROVAL` row to `PUBLISHED`. **Does
+not re-check completeness** — the roster-wide gate already ran at submit
+time, and the score-entry lock (`PUT /exams/scores`, below) has been
+blocking further writes to this subject the entire time it sat
+`PENDING_APPROVAL` (same bypass roles as the `PUBLISHED` lock), so nothing
+could have changed underneath since submit. Cascades upward through the
+same **two** aggregates the old direct-publish action did (unchanged
+functions, just called from here now):
 
 - **`term_exam_results`** (Q6 ranking (b)) — per student+term, the
   average across every subject they've been exam-scored in this term.
@@ -1764,18 +1833,69 @@ aggregates, both purely derived (no separate publish action of their own):
   least one published term this session; `yearExamPosition` ranks only
   among students who do.
 
-**Response `200`**: `{ classArmId, subjectId, termId, publishedCount, termExamPublishedCount, yearExamRecomputedCount }`.
+**Response `200`**: `{ classArmId, subjectId, termId, approvedCount, termExamPublishedCount, yearExamRecomputedCount }`.
+
+**Response `409`**: nothing pending to approve.
+
+Audited (`exams.approve`).
+
+### `POST /exams/reject` (v0.7.4 step 2)
+
+`SCHOOL_ADMIN`/`PROPRIETOR`, same role list as approve. Body:
+`{ classArmId, subjectId, termId }`.
+
+Transitions every currently `PENDING_APPROVAL` row back to `DRAFT` — a
+bare state revert, deliberately **no reason field** (scope creep beyond
+the frozen five items). **No cascade**: nothing pending was ever counted
+in `term_exam_results`/`year_exam_results` (both gate on `PUBLISHED`
+only), so there's nothing upstream to unwind. A rejected subject can be
+resubmitted once revised (confirmed round-trip).
+
+**Response `200`**: `{ classArmId, subjectId, termId, rejectedCount }`.
+
+**Response `409`**: nothing pending to reject.
+
+Audited (`exams.reject`).
 
 ### `POST /exams/unpublish`
 
-`PROPRIETOR` only. Same subject-level model as publish above (unaffected
-by v0.7.4 step 1) — reverts every currently-`PUBLISHED` row for the
-subject/class/term back to `DRAFT` and cascades the same two aggregates
-above (a student dropping out of a fully-published term also drops out of
-that term's ranking, and the year-level average recomputes without their
-now-unpublished term).
+`PROPRIETOR` only. **Unaffected by v0.7.4 step 2** — reverts every
+currently-`PUBLISHED` row for the subject/class/term back to `DRAFT` and
+cascades the same two aggregates above (a student dropping out of a
+fully-published term also drops out of that term's ranking, and the
+year-level average recomputes without their now-unpublished term).
 
 **Response `200`**: `{ classArmId, subjectId, termId, unpublishedCount, termExamRevertedCount, yearExamRecomputedCount }`.
+
+### `GET /exams/review?classArmId=&termId=&status=` (v0.7.4 step 2, SPEC_V0.7.4.md §3)
+
+The admin pending-approvals surface — `SCHOOL_ADMIN`/`PROPRIETOR` only, no
+`TEACHER` path, mirroring `GET /grades/review` exactly (source table
+swapped to `term_subject_exam_result`). One row per subject with at least
+one exam result in this class arm/term.
+
+```json
+{
+  "classArmId": "...", "termId": "...",
+  "subjects": [
+    {
+      "subjectId": "...", "subjectName": "Mathematics", "needsTeacherAssignment": false,
+      "rosterSize": 20, "draftCount": 0, "pendingApprovalCount": 20, "publishedCount": 0,
+      "averageScore": 68.8, "averageGrade": "B3"
+    }
+  ]
+}
+```
+
+Unlike `GradesReviewSubject` post-v0.7.4-step-1 (where `pendingApprovalCount`
+is permanently `0` — that tier was retired on the grades side),
+`pendingApprovalCount` here is real: exams stayed subject-level, so a
+subject's whole roster moves through `PENDING_APPROVAL` together. The
+optional `status=` query filters to subjects with **at least one** student
+in that status, same semantics as the grades side.
+
+**Response `403`**: any `TEACHER`. **Response `404`**: `classArmId`/`termId`
+don't resolve within the caller's tenant.
 
 ### `GET /exams` / `POST /exams` (v0.7 step 3, SPEC_V0.7.md §3)
 
@@ -1802,9 +1922,17 @@ fields as the evaluation list (`termClosed`, `locked`, `unlockReason`).
 classArmId/subjectId/termId fixed at creation, same as evaluations.
 
 - **`409` `{ termLocked: true }`**: shared term lock, same as evaluations.
-- **`409`**: this subject's exam results are already `PUBLISHED` for this
-  term — the exam set is frozen once published (confirmed, mirrors the
-  evaluation rule exactly) — unpublish first, then create.
+- **`409`**: this subject's exam results are already `PUBLISHED` **or**
+  `PENDING_APPROVAL` for this term (widened v0.7.4 step 2, same reasoning
+  as the score-entry lock above: a new exam sneaking in while a subject is
+  mid-approval would change what the admin is about to approve without
+  them seeing it) — the exam set is frozen from that point; unpublish (if
+  published) or wait for the pending decision, then create. **This is now
+  where exams and evaluations genuinely diverge**: evaluations dropped
+  their equivalent "sibling already published blocks create" gate
+  entirely in v0.7.4 step 1 (adding a new evaluation alongside an
+  already-published one is the normal case there); exams kept theirs,
+  unaffected by that change, and are now further widened by this step.
 - **`403`**/**`404`**: same `TEACHER` assignment / tenant / "no assignment
   at all" rules as the evaluation authoring routes.
 
@@ -1817,8 +1945,11 @@ Audited (`exam.create`, standard `@Audit()`).
 Body: `{ name? }` — required (`400` if omitted; the only field there is).
 
 - Freely editable while this subject's exam results are `DRAFT`.
-- **`403`** once ANY row is `PUBLISHED` for this subject/term: `PROPRIETOR`
-  only from that point — same data-dependent narrowing as evaluations.
+- **`403`** once ANY row is `PUBLISHED` **or** `PENDING_APPROVAL` for this
+  subject/term (widened v0.7.4 step 2): `PROPRIETOR` only from that point
+  — same data-dependent narrowing pattern the evaluation track uses (there
+  scoped to `PUBLISHED` only, since evaluations have no `PENDING_APPROVAL`
+  tier any more post-v0.7.4-step-1).
 - Same term-lock `409` as create.
 
 Audited (`exam.update`).
@@ -1829,10 +1960,11 @@ Audited (`exam.update`).
 at all, regardless of state). Soft-deletes (`deletedAt`) and recomputes
 the roster's `term_subject_exam_results` for this subject/term.
 
-- **`409`**: this subject's exam results are already `PUBLISHED` — no
-  force-delete-through-published path. This is why the recompute needs no
-  cascade to `term_exam_results`/`year_exam_results`: every affected row
-  is guaranteed `DRAFT` at delete-time (docs/DECISIONS.md).
+- **`409`**: this subject's exam results are already `PUBLISHED` **or**
+  `PENDING_APPROVAL` (widened v0.7.4 step 2) — no force-delete-through-
+  those-states path. This is why the recompute needs no cascade to
+  `term_exam_results`/`year_exam_results`: every affected row is
+  guaranteed `DRAFT` at delete-time (docs/DECISIONS.md).
 - **`409` `{ termLocked: true }`**: same shared term lock.
 
 **Response `200`**: `{ id }`.
@@ -1852,10 +1984,15 @@ field.
 
 **The published-only wall (the safety-critical part):** for `STUDENT`/
 `PARENT`, a subject is visible only if its `term_subject_exam_result` row
-is `PUBLISHED`. If it's `DRAFT` (or doesn't exist yet), the response is
+is `PUBLISHED`. If it's `DRAFT`, `PENDING_APPROVAL` (v0.7.4 step 2's new
+intermediate — SPEC_V0.7.4.md §3), or doesn't exist yet, the response is
 **indistinguishable from "nothing entered yet"** — `exams: []`, both
-averages `null`, `status: null` — never a hint that draft data exists.
-Staff (`TEACHER`/`SCHOOL_ADMIN`/`PROPRIETOR`) always sees the real state.
+averages `null`, `status: null` — never a hint that draft or pending data
+exists. This filter needed zero code changes for `PENDING_APPROVAL` to
+be covered — it already excluded anything short of `PUBLISHED` — proven
+directly by a dedicated e2e leak test (`exams-views.e2e-spec.ts`).
+Staff (`TEACHER`/`SCHOOL_ADMIN`/`PROPRIETOR`) always sees the real state,
+including a subject's real `PENDING_APPROVAL` status.
 
 ```json
 {

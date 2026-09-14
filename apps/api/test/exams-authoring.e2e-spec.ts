@@ -53,6 +53,42 @@ describe("Exam authoring (e2e) — SPEC_V0.7.md §3, step 3", () => {
     return exam.id;
   }
 
+  // v0.7.4 step 2 (SPEC_V0.7.4.md §3 Q5) — the roster-wide completeness
+  // gate means "published" fixtures for these publish-probe tests must
+  // score the WHOLE shared jss2AArmId roster now, not just one student
+  // (the old subject-scoped gate's carve-out this replaces).
+  async function scoreEntireRoster(subjectId: string, classArmId: string, termId: string, examId: string, score = 70) {
+    const response = await request(app.getHttpServer())
+      .put("/api/v1/exams/scores")
+      .set(auth(sunriseAdminToken))
+      .send({
+        classArmId,
+        subjectId,
+        examId,
+        termId,
+        scores: jss2ARoster.map((s) => ({ studentId: s.id, rawScore: score })),
+      });
+    if (response.status !== 200) throw new Error(`scoreEntireRoster failed: ${response.status} ${JSON.stringify(response.body)}`);
+    return response;
+  }
+
+  // Submits (TEACHER, mathTeacherId — assigned to every publish-probe
+  // subject below) then approves (SCHOOL_ADMIN) — the confirmed path to
+  // PUBLISHED under the new two-step workflow.
+  async function submitAndApproveExam(classArmId: string, subjectId: string, termId: string) {
+    const submitRes = await request(app.getHttpServer())
+      .post("/api/v1/exams/submit-for-approval")
+      .set(auth(sunriseMathTeacherToken))
+      .send({ classArmId, subjectId, termId });
+    if (submitRes.status !== 200) throw new Error(`submit failed: ${submitRes.status} ${JSON.stringify(submitRes.body)}`);
+    const approveRes = await request(app.getHttpServer())
+      .post("/api/v1/exams/approve")
+      .set(auth(sunriseAdminToken))
+      .send({ classArmId, subjectId, termId });
+    if (approveRes.status !== 200) throw new Error(`approve failed: ${approveRes.status} ${JSON.stringify(approveRes.body)}`);
+    return approveRes;
+  }
+
   interface ScratchBundle {
     sessionId: string;
     termId: string;
@@ -372,16 +408,8 @@ describe("Exam authoring (e2e) — SPEC_V0.7.md §3, step 3", () => {
           data: { schoolId: sunriseId, subjectId: publishSubject.id, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacherId },
         });
         const examId = await createExam(publishSubject.id, jss2AArmId, sunriseTermId, sunriseSessionId);
-        const [student] = jss2ARoster;
-        await request(app.getHttpServer())
-          .put("/api/v1/exams/scores")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, examId, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 80 }] });
-        const publishRes = await request(app.getHttpServer())
-          .post("/api/v1/exams/publish")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, termId: sunriseTermId });
-        expect(publishRes.status).toBe(200);
+        await scoreEntireRoster(publishSubject.id, jss2AArmId, sunriseTermId, examId, 80);
+        await submitAndApproveExam(jss2AArmId, publishSubject.id, sunriseTermId);
 
         const response = await request(app.getHttpServer())
           .post("/api/v1/exams")
@@ -461,16 +489,8 @@ describe("Exam authoring (e2e) — SPEC_V0.7.md §3, step 3", () => {
           data: { schoolId: sunriseId, subjectId: publishSubject.id, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacherId },
         });
         const examId = await createExam(publishSubject.id, jss2AArmId, sunriseTermId, sunriseSessionId);
-        const [student] = jss2ARoster;
-        await request(app.getHttpServer())
-          .put("/api/v1/exams/scores")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, examId, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 60 }] });
-        const publishRes = await request(app.getHttpServer())
-          .post("/api/v1/exams/publish")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, termId: sunriseTermId });
-        expect(publishRes.status).toBe(200);
+        await scoreEntireRoster(publishSubject.id, jss2AArmId, sunriseTermId, examId, 60);
+        await submitAndApproveExam(jss2AArmId, publishSubject.id, sunriseTermId);
 
         const teacherRes = await request(app.getHttpServer())
           .patch(`/api/v1/exams/${examId}`)
@@ -587,16 +607,8 @@ describe("Exam authoring (e2e) — SPEC_V0.7.md §3, step 3", () => {
           data: { schoolId: sunriseId, subjectId: publishSubject.id, classArmId: jss2AArmId, sessionId: sunriseSessionId, teacherUserId: mathTeacherId },
         });
         const examId = await createExam(publishSubject.id, jss2AArmId, sunriseTermId, sunriseSessionId);
-        const [student] = jss2ARoster;
-        await request(app.getHttpServer())
-          .put("/api/v1/exams/scores")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, examId, termId: sunriseTermId, scores: [{ studentId: student.id, rawScore: 70 }] });
-        const publishRes = await request(app.getHttpServer())
-          .post("/api/v1/exams/publish")
-          .set(auth(sunriseAdminToken))
-          .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, termId: sunriseTermId });
-        expect(publishRes.status).toBe(200);
+        await scoreEntireRoster(publishSubject.id, jss2AArmId, sunriseTermId, examId, 70);
+        await submitAndApproveExam(jss2AArmId, publishSubject.id, sunriseTermId);
 
         const response = await request(app.getHttpServer())
           .delete(`/api/v1/exams/${examId}`)

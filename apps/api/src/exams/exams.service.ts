@@ -7,6 +7,7 @@ import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import {
   computeAssessmentClassStats,
   computeEvaluationAverage,
+  computeOverallAverage,
   computeStandardCompetitionRanking,
   resolveGradeBand,
   type DecidableScoreInput,
@@ -17,19 +18,24 @@ import {
   getRoster,
   resolveSliceLockState,
   resolveTenantScopeSubjectOnly,
+  resolveTenantScopeArmTermOnly,
   assertTeacherAssignment,
 } from "../grades/grade-shared.util";
 import { resolveTeacherAccess } from "../grades/teacher-access.util";
+import { getAssignedSubjectMap } from "../grades/subject-assignment.util";
 import { GetExamScoresQueryDto } from "./dto/get-exam-scores-query.dto";
 import { SaveExamScoresDto } from "./dto/save-exam-scores.dto";
 import { RecomputeExamGradesDto } from "./dto/recompute-exam-grades.dto";
-import { PublishExamGradesDto } from "./dto/publish-exam-grades.dto";
+import { SubmitExamForApprovalDto } from "./dto/submit-exam-for-approval.dto";
+import { ApproveExamDto } from "./dto/approve-exam.dto";
+import { RejectExamDto } from "./dto/reject-exam.dto";
 import { UnpublishExamGradesDto } from "./dto/unpublish-exam-grades.dto";
 import { GetExamsQueryDto } from "./dto/get-exams-query.dto";
 import { CreateExamDto } from "./dto/create-exam.dto";
 import { UpdateExamDto } from "./dto/update-exam.dto";
 import { GetStudentSubjectExamsQueryDto } from "./dto/get-student-subject-exams-query.dto";
 import { GetYearExamsQueryDto } from "./dto/get-year-exams-query.dto";
+import { GetExamsReviewQueryDto } from "./dto/get-exams-review-query.dto";
 
 export interface ExamScoresRow {
   studentId: string;
@@ -88,13 +94,41 @@ interface RecomputedRow {
   status: ResultStatus;
 }
 
-export interface PublishExamResponse {
+// v0.7.4 step 2 (SPEC_V0.7.4.md §3) — replaces PublishExamResponse.
+// Submitting never cascades to TermExamResult/YearExamResult: those two
+// only ever count PUBLISHED rows (recomputeExamOverallForClassArm's
+// `allPublished` check, unchanged), and PENDING_APPROVAL isn't PUBLISHED —
+// so there is nothing for a cascade to do here. submittedCount is always
+// the whole roster's size, same reasoning as the evaluation track's
+// publishedCount (SPEC_V0.7.4.md §2): the roster-wide completeness gate
+// means every student is decided by the time this succeeds.
+export interface SubmitExamForApprovalResponse {
   classArmId: string;
   subjectId: string;
   termId: string;
-  publishedCount: number;
+  submittedCount: number;
+}
+
+// Replaces PublishExamResponse's old direct-publish shape — this is now
+// where the publish cascade actually lives (moved from the old publish()).
+export interface ApproveExamResponse {
+  classArmId: string;
+  subjectId: string;
+  termId: string;
+  approvedCount: number;
   termExamPublishedCount: number;
   yearExamRecomputedCount: number;
+}
+
+// PENDING_APPROVAL -> DRAFT, bare state revert (no reason field — v0.7.4
+// step 2 confirmed decision). No cascade: nothing pending was ever counted
+// in TermExamResult/YearExamResult (both gate on PUBLISHED only), so
+// there's nothing upstream to unwind.
+export interface RejectExamResponse {
+  classArmId: string;
+  subjectId: string;
+  termId: string;
+  rejectedCount: number;
 }
 
 export interface UnpublishExamResponse {
@@ -104,6 +138,29 @@ export interface UnpublishExamResponse {
   unpublishedCount: number;
   termExamRevertedCount: number;
   yearExamRecomputedCount: number;
+}
+
+// v0.7.4 step 2 (SPEC_V0.7.4.md §3) — the admin pending-approvals surface,
+// mirroring GradesReviewSubject/GradesReviewResponse exactly (grades.service.ts),
+// source table swapped to term_subject_exam_result. Unlike the grades side
+// (where pendingApprovalCount is permanently 0 post-v0.7.4 — that tier was
+// retired there), this is exactly where PENDING_APPROVAL lives now.
+export interface ExamReviewSubject {
+  subjectId: string;
+  subjectName: string;
+  needsTeacherAssignment: boolean;
+  rosterSize: number;
+  draftCount: number;
+  pendingApprovalCount: number;
+  publishedCount: number;
+  averageScore: number;
+  averageGrade: string | null;
+}
+
+export interface ExamReviewResponse {
+  classArmId: string;
+  termId: string;
+  subjects: ExamReviewSubject[];
 }
 
 // v0.7 step 3 (SPEC_V0.7.md §3) — the authoring surface, mirroring
@@ -325,12 +382,29 @@ export class ExamsService {
             sessionId: term.sessionId,
           },
         });
-        const lockedStudentIds = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).map((r) => r.studentId);
-        const isPublishedBypassAllowed = user.role === UserRole.SCHOOL_ADMIN || user.role === UserRole.PROPRIETOR;
-        if (lockedStudentIds.length > 0 && !isPublishedBypassAllowed) {
-          throw this.publishedLockException("save scores", lockedStudentIds);
+        // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — PENDING_APPROVAL locks writes
+        // the same way PUBLISHED does: a subject sitting in the admin's
+        // approval queue must not be editable out from under them (an
+        // unblocked edit would silently un-submit it via
+        // recomputeExamStudents' status derivation below, with no signal
+        // to anyone, and would invalidate approve()'s assumption that
+        // nothing changed since the completeness gate ran at submit time).
+        // Same bypass roles as the PUBLISHED lock.
+        const lockedResults = existingResults.filter(
+          (r) => r.status === ResultStatus.PUBLISHED || r.status === ResultStatus.PENDING_APPROVAL,
+        );
+        const lockedStudentIds = lockedResults.map((r) => r.studentId);
+        const isLockBypassAllowed = user.role === UserRole.SCHOOL_ADMIN || user.role === UserRole.PROPRIETOR;
+        if (lockedStudentIds.length > 0 && !isLockBypassAllowed) {
+          throw this.resultLockException("save scores", lockedStudentIds);
         }
-        const bypassedPublishedStudentIds = new Set<string>(isPublishedBypassAllowed ? lockedStudentIds : []);
+        // Preserve each bypassed student's CURRENT locked status (PUBLISHED
+        // or PENDING_APPROVAL) rather than forcing everyone toward
+        // PUBLISHED — a bypass-edit during PENDING_APPROVAL stays
+        // PENDING_APPROVAL, it doesn't jump the approval queue.
+        const preserveStatusByStudentId = new Map<string, ResultStatus>(
+          isLockBypassAllowed ? lockedResults.map((r) => [r.studentId, r.status]) : [],
+        );
 
         await Promise.all(
           dto.scores.map((item) => {
@@ -355,7 +429,7 @@ export class ExamsService {
           tx,
           { schoolId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId, classArmId: dto.classArmId },
           affectedStudentIds,
-          bypassedPublishedStudentIds,
+          preserveStatusByStudentId,
         );
 
         await tx.auditLog.create({
@@ -370,7 +444,10 @@ export class ExamsService {
               examId: dto.examId,
               termId: dto.termId,
               scoreCount: dto.scores.length,
-              publishedBypassStudentIds: [...bypassedPublishedStudentIds],
+              // Renamed from publishedBypassStudentIds (v0.7.4 step 2) —
+              // the bypass now covers PENDING_APPROVAL too, not just
+              // PUBLISHED, so "published" alone would be a misleading name.
+              lockBypassStudentIds: [...preserveStatusByStudentId.keys()],
             },
           },
         });
@@ -464,19 +541,26 @@ export class ExamsService {
 
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
 
-        const publishedCount = await tx.termSubjectExamResult.count({
+        // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — widened from PUBLISHED-only:
+        // a new exam sneaking in while the subject is PENDING_APPROVAL
+        // would change what the admin is about to approve without them
+        // ever seeing the updated picture (and that new exam could never
+        // be scored afterward either, since PUBLISHED locks writes) —
+        // same reasoning as the score-entry lock above, applied to
+        // authoring.
+        const lockedCount = await tx.termSubjectExamResult.count({
           where: {
             schoolId,
             classArmId: dto.classArmId,
             subjectId: dto.subjectId,
             termId: dto.termId,
             sessionId: term.sessionId,
-            status: ResultStatus.PUBLISHED,
+            status: { in: [ResultStatus.PUBLISHED, ResultStatus.PENDING_APPROVAL] },
           },
         });
-        if (publishedCount > 0) {
+        if (lockedCount > 0) {
           throw new ConflictException(
-            "Cannot create: this subject's exam results are already published for this term — unpublish first to add a new exam.",
+            "Cannot create: this subject's exam results are already published or pending approval for this term — resolve that first (unpublish, or wait for the pending decision) before adding a new exam.",
           );
         }
 
@@ -536,18 +620,22 @@ export class ExamsService {
 
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
 
-      const publishedCount = await tx.termSubjectExamResult.count({
+      // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — widened from PUBLISHED-only,
+      // same reasoning as createExam's gate above.
+      const lockedCount = await tx.termSubjectExamResult.count({
         where: {
           schoolId,
           classArmId: exam.classArmId,
           subjectId: exam.subjectId,
           termId: exam.termId,
           sessionId: exam.sessionId,
-          status: ResultStatus.PUBLISHED,
+          status: { in: [ResultStatus.PUBLISHED, ResultStatus.PENDING_APPROVAL] },
         },
       });
-      if (publishedCount > 0 && user.role !== UserRole.PROPRIETOR) {
-        throw new ForbiddenException("Only the school owner (PROPRIETOR) may edit an exam once this subject's results are published.");
+      if (lockedCount > 0 && user.role !== UserRole.PROPRIETOR) {
+        throw new ForbiddenException(
+          "Only the school owner (PROPRIETOR) may edit an exam once this subject's results are published or pending approval.",
+        );
       }
 
       const updated = await tx.exam.update({
@@ -602,18 +690,22 @@ export class ExamsService {
 
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
 
-        const publishedCount = await tx.termSubjectExamResult.count({
+        // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — widened from PUBLISHED-only,
+        // same reasoning as createExam's gate above.
+        const lockedCount = await tx.termSubjectExamResult.count({
           where: {
             schoolId,
             classArmId: exam.classArmId,
             subjectId: exam.subjectId,
             termId: exam.termId,
             sessionId: exam.sessionId,
-            status: ResultStatus.PUBLISHED,
+            status: { in: [ResultStatus.PUBLISHED, ResultStatus.PENDING_APPROVAL] },
           },
         });
-        if (publishedCount > 0) {
-          throw new ConflictException("Cannot delete: this subject's exam results are already published for this term — unpublish first.");
+        if (lockedCount > 0) {
+          throw new ConflictException(
+            "Cannot delete: this subject's exam results are already published or pending approval for this term — resolve that first.",
+          );
         }
 
         await tx.exam.update({ where: { id: examId }, data: { deletedAt: new Date() } });
@@ -667,9 +759,17 @@ export class ExamsService {
         const existingResults = await tx.termSubjectExamResult.findMany({
           where: { studentId: { in: studentIds }, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId },
         });
-        const lockedStudentIds = existingResults.filter((r) => r.status === ResultStatus.PUBLISHED).map((r) => r.studentId);
+        // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — widened from PUBLISHED-only:
+        // a manual recompute must not silently un-submit a PENDING_APPROVAL
+        // subject either (recomputeExamStudents defaults to DRAFT unless
+        // told to preserve, and recompute() never passes a preserve map —
+        // it's a full categorical block here, no bypass, matching its
+        // pre-existing PUBLISHED-only behavior just widened).
+        const lockedStudentIds = existingResults
+          .filter((r) => r.status === ResultStatus.PUBLISHED || r.status === ResultStatus.PENDING_APPROVAL)
+          .map((r) => r.studentId);
         if (lockedStudentIds.length > 0) {
-          throw this.publishedLockException("recompute", lockedStudentIds);
+          throw this.resultLockException("recompute", lockedStudentIds);
         }
 
         const recomputed = await this.recomputeExamStudents(
@@ -684,15 +784,101 @@ export class ExamsService {
     );
   }
 
-  // Transitions a subject's DRAFT exam results to PUBLISHED, then cascades
-  // upward: TermExamResult (per-term cross-subject, ranking (b)) and
-  // YearExamResult (whole-year, ranking (c)) — confirmed: the year cascade
-  // has no separate manual publish action of its own, it's recomputed
-  // progressively as terms publish. No subjectPosition/re-ranking at THIS
-  // level (schema has none for term_subject_exam_results — Q6 ranks only
-  // at (b)/(c)). Same completeness gate/rejection shape as
-  // GradesService.publish (confirmed: same publish model as v0.4).
-  async publish(dto: PublishExamGradesDto, user: AuthenticatedUser): Promise<PublishExamResponse> {
+  // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — replaces publish(). Transitions a
+  // subject's DRAFT exam results to PENDING_APPROVAL only — PUBLISHED is
+  // now exclusively reached via approve() below, never directly from
+  // here. TEACHER-only (enforced at the controller with a route-level
+  // @Roles(TEACHER) override, no admin/proprietor in that list at all —
+  // confirmed: admin's route to PUBLISHED is exclusively approve(), never
+  // submit, so there is no self-submit-self-approve shape even
+  // temporarily). No cascade: TermExamResult/YearExamResult only ever
+  // count PUBLISHED rows (recomputeExamOverallForClassArm's `allPublished`
+  // check, untouched) and PENDING_APPROVAL isn't PUBLISHED, so there is
+  // nothing for a cascade to do until approve().
+  //
+  // Completeness gate (SPEC_V0.7.4.md §3 Q5) — ROSTER-WIDE, reusing the
+  // evaluation track's Step 1 shape: every CURRENTLY enrolled student must
+  // be decided on every active exam for this subject/term, not just
+  // students who already happen to have a term_subject_exam_result row
+  // (the old carve-out this replaces — see findIncompleteExamEntries).
+  async submitForApproval(dto: SubmitExamForApprovalDto, user: AuthenticatedUser): Promise<SubmitExamForApprovalResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);
+    await assertTeacherAssignment(this.prisma, schoolId, user, dto.subjectId, dto.classArmId, term.sessionId);
+
+    // Fetched before the transaction — same convention as
+    // GradesService.publishEvaluation (roster doesn't change within one
+    // request's lifetime).
+    const students = await getRoster(this.prisma, schoolId, dto.classArmId, term.sessionId);
+    const studentIds = students.map((s) => s.id);
+
+    const subjectLockKey = examSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjectLockKey}))`;
+
+        const existing = await tx.termSubjectExamResult.findMany({
+          where: { schoolId, classArmId: dto.classArmId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId },
+        });
+        const toSubmit = existing.filter((r) => r.status === ResultStatus.DRAFT);
+
+        if (existing.length === 0) {
+          throw new ConflictException("Nothing to submit for this subject: no exam scores have been entered yet.");
+        }
+        if (toSubmit.length === 0) {
+          throw new ConflictException("This subject's exam results are already submitted for approval or published.");
+        }
+
+        const incomplete = await this.findIncompleteExamEntries(
+          tx,
+          { schoolId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId },
+          studentIds,
+        );
+        if (incomplete.length > 0) {
+          const incompleteStudentIds = [...new Set(incomplete.map((e) => e.studentId))];
+          throw new ConflictException({
+            message: `Cannot submit: ${incompleteStudentIds.length} student(s) don't have a score or absence recorded for every exam yet.`,
+            incompleteStudentIds,
+          });
+        }
+
+        await Promise.all(
+          toSubmit.map((row) => tx.termSubjectExamResult.update({ where: { id: row.id }, data: { status: ResultStatus.PENDING_APPROVAL } })),
+        );
+
+        await tx.auditLog.create({
+          data: {
+            schoolId,
+            actorUserId: user.userId,
+            action: "exams.submitForApproval",
+            entityType: "exams",
+            entityId: dto.classArmId,
+            metadata: { subjectId: dto.subjectId, termId: dto.termId, submittedCount: toSubmit.length },
+          },
+        });
+
+        return {
+          classArmId: dto.classArmId,
+          subjectId: dto.subjectId,
+          termId: dto.termId,
+          submittedCount: toSubmit.length,
+        };
+      },
+      { timeout: 20000 },
+    );
+  }
+
+  // v0.7.4 step 2 — the only path to PUBLISHED now. Inherits publish()'s
+  // old cascade (TermExamResult/YearExamResult) unchanged, just moved from
+  // the old direct-publish call-site to here. No completeness re-check:
+  // the roster-wide gate already ran at submit time, and the score-entry
+  // lock (saveExamScores) now blocks further writes for the whole time
+  // this subject sits PENDING_APPROVAL (SCHOOL_ADMIN/PROPRIETOR bypass
+  // excepted, same as PUBLISHED) — so nothing could have changed
+  // underneath since submit. SCHOOL_ADMIN + PROPRIETOR (SPEC_V0.7.4.md §3,
+  // Item 4's "Admin/proprietor KEEP: approve exams", both roles).
+  async approve(dto: ApproveExamDto, user: AuthenticatedUser): Promise<ApproveExamResponse> {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);
 
@@ -707,35 +893,15 @@ export class ExamsService {
         const existing = await tx.termSubjectExamResult.findMany({
           where: { schoolId, classArmId: dto.classArmId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId },
         });
-        const toPublish = existing.filter((r) => r.status === ResultStatus.DRAFT);
-        const alreadyPublished = existing.filter((r) => r.status === ResultStatus.PUBLISHED);
-
-        if (toPublish.length === 0 && alreadyPublished.length === 0) {
-          throw new ConflictException("Nothing to publish for this subject: no exam scores have been entered yet.");
-        }
-
-        if (toPublish.length > 0) {
-          const incompleteEntries = await this.findIncompleteExamEntries(
-            tx,
-            { schoolId, termId: dto.termId, sessionId: term.sessionId },
-            toPublish.map((row) => ({ subjectId: dto.subjectId, studentId: row.studentId })),
-          );
-          if (incompleteEntries.length > 0) {
-            const incompleteStudentCount = new Set(incompleteEntries.map((e) => e.studentId)).size;
-            throw new ConflictException({
-              message: `Cannot publish: ${incompleteStudentCount} student(s) have at least one exam that's neither scored nor marked absent.`,
-              incompleteEntries: incompleteEntries.map(({ studentId, examId }) => ({ studentId, examId })),
-            });
-          }
+        const toApprove = existing.filter((r) => r.status === ResultStatus.PENDING_APPROVAL);
+        if (toApprove.length === 0) {
+          throw new ConflictException("Nothing to approve for this subject: no exam results are pending approval.");
         }
 
         const now = new Date();
         await Promise.all(
-          toPublish.map((row) =>
-            tx.termSubjectExamResult.update({
-              where: { id: row.id },
-              data: { status: ResultStatus.PUBLISHED, publishedAt: now },
-            }),
+          toApprove.map((row) =>
+            tx.termSubjectExamResult.update({ where: { id: row.id }, data: { status: ResultStatus.PUBLISHED, publishedAt: now } }),
           ),
         );
 
@@ -743,15 +909,15 @@ export class ExamsService {
           data: {
             schoolId,
             actorUserId: user.userId,
-            action: "exams.publish",
+            action: "exams.approve",
             entityType: "exams",
             entityId: dto.classArmId,
-            metadata: { subjectId: dto.subjectId, termId: dto.termId, publishedCount: toPublish.length },
+            metadata: { subjectId: dto.subjectId, termId: dto.termId, approvedCount: toApprove.length },
           },
         });
 
         // Broader lock for the cross-subject term cascade — same reasoning
-        // as GradesService.publish's classArmLockKey acquisition.
+        // as the old publish()'s classArmLockKey acquisition.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${classArmLockKey}))`;
         const termCascade = await this.recomputeExamOverallForClassArm(tx, {
           schoolId,
@@ -770,9 +936,57 @@ export class ExamsService {
           classArmId: dto.classArmId,
           subjectId: dto.subjectId,
           termId: dto.termId,
-          publishedCount: toPublish.length,
+          approvedCount: toApprove.length,
           termExamPublishedCount: termCascade.publishedCount,
           yearExamRecomputedCount: yearCascade.recomputedCount,
+        };
+      },
+      { timeout: 20000 },
+    );
+  }
+
+  // v0.7.4 step 2 — bare state revert (PENDING_APPROVAL -> DRAFT), no
+  // reason field (confirmed: scope creep beyond the frozen five items).
+  // No cascade — nothing pending was ever counted in TermExamResult/
+  // YearExamResult (both gate on PUBLISHED only), so there's nothing
+  // upstream to unwind. Same role list as approve (SCHOOL_ADMIN +
+  // PROPRIETOR).
+  async reject(dto: RejectExamDto, user: AuthenticatedUser): Promise<RejectExamResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);
+
+    const subjectLockKey = examSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
+
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjectLockKey}))`;
+
+        const existing = await tx.termSubjectExamResult.findMany({
+          where: { schoolId, classArmId: dto.classArmId, subjectId: dto.subjectId, termId: dto.termId, sessionId: term.sessionId },
+        });
+        const toReject = existing.filter((r) => r.status === ResultStatus.PENDING_APPROVAL);
+        if (toReject.length === 0) {
+          throw new ConflictException("Nothing to reject for this subject: no exam results are pending approval.");
+        }
+
+        await Promise.all(toReject.map((row) => tx.termSubjectExamResult.update({ where: { id: row.id }, data: { status: ResultStatus.DRAFT } })));
+
+        await tx.auditLog.create({
+          data: {
+            schoolId,
+            actorUserId: user.userId,
+            action: "exams.reject",
+            entityType: "exams",
+            entityId: dto.classArmId,
+            metadata: { subjectId: dto.subjectId, termId: dto.termId, rejectedCount: toReject.length },
+          },
+        });
+
+        return {
+          classArmId: dto.classArmId,
+          subjectId: dto.subjectId,
+          termId: dto.termId,
+          rejectedCount: toReject.length,
         };
       },
       { timeout: 20000 },
@@ -848,6 +1062,71 @@ export class ExamsService {
       },
       { timeout: 20000 },
     );
+  }
+
+  // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — the admin pending-approvals
+  // surface, mirroring GradesService.getReview() exactly (grades.service.ts),
+  // source table swapped to term_subject_exam_result. SCHOOL_ADMIN/
+  // PROPRIETOR only (enforced at the controller — no TEACHER path, same as
+  // the grades side). Unlike GradesService.getReview() post-v0.7.4 (where
+  // pendingApprovalCount is permanently 0 — that tier was retired on the
+  // grades side), this is exactly where PENDING_APPROVAL lives now.
+  async getReview(query: GetExamsReviewQueryDto): Promise<ExamReviewResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const { term } = await resolveTenantScopeArmTermOnly(this.prisma, schoolId, query.classArmId, query.termId);
+
+    const [students, subjectResults, boundaries, assignedSubjects] = await Promise.all([
+      getRoster(this.prisma, schoolId, query.classArmId, term.sessionId),
+      this.prisma.termSubjectExamResult.findMany({
+        where: { schoolId, classArmId: query.classArmId, termId: query.termId, sessionId: term.sessionId },
+        include: { subject: { select: { id: true, name: true } } },
+      }),
+      this.prisma.gradeBoundary.findMany({ where: { schoolId }, orderBy: { sortOrder: "asc" } }),
+      getAssignedSubjectMap(this.prisma, { schoolId, classArmId: query.classArmId, sessionId: term.sessionId }),
+    ]);
+    const boundaryInputs: GradeBoundaryInput[] = boundaries.map((b) => ({ grade: b.grade, minScore: b.minScore, maxScore: b.maxScore }));
+    const rosterSize = students.length;
+
+    const bySubject = new Map<string, { name: string; rows: typeof subjectResults }>();
+    for (const row of subjectResults) {
+      const bucket = bySubject.get(row.subjectId) ?? { name: row.subject.name, rows: [] };
+      bucket.rows.push(row);
+      bySubject.set(row.subjectId, bucket);
+    }
+
+    const bySubjectEntries = [...bySubject.entries()];
+
+    let subjects: ExamReviewSubject[] = bySubjectEntries.map(([subjectId, { name, rows }]) => {
+      const draftCount = rows.filter((r) => r.status === ResultStatus.DRAFT).length;
+      const pendingApprovalCount = rows.filter((r) => r.status === ResultStatus.PENDING_APPROVAL).length;
+      const publishedCount = rows.filter((r) => r.status === ResultStatus.PUBLISHED).length;
+      const averageScore = computeOverallAverage(rows.map((r) => Number(r.totalScore)));
+      return {
+        subjectId,
+        subjectName: name,
+        needsTeacherAssignment: !assignedSubjects.has(subjectId),
+        rosterSize,
+        draftCount,
+        pendingApprovalCount,
+        publishedCount,
+        averageScore,
+        averageGrade: resolveGradeBand(averageScore, boundaryInputs),
+      };
+    });
+
+    if (query.status) {
+      subjects = subjects.filter((s) =>
+        query.status === ResultStatus.DRAFT
+          ? s.draftCount > 0
+          : query.status === ResultStatus.PENDING_APPROVAL
+            ? s.pendingApprovalCount > 0
+            : s.publishedCount > 0,
+      );
+    }
+
+    subjects.sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+
+    return { classArmId: query.classArmId, termId: query.termId, subjects };
   }
 
   // v0.7 step 3 (SPEC_V0.7.md §4): the per-term "Show exams" button —
@@ -1248,11 +1527,18 @@ export class ExamsService {
   // subjectId, termId) — mirrors GradesService.recomputeStudents exactly,
   // minus overrideGrade/finalGrade/subjectPosition (no such fields on this
   // table — see model's own comment).
+  // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — generalized from
+  // preservePublishedStudentIds: Set<string> to a status map, since a
+  // bypassed write can now happen during EITHER lock tier (PUBLISHED or
+  // PENDING_APPROVAL, saveExamScores' own widened gate above) and must
+  // preserve whichever one currently applies, not force everyone toward
+  // PUBLISHED. A student absent from the map (the normal, non-bypass
+  // path) still resolves to DRAFT exactly as before.
   private async recomputeExamStudents(
     tx: Prisma.TransactionClient,
     ctx: RecomputeContext,
     studentIds: string[],
-    preservePublishedStudentIds?: Set<string>,
+    preserveStatusByStudentId?: Map<string, ResultStatus>,
   ): Promise<RecomputedRow[]> {
     const [exams, boundaries] = await Promise.all([
       tx.exam.findMany({
@@ -1285,8 +1571,8 @@ export class ExamsService {
         isAbsent: s.isAbsent,
       }));
       const totalScore = computeEvaluationAverage(scoreInputs);
-      const preservePublished = preservePublishedStudentIds?.has(studentId) ?? false;
-      const status = preservePublished ? ResultStatus.PUBLISHED : ResultStatus.DRAFT;
+      const preservedStatus = preserveStatusByStudentId?.get(studentId);
+      const status = preservedStatus ?? ResultStatus.DRAFT;
       const autoGrade = resolveGradeBand(totalScore, boundaryInputs);
 
       const saved = await tx.termSubjectExamResult.upsert({
@@ -1303,7 +1589,10 @@ export class ExamsService {
           autoGrade,
           status,
           classArmId: ctx.classArmId,
-          publishedAt: preservePublished ? undefined : null,
+          // undefined = leave the existing publishedAt untouched — correct
+          // whether the preserved status is PUBLISHED (a real timestamp
+          // already there) or PENDING_APPROVAL (already null).
+          publishedAt: preservedStatus ? undefined : null,
         },
         create: {
           schoolId: ctx.schoolId,
@@ -1468,53 +1757,52 @@ export class ExamsService {
     return { recomputedCount: eligibleStudentIds.length };
   }
 
-  // Batched completeness check, mirrors GradesService.findIncompleteEntries
-  // exactly — "blank" = no exam_scores row, or a row with rawScore IS NULL
-  // AND isAbsent = false; absent is NOT blank.
+  // v0.7.4 step 2 (SPEC_V0.7.4.md §3 Q5) — rewritten ROSTER-WIDE, reusing
+  // GradesService.findIncompleteStudentsForEvaluation's shape (Step 1):
+  // `studentIds` is now the FULL currently-enrolled roster (from
+  // getRoster(), passed in by submitForApproval), not a candidate list
+  // derived from students who already happen to have a
+  // term_subject_exam_result row — that was the old carve-out this
+  // replaces. Single-subject now (submit always targets exactly one
+  // subject; the old multi-subject candidate shape was never used by more
+  // than one call site). "Blank" = no exam_scores row, or a row with
+  // rawScore IS NULL AND isAbsent = false; absent is NOT blank.
   private async findIncompleteExamEntries(
     tx: Prisma.TransactionClient,
-    ctx: { schoolId: string; termId: string; sessionId: string },
-    candidates: Array<{ subjectId: string; studentId: string }>,
-  ): Promise<Array<{ subjectId: string; studentId: string; examId: string }>> {
-    if (candidates.length === 0) return [];
-
-    const subjectIds = [...new Set(candidates.map((c) => c.subjectId))];
-    const studentIds = [...new Set(candidates.map((c) => c.studentId))];
+    ctx: { schoolId: string; subjectId: string; termId: string; sessionId: string },
+    studentIds: string[],
+  ): Promise<Array<{ studentId: string; examId: string }>> {
+    if (studentIds.length === 0) return [];
 
     const exams = await tx.exam.findMany({
-      where: { schoolId: ctx.schoolId, termId: ctx.termId, sessionId: ctx.sessionId, subjectId: { in: subjectIds }, deletedAt: null },
-      select: { id: true, subjectId: true },
+      where: { schoolId: ctx.schoolId, termId: ctx.termId, sessionId: ctx.sessionId, subjectId: ctx.subjectId, deletedAt: null },
+      select: { id: true },
     });
-    const examsBySubject = new Map<string, string[]>();
-    for (const e of exams) {
-      const arr = examsBySubject.get(e.subjectId) ?? [];
-      arr.push(e.id);
-      examsBySubject.set(e.subjectId, arr);
-    }
-    const allExamIds = exams.map((e) => e.id);
+    const examIds = exams.map((e) => e.id);
+    if (examIds.length === 0) return [];
 
-    const scores = allExamIds.length
-      ? await tx.examScore.findMany({ where: { examId: { in: allExamIds }, studentId: { in: studentIds } } })
-      : [];
+    const scores = await tx.examScore.findMany({ where: { examId: { in: examIds }, studentId: { in: studentIds } } });
     const decided = new Set(
       scores.filter((s) => (s.rawScore !== null && s.rawScore !== undefined) || s.isAbsent).map((s) => `${s.examId}:${s.studentId}`),
     );
 
-    const incomplete: Array<{ subjectId: string; studentId: string; examId: string }> = [];
-    for (const { subjectId, studentId } of candidates) {
-      const subjectExamIds = examsBySubject.get(subjectId) ?? [];
-      for (const examId of subjectExamIds) {
+    const incomplete: Array<{ studentId: string; examId: string }> = [];
+    for (const studentId of studentIds) {
+      for (const examId of examIds) {
         if (!decided.has(`${examId}:${studentId}`)) {
-          incomplete.push({ subjectId, studentId, examId });
+          incomplete.push({ studentId, examId });
         }
       }
     }
     return incomplete;
   }
 
-  private publishedLockException(action: string, lockedStudentIds: string[]): ConflictException {
+  // Renamed from publishedLockException (v0.7.4 step 2) — now covers
+  // PENDING_APPROVAL too, not just PUBLISHED, so "published" alone would
+  // be a misleading name.
+  private resultLockException(action: string, lockedStudentIds: string[]): ConflictException {
     return new ConflictException({
-      message: `Cannot ${action}: this subject's exam result is already PUBLISHED for ${lockedStudentIds.length} student(s) — unpublish first.`,
+      message: `Cannot ${action}: ${lockedStudentIds.length} student(s) already have published or pending-approval exam results for this subject — unpublish (if published) or wait for the pending approval decision first.`,
       lockedStudentIds,
     });
   }

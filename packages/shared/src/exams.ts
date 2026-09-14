@@ -97,21 +97,46 @@ export interface CreateExamInput extends ExamFormInput {
 
 export type UpdateExamInput = ExamFormInput;
 
-export interface PublishExamGradesInput {
+// v0.7.4 step 2 (SPEC_V0.7.4.md §3) — replaces PublishExamGradesInput.
+// Same shape; the target status this triggers changed from PUBLISHED to
+// PENDING_APPROVAL.
+export interface SubmitExamForApprovalInput {
   classArmId: string;
   subjectId: string;
   termId: string;
 }
 
-export type UnpublishExamGradesInput = PublishExamGradesInput;
+export type ApproveExamInput = SubmitExamForApprovalInput;
+export type RejectExamInput = SubmitExamForApprovalInput;
+export type UnpublishExamGradesInput = SubmitExamForApprovalInput;
 
-export interface PublishExamResponse {
+// Submitting never cascades to TermExamResult/YearExamResult — see
+// ExamsService.submitForApproval's own doc comment (backend source of
+// truth for this mirror).
+export interface SubmitExamForApprovalResponse {
   classArmId: string;
   subjectId: string;
   termId: string;
-  publishedCount: number;
+  submittedCount: number;
+}
+
+// Replaces PublishExamResponse — this is now where the publish cascade
+// actually lives (moved from the old direct-publish endpoint).
+export interface ApproveExamResponse {
+  classArmId: string;
+  subjectId: string;
+  termId: string;
+  approvedCount: number;
   termExamPublishedCount: number;
   yearExamRecomputedCount: number;
+}
+
+// PENDING_APPROVAL -> DRAFT, bare state revert, no cascade.
+export interface RejectExamResponse {
+  classArmId: string;
+  subjectId: string;
+  termId: string;
+  rejectedCount: number;
 }
 
 export interface UnpublishExamResponse {
@@ -121,6 +146,27 @@ export interface UnpublishExamResponse {
   unpublishedCount: number;
   termExamRevertedCount: number;
   yearExamRecomputedCount: number;
+}
+
+// v0.7.4 step 2 — the admin pending-approvals surface, mirroring
+// GradesReviewSubject/GradesReviewResponse (grades.ts) exactly, source
+// table swapped to term_subject_exam_result.
+export interface ExamReviewSubject {
+  subjectId: string;
+  subjectName: string;
+  needsTeacherAssignment: boolean;
+  rosterSize: number;
+  draftCount: number;
+  pendingApprovalCount: number;
+  publishedCount: number;
+  averageScore: number;
+  averageGrade: string | null;
+}
+
+export interface ExamReviewResponse {
+  classArmId: string;
+  termId: string;
+  subjects: ExamReviewSubject[];
 }
 
 // v0.7 step 3 (SPEC_V0.7.md §4) — the two exam read views. v0.7 step 5

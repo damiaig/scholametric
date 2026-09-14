@@ -333,8 +333,63 @@ describe("ClassGradesPage — Enter scores tab", () => {
     expect(
       screen.queryByRole("button", { name: /CA 1/ }),
     ).not.toBeInTheDocument();
-    // The publish/unpublish affordance is exams-only, admin-visible.
-    expect(screen.getByRole("button", { name: "Publish" })).toBeInTheDocument();
+    // v0.7.4 step 2 — a plain SCHOOL_ADMIN (not the assigned TEACHER, not
+    // PROPRIETOR) has no action on this track any more: "Submit for
+    // approval" is TEACHER-only (own assignment), "Unpublish" is
+    // PROPRIETOR-only. Admin's exam actions now live entirely on the
+    // separate Exam approvals page (Approve/Reject).
+    expect(
+      screen.queryByRole("button", { name: "Submit for approval" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Unpublish" }),
+    ).not.toBeInTheDocument();
+  });
+
+  // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — the assigned TEACHER (per the
+  // TEACHING fixture: sub1/arm1) sees "Submit for approval" where admin's
+  // "Publish" used to be; selecting the exam surfaces its subject-level
+  // status as a badge next to the picker (sourced from the exam-scores
+  // grid response, same query ScoreEntryGrid ends up using).
+  it("TEACHER (assigned) sees 'Submit for approval' on the Exams tab, and the exam's status badge appears once selected", async () => {
+    mockedApiRequest.mockImplementation(
+      async (path: string, opts?: { query?: Record<string, unknown> }) => {
+        if (path === "/api/v1/auth/me") return TEACHER_USER;
+        if (path === "/api/v1/me/teaching") return TEACHING;
+        if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL;
+        if (path === "/api/v1/grades/evaluations") return EVALUATIONS_OPEN;
+        if (path === "/api/v1/exams") return EXAMS_OPEN;
+        if (path === "/api/v1/sessions") return SESSIONS;
+        if (path === "/api/v1/terms") return TERMS;
+        if (path === "/api/v1/class-arms/arm1/results") return RESULTS;
+        if (path === "/api/v1/exams/scores") {
+          expect(opts?.query).toMatchObject({ classArmId: "arm1", subjectId: "sub1" });
+          return {
+            classArmId: "arm1",
+            subjectId: "sub1",
+            examId: "e1",
+            termId: "term1",
+            termClosed: false,
+            locked: false,
+            unlockReason: null,
+            rows: [{ studentId: "s1", firstName: "Ada", lastName: "Bello", admissionNumber: "SUN/0001", rawScore: null, isAbsent: false, status: "PENDING_APPROVAL" }],
+          };
+        }
+        throw new Error(`unexpected apiRequest call: ${path}`);
+      },
+    );
+    renderPage("/grades/arms/arm1?tab=enter&subjectId=sub1&track=evaluations");
+
+    await screen.findByRole("button", { name: /CA 1/ });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "Exams" }));
+    expect(
+      await screen.findByRole("button", { name: "Submit for approval" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Unpublish" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Term 1 Exam" }));
+    expect(await screen.findByText("Pending approval")).toBeInTheDocument();
   });
 
   // v0.7.1 step 4 (SPEC_V0.7.1.md §4.3, item 11) — the grid header now

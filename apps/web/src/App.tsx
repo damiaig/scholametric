@@ -15,6 +15,7 @@ import { ClassArmDetailPage } from "./features/classes/ClassArmDetailPage";
 import { ClassGradesPage } from "./features/grades/ClassGradesPage";
 import { GradesLandingPage } from "./features/grades/GradesLandingPage";
 import { ReviewPublishPage } from "./features/grades/ReviewPublishPage";
+import { ExamApprovalsPage } from "./features/grades/ExamApprovalsPage";
 import { ReportCardPage } from "./features/grades/ReportCardPage";
 import { MyGradesPage } from "./features/grades/MyGradesPage";
 import { PersonnelListPage } from "./features/personnel/PersonnelListPage";
@@ -78,6 +79,7 @@ export function AppRoutes() {
         <Route element={<RequireSchoolAdmin />}>
           <Route path="/personnel" element={<PersonnelListPage />} />
           <Route path="/grades/review" element={<ReviewPublishPage />} />
+          <Route path="/grades/exam-approvals" element={<ExamApprovalsPage />} />
           <Route
             path="/classes/arms/:id/credential-slips"
             element={<ClassArmCredentialSlipsPage />}

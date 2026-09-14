@@ -5453,3 +5453,108 @@ publish-button test blocks (`ResultsTab.test.tsx` deleted entirely,
 `ReviewPublishPage.test.tsx` rewritten for read-only) net out against
 new coverage added for `EnterScoresTab`'s evaluation-level publish UI
 and `EvaluationPicker`'s status badge.
+
+## 2026-09-13 — v0.7.4 step 2: exam approval workflow (Item 3)
+
+**Two-step workflow replaces direct admin publish.** `POST /exams/publish`
+is retired. `POST /exams/submit-for-approval` (TEACHER-only, own
+assignment) moves a subject's exam results `DRAFT → PENDING_APPROVAL`;
+`POST /exams/approve` (SCHOOL_ADMIN/PROPRIETOR) is now the *only* path to
+`PUBLISHED`; `POST /exams/reject` (same roles) reverts
+`PENDING_APPROVAL → DRAFT`, bare state revert, no reason field (confirmed
+scope decision — a reason field is creep beyond the frozen five items).
+`POST /exams/unpublish` (`PUBLISHED → DRAFT`, PROPRIETOR-only) is
+untouched. No schema migration needed — `TermSubjectExamResult.status`
+already had `ResultStatus` with `PENDING_APPROVAL` since v0.7, unused
+until now.
+
+**No self-submit-self-approve shape, even temporarily.** Confirmed before
+building: admin/proprietor cannot submit at all (categorical `@Roles`
+exclusion, not just a narrower assignment check), so there's no route by
+which the same actor could both submit and approve their own request.
+e2e-proven directly (`TEACHER cannot self-approve — 403`).
+
+**The completeness gate is now ROSTER-WIDE, reusing Step 1's shape exactly.**
+`findIncompleteExamEntries` rewritten from a candidate list derived from
+students who already had a `term_subject_exam_result` row (the old
+carve-out) to the full currently-enrolled roster (`getRoster()`) — every
+enrolled student must be decided on every active exam for the subject
+before it can submit, not just students previously touched. This is a
+genuine behavior tightening, not just a rename, and produced the same
+class of e2e ripple Step 1's roster-wide gate did: `exam-rankings.e2e-spec.ts`'s
+two ranking tests relied on a currently-enrolled-but-untouched student
+being silently exempt from a subject's publish — fixed by having that
+student genuinely leave the roster (withdrawal) or join late (delayed
+enrollment) instead, since the new gate no longer permits "enrolled but
+optional" to exist naturally.
+
+**Two lock gaps found and fixed during the build (flagged and confirmed
+with Dami before writing code, not discovered after the fact).** Neither
+was in the original Step 2 plan — both are direct consequences of
+`PENDING_APPROVAL` becoming a real reachable state for the first time:
+1. `saveExamScores`'s write-lock and `recompute()`'s block only checked
+   `status === PUBLISHED`. Left alone, a teacher's own further edits (or
+   an admin recompute) would silently drop a `PENDING_APPROVAL` row back
+   to `DRAFT` via `recomputeExamStudents`' status-derivation, un-submitting
+   it with no signal to anyone reviewing it. Fixed by widening both checks
+   to `PUBLISHED || PENDING_APPROVAL` (same bypass roles as before), and
+   generalizing `recomputeExamStudents`' `preservePublishedStudentIds:
+   Set<string>` param to `preserveStatusByStudentId: Map<string,
+   ResultStatus>` — a bypassed edit now preserves whichever locked status
+   already applied, not just PUBLISHED.
+2. `createExam`/`updateExam`/`deleteExam`'s existing `PUBLISHED`-only
+   gates had the identical blind spot for authoring actions (adding/
+   renaming/deleting an exam while its subject sits in the admin's queue).
+   Widened the same way, same reasoning.
+
+Confirmed load-bearing: `approve()` deliberately does NOT re-check
+completeness — it relies on the widened lock making that safe (nothing
+could have changed underneath since submit, because `PENDING_APPROVAL` is
+now genuinely frozen from further teacher edits).
+
+**`recomputeExamOverallForClassArm`/`recomputeYearExamResults`: byte-for-byte
+unchanged**, proven by diff — only their call-site moved (from the old
+direct-publish action to `approve()`). Both already treated "not
+PUBLISHED" uniformly regardless of whether that meant `DRAFT` or the
+newly-reachable `PENDING_APPROVAL`, so zero logic change was needed for
+either to keep working correctly — confirmed, not assumed.
+
+**Published-only read paths (`getReportCard`'s exam breakdown analog,
+`/me/exams`, `/me/year-exams`, and their children/parent equivalents):
+zero changes.** All already filtered self-view to `status: PUBLISHED`;
+`PENDING_APPROVAL` fails that filter for free, same as `DRAFT` always
+did. Proven directly by a new dedicated leak test in
+`exams-views.e2e-spec.ts` (structural absence + `JSON.stringify` scan),
+mirroring step 1's evaluation-track leak-fix test's own rigor.
+
+**Frontend.** `EnterScoresTab`'s `ExamsTrack`: the admin-only "Publish"
+button is gone, replaced by a TEACHER-only (own assignment) "Submit for
+approval" button; "Unpublish" (PROPRIETOR) is unchanged and stays inline;
+a new subject-level status badge (Draft/Pending approval/Published) next
+to the exam picker, sourced from the exam-scores grid's own already-fetched
+query (no new request). New `ExamApprovalsPage` (`/grades/exam-approvals`,
+under the existing `RequireSchoolAdmin` wrapper) is a **deliberately
+separate page from `ReviewPublishPage`**, not a second tab on it — that
+page was just made pure read-only one step ago (v0.7.4 step 1);
+reintroducing action buttons there would re-contaminate a page just
+simplified. `ExamApprovalsPage` mirrors `ReviewPublishPage`'s layout
+exactly but adds Approve/Reject buttons per subject when
+`pendingApprovalCount > 0`.
+
+**Test impact.** New `GET /exams/review` endpoint mirrors
+`GET /grades/review` exactly (`ExamReviewSubject`/`ExamReviewResponse`,
+source table swapped) — unlike the grades side post-step-1,
+`pendingApprovalCount` is real here, not permanently 0. `exams-publish.e2e-spec.ts`
+rewritten wholesale for the two-step workflow (19 tests, up from 8).
+Ripple fixes: `exams-authoring.e2e-spec.ts` (3 tests needed a
+`scoreEntireRoster` helper — the shared `jss2AArmId` roster, previously
+satisfied by scoring just one probe student under the old carve-out
+gate), `exams-engine.e2e-spec.ts` (1 test), `exams-views.e2e-spec.ts`
+(2 publish call-sites + 1 new leak test), `exam-rankings.e2e-spec.ts`
+(both ranking tests restructured around the new gate, plus its own
+cross-tenant test fixed to use a real per-role token instead of an
+admin token hitting a role-based 403 before ever reaching the tenant-scope
+check it was meant to prove). Full backend e2e suite: 475/475 (38 suites)
+after — net +13 over the 462 baseline (11 new tests in the rewritten
+`exams-publish.e2e-spec.ts`, 1 new leak test, 1 new exam-rankings
+cross-tenant assertion added). Full web suite: 304/304 (49 files) after.

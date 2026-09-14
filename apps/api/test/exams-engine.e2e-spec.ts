@@ -275,8 +275,16 @@ describe("Exam scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
     it("published-lock: TEACHER 409s against a PUBLISHED exam result; SCHOOL_ADMIN/PROPRIETOR may correct it", async () => {
       const bundle = await createScratchBundle("PublishedLock");
       await scoreExam(sunriseAdminToken, bundle, bundle.examId, bundle.studentIds.map((studentId) => ({ studentId, rawScore: 50 })));
+      // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — replaces the retired direct
+      // POST /exams/publish: TEACHER submits (own assignment), then admin
+      // approves.
+      const submitRes = await request(app.getHttpServer())
+        .post("/api/v1/exams/submit-for-approval")
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, termId: bundle.termId });
+      expect(submitRes.status).toBe(200);
       const publishRes = await request(app.getHttpServer())
-        .post("/api/v1/exams/publish")
+        .post("/api/v1/exams/approve")
         .set(auth(sunriseAdminToken))
         .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, termId: bundle.termId });
       expect(publishRes.status).toBe(200);

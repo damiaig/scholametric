@@ -64,6 +64,9 @@ describe("Exam views (e2e) — SPEC_V0.7.md §4, step 3", () => {
     return exam.id;
   }
 
+  // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — replaces the retired direct
+  // POST /exams/publish: TEACHER submits (mathTeacherId's own
+  // assignment), then admin approves.
   async function scoreAndMaybePublish(subjectId: string, examId: string, termId: string, rawScore: number, publish: boolean) {
     const saveRes = await request(app.getHttpServer())
       .put("/api/v1/exams/scores")
@@ -71,11 +74,16 @@ describe("Exam views (e2e) — SPEC_V0.7.md §4, step 3", () => {
       .send({ classArmId, subjectId, examId, termId, scores: [{ studentId, rawScore }] });
     if (saveRes.status !== 200) throw new Error(`score failed: ${saveRes.status} ${JSON.stringify(saveRes.body)}`);
     if (publish) {
+      const submitRes = await request(app.getHttpServer())
+        .post("/api/v1/exams/submit-for-approval")
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId, subjectId, termId });
+      if (submitRes.status !== 200) throw new Error(`submit failed: ${submitRes.status} ${JSON.stringify(submitRes.body)}`);
       const publishRes = await request(app.getHttpServer())
-        .post("/api/v1/exams/publish")
+        .post("/api/v1/exams/approve")
         .set(auth(sunriseAdminToken))
         .send({ classArmId, subjectId, termId });
-      if (publishRes.status !== 200) throw new Error(`publish failed: ${publishRes.status} ${JSON.stringify(publishRes.body)}`);
+      if (publishRes.status !== 200) throw new Error(`approve failed: ${publishRes.status} ${JSON.stringify(publishRes.body)}`);
     }
   }
 
@@ -325,6 +333,91 @@ describe("Exam views (e2e) — SPEC_V0.7.md §4, step 3", () => {
       expect(response.body.status).toBeNull();
     });
 
+    // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — THE PENDING-EXAM LEAK PROOF.
+    // PENDING_APPROVAL is a newly-reachable state on term_subject_exam_result
+    // (previously exams only ever sat at DRAFT or PUBLISHED); this proves
+    // the pre-existing `status: PUBLISHED` self-view filter already
+    // excludes it for free — not a new filter, a proof that the new state
+    // doesn't slip past the old wall. Structural absence AND a
+    // JSON.stringify scan, mirroring the evaluation-track leak-fix test's
+    // own rigor (me-student.e2e-spec.ts, v0.7.4 step 1).
+    it("THE PENDING-EXAM LEAK PROOF: a PENDING_APPROVAL subject never reaches the student — its exam's id/name appear nowhere in the response", async () => {
+      // A dedicated THIRD term (not termFirstId/termSecondId) so this
+      // fresh subject doesn't change the exact subject counts the staff
+      // year-exams test above already asserts for term FIRST.
+      const pendingTerm = await prisma.term.create({
+        data: { schoolId: sunriseId, sessionId, name: "THIRD", startsOn: new Date("2027-08-15"), endsOn: new Date("2027-09-01") },
+      });
+      createdTermIds.push(pendingTerm.id);
+
+      const pendingSubject = await prisma.subject.create({
+        data: { schoolId: sunriseId, name: "E2E ExamViews Pending Leak Probe", code: "E2EXVPLP" },
+      });
+      createdSubjectIds.push(pendingSubject.id);
+      await prisma.subjectTeacherAssignment.create({
+        data: { schoolId: sunriseId, subjectId: pendingSubject.id, classArmId, sessionId, teacherUserId: mathTeacherId },
+      });
+      const pendingExam = await createExam(pendingSubject.id, pendingTerm.id, "Pending Leak Exam");
+
+      // Roster-wide gate — every currently-enrolled student on classArmId
+      // (studentId, classmate2Id, classmate3Id) must be decided.
+      const saveRes = await request(app.getHttpServer())
+        .put("/api/v1/exams/scores")
+        .set(auth(sunriseAdminToken))
+        .send({
+          classArmId,
+          subjectId: pendingSubject.id,
+          examId: pendingExam,
+          termId: pendingTerm.id,
+          scores: [
+            { studentId, rawScore: 77 },
+            { studentId: classmate2Id, rawScore: 55 },
+            { studentId: classmate3Id, rawScore: 33 },
+          ],
+        });
+      expect(saveRes.status).toBe(200);
+
+      const submitRes = await request(app.getHttpServer())
+        .post("/api/v1/exams/submit-for-approval")
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId, subjectId: pendingSubject.id, termId: pendingTerm.id });
+      expect(submitRes.status).toBe(200);
+
+      const pendingRow = await prisma.termSubjectExamResult.findUniqueOrThrow({
+        where: { studentId_subjectId_termId_sessionId: { studentId, subjectId: pendingSubject.id, termId: pendingTerm.id, sessionId } },
+      });
+      expect(pendingRow.status).toBe("PENDING_APPROVAL"); // confirms the state under test is real, not accidentally DRAFT
+
+      const meResponse = await request(app.getHttpServer())
+        .get("/api/v1/me/exams")
+        .query({ subjectId: pendingSubject.id, termId: pendingTerm.id, sessionId })
+        .set(auth(studentToken));
+      expect(meResponse.status).toBe(200);
+      expect(meResponse.body.exams).toEqual([]);
+      expect(meResponse.body.status).toBeNull();
+
+      const serialized = JSON.stringify(meResponse.body);
+      expect(serialized).not.toContain(pendingExam);
+      expect(serialized).not.toContain("Pending Leak Exam");
+
+      // Same wall for the whole-year view.
+      const yearResponse = await request(app.getHttpServer())
+        .get("/api/v1/me/year-exams")
+        .query({ sessionId })
+        .set(auth(studentToken));
+      expect(yearResponse.status).toBe(200);
+      const yearSerialized = JSON.stringify(yearResponse.body);
+      expect(yearSerialized).not.toContain(pendingExam);
+      expect(yearSerialized).not.toContain("Pending Leak Exam");
+      // The term entry itself still exists (every term in the session
+      // gets one, same as term SECOND's still-all-draft entry elsewhere
+      // in this file) but with subjects empty — the pending subject is
+      // structurally absent, not a hidden field on a row that's there.
+      const pendingTermEntry = yearResponse.body.terms.find((t: { termId: string }) => t.termId === pendingTerm.id);
+      expect(pendingTermEntry.subjects).toEqual([]);
+      expect(pendingTermEntry.status).toBeNull();
+    });
+
     it("PARENT sees the same published/unpublished split for their child", async () => {
       const publishedRes = await request(app.getHttpServer())
         .get("/api/v1/me/children")
@@ -569,11 +662,17 @@ describe("Exam views (e2e) — SPEC_V0.7.md §4, step 3", () => {
       // subject this term -> immediately PUBLISHED) and year_exam_results
       // (>=1 published term this session -> a real row per student) —
       // recomputeYearExamResults doesn't require every term published.
+      // v0.7.4 step 2 — TEACHER submits, admin approves.
+      const submitRes = await request(app.getHttpServer())
+        .post("/api/v1/exams/submit-for-approval")
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId: yerClassArmId, subjectId: yerSubjectId, termId: yerTermId });
+      if (submitRes.status !== 200) throw new Error(`submit failed: ${submitRes.status} ${JSON.stringify(submitRes.body)}`);
       const publishRes = await request(app.getHttpServer())
-        .post("/api/v1/exams/publish")
+        .post("/api/v1/exams/approve")
         .set(auth(sunriseAdminToken))
         .send({ classArmId: yerClassArmId, subjectId: yerSubjectId, termId: yerTermId });
-      if (publishRes.status !== 200) throw new Error(`publish failed: ${publishRes.status} ${JSON.stringify(publishRes.body)}`);
+      if (publishRes.status !== 200) throw new Error(`approve failed: ${publishRes.status} ${JSON.stringify(publishRes.body)}`);
 
       const passwordHash = await bcrypt.hash(SEED_PASSWORD, 4);
       const yerUserA = await prisma.user.create({

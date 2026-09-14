@@ -186,6 +186,7 @@ const ROUTES = [
   "/grades/arms/route-smoke-id",
   "/grades",
   "/grades/review",
+  "/grades/exam-approvals",
   "/me/grades",
   "/personnel",
   "/settings/school",
