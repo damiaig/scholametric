@@ -9,7 +9,10 @@ import { PrismaService } from "../src/prisma/prisma.service";
 // POST /exams/publish with a two-step approval workflow: TEACHER submits
 // (own assignment) -> PENDING_APPROVAL; SCHOOL_ADMIN/PROPRIETOR approves
 // -> PUBLISHED (only path there now) or rejects -> back to DRAFT.
-// POST /exams/unpublish is UNCHANGED (PROPRIETOR-only, PUBLISHED -> DRAFT).
+// POST /exams/unpublish: v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4, resolving
+// the spec's own Q6) widens this from PROPRIETOR-only to SCHOOL_ADMIN +
+// PROPRIETOR, matching approve/reject's existing role set — the oversight
+// powers travel together. TEACHER remains categorically excluded.
 // No subjectPosition/override at this level (term_subject_exam_results has
 // neither field — Q6 ranks only at the per-term/whole-year levels, see
 // exam-rankings.e2e-spec.ts).
@@ -412,30 +415,51 @@ describe("Exam approval workflow (e2e) — SPEC_V0.7.4.md §3, v0.7.4 step 2", (
   });
 
   describe("POST /exams/unpublish", () => {
-    it("happy path (PROPRIETOR): reverts to DRAFT; SCHOOL_ADMIN 403s", async () => {
-      const bundle = await createScratchBundle("Unpublish", 1);
-      const examId = await createExamFor(bundle.subjectId, bundle.classArmId, bundle.sessionId, bundle.termId);
-      await scoreExam(bundle, examId, [{ studentId: bundle.studentIds[0], rawScore: 70 }]);
-      await submitAndApprove(bundle);
+    it("happy path: both PROPRIETOR and SCHOOL_ADMIN can revert to DRAFT (widened in v0.7.4 step 3); TEACHER still 403s categorically", async () => {
+      const proprietorBundle = await createScratchBundle("UnpublishProprietor", 1);
+      const proprietorExamId = await createExamFor(proprietorBundle.subjectId, proprietorBundle.classArmId, proprietorBundle.sessionId, proprietorBundle.termId);
+      await scoreExam(proprietorBundle, proprietorExamId, [{ studentId: proprietorBundle.studentIds[0], rawScore: 70 }]);
+      await submitAndApprove(proprietorBundle);
 
-      const adminAttempt = await request(app.getHttpServer())
+      const teacherAttempt = await request(app.getHttpServer())
         .post("/api/v1/exams/unpublish")
-        .set(auth(sunriseAdminToken))
-        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, termId: bundle.termId });
-      expect(adminAttempt.status).toBe(403);
+        .set(auth(sunriseTeacherToken))
+        .send({ classArmId: proprietorBundle.classArmId, subjectId: proprietorBundle.subjectId, termId: proprietorBundle.termId });
+      expect(teacherAttempt.status).toBe(403);
 
-      const unpublishRes = await request(app.getHttpServer())
+      const proprietorRes = await request(app.getHttpServer())
         .post("/api/v1/exams/unpublish")
         .set(auth(sunriseProprietorToken))
-        .send({ classArmId: bundle.classArmId, subjectId: bundle.subjectId, termId: bundle.termId });
-      expect(unpublishRes.status).toBe(200);
-      expect(unpublishRes.body.unpublishedCount).toBe(1);
+        .send({ classArmId: proprietorBundle.classArmId, subjectId: proprietorBundle.subjectId, termId: proprietorBundle.termId });
+      expect(proprietorRes.status).toBe(200);
+      expect(proprietorRes.body.unpublishedCount).toBe(1);
 
-      const reverted = await prisma.termSubjectExamResult.findUniqueOrThrow({
-        where: { studentId_subjectId_termId_sessionId: { studentId: bundle.studentIds[0], subjectId: bundle.subjectId, termId: bundle.termId, sessionId: bundle.sessionId } },
+      const revertedByProprietor = await prisma.termSubjectExamResult.findUniqueOrThrow({
+        where: { studentId_subjectId_termId_sessionId: { studentId: proprietorBundle.studentIds[0], subjectId: proprietorBundle.subjectId, termId: proprietorBundle.termId, sessionId: proprietorBundle.sessionId } },
       });
-      expect(reverted.status).toBe("DRAFT");
-      expect(reverted.publishedAt).toBeNull();
+      expect(revertedByProprietor.status).toBe("DRAFT");
+      expect(revertedByProprietor.publishedAt).toBeNull();
+
+      // A SEPARATE bundle for the admin half of the proof — the first
+      // bundle is already back to DRAFT, so a second unpublish attempt on
+      // it would just 409 "nothing to unpublish," not prove admin CAN.
+      const adminBundle = await createScratchBundle("UnpublishAdmin", 1);
+      const adminExamId = await createExamFor(adminBundle.subjectId, adminBundle.classArmId, adminBundle.sessionId, adminBundle.termId);
+      await scoreExam(adminBundle, adminExamId, [{ studentId: adminBundle.studentIds[0], rawScore: 55 }]);
+      await submitAndApprove(adminBundle);
+
+      const adminRes = await request(app.getHttpServer())
+        .post("/api/v1/exams/unpublish")
+        .set(auth(sunriseAdminToken))
+        .send({ classArmId: adminBundle.classArmId, subjectId: adminBundle.subjectId, termId: adminBundle.termId });
+      expect(adminRes.status).toBe(200);
+      expect(adminRes.body.unpublishedCount).toBe(1);
+
+      const revertedByAdmin = await prisma.termSubjectExamResult.findUniqueOrThrow({
+        where: { studentId_subjectId_termId_sessionId: { studentId: adminBundle.studentIds[0], subjectId: adminBundle.subjectId, termId: adminBundle.termId, sessionId: adminBundle.sessionId } },
+      });
+      expect(revertedByAdmin.status).toBe("DRAFT");
+      expect(revertedByAdmin.publishedAt).toBeNull();
     });
 
     it("409s when nothing is currently published", async () => {

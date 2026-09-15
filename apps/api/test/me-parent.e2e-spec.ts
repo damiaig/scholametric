@@ -18,6 +18,7 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
   let prisma: PrismaService;
 
   let sunriseAdminToken: string;
+  let sunriseTeacherToken: string;
 
   let sunriseId: string;
   let sunriseSessionId: string;
@@ -93,7 +94,7 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
   // ids here.
   async function publishEvaluations(evaluationIds: string[]) {
     for (const evaluationId of evaluationIds) {
-      const response = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseAdminToken));
+      const response = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseTeacherToken));
       if (response.status !== 200) {
         throw new Error(`publish failed for ${evaluationId}: ${response.status} ${JSON.stringify(response.body)}`);
       }
@@ -164,6 +165,7 @@ describe("Parent read views (e2e) — SPEC_V0.6.md §2.4, v0.6 step 4", () => {
     prisma = app.get(PrismaService);
 
     sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
+    sunriseTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
 
     const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
     sunriseId = sunrise.id;

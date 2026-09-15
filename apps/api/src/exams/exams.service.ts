@@ -994,8 +994,11 @@ export class ExamsService {
   }
 
   // Reverts a subject's PUBLISHED exam results back to DRAFT and cascades
-  // the same two levels upward — mirrors GradesService.unpublish.
-  // PROPRIETOR only (owner authority, same as the evaluation track).
+  // the same two levels upward. v0.7.4 step 3 (SPEC_V0.7.4.md §4, Q6):
+  // SCHOOL_ADMIN + PROPRIETOR both (widened from PROPRIETOR-only) — both
+  // oversight roles keep exam-approval + unpublish; unlike the evaluation
+  // track's unpublish (TEACHER + PROPRIETOR only), there's no teacher
+  // authorship to balance here.
   async unpublish(dto: UnpublishExamGradesDto, user: AuthenticatedUser): Promise<UnpublishExamResponse> {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await resolveTenantScopeSubjectOnly(this.prisma, schoolId, dto);

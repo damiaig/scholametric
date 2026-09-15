@@ -205,7 +205,7 @@ describe("Evaluation scores (e2e) — SPEC_V0.7.md §2/§5, step 1", () => {
         expect(scoreRes.status).toBe(200);
         const publishRes = await request(app.getHttpServer())
           .post(`/api/v1/grades/evaluations/${evaluationId}/publish`)
-          .set(auth(sunriseAdminToken));
+          .set(auth(sunriseMathTeacherToken));
         expect(publishRes.status).toBe(200);
 
         const publishedResponse = await request(app.getHttpServer())

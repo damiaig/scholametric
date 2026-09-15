@@ -157,7 +157,7 @@ describe("Report card + remarks (e2e) — SPEC_V0.5.md §2.4, v0.5 step 4", () =
     // total is the average across all of them, matching this fixture's
     // hand-verified 51/30 figures.
     for (const evaluationId of [aEval1, aEval2, aEval3]) {
-      const publishRes = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseAdminToken));
+      const publishRes = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(teacherSubjectToken));
       if (publishRes.status !== 200) {
         throw new Error(`publish failed for ${evaluationId}: ${publishRes.status} ${JSON.stringify(publishRes.body)}`);
       }

@@ -21,6 +21,7 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
   let sunriseMathTeacherToken: string; // teacher@sunrise.test — assigned to scratchSubjectId below
   let sunriseEnglishTeacherToken: string; // teacher2@sunrise.test — assigned English only, unassigned probe
   let hillcrestAdminToken: string;
+  let hillcrestTeacherToken: string;
 
   let sunriseId: string;
   let sunriseSessionId: string;
@@ -134,6 +135,7 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
     sunriseMathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
     sunriseEnglishTeacherToken = await loginAs(app, "teacher2@sunrise.test", "sunrise");
     hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
+    hillcrestTeacherToken = await loginAs(app, "teacher@hillcrest.test", "hillcrest");
 
     const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
     sunriseId = sunrise.id;
@@ -303,27 +305,33 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
       await prisma.evaluation.delete({ where: { id: response.body.id } });
     });
 
-    it("SCHOOL_ADMIN and PROPRIETOR can also create (matching the scoring endpoint's roles)", async () => {
+    // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — replaces "SCHOOL_ADMIN and
+    // PROPRIETOR can also create." Admin/proprietor can no longer author
+    // evaluations at all — "teachers own evaluations entirely." Categorical
+    // (route-level @Roles(TEACHER)), not data-dependent — 403 regardless of
+    // assignment state.
+    it("SCHOOL_ADMIN and PROPRIETOR now 403 categorically — evaluations are TEACHER-only to author", async () => {
       const adminRes = await request(app.getHttpServer())
         .post("/api/v1/grades/evaluations")
         .set(auth(sunriseAdminToken))
         .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, termId: sunriseTermId, name: "Admin-created", description: "Admin stepping in" });
-      expect(adminRes.status).toBe(201);
-      await prisma.evaluation.delete({ where: { id: adminRes.body.id } });
+      expect(adminRes.status).toBe(403);
 
       const proprietorRes = await request(app.getHttpServer())
         .post("/api/v1/grades/evaluations")
         .set(auth(sunriseProprietorToken))
         .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, termId: sunriseTermId, name: "Proprietor-created", description: "Owner stepping in" });
-      expect(proprietorRes.status).toBe(201);
-      await prisma.evaluation.delete({ where: { id: proprietorRes.body.id } });
+      expect(proprietorRes.status).toBe(403);
     });
 
+    // v0.7.4 step 3 — actor swapped from admin to the assigned TEACHER:
+    // create is TEACHER-only now, so an admin token would 403 on role
+    // before ever reaching DTO validation, breaking this proof.
     it("400s a missing name, writing nothing", async () => {
       const before = await prisma.evaluation.count({ where: { subjectId: scratchSubjectId } });
       const response = await request(app.getHttpServer())
         .post("/api/v1/grades/evaluations")
-        .set(auth(sunriseAdminToken))
+        .set(auth(sunriseMathTeacherToken))
         .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, termId: sunriseTermId, description: "No name given" });
       expect(response.status).toBe(400);
       expect(await prisma.evaluation.count({ where: { subjectId: scratchSubjectId } })).toBe(before);
@@ -332,7 +340,7 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
     it("400s a name over the 200-character cap", async () => {
       const response = await request(app.getHttpServer())
         .post("/api/v1/grades/evaluations")
-        .set(auth(sunriseAdminToken))
+        .set(auth(sunriseMathTeacherToken))
         .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, termId: sunriseTermId, name: "x".repeat(201), description: "ok" });
       expect(response.status).toBe(400);
     });
@@ -340,7 +348,7 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
     it("400s a description over the 2000-character cap", async () => {
       const response = await request(app.getHttpServer())
         .post("/api/v1/grades/evaluations")
-        .set(auth(sunriseAdminToken))
+        .set(auth(sunriseMathTeacherToken))
         .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, termId: sunriseTermId, name: "ok", description: "x".repeat(2001) });
       expect(response.status).toBe(400);
     });
@@ -360,30 +368,41 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
       expect(response.status).toBe(403);
     });
 
-    it("404s (not 403) SCHOOL_ADMIN/PROPRIETOR against a subject with no teacher assigned at all", async () => {
+    // v0.7.4 step 3 — this used to prove the admin/proprietor-specific
+    // "404 not 403 for a wholly-unassigned subject" distinction (the
+    // "hidden, not forbidden" rule GradesController's own doc comment
+    // describes). That distinction no longer applies to CREATE: SCHOOL_ADMIN/
+    // PROPRIETOR can't reach createEvaluation at all any more (categorical
+    // role guard), so they 403 here too — same as the "can also create"
+    // test above, just against a subject with zero assignments instead of
+    // one. Confirms the categorical exclusion holds even in this edge case.
+    it("403s SCHOOL_ADMIN/PROPRIETOR against a subject with no teacher assigned at all too — categorical, not data-dependent", async () => {
       const adminRes = await request(app.getHttpServer())
         .post("/api/v1/grades/evaluations")
         .set(auth(sunriseAdminToken))
         .send({ classArmId: jss2AArmId, subjectId: noAssignmentSubjectId, termId: sunriseTermId, name: "x", description: "y" });
-      expect(adminRes.status).toBe(404);
+      expect(adminRes.status).toBe(403);
 
       const proprietorRes = await request(app.getHttpServer())
         .post("/api/v1/grades/evaluations")
         .set(auth(sunriseProprietorToken))
         .send({ classArmId: jss2AArmId, subjectId: noAssignmentSubjectId, termId: sunriseTermId, name: "x", description: "y" });
-      expect(proprietorRes.status).toBe(404);
+      expect(proprietorRes.status).toBe(403);
     });
 
+    // v0.7.4 step 3 — real TEACHER tokens on both sides now (create is
+    // TEACHER-only): an admin token would 403 on role before ever
+    // reaching tenant-scope resolution, breaking this proof.
     it("404s (not 403) cross-tenant, both directions", async () => {
       const a = await request(app.getHttpServer())
         .post("/api/v1/grades/evaluations")
-        .set(auth(sunriseAdminToken))
+        .set(auth(sunriseMathTeacherToken))
         .send({ classArmId: hillcrestArmId, subjectId: hillcrestSubjectId, termId: hillcrestTermId, name: "x", description: "y" });
       expect(a.status).toBe(404);
 
       const b = await request(app.getHttpServer())
         .post("/api/v1/grades/evaluations")
-        .set(auth(hillcrestAdminToken))
+        .set(auth(hillcrestTeacherToken))
         .send({ classArmId: jss2AArmId, subjectId: scratchSubjectId, termId: sunriseTermId, name: "x", description: "y" });
       expect(b.status).toBe(404);
     });
@@ -404,14 +423,15 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
         });
         const evaluationId = await createEvaluation(publishSubject.id, jss2AArmId, sunriseTermId, sunriseSessionId);
         await scoreEntireRoster(evaluationId, publishSubject.id, jss2AArmId, sunriseTermId, 80);
+        // v0.7.4 step 3 — publish and create are both TEACHER-only now.
         const publishRes = await request(app.getHttpServer())
           .post(`/api/v1/grades/evaluations/${evaluationId}/publish`)
-          .set(auth(sunriseAdminToken));
+          .set(auth(sunriseMathTeacherToken));
         expect(publishRes.status).toBe(200);
 
         const response = await request(app.getHttpServer())
           .post("/api/v1/grades/evaluations")
-          .set(auth(sunriseAdminToken))
+          .set(auth(sunriseMathTeacherToken))
           .send({ classArmId: jss2AArmId, subjectId: publishSubject.id, termId: sunriseTermId, name: "Late addition", description: "No longer blocked" });
         expect(response.status).toBe(201);
       } finally {
@@ -440,12 +460,15 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
       }
     });
 
+    // v0.7.4 step 3 — actor swapped from admin to TEACHER: update is
+    // TEACHER-only now, so an admin token would 403 on role before ever
+    // reaching DTO validation, breaking this proof.
     it("400s when neither name nor description is provided", async () => {
       const evaluationId = await createEvaluation(scratchSubjectId, jss2AArmId, sunriseTermId, sunriseSessionId);
       try {
         const response = await request(app.getHttpServer())
           .patch(`/api/v1/grades/evaluations/${evaluationId}`)
-          .set(auth(sunriseAdminToken))
+          .set(auth(sunriseMathTeacherToken))
           .send({});
         expect(response.status).toBe(400);
       } finally {
@@ -466,7 +489,7 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
     it("404s a nonexistent id", async () => {
       const response = await request(app.getHttpServer())
         .patch("/api/v1/grades/evaluations/00000000-0000-0000-0000-000000000000")
-        .set(auth(sunriseAdminToken))
+        .set(auth(sunriseMathTeacherToken))
         .send({ name: "x" });
       expect(response.status).toBe(404);
     });
@@ -474,12 +497,19 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
     it("404s (not 403) cross-tenant", async () => {
       const response = await request(app.getHttpServer())
         .patch(`/api/v1/grades/evaluations/${hillcrestEvaluationId}`)
-        .set(auth(sunriseAdminToken))
+        .set(auth(sunriseMathTeacherToken))
         .send({ name: "x" });
       expect(response.status).toBe(404);
     });
 
-    it("edit after publish: 403s TEACHER and SCHOOL_ADMIN, 200s PROPRIETOR (mirrors override()'s data-dependent role narrowing)", async () => {
+    // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — replaces "403s TEACHER and
+    // SCHOOL_ADMIN, 200s PROPRIETOR." The PROPRIETOR-may-edit-once-published
+    // escape hatch is removed entirely: "declared final = frozen," for
+    // EVERYONE, not narrowed to the owner — matching every other
+    // publish-lock in this codebase (unpublish first, then edit, then
+    // republish). PROPRIETOR keeps unpublish (the correction lever) but
+    // no longer a direct edit-through-published bypass.
+    it("edit after publish: frozen for EVERYONE, including PROPRIETOR — no more edit-through-published escape hatch", async () => {
       const publishSubject = await prisma.subject.create({
         data: { schoolId: sunriseId, name: "E2E Eval Authoring Edit-After-Publish", code: "E2EEAE" },
       });
@@ -491,7 +521,7 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
         await scoreEntireRoster(evaluationId, publishSubject.id, jss2AArmId, sunriseTermId, 60);
         const publishRes = await request(app.getHttpServer())
           .post(`/api/v1/grades/evaluations/${evaluationId}/publish`)
-          .set(auth(sunriseAdminToken));
+          .set(auth(sunriseMathTeacherToken));
         expect(publishRes.status).toBe(200);
 
         const teacherRes = await request(app.getHttpServer())
@@ -510,8 +540,24 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
           .patch(`/api/v1/grades/evaluations/${evaluationId}`)
           .set(auth(sunriseProprietorToken))
           .send({ name: "Proprietor edit" });
-        expect(proprietorRes.status).toBe(200);
-        expect(proprietorRes.body.name).toBe("Proprietor edit");
+        expect(proprietorRes.status).toBe(403);
+
+        const stillOriginal = await prisma.evaluation.findUniqueOrThrow({ where: { id: evaluationId } });
+        expect(stillOriginal.name).not.toBe("Proprietor edit");
+
+        // The confirmed path: unpublish (PROPRIETOR, still allowed — the
+        // correction lever), edit while DRAFT, republish.
+        const unpublishRes = await request(app.getHttpServer())
+          .post(`/api/v1/grades/evaluations/${evaluationId}/unpublish`)
+          .set(auth(sunriseProprietorToken));
+        expect(unpublishRes.status).toBe(200);
+
+        const editAfterUnpublish = await request(app.getHttpServer())
+          .patch(`/api/v1/grades/evaluations/${evaluationId}`)
+          .set(auth(sunriseMathTeacherToken))
+          .send({ name: "Teacher edit after unpublish" });
+        expect(editAfterUnpublish.status).toBe(200);
+        expect(editAfterUnpublish.body.name).toBe("Teacher edit after unpublish");
       } finally {
         await prisma.evaluationScore.deleteMany({ where: { evaluation: { subjectId: publishSubject.id } } });
         await prisma.evaluation.deleteMany({ where: { subjectId: publishSubject.id } });
@@ -576,7 +622,7 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
 
         const publishKeepRes = await request(app.getHttpServer())
           .post(`/api/v1/grades/evaluations/${keepId}/publish`)
-          .set(auth(sunriseAdminToken));
+          .set(auth(sunriseMathTeacherToken));
         expect(publishKeepRes.status).toBe(200);
 
         const before = await prisma.termSubjectResult.findUniqueOrThrow({
@@ -631,7 +677,7 @@ describe("Evaluation authoring (e2e) — SPEC_V0.7.md §3, step 2", () => {
         await scoreEntireRoster(evaluationId, publishSubject.id, jss2AArmId, sunriseTermId, 70);
         const publishRes = await request(app.getHttpServer())
           .post(`/api/v1/grades/evaluations/${evaluationId}/publish`)
-          .set(auth(sunriseAdminToken));
+          .set(auth(sunriseMathTeacherToken));
         expect(publishRes.status).toBe(200);
 
         const response = await request(app.getHttpServer())

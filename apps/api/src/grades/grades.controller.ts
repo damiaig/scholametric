@@ -39,23 +39,32 @@ export class GradesController {
     return this.gradesService.saveEvaluationScores(dto, user);
   }
 
-  // v0.7 step 2 (SPEC_V0.7.md §3): the authoring surface. TEACHER/
-  // SCHOOL_ADMIN/PROPRIETOR all inherit the controller-level @Roles()
-  // above — same role list as scoring, confirmed. Fine-grained
-  // authorization (assignment check, draft-vs-published edit gating) lives
-  // in GradesService, same discipline as every other route here.
+  // v0.7 step 2 (SPEC_V0.7.md §3): the read surface. TEACHER/SCHOOL_ADMIN/
+  // PROPRIETOR all inherit the controller-level @Roles() above — same role
+  // list as score entry, confirmed. Fine-grained authorization (assignment
+  // check) lives in GradesService, same discipline as every other route
+  // here.
   @Get("evaluations")
   listEvaluations(@Query() query: GetEvaluationsQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.gradesService.listEvaluations(query, user);
   }
 
+  // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — TEACHER-only, categorical.
+  // Admin/proprietor can no longer author evaluations at all — "teachers
+  // own evaluations entirely." Overrides the class-level @Roles() above.
   @Audit("evaluation", "create")
+  @Roles(UserRole.TEACHER)
   @Post("evaluations")
   createEvaluation(@Body() dto: CreateEvaluationDto, @CurrentUser() user: AuthenticatedUser) {
     return this.gradesService.createEvaluation(dto, user);
   }
 
+  // v0.7.4 step 3 — same TEACHER-only narrowing as create. The old
+  // PROPRIETOR-may-edit-once-published escape hatch is gone too (see
+  // GradesService.updateEvaluation's own doc comment) — once published,
+  // editing is frozen for everyone, not just narrowed to the owner.
   @Audit("evaluation", "update")
+  @Roles(UserRole.TEACHER)
   @Patch("evaluations/:id")
   updateEvaluation(@Param("id", ParseUUIDPipe) id: string, @Body() dto: UpdateEvaluationDto, @CurrentUser() user: AuthenticatedUser) {
     return this.gradesService.updateEvaluation(id, dto, user);
@@ -75,7 +84,10 @@ export class GradesController {
   // level @Roles() above, so TEACHER cannot reach it. An action on
   // existing data, not a resource creation — 200, not the POST default
   // 201 (same convention as .../withdraw, .../transfer-class, auth's
-  // login/refresh/logout/change-password).
+  // login/refresh/logout/change-password). v0.7.4 step 3: deliberately
+  // UNTOUCHED by Item 4 — a derived-state re-trigger, not authorship (it
+  // can't create, edit, or publish anything, only re-derive numbers from
+  // data that already exists).
   @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
   @Post("recompute")
   @HttpCode(HttpStatus.OK)
@@ -86,12 +98,13 @@ export class GradesController {
   // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — replaces POST /grades/publish.
   // Publish moved from the subject to the individual evaluation; the
   // route param carries the evaluation id (it already knows its own
-  // classArmId/subjectId/termId), no request body needed. Role shape
-  // carried over unchanged from v0.7.3: director-or-owner, or a TEACHER
-  // publishing an evaluation of a subject they're assigned to (fine-
-  // grained scoping lives in GradesService.publishEvaluation() itself,
-  // same discipline as every other route here).
-  @Roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  // classArmId/subjectId/termId), no request body needed.
+  // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — narrowed to TEACHER-only:
+  // admin/proprietor's route to declaring an evaluation final is gone,
+  // same "teachers own evaluations entirely" reasoning as create/update
+  // above (fine-grained assignment scoping still lives in
+  // GradesService.publishEvaluation() itself).
+  @Roles(UserRole.TEACHER)
   @Post("evaluations/:id/publish")
   @HttpCode(HttpStatus.OK)
   publishEvaluation(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
@@ -102,6 +115,12 @@ export class GradesController {
   // unpublishing their OWN assigned subject's evaluation — SCHOOL_ADMIN
   // still excluded here, unchanged asymmetry with publish carried over
   // from v0.7.3.
+  // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — deliberately UNTOUCHED:
+  // publish/create/update are authorship (narrowed to TEACHER above);
+  // unpublish is the correction/safety-valve PROPRIETOR already held
+  // before this step and keeps — admin can never GRANT visibility
+  // (publish), but proprietor can still REMOVE it (unpublish) as
+  // oversight. No conflict with Item 4's narrowing.
   @Roles(UserRole.TEACHER, UserRole.PROPRIETOR)
   @Post("evaluations/:id/unpublish")
   @HttpCode(HttpStatus.OK)
@@ -111,7 +130,10 @@ export class GradesController {
 
   // Both roles may reach this route; the PUBLISHED-result PROPRIETOR-only
   // restriction and the DRAFT block are data-dependent, enforced inside
-  // GradesService (see its override() doc comment).
+  // GradesService (see its override() doc comment). v0.7.4 step 3:
+  // deliberately UNTOUCHED by Item 4 — a display-layer correction
+  // (final_grade only; total_score/subjectPosition never touched), not
+  // evaluation authorship.
   @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
   @Put("override")
   override(@Body() dto: OverrideGradeDto, @CurrentUser() user: AuthenticatedUser) {

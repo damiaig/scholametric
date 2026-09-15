@@ -219,7 +219,7 @@ describe("GET /grades/review (e2e)", () => {
     expect(scoreRes.status).toBe(200);
     const publishRes = await request(app.getHttpServer())
       .post(`/api/v1/grades/evaluations/${ca1.id}/publish`)
-      .set(auth(sunriseAdminToken));
+      .set(auth(sunriseTeacherToken));
     expect(publishRes.status).toBe(200);
 
     const publishedOnly = await request(app.getHttpServer())

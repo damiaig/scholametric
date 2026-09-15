@@ -24,8 +24,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
   let sunriseAdminToken: string;
   let sunriseProprietorToken: string;
   let sunriseTeacherToken: string;
-  let hillcrestAdminToken: string;
   let hillcrestProprietorToken: string;
+  let hillcrestTeacherToken: string;
 
   let sunriseId: string;
   let sunriseSessionId: string;
@@ -196,7 +196,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
     sunriseProprietorToken = await loginAs(app, "proprietor@sunrise.test", "sunrise");
     sunriseTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
-    hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
+    hillcrestTeacherToken = await loginAs(app, "teacher@hillcrest.test", "hillcrest");
 
     const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
     sunriseId = sunrise.id;
@@ -348,7 +348,10 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         { studentId: s2, total: 20 },
       ]);
 
-      const response = await publishEvaluation(sunriseAdminToken, evaluationIds[0]); // SCHOOL_ADMIN may publish
+      // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — publish is TEACHER-only
+      // now (ensureAssignment, inside scoreTotal above, already wired this
+      // subject to teacherUserId = sunriseTeacherToken's own user).
+      const response = await publishEvaluation(sunriseTeacherToken, evaluationIds[0]);
 
       expect(response.status).toBe(200);
       expect(response.body.evaluationId).toBe(evaluationIds[0]);
@@ -395,7 +398,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
     // (the id is in the route), so the equivalent empty case is simply
     // "that evaluation doesn't exist."
     it("404s an evaluation that doesn't exist", async () => {
-      const response = await publishEvaluation(sunriseAdminToken, "00000000-0000-0000-0000-000000000000");
+      const response = await publishEvaluation(sunriseTeacherToken, "00000000-0000-0000-0000-000000000000");
       expect(response.status).toBe(404);
     });
 
@@ -408,11 +411,11 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const [s0] = await createScratchStudents(1, "Idem");
       const [evaluationId] = await createEvaluationsForSubject(subjectId, armId, 1);
       await scoreEvaluation(sunriseAdminToken, subjectId, evaluationId, [{ studentId: s0, rawScore: 100 }]);
-      const first = await publishEvaluation(sunriseAdminToken, evaluationId);
+      const first = await publishEvaluation(sunriseTeacherToken, evaluationId);
       expect(first.status).toBe(200);
       expect(first.body.publishedCount).toBe(1);
 
-      const second = await publishEvaluation(sunriseAdminToken, evaluationId);
+      const second = await publishEvaluation(sunriseTeacherToken, evaluationId);
       expect(second.status).toBe(409);
       expect(second.body.message).toMatch(/already published/i);
     });
@@ -428,7 +431,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       await scoreEvaluation(sunriseAdminToken, subjectId, evaluationId, [{ studentId: complete, rawScore: 40 }]);
       // `incomplete` never scored, never marked absent on this evaluation.
 
-      const response = await publishEvaluation(sunriseAdminToken, evaluationId);
+      const response = await publishEvaluation(sunriseTeacherToken, evaluationId);
       expect(response.status).toBe(409);
       expect(response.body.message).toMatch(/1 student/i);
       expect(response.body.incompleteStudentIds).toEqual([incomplete]);
@@ -483,14 +486,18 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       expect(response.status).toBe(401);
     });
 
+    // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — publish is TEACHER-only
+    // now, so a real TEACHER token (not admin) is needed on both sides to
+    // actually reach the tenant-scope check this test is about — an admin
+    // token would 403 on role alone before ever getting there.
     it("404s (not 403) cross-tenant, both directions", async () => {
       const subjectId = await createScratchSubject("E2E Publish CrossTenant");
       const [sunriseEvaluationId] = await createEvaluationsForSubject(subjectId, armId, 1);
 
-      const a = await publishEvaluation(sunriseAdminToken, hillcrestScratchEvaluationId!);
+      const a = await publishEvaluation(sunriseTeacherToken, hillcrestScratchEvaluationId!);
       expect(a.status).toBe(404);
 
-      const b = await publishEvaluation(hillcrestAdminToken, sunriseEvaluationId);
+      const b = await publishEvaluation(hillcrestTeacherToken, sunriseEvaluationId);
       expect(b.status).toBe(404);
     });
   });
@@ -502,10 +509,11 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const [evaluationId] = await createEvaluationsForSubject(subjectId, armId, 1);
       await scoreEvaluation(sunriseAdminToken, subjectId, evaluationId, [{ studentId: s0, rawScore: 80 }]);
 
-      const publishRes = await publishEvaluation(sunriseAdminToken, evaluationId);
+      // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — publish is TEACHER-only.
+      const publishRes = await publishEvaluation(sunriseTeacherToken, evaluationId);
       expect(publishRes.status).toBe(200);
 
-      // SCHOOL_ADMIN can publish but not unpublish — owner-only.
+      // SCHOOL_ADMIN can't publish OR unpublish now — categorically excluded from both.
       const adminAttempt = await unpublishEvaluation(sunriseAdminToken, evaluationId);
       expect(adminAttempt.status).toBe(403);
 
@@ -545,8 +553,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const [eval1, eval2] = await createEvaluationsForSubject(subjectId, armId, 2);
       await scoreEvaluation(sunriseAdminToken, subjectId, eval1, [{ studentId: s0, rawScore: 60 }]);
       await scoreEvaluation(sunriseAdminToken, subjectId, eval2, [{ studentId: s0, rawScore: 40 }]);
-      expect((await publishEvaluation(sunriseAdminToken, eval1)).status).toBe(200);
-      expect((await publishEvaluation(sunriseAdminToken, eval2)).status).toBe(200);
+      expect((await publishEvaluation(sunriseTeacherToken, eval1)).status).toBe(200);
+      expect((await publishEvaluation(sunriseTeacherToken, eval2)).status).toBe(200);
 
       const beforeUnpublish = await prisma.termSubjectResult.findUniqueOrThrow({
         where: { studentId_subjectId_termId_sessionId: { studentId: s0, subjectId, termId: sunriseTermId, sessionId: sunriseSessionId } },
@@ -672,7 +680,18 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       expect(response.body.termLocked).toBe(true);
     });
 
-    it("blocks SCHOOL_ADMIN's publish too — the fix applies to every role, not just the new TEACHER path", async () => {
+    // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — this test previously
+    // proved the closed-term fix "applies to every role, not just the new
+    // TEACHER path," using SCHOOL_ADMIN as the other role. That premise is
+    // now void: SCHOOL_ADMIN can't reach publishEvaluation() AT ALL any
+    // more (categorical @Roles(TEACHER) route guard), so there's no other
+    // role left to prove the term-lock check against — the sibling test
+    // above (assigned TEACHER) is the only one that still can. Repurposed
+    // into the guardrail Item 4 itself asks for: the role gate rejects
+    // SCHOOL_ADMIN/PROPRIETOR BEFORE the term-lock (or any other) check
+    // ever runs — 403, not 409, even against an evaluation in an
+    // already-closed term.
+    it("SCHOOL_ADMIN and PROPRIETOR now 403 categorically on publish — the role gate fires before the term-lock check even runs", async () => {
       const subjectId = await createScratchSubject("E2E ClosedTerm Publish Admin");
       await prisma.subjectTeacherAssignment.create({
         data: { schoolId: sunriseId, subjectId, classArmId: armId, sessionId: closedTermSessionId, teacherUserId },
@@ -681,10 +700,11 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         data: { schoolId: sunriseId, classArmId: armId, subjectId, sessionId: closedTermSessionId, termId: closedTermId, name: "CA 1", description: "CA 1", createdBy: teacherUserId },
       });
 
-      const response = await publishEvaluation(sunriseAdminToken, evaluation.id);
+      const adminResponse = await publishEvaluation(sunriseAdminToken, evaluation.id);
+      expect(adminResponse.status).toBe(403);
 
-      expect(response.status).toBe(409);
-      expect(response.body.termLocked).toBe(true);
+      const proprietorResponse = await publishEvaluation(sunriseProprietorToken, evaluation.id);
+      expect(proprietorResponse.status).toBe(403);
     });
 
     it("blocks PROPRIETOR's unpublish too, even on an evaluation published before the term was closed", async () => {
@@ -762,7 +782,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       // Publishing just evaluationIds[0] is enough: scoreTotal set the SAME
       // value on every evaluation, so the subject's derived total already
       // equals 51 with only one of them published.
-      const publishRes = await publishEvaluation(sunriseAdminToken, evaluationIds[0]);
+      const publishRes = await publishEvaluation(sunriseTeacherToken, evaluationIds[0]);
       expect(publishRes.status).toBe(200);
 
       const published = await prisma.termSubjectResult.findUniqueOrThrow({
@@ -794,7 +814,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const [s0] = await createScratchStudents(1, "OvrPublished");
       const evaluationIds = await createEvaluationsForSubject(subjectId, armId);
       await scoreTotal(sunriseAdminToken, subjectId, evaluationIds, [{ studentId: s0, total: 51 }]);
-      const publishRes = await publishEvaluation(sunriseAdminToken, evaluationIds[0]);
+      const publishRes = await publishEvaluation(sunriseTeacherToken, evaluationIds[0]);
       const publishedPosition = publishRes.body.subjectPositions[0].subjectPosition;
 
       const row = await prisma.termSubjectResult.findUniqueOrThrow({
@@ -921,7 +941,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
 
       // Publishing just sharedEvaluationIds[0] is enough — scoreTotal set
       // the same value across every evaluation.
-      const sharedPublish = await publishEvaluation(sunriseAdminToken, sharedEvaluationIds[0]);
+      const sharedPublish = await publishEvaluation(sunriseTeacherToken, sharedEvaluationIds[0]);
       expect(sharedPublish.status).toBe(200);
       expect(sharedPublish.body.publishedCount).toBe(4);
 
@@ -1009,10 +1029,10 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       // entered, never marked absent.
       await scoreEvaluation(sunriseAdminToken, subjectId, eval2, [{ studentId: complete, rawScore: 60 }], armId);
 
-      const eval1Publish = await publishEvaluation(sunriseAdminToken, eval1);
+      const eval1Publish = await publishEvaluation(sunriseTeacherToken, eval1);
       expect(eval1Publish.status).toBe(200);
 
-      const eval2Publish = await publishEvaluation(sunriseAdminToken, eval2);
+      const eval2Publish = await publishEvaluation(sunriseTeacherToken, eval2);
       expect(eval2Publish.status).toBe(409);
       expect(eval2Publish.body.message).toMatch(/1 student/i);
       expect(eval2Publish.body.incompleteStudentIds).toEqual([incomplete]);
@@ -1033,13 +1053,13 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       await scoreEvaluation(sunriseAdminToken, subjectId, evaluationId, [{ studentId: s0, rawScore: 15 }], armId);
       // s1's row on this evaluation still blank.
 
-      const blocked = await publishEvaluation(sunriseAdminToken, evaluationId);
+      const blocked = await publishEvaluation(sunriseTeacherToken, evaluationId);
       expect(blocked.status).toBe(409);
       expect(blocked.body.incompleteStudentIds).toEqual([s1]);
 
       await scoreEvaluation(sunriseAdminToken, subjectId, evaluationId, [{ studentId: s1, rawScore: 8 }], armId);
 
-      const allowed = await publishEvaluation(sunriseAdminToken, evaluationId);
+      const allowed = await publishEvaluation(sunriseTeacherToken, evaluationId);
       expect(allowed.status).toBe(200);
       expect(allowed.body.publishedCount).toBe(2);
     });
@@ -1059,7 +1079,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       expect(absentRes.status).toBe(200);
 
       // Publish all three — eval3's absent mark satisfies its own gate.
-      const response = await publishAllEvaluations(sunriseAdminToken, [eval1, eval2, eval3]);
+      const response = await publishAllEvaluations(sunriseTeacherToken, [eval1, eval2, eval3]);
       expect(response.body.publishedCount).toBe(1);
       const persistedEval3 = await prisma.evaluation.findUniqueOrThrow({ where: { id: eval3 } });
       expect(persistedEval3.status).toBe("PUBLISHED");
@@ -1087,7 +1107,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         armId,
       );
 
-      const publishRes = await publishEvaluation(sunriseAdminToken, evaluationIds[0]);
+      const publishRes = await publishEvaluation(sunriseTeacherToken, evaluationIds[0]);
       expect(publishRes.status).toBe(200);
       expect(publishRes.body.publishedCount).toBe(3);
 
@@ -1181,7 +1201,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         { studentId: sA, total: 100 },
         { studentId: sB, total: 100 },
       ], armId);
-      const publishA2 = await publishEvaluation(sunriseAdminToken, a2Evals[0]);
+      const publishA2 = await publishEvaluation(sunriseTeacherToken, a2Evals[0]);
       expect(publishA2.status).toBe(200);
 
       // subjectC2: left DRAFT for now — this is what the concurrent
@@ -1204,7 +1224,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
           .put("/api/v1/grades/evaluation-scores")
           .set(auth(sunriseAdminToken))
           .send({ classArmId: armId, subjectId: subjectB2, evaluationId: subjectB2Eval, termId: sunriseTermId, scores: [{ studentId: sA, rawScore: 5 }] }),
-        publishEvaluation(sunriseAdminToken, c2Evals[0]),
+        publishEvaluation(sunriseTeacherToken, c2Evals[0]),
       ]);
       expect(saveRes.status).toBe(200);
       expect(publishRes.status).toBe(200);
@@ -1259,7 +1279,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         ],
         armId,
       );
-      const publishRes = await publishEvaluation(sunriseAdminToken, evaluationIds[0]);
+      const publishRes = await publishEvaluation(sunriseTeacherToken, evaluationIds[0]);
       expect(publishRes.status).toBe(200);
 
       const [s0Before, s1Before, s2Before] = await Promise.all(
@@ -1327,7 +1347,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
         { studentId: sA, total: 100 },
         { studentId: sB, total: 100 },
       ], armId);
-      const publishA2 = await publishEvaluation(sunriseAdminToken, a2Evals[0]);
+      const publishA2 = await publishEvaluation(sunriseTeacherToken, a2Evals[0]);
       expect(publishA2.status).toBe(200);
 
       // subjectC2: left DRAFT — what the concurrent publish call will publish.
@@ -1356,7 +1376,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
           .post("/api/v1/grades/recompute")
           .set(auth(sunriseAdminToken))
           .send({ classArmId: armId, subjectId: subjectB2, termId: sunriseTermId }),
-        publishEvaluation(sunriseAdminToken, c2Evals[0]),
+        publishEvaluation(sunriseTeacherToken, c2Evals[0]),
       ]);
       expect(recomputeRes.status).toBe(200);
       expect(publishRes.status).toBe(200);
@@ -1401,10 +1421,10 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       const [eval1, eval2] = await createEvaluationsForSubject(subjectId, armId, 2);
       await scoreEvaluation(sunriseAdminToken, subjectId, eval1, [{ studentId: s0, rawScore: 60 }]);
       await scoreEvaluation(sunriseAdminToken, subjectId, eval2, [{ studentId: s0, rawScore: 0 }]);
-      expect((await publishEvaluation(sunriseAdminToken, eval1)).status).toBe(200); // settled: eval1 published at 60
+      expect((await publishEvaluation(sunriseTeacherToken, eval1)).status).toBe(200); // settled: eval1 published at 60
 
       const [publishRes, saveRes] = await Promise.all([
-        publishEvaluation(sunriseAdminToken, eval2),
+        publishEvaluation(sunriseTeacherToken, eval2),
         request(app.getHttpServer())
           .put("/api/v1/grades/evaluation-scores")
           .set(auth(sunriseAdminToken))
@@ -1437,8 +1457,8 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       // C: 80. D: 40. Both DRAFT (never published).
 
       const [resC, resD] = await Promise.all([
-        publishEvaluation(sunriseAdminToken, cEvals[0]),
-        publishEvaluation(sunriseProprietorToken, dEvals[0]),
+        publishEvaluation(sunriseTeacherToken, cEvals[0]),
+        publishEvaluation(sunriseTeacherToken, dEvals[0]),
       ]);
       expect(resC.status).toBe(200);
       expect(resD.status).toBe(200);
@@ -1478,7 +1498,7 @@ describe("Grades publish/unpublish/override (e2e)", () => {
       );
 
       const start = Date.now();
-      const response = await publishEvaluation(sunriseAdminToken, eval1);
+      const response = await publishEvaluation(sunriseTeacherToken, eval1);
       const elapsedMs = Date.now() - start;
       // eslint-disable-next-line no-console
       console.log(`[grades-publish] 100-student publish + position computation: ${elapsedMs}ms`);

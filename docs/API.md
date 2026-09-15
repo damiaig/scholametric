@@ -1299,22 +1299,22 @@ one row per bulk save, metadata includes `publishedBypassStudentIds` (empty
 for an ordinary save, populated only for the admin/proprietor published-lock
 bypass above, so that sensitive path stays traceable).
 
-### `GET /grades/evaluations` / `POST /grades/evaluations` (v0.7 step 2, SPEC_V0.7.md §3)
+### `GET /grades/evaluations` / `POST /grades/evaluations` (v0.7 step 2, SPEC_V0.7.md §3; POST narrowed v0.7.4 step 3)
 
-The authoring surface — teacher-created evaluations. `TEACHER` (must hold
-the `subject_teacher_assignment`)/`SCHOOL_ADMIN`/`PROPRIETOR` — same role
-list as scoring (confirmed: an admin stepping in for a teacher may author
-too). **v0.7.4 step 1** (SPEC_V0.7.4.md §2): an `Evaluation` now carries its
-OWN `status`/`publishedAt` columns — publish is per-evaluation, so
-authoring gates below check THIS evaluation's own status, not a
-subject-wide `term_subject_results` lookup the way pre-v0.7.4 did.
+The authoring surface — teacher-created evaluations. **v0.7.4 step 1**
+(SPEC_V0.7.4.md §2): an `Evaluation` now carries its OWN `status`/
+`publishedAt` columns — publish is per-evaluation, so authoring gates
+below check THIS evaluation's own status, not a subject-wide
+`term_subject_results` lookup the way pre-v0.7.4 did.
 
-**`GET`** — query: `classArmId`, `subjectId`, `termId`. Returns every
-active (non-deleted) evaluation for that exact slice, oldest first, plus
-the SAME lock-state fields `GET /grades/evaluation-scores` carries
-(`termClosed`, `locked`, `unlockReason`) — so a "+ New evaluation"
-affordance can show a blocked state up front, before the teacher opens the
-form, not as a bare `409` after submitting.
+**`GET`** — `TEACHER` (must hold the `subject_teacher_assignment`)/
+`SCHOOL_ADMIN`/`PROPRIETOR` — same role list as scoring, unchanged. Query:
+`classArmId`, `subjectId`, `termId`. Returns every active (non-deleted)
+evaluation for that exact slice, oldest first, plus the SAME lock-state
+fields `GET /grades/evaluation-scores` carries (`termClosed`, `locked`,
+`unlockReason`) — so a "+ New evaluation" affordance can show a blocked
+state up front, before the teacher opens the form, not as a bare `409`
+after submitting.
 
 ```json
 {
@@ -1326,19 +1326,26 @@ form, not as a bare `409` after submitting.
 }
 ```
 
-**`POST`** — body: `{ classArmId, subjectId, termId, name, description }`.
-`name` (1-200 chars) and `description` (1-2000 chars) are both required
-(SPEC_V0.7.md §3 — no optional description). classArmId/subjectId/termId
-are fixed at creation — there is no "move this evaluation to another
-term" operation. Always created `DRAFT`.
+**`POST`** — **`TEACHER`-only as of v0.7.4 step 3** (SPEC_V0.7.4.md §4,
+Item 4): `SCHOOL_ADMIN`/`PROPRIETOR` get a categorical `403` — evaluation
+authorship no longer has an admin-stepping-in escape hatch, even against a
+subject with no `subject_teacher_assignment` at all (the `403` fires on
+role before tenant/data resolution ever runs). Body: `{ classArmId,
+subjectId, termId, name, description }`. `name` (1-200 chars) and
+`description` (1-2000 chars) are both required (SPEC_V0.7.md §3 — no
+optional description). classArmId/subjectId/termId are fixed at creation —
+there is no "move this evaluation to another term" operation. Always
+created `DRAFT`.
 
 - **`409` `{ termLocked: true }`**: the term is closed for this class+
   subject with no active unlock — same shared term lock the scoring
   endpoints use (closing a term blocks editing either track).
-- **`403`**: `TEACHER` not assigned to this subject/class.
-- **`404`**: any id doesn't resolve within the caller's tenant, or no
-  `subject_teacher_assignment` exists at all for this (subject, class arm,
-  session) — same "hidden, not forbidden" rule as scoring.
+- **`403`**: `TEACHER` not assigned to this subject/class (or any
+  non-`TEACHER` role, categorically).
+- **`404`**: any id doesn't resolve within the caller's tenant — an
+  assigned `TEACHER`'s cross-tenant attempt, specifically (no
+  `subject_teacher_assignment` for a *non-existent-to-this-caller*
+  subject/class looks identical to a real cross-tenant miss).
 
 **No published-subject gate any more** (v0.7.4 step 1 — removed): a
 sibling evaluation of the same subject being `PUBLISHED` has no bearing on
@@ -1350,18 +1357,21 @@ doesn't disturb CA1's already-derived contribution to the subject total.
 
 Audited (`evaluation.create`, standard `@Audit()`/`AuditInterceptor`).
 
-### `PATCH /grades/evaluations/:id` (v0.7 step 2, re-scoped v0.7.4 step 1)
+### `PATCH /grades/evaluations/:id` (v0.7 step 2, re-scoped v0.7.4 step 1, narrowed v0.7.4 step 3)
 
+`TEACHER`-only (assigned), categorical — same narrowing as `POST` above.
 Body: `{ name?, description? }` — at least one required (`400` if both
 omitted). Name/description only; re-scoping isn't in scope.
 
-- Freely editable by `TEACHER` (assigned)/`SCHOOL_ADMIN`/`PROPRIETOR`
-  while **this evaluation** is `DRAFT`.
-- **`403`** once **this evaluation** is `PUBLISHED`: only `PROPRIETOR` may
-  edit from that point — the same data-dependent role-narrowing shape
-  `PUT /grades/override` already uses, re-scoped from "the subject" (pre-
-  v0.7.4) to "this evaluation" — a sibling evaluation's publish state has
-  no bearing on this one any more.
+- Freely editable by the assigned `TEACHER` while **this evaluation** is
+  `DRAFT`.
+- **`403` for EVERY role, including `PROPRIETOR`, once this evaluation is
+  `PUBLISHED`** (v0.7.4 step 3 — the PROPRIETOR edit-through-published
+  escape hatch is removed entirely). "Declared final = frozen" now applies
+  to the owner too: `POST /grades/evaluations/:id/unpublish` first, then
+  edit, then republish. (Previously: `PROPRIETOR` alone could still edit a
+  published evaluation, mirroring `PUT /grades/override`'s data-dependent
+  shape — that mirroring is gone; override itself is unchanged.)
 - Same term-lock `409` as create.
 - No recompute — name/description never feed the average.
 
@@ -1426,9 +1436,9 @@ already-published students' positions.
 Publish moved from the subject to the individual `Evaluation` — the route
 param carries the evaluation id (it already knows its own
 `classArmId`/`subjectId`/`termId`), no request body. `200`, not `201`.
-Role shape carried over unchanged from v0.7.3: `SCHOOL_ADMIN`/`PROPRIETOR`
-(director-or-owner), or a `TEACHER` publishing an evaluation of a subject
-they're assigned to.
+**`TEACHER`-only as of v0.7.4 step 3** (must hold the assignment) —
+`SCHOOL_ADMIN`/`PROPRIETOR` publishing on a teacher's behalf is gone;
+publish is authorship, same narrowing as `POST`/`PATCH` above.
 
 Sets **this evaluation's own** `status: PUBLISHED`/`publishedAt = now`,
 then re-derives `term_subject_results` for the whole class-arm roster from
@@ -1859,10 +1869,13 @@ Audited (`exams.reject`).
 
 ### `POST /exams/unpublish`
 
-`PROPRIETOR` only. **Unaffected by v0.7.4 step 2** — reverts every
-currently-`PUBLISHED` row for the subject/class/term back to `DRAFT` and
-cascades the same two aggregates above (a student dropping out of a
-fully-published term also drops out of that term's ranking, and the
+`SCHOOL_ADMIN` or `PROPRIETOR` — **widened from `PROPRIETOR`-only in
+v0.7.4 step 3** (SPEC_V0.7.4.md §4, resolving the spec's own Q6): unpublish
+is an oversight action, not authorship, so it now matches
+approve/reject's role set. `TEACHER` remains categorically excluded.
+Reverts every currently-`PUBLISHED` row for the subject/class/term back to
+`DRAFT` and cascades the same two aggregates above (a student dropping out
+of a fully-published term also drops out of that term's ranking, and the
 year-level average recomputes without their now-unpublished term).
 
 **Response `200`**: `{ classArmId, subjectId, termId, unpublishedCount, termExamRevertedCount, yearExamRecomputedCount }`.

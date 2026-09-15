@@ -149,7 +149,7 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
   async function publishSubject(bundle: ScratchBundle) {
     let body: unknown;
     for (const evaluationId of bundle.evaluationIds) {
-      const res = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseAdminToken));
+      const res = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseTeacherToken));
       if (res.status !== 200) throw new Error(`publish failed for ${evaluationId}: ${res.status} ${JSON.stringify(res.body)}`);
       body = res.body;
     }
@@ -440,7 +440,7 @@ describe("Mark absent after publish (e2e) — SPEC_V0.5.1.md §2.5, v0.5.1 step 
         .send(scoreBody(bundle, bundle.evaluationIds[2], high, { isAbsent: true })),
       request(app.getHttpServer())
         .post(`/api/v1/grades/evaluations/${subjectBEvaluationIds[0]}/publish`)
-        .set(auth(sunriseAdminToken)),
+        .set(auth(sunriseTeacherToken)),
     ]);
 
     expect(correctionRes.status).toBe(200);

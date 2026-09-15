@@ -714,10 +714,11 @@ export class GradesService {
     };
   }
 
-  // Create: TEACHER (must hold the assignment)/SCHOOL_ADMIN/PROPRIETOR,
-  // matching the scoring endpoint's own role list (confirmed — an admin
-  // stepping in for a teacher can author too). Term-lock first (shared
-  // with the exam track, same key order as saveEvaluationScores).
+  // Create: TEACHER-only, must hold the assignment (v0.7.4 step 3,
+  // SPEC_V0.7.4.md §4, Item 4 — admin/proprietor stepping in to author
+  // for a teacher is no longer possible; "teachers own evaluations
+  // entirely"). Term-lock first (shared with the exam track, same key
+  // order as saveEvaluationScores).
   // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the old "subject already
   // published blocks creating a new evaluation" gate is REMOVED: that
   // was a consequence of subject-publish being the only publish unit
@@ -774,13 +775,15 @@ export class GradesService {
   }
 
   // Edit name/description only (classArmId/subjectId/termId are immutable
-  // — re-scoping isn't a "fix a typo" edit). Freely editable while THIS
-  // evaluation is DRAFT; once IT is PUBLISHED, only PROPRIETOR may edit —
-  // same data-dependent role-narrowing shape override() already uses,
-  // just re-scoped from "the subject" to "this evaluation" (v0.7.4 step 1,
-  // SPEC_V0.7.4.md §2/§6): a sibling evaluation's publish state has no
-  // bearing on this one anymore. No recompute needed: name/description
-  // never feed the average.
+  // — re-scoping isn't a "fix a typo" edit). TEACHER-only at the route
+  // (v0.7.4 step 3, SPEC_V0.7.4.md §4, Item 4 — admin/proprietor can no
+  // longer author evaluations at all). Freely editable while THIS
+  // evaluation is DRAFT; once IT is PUBLISHED, editing is frozen for
+  // EVERYONE — no PROPRIETOR escape hatch any more (v0.7.4 step 1 through
+  // step 2 had one, mirroring override()'s data-dependent role-narrowing;
+  // step 3 removes it: "declared final = frozen," unpublish first, then
+  // edit, matching every other publish-lock in this codebase). No
+  // recompute needed: name/description never feed the average.
   async updateEvaluation(evaluationId: string, dto: UpdateEvaluationDto, user: AuthenticatedUser): Promise<EvaluationResponse> {
     if (dto.name === undefined && dto.description === undefined) {
       throw new BadRequestException("At least one of name or description must be provided.");
@@ -816,8 +819,8 @@ export class GradesService {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjLockKey}))`;
 
       const freshEvaluation = await tx.evaluation.findUniqueOrThrow({ where: { id: evaluationId } });
-      if (freshEvaluation.status === ResultStatus.PUBLISHED && user.role !== UserRole.PROPRIETOR) {
-        throw new ForbiddenException("Only the school owner (PROPRIETOR) may edit an evaluation once it's published.");
+      if (freshEvaluation.status === ResultStatus.PUBLISHED) {
+        throw new ForbiddenException("Cannot edit an evaluation once it's published — unpublish first.");
       }
 
       const updated = await tx.evaluation.update({
@@ -1011,9 +1014,11 @@ export class GradesService {
   // (recomputeStudents) — the subject itself has no publish action of
   // its own anymore; re-ranks the ENTIRE currently-published set for this
   // subject, same as old publish() did, since one evaluation publishing
-  // can shift everyone's relative total. Role shape carried over
-  // unchanged from v0.7.3 (Item 4's admin-narrowing is a later step, not
-  // this one): TEACHER (assigned) + SCHOOL_ADMIN + PROPRIETOR.
+  // can shift everyone's relative total. v0.7.4 step 3 (SPEC_V0.7.4.md §4,
+  // Item 4): TEACHER-only now, categorical — admin/proprietor's route to
+  // declaring an evaluation final is gone (was TEACHER + SCHOOL_ADMIN +
+  // PROPRIETOR through step 2). Fine-grained assignment scoping below is
+  // unchanged.
   async publishEvaluation(evaluationId: string, user: AuthenticatedUser): Promise<PublishEvaluationResponse> {
     const schoolId = this.tenantContext.schoolId;
     const evaluation = await this.prisma.evaluation.findFirst({ where: forSchool(schoolId, { id: evaluationId, deletedAt: null }) });

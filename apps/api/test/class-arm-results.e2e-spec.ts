@@ -329,7 +329,7 @@ describe("GET /class-arms/:id/results (e2e)", () => {
     // matches with only one of them published.
     const publishRes = await request(app.getHttpServer())
       .post(`/api/v1/grades/evaluations/${pubEval1}/publish`)
-      .set(auth(sunriseAdminToken));
+      .set(auth(teacherClassToken));
     expect(publishRes.status).toBe(200);
     expect(publishRes.body.publishedCount).toBe(2); // both p0 and p1 were complete
 

@@ -109,7 +109,7 @@ describe("Student read views (e2e) — SPEC_V0.6.md §2.3, v0.6 step 3", () => {
   // ids here.
   async function publishEvaluations(evaluationIds: string[]) {
     for (const evaluationId of evaluationIds) {
-      const response = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseAdminToken));
+      const response = await request(app.getHttpServer()).post(`/api/v1/grades/evaluations/${evaluationId}/publish`).set(auth(sunriseTeacherToken));
       if (response.status !== 200) {
         throw new Error(`publish failed for ${evaluationId}: ${response.status} ${JSON.stringify(response.body)}`);
       }

@@ -18,9 +18,17 @@ interface EvaluationPickerProps {
   termId: string;
   value: string;
   onChange: (evaluationId: string) => void;
-  /** Renders "+ New", per-selection Edit/Delete, and the closed-term lock banner. False for read-only pickers (e.g. MarkAbsentDialog). */
+  /** Renders the closed-term lock banner and mounts the create/edit + delete dialogs. False for read-only pickers (e.g. MarkAbsentDialog). */
   allowManage?: boolean;
-  /** PROPRIETOR only — shows Delete on the currently selected evaluation. Ignored when allowManage is false. */
+  /**
+   * v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — TEACHER (assigned) only:
+   * shows "+ New" and Edit. Split from `allowManage`/`canDelete` because
+   * create/edit (TEACHER-only) and delete (PROPRIETOR-only) are no longer
+   * nested role sets — a PROPRIETOR who isn't the assigned teacher must
+   * still see Delete without this flag being true.
+   */
+  canCreateOrEdit?: boolean;
+  /** PROPRIETOR only — shows Delete on the currently selected evaluation. Independent of canCreateOrEdit; still requires allowManage. */
   canDelete?: boolean;
   /** SCHOOL_ADMIN/PROPRIETOR — passed through to the lock banner's Unlock/Relock controls. */
   canManageTermLock?: boolean;
@@ -43,6 +51,7 @@ export function EvaluationPicker({
   value,
   onChange,
   allowManage = false,
+  canCreateOrEdit = false,
   canDelete = false,
   canManageTermLock = false,
   id = "evaluation-select",
@@ -83,20 +92,22 @@ export function EvaluationPicker({
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
         <Label id={labelId}>{label}</Label>
-        {allowManage && (
+        {allowManage && (canCreateOrEdit || canDelete) && (
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={openCreate}
-              disabled={evaluationsQuery.data?.locked ?? false}
-              title={evaluationsQuery.data?.locked ? "This term is closed — ask your principal/proprietor to unlock before adding an evaluation." : undefined}
-            >
-              <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-              New
-            </Button>
-            {selected && (
+            {canCreateOrEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={openCreate}
+                disabled={evaluationsQuery.data?.locked ?? false}
+                title={evaluationsQuery.data?.locked ? "This term is closed — ask your principal/proprietor to unlock before adding an evaluation." : undefined}
+              >
+                <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+                New
+              </Button>
+            )}
+            {selected && canCreateOrEdit && (
               <Button type="button" variant="outline" size="sm" aria-label={`Edit ${selected.name}`} onClick={openEdit}>
                 <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
@@ -179,7 +190,7 @@ export function EvaluationPicker({
         />
       )}
 
-      {allowManage && (
+      {allowManage && canCreateOrEdit && (
         <EvaluationFormDialog
           open={formOpen}
           onClose={() => setFormOpen(false)}

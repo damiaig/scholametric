@@ -17,10 +17,14 @@ import { CreateExamDto } from "./dto/create-exam.dto";
 import { UpdateExamDto } from "./dto/update-exam.dto";
 import { GetExamsReviewQueryDto } from "./dto/get-exams-review-query.dto";
 
-// Mirrors GradesController's role split exactly (SPEC_V0.7.md §2, "same
-// publish model as v0.4" applied to the exam track): TEACHER for score
-// entry only, SCHOOL_ADMIN/PROPRIETOR for recompute/publish, PROPRIETOR
-// only for unpublish. SUPER_ADMIN deliberately absent.
+// Mirrors GradesController's role split (SPEC_V0.7.md §2, "same publish
+// model as v0.4" applied to the exam track): TEACHER for score entry;
+// SCHOOL_ADMIN/PROPRIETOR for recompute, approve, reject, and (v0.7.4
+// step 3, Q6) unpublish. SUPER_ADMIN deliberately absent. Unlike the
+// evaluation track, exam authoring/submit was never SCHOOL_ADMIN/
+// PROPRIETOR-accessible to begin with (submit-for-approval is TEACHER-
+// only since v0.7.4 step 2), so step 3's admin-narrowing has nothing to
+// remove here — only the unpublish widening above.
 @Roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
 @Controller("exams")
 export class ExamsController {
@@ -103,7 +107,12 @@ export class ExamsController {
     return this.examsService.reject(dto, user);
   }
 
-  @Roles(UserRole.PROPRIETOR)
+  // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Q6) — widened from PROPRIETOR-only:
+  // both oversight roles keep exam-approval + unpublish (unlike the
+  // evaluation track, exam authoring was never teacher-exclusive to begin
+  // with, so there's no "admin loses authorship" narrowing to balance
+  // here — this is purely resolving spec's own Q6 in favor of "both").
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
   @Post("unpublish")
   @HttpCode(HttpStatus.OK)
   unpublish(@Body() dto: UnpublishExamGradesDto, @CurrentUser() user: AuthenticatedUser) {

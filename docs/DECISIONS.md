@@ -5558,3 +5558,79 @@ check it was meant to prove). Full backend e2e suite: 475/475 (38 suites)
 after — net +13 over the 462 baseline (11 new tests in the rewritten
 `exams-publish.e2e-spec.ts`, 1 new leak test, 1 new exam-rankings
 cross-tenant assertion added). Full web suite: 304/304 (49 files) after.
+
+## 2026-09-15 — v0.7.4 step 3: evaluation authorship narrowed to TEACHER-only; exam unpublish widened to SCHOOL_ADMIN+PROPRIETOR; teacher's grades picker filters to own subjects
+Decision: `createEvaluation`/`updateEvaluation`/`publishEvaluation`
+(`apps/api/src/grades/grades.controller.ts`) are now `@Roles(TEACHER)`
+only — SCHOOL_ADMIN and PROPRIETOR can no longer author or publish an
+evaluation at all (categorical 403, not data-dependent). `deleteEvaluation`
+stays PROPRIETOR-only (unchanged — delete was never in Item 4's
+"create, modify, or publish" verb list, and extending it to teacher would
+be granting a new capability, not narrowing one). `recompute` and
+`override` are unchanged for the same reason: derived-state re-trigger and
+display-layer correction, not authorship. `unpublishEvaluation` is also
+unchanged (still TEACHER own-assignment + PROPRIETOR) — admin can never
+GRANT visibility, but proprietor keeps the correction lever to REMOVE it.
+`updateEvaluation`'s PUBLISHED-PROPRIETOR edit escape hatch is removed
+entirely: `grades.service.ts` now 403s EVERY role on an edit attempt
+against a published evaluation, full stop — "declared final = frozen"
+applies to the owner too, matching every other publish-lock already in
+this codebase. Unpublish-then-edit-then-republish is the only path now.
+On the exam track, `POST /exams/unpublish` widens from PROPRIETOR-only to
+`SCHOOL_ADMIN + PROPRIETOR` (`exams.controller.ts`), resolving the spec's
+own Q6 — it now matches approve/reject's existing role set, since all
+three are oversight actions, not authorship.
+
+`ClassGradesPage`'s "Pick a subject to enter scores" list
+(`apps/web/src/features/grades/ClassGradesPage.tsx`) filters to only the
+subjects where the signed-in TEACHER is the assigned
+`subjectTeachers[].teacherUserId`, with a distinct empty-state message
+when a teacher has zero assignments in the class arm. This is a pure
+frontend/UX filter, not a security boundary — the server-side
+`assertTeacherAssignment` 403 on the write endpoints is untouched and
+remains the real gate. SCHOOL_ADMIN/PROPRIETOR see every subject,
+unfiltered. The Results-tab oversight view (`ClassArmResultsView`) is
+deliberately untouched — out of scope per the spec's own parenthetical.
+
+Reason: Item 4 (SPEC_V0.7.4.md §4) reads teachers as owning evaluation
+authorship entirely, admin/proprietor kept only as oversight (approve
+exams, unpublish, override, delete). Item 5 asks teachers to see only
+their own subjects on the authoring surface specifically, not the
+class-teacher oversight view.
+
+Mechanical fallout, confirmed by design not by accident: `EvaluationPicker`
+(`apps/web/src/features/grades/EvaluationPicker.tsx`) gained a
+`canCreateOrEdit` prop, decoupled from `canDelete` — the two were
+previously nested under one `allowManage` gate, but create/edit
+(TEACHER-only) and delete (PROPRIETOR-only) are no longer a subset
+relationship, so a proprietor who isn't the assigned teacher would
+otherwise lose Delete/the term-lock banner too.
+
+**Test impact.** Every e2e test that used an admin/proprietor token to
+create, update, or publish an evaluation needed either (a) a token swap to
+an assigned TEACHER — mechanical, ~30 occurrences across
+`grades-publish.e2e-spec.ts`, `evaluations-authoring.e2e-spec.ts`,
+`evaluations-engine.e2e-spec.ts`, `mark-absent-after-publish.e2e-spec.ts`,
+`report-card.e2e-spec.ts`, `class-arm-results.e2e-spec.ts`,
+`me-student.e2e-spec.ts`, `grades-review.e2e-spec.ts`,
+`me-parent.e2e-spec.ts` (the last two needed a new `sunriseTeacherToken`
+login added), or (b) a genuine assertion rewrite where the test's entire
+premise was voided by the narrowing — not a token swap, a logic change:
+`evaluations-authoring.e2e-spec.ts`'s "SCHOOL_ADMIN and PROPRIETOR can
+also create" became "...now 403 categorically," its "404s (not 403) ...
+subject with no teacher assigned" became "403s ... categorical, not
+data-dependent" (create no longer reaches tenant/data resolution for
+admin/proprietor at all), and its "edit after publish: ... 200s
+PROPRIETOR" became "frozen for EVERYONE, including PROPRIETOR" with a new
+unpublish-then-edit round-trip appended to prove the real path still
+works. `exams-publish.e2e-spec.ts`'s unpublish happy-path test similarly
+rewrote from "PROPRIETOR succeeds, SCHOOL_ADMIN 403s" to "both succeed,
+TEACHER 403s categorically" against two separate scratch bundles (a
+single bundle can't prove two roles both CAN, since the first successful
+unpublish leaves nothing for the second to unpublish). Full backend e2e
+suite: 475/475 (38 suites) — same count as the pre-step baseline, since
+this step redesigned existing assertions rather than adding new ones.
+Full web suite: 307/307 (49 files) after — net +3 over the 304 baseline
+(2 new cases in `ClassGradesPage.test.tsx` for the own-subjects filter, 1
+new case in `EvaluationPicker.test.tsx` for the `canCreateOrEdit`/
+`canDelete` decoupling).

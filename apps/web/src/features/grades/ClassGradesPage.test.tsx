@@ -489,9 +489,12 @@ describe("ClassGradesPage — Enter scores tab", () => {
   });
 
   // Non-negotiable: the closed-term block must stay VISIBLE in the
-  // restructured tab, not hidden by the navigation change.
+  // restructured tab, not hidden by the navigation change. v0.7.4 step 3
+  // (SPEC_V0.7.4.md §4, Item 4) — "New" is TEACHER-only now (the assigned
+  // teacher, per the TEACHING fixture: sub1/arm1), so this uses TEACHER
+  // rather than SCHOOL_ADMIN to actually exercise the button at all.
   it("closed term, no active unlock: the blocked state (disabled New + reason banner) still renders inside the Enter-scores tab", async () => {
-    mockCommon("SCHOOL_ADMIN", EVALUATIONS_CLOSED_LOCKED);
+    mockCommon("TEACHER", EVALUATIONS_CLOSED_LOCKED);
     renderPage("/grades/arms/arm1?tab=enter&subjectId=sub1&track=evaluations");
 
     expect(
@@ -558,6 +561,59 @@ describe("ClassGradesPage — Results tab", () => {
       "href",
       "/grades/arms/arm1?tab=enter&subjectId=sub1&track=exams",
     );
+  });
+
+  // v0.7.4 step 3 (SPEC_V0.7.4.md §5, Item 5) — a TEACHER (even a class
+  // teacher) picks a subject to enter scores for from only their OWN
+  // assigned subjects, not every subject taught in the class. Pure
+  // frontend filter over armDetail.data.subjectTeachers (no new query);
+  // SCHOOL_ADMIN/PROPRIETOR are unaffected (see the admin test above,
+  // still unfiltered).
+  it("TEACHER: the 'Pick a subject' list shows only their OWN subject, not a colleague's, even though both are taught in this class", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/auth/me") return TEACHER_USER;
+      if (path === "/api/v1/me/teaching") return TEACHING;
+      if (path === "/api/v1/class-arms/arm1")
+        return {
+          ...ARM1_DETAIL,
+          subjectTeachers: [
+            ARM1_DETAIL.subjectTeachers[0], // teacherUserId: "t1" — a colleague, not TEACHER_USER
+            {
+              id: "sta2",
+              subjectId: "sub2",
+              subjectName: "English Language",
+              teacherUserId: TEACHER_USER.id, // TEACHER_USER's own assignment
+              teacherFirstName: "Bola",
+              teacherLastName: "Ogundare",
+            },
+          ],
+        };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    renderPage("/grades/arms/arm1?tab=enter");
+
+    expect(
+      await screen.findByText("Pick a subject to enter scores"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("English Language")).toBeInTheDocument();
+    expect(screen.queryByText("Mathematics")).not.toBeInTheDocument();
+  });
+
+  it("TEACHER: 'Pick a subject' shows the not-assigned empty state when they teach no subject in this class", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/auth/me") return TEACHER_USER;
+      if (path === "/api/v1/me/teaching") return TEACHING;
+      if (path === "/api/v1/class-arms/arm1") return ARM1_DETAIL; // only "t1" (a colleague) teaches sub1 here
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    renderPage("/grades/arms/arm1?tab=enter");
+
+    expect(
+      await screen.findByText(
+        "You aren't assigned to teach any subject in this class.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Mathematics")).not.toBeInTheDocument();
   });
 
   it("TEACHER: Results tab shows the fixed current term, no term dropdown", async () => {

@@ -78,7 +78,7 @@ describe("EvaluationPicker", () => {
       throw new Error(`unexpected call: ${path}`);
     });
     renderWithProviders(
-      <EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={vi.fn()} allowManage canManageTermLock />,
+      <EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={vi.fn()} allowManage canCreateOrEdit canManageTermLock />,
     );
 
     expect(await screen.findByText(/This term is closed for this class and subject/)).toBeInTheDocument();
@@ -92,7 +92,7 @@ describe("EvaluationPicker", () => {
       throw new Error(`unexpected call: ${path}`);
     });
     renderWithProviders(
-      <EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={vi.fn()} allowManage canManageTermLock />,
+      <EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={vi.fn()} allowManage canCreateOrEdit canManageTermLock />,
     );
 
     expect(await screen.findByText(/Unlocked for editing/)).toBeInTheDocument();
@@ -106,7 +106,7 @@ describe("EvaluationPicker", () => {
       throw new Error(`unexpected call: ${path}`);
     });
     const user = userEvent.setup();
-    renderWithProviders(<EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={vi.fn()} allowManage />);
+    renderWithProviders(<EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="" onChange={vi.fn()} allowManage canCreateOrEdit />);
 
     const newButton = await screen.findByRole("button", { name: "New" });
     await waitFor(() => expect(newButton).not.toBeDisabled());
@@ -134,10 +134,27 @@ describe("EvaluationPicker", () => {
       if (path === "/api/v1/grades/evaluations") return OPEN;
       throw new Error(`unexpected call: ${path}`);
     });
-    renderWithProviders(<EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="e1" onChange={vi.fn()} allowManage />);
+    renderWithProviders(<EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="e1" onChange={vi.fn()} allowManage canCreateOrEdit />);
 
     await screen.findByRole("button", { name: "Edit CA 1" });
     expect(screen.queryByRole("button", { name: "Delete CA 1" })).not.toBeInTheDocument();
+  });
+
+  // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — the decoupling this step
+  // introduced: create/edit (TEACHER-only) and delete (PROPRIETOR-only)
+  // are no longer nested role sets. A PROPRIETOR viewing this picker
+  // (allowManage + canDelete, but NOT the assigned teacher) must still
+  // see Delete even with canCreateOrEdit=false.
+  it("canCreateOrEdit=false hides New/Edit but canDelete alone still shows Delete (proprietor-not-assigned-teacher case)", async () => {
+    mockedApiRequest.mockImplementation(async (path) => {
+      if (path === "/api/v1/grades/evaluations") return OPEN;
+      throw new Error(`unexpected call: ${path}`);
+    });
+    renderWithProviders(<EvaluationPicker classArmId="arm1" subjectId="sub1" termId="term1" value="e1" onChange={vi.fn()} allowManage canDelete />);
+
+    await screen.findByRole("button", { name: "Delete CA 1" });
+    expect(screen.queryByRole("button", { name: "New" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit CA 1" })).not.toBeInTheDocument();
   });
 
   it("deleting the selected evaluation clears the selection on success", async () => {

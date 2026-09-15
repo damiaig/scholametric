@@ -252,11 +252,13 @@ function EvaluationsTrack({
   // Publish/Unpublish buttons that used to live on the Results tab. Publish
   // is now per-evaluation, so the controls live here, next to the picker,
   // scoped to whichever evaluation is currently selected — mirroring
-  // ExamsTrack's own inline ConfirmDialog pattern. Role shape carried over
-  // unchanged from v0.7.3: TEACHER (assigned) + SCHOOL_ADMIN + PROPRIETOR
-  // may publish; TEACHER (assigned) + PROPRIETOR may unpublish (SCHOOL_ADMIN
-  // excluded, same pre-existing asymmetry).
-  const canPublish = isConfirmedAdmin || canManageAsTeacher;
+  // ExamsTrack's own inline ConfirmDialog pattern.
+  // v0.7.4 step 3 (SPEC_V0.7.4.md §4, Item 4) — admin/proprietor lose
+  // Publish entirely ("teachers own evaluations entirely"); Unpublish is
+  // UNCHANGED (the correction safety valve PROPRIETOR already held,
+  // untouched by this narrowing — SCHOOL_ADMIN stays excluded, same
+  // pre-existing asymmetry from v0.7.3).
+  const canPublish = canManageAsTeacher;
   const canUnpublish = isProprietorRole || canManageAsTeacher;
   const incompleteStudentCount =
     publishEvaluation.error instanceof ApiError && publishEvaluation.error.status === 409
@@ -273,6 +275,7 @@ function EvaluationsTrack({
           value={evaluationId}
           onChange={setEvaluationId}
           allowManage
+          canCreateOrEdit={canManageAsTeacher}
           canManageTermLock={isConfirmedAdmin}
           canDelete={isProprietorRole}
         />

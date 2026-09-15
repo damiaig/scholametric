@@ -11,6 +11,7 @@ import { Tabs } from "../../components/ui/tabs";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
 import { useClassArmDetail } from "../classes/use-class-arm-detail";
+import { useCurrentUser } from "../shell/use-current-user";
 import { EnterScoresTab } from "./EnterScoresTab";
 import { ResultsTab } from "./ResultsTab";
 
@@ -44,6 +45,7 @@ export function ClassGradesPage() {
   const tab = searchParams.get("tab") === "enter" ? "enter" : "results";
 
   const armDetail = useClassArmDetail(classArmId, 1, 1);
+  const { data: currentUser } = useCurrentUser();
 
   function setTab(nextTab: string) {
     const next = new URLSearchParams(searchParams);
@@ -87,6 +89,19 @@ export function ClassGradesPage() {
 
   const armLabel = `${armDetail.data.classLevel.name} ${armDetail.data.name}`;
 
+  // v0.7.4 step 3 (SPEC_V0.7.4.md §5, Item 7) — a TEACHER (even the class
+  // teacher) picks a subject to enter scores for from only their OWN
+  // assigned subjects here, not every subject taught in the class. Pure
+  // frontend filter over already-fetched data (no new query) — a UX
+  // restriction, not a security boundary: the real gate is server-side
+  // (assertTeacherAssignment 403s an unassigned teacher regardless), and
+  // is completely untouched by this. SCHOOL_ADMIN/PROPRIETOR still see
+  // every subject.
+  const pickableSubjectTeachers =
+    currentUser?.role === "TEACHER"
+      ? armDetail.data.subjectTeachers.filter((entry) => entry.teacherUserId === currentUser.id)
+      : armDetail.data.subjectTeachers;
+
   return (
     <div>
       <Button
@@ -125,13 +140,15 @@ export function ClassGradesPage() {
               <h2 className="mb-2 text-lg font-semibold text-text">
                 Pick a subject to enter scores
               </h2>
-              {armDetail.data.subjectTeachers.length === 0 ? (
+              {pickableSubjectTeachers.length === 0 ? (
                 <p className="text-sm text-muted">
-                  No subject teachers assigned this session.
+                  {currentUser?.role === "TEACHER"
+                    ? "You aren't assigned to teach any subject in this class."
+                    : "No subject teachers assigned this session."}
                 </p>
               ) : (
                 <div className="flex flex-col gap-2">
-                  {armDetail.data.subjectTeachers.map((entry) => (
+                  {pickableSubjectTeachers.map((entry) => (
                     <div
                       key={entry.id}
                       className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-muted/20 p-3"
