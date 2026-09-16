@@ -16,3 +16,4 @@ export * from "./grading-config";
 export * from "./grades";
 export * from "./exams";
 export * from "./portal-accounts";
+export * from "./calendar";

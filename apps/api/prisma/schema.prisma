@@ -118,6 +118,10 @@ model School {
   termSubjectExamResults    TermSubjectExamResult[]
   termExamResults           TermExamResult[]
   yearExamResults           YearExamResult[]
+  periods                   Period[]
+  breaks                    Break[]
+  holidays                  Holiday[]
+  classSchoolDays           ClassSchoolDays[]
 
   @@map("schools")
 }
@@ -222,6 +226,7 @@ model AcademicSession {
   termSubjectExamResults    TermSubjectExamResult[]
   termExamResults           TermExamResult[]
   yearExamResults           YearExamResult[]
+  holidays                  Holiday[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -259,6 +264,7 @@ model Term {
   exams                  Exam[]
   termSubjectExamResults TermSubjectExamResult[]
   termExamResults        TermExamResult[]
+  holidays               Holiday[]
 
   @@unique([sessionId, name])
   @@index([schoolId])
@@ -303,6 +309,7 @@ model ClassArm {
   exams                     Exam[]
   termSubjectExamResults    TermSubjectExamResult[]
   termExamResults           TermExamResult[]
+  classSchoolDays           ClassSchoolDays?
 
   @@unique([classLevelId, name])
   @@index([schoolId])
@@ -926,4 +933,96 @@ model TermRemark {
   @@unique([studentId, termId, sessionId])
   @@index([schoolId, classArmId, termId])
   @@map("term_remarks")
+}
+
+// v0.8 step 1 (SPEC_V0.8.md §7 item 1) — the calendar domain's foundation.
+// Genuinely new: no shared tables/FKs with the grade engine, publish
+// model, or their walls (Evaluation/Exam/TermSubjectResult etc. above).
+
+// The school-wide bell schedule. Variable-length periods, defined once
+// per school (not per session/term — a school's daily period structure
+// rarely changes). startsAt/endsAt are "HH:mm" strings, not a native SQL
+// TIME column: zero-padded HH:mm already sorts/compares correctly as a
+// plain string in both SQL and JS, so overlap/ordering checks never have
+// to think about Prisma's DateTime-with-epoch-date round-trip for @db.Time.
+model Period {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  schoolId  String   @map("school_id") @db.Uuid
+  name      String
+  startsAt  String   @map("starts_at") @db.VarChar(5)
+  endsAt    String   @map("ends_at") @db.VarChar(5)
+  sortOrder Int      @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@map("periods")
+}
+
+// Global across the day (SPEC_V0.8.md §2 item 5 — editing a break is
+// school-wide, never per-class). No sortOrder: unlike Period, a break's
+// position in the day is already fully determined by startsAt.
+model Break {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  schoolId  String   @map("school_id") @db.Uuid
+  name      String
+  startsAt  String   @map("starts_at") @db.VarChar(5)
+  endsAt    String   @map("ends_at") @db.VarChar(5)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@map("breaks")
+}
+
+// A no-school day/range, school-wide. sessionId required, termId
+// optional/nullable — an inter-term break (Christmas/Sallah) doesn't
+// belong to one specific Term row the way a public holiday mid-term
+// does; forcing termId would misrepresent it either way. A single-day
+// holiday has startDate == endDate, not a separate one-day shape.
+model Holiday {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  schoolId  String   @map("school_id") @db.Uuid
+  sessionId String   @map("session_id") @db.Uuid
+  termId    String?  @map("term_id") @db.Uuid
+  name      String
+  startDate DateTime @map("start_date") @db.Date
+  endDate   DateTime @map("end_date") @db.Date
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  school  School          @relation(fields: [schoolId], references: [id])
+  session AcademicSession @relation(fields: [sessionId], references: [id])
+  term    Term?           @relation(fields: [termId], references: [id])
+
+  @@index([schoolId, sessionId])
+  @@map("holidays")
+}
+
+// Per-class-arm school-days config (SPEC_V0.8.md §2 item 4). Mon-Fri is
+// implicit and fixed — no row at all means Mon-Fri, includesSaturday:
+// false. Sunday is NOT a validation rule here; it's structurally
+// unrepresentable — there is no field, column, or code path capable of
+// expressing it, only ever this one boolean. A row is only ever created
+// once a school customizes a class arm away from the default (upserted
+// by PUT .../class-school-days/:classArmId).
+model ClassSchoolDays {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  schoolId         String   @map("school_id") @db.Uuid
+  classArmId       String   @unique @map("class_arm_id") @db.Uuid
+  includesSaturday Boolean  @default(false) @map("includes_saturday")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  school   School   @relation(fields: [schoolId], references: [id])
+  classArm ClassArm @relation(fields: [classArmId], references: [id])
+
+  @@index([schoolId])
+  @@map("class_school_days")
 }

@@ -26,6 +26,7 @@ import { GradeBoundariesModule } from "./grade-boundaries/grade-boundaries.modul
 import { GradesModule } from "./grades/grades.module";
 import { ExamsModule } from "./exams/exams.module";
 import { PortalAccountsModule } from "./portal-accounts/portal-accounts.module";
+import { CalendarModule } from "./calendar/calendar.module";
 import { TenantModule } from "./common/tenant/tenant.module";
 import { AppThrottlerGuard } from "./common/guards/app-throttler.guard";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
@@ -66,6 +67,7 @@ import { AuditInterceptor } from "./common/interceptors/audit.interceptor";
     GradesModule,
     ExamsModule,
     PortalAccountsModule,
+    CalendarModule,
   ],
   providers: [
     // Order matters — Nest runs global APP_GUARDs in registration order:

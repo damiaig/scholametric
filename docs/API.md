@@ -2218,6 +2218,119 @@ docs/DECISIONS.md).
 
 ---
 
+## Calendar (v0.8 step 1, SPEC_V0.8.md §7 item 1)
+
+The calendar domain's foundation — periods (bell schedule), breaks,
+holidays, per-class school-days. Genuinely new: no shared tables/FKs with
+the grade engine, publish model, or their walls. Every route:
+`SCHOOL_ADMIN`/`PROPRIETOR` only (`@Roles()` at the controller level), no
+`TEACHER` path yet — read views for other roles arrive in a later v0.8
+step. Term start/end dates are NOT duplicated here — `GET /terms`/
+`GET /sessions` already carry `startsOn`/`endsOn`.
+
+### `GET` / `POST /calendar/periods`, `PATCH` / `DELETE /calendar/periods/:id`
+
+The school-wide bell schedule — variable-length periods, defined once per
+school (not per session/term). `startsAt`/`endsAt` are `"HH:mm"` 24-hour
+strings, not timestamps.
+
+**`GET`** — no query params. Returns every period for the school, ordered
+by `sortOrder`.
+
+**`POST`** — body: `{ name, startsAt, endsAt, sortOrder }`. **`PATCH`** —
+same fields, all optional (at least one implied by having a body at all;
+an empty body is a no-op, not a `400`).
+
+- **`400`**: `startsAt >= endsAt`; a malformed (non-`HH:mm`) time; the
+  edited/new interval overlaps ANY other period **or break** for the
+  school (periods and breaks share one daily timeline — a school can't
+  have a class "in Period 3" and "at Lunch" at the same clock time).
+- **`409`**: a period with this `name` already exists in the school.
+- **`404`** (`DELETE`/`PATCH`): id doesn't resolve within the caller's
+  tenant.
+
+**`DELETE`** — hard delete (no `deletedAt`) — pure config data, nothing
+references a period yet in this step.
+
+**Response `200`/`201`**: `{ id, schoolId, name, startsAt, endsAt, sortOrder, createdAt, updatedAt }`.
+
+Audited (`period.create`/`period.update`/`period.delete`).
+
+### `GET` / `POST /calendar/breaks`, `PATCH` / `DELETE /calendar/breaks/:id`
+
+Global across the day (SPEC_V0.8.md §2 item 5) — editing a break applies
+school-wide, not per-class. Same shape as periods, minus `sortOrder` (a
+break's position in the day is already fully determined by `startsAt`).
+
+**`GET`** — ordered by `startsAt`. **`POST`**/**`PATCH`** — body:
+`{ name, startsAt, endsAt }` (`PATCH`'s fields all optional). Same
+`400`/`409`/`404` rules as periods, including the combined periods+breaks
+overlap check (a new/edited break overlapping an existing **period** also
+`400`s, not just another break).
+
+**Response `200`/`201`**: `{ id, schoolId, name, startsAt, endsAt, createdAt, updatedAt }`.
+
+Audited (`break.create`/`break.update`/`break.delete`).
+
+### `GET /calendar/holidays?sessionId=`, `POST /calendar/holidays`, `PATCH` / `DELETE /calendar/holidays/:id`
+
+A no-school day or date range, school-wide. `sessionId` is required;
+`termId` is optional/nullable — an inter-term break (Christmas/Sallah)
+doesn't belong to one specific `Term` row the way a public holiday mid-
+term does. A single-day holiday has `startDate === endDate`, not a
+separate shape.
+
+**`GET`** — `sessionId` query param is required (`400` without it).
+Returns every holiday for that session, ordered by `startDate`.
+
+**`POST`** — body: `{ sessionId, termId?, name, startDate, endDate }`.
+**`PATCH`** — `{ termId?, name?, startDate?, endDate? }`; `sessionId` is
+fixed at creation, not re-scopable (same convention as evaluations'
+classArmId/subjectId/termId).
+
+- **`400`**: `startDate > endDate`; a missing `sessionId` on create.
+- **`404`**: `sessionId`/`termId` doesn't resolve within the caller's
+  tenant; the holiday id itself doesn't resolve (`PATCH`/`DELETE`).
+- **No bounds check against the session's/term's own date range** — a
+  holiday spanning a session rollover (December into a new January) is
+  legitimate and must not be rejected. **No overlap check** either —
+  two holidays covering the same dates are harmless (only period/break
+  overlap corrupts an actual daily schedule).
+
+**`DELETE`** — hard delete.
+
+**Response `200`/`201`**: `{ id, schoolId, sessionId, termId, name, startDate, endDate, createdAt, updatedAt }`.
+
+Audited (`holiday.create`/`holiday.update`/`holiday.delete`).
+
+### `GET /calendar/class-school-days`, `PUT /calendar/class-school-days/:classArmId`
+
+Per-class-arm school-days config. Mon-Fri is implicit and fixed for every
+class; the only knob is whether Saturday is ALSO a school day. **Sunday
+is not validated away — it is structurally unrepresentable.** There is no
+column, DTO field, or code path anywhere in this route capable of
+expressing it, only ever `includesSaturday: boolean`.
+
+**`GET`** — no query params. Returns every class arm in the school with
+its config: `{ classArmId, classArmName, classLevelName, includesSaturday }[]`.
+A class arm with no row yet defaults to `includesSaturday: false` — a row
+is only created on first `PUT`.
+
+**`PUT`** — body: `{ includesSaturday: boolean }`. Upserts (create-or-
+update) the config for that class arm.
+
+- **`400`**: `includesSaturday` isn't a boolean; any extra/unexpected
+  field in the body (the global `ValidationPipe`'s `forbidNonWhitelisted`
+  rejects it outright — this is what makes a smuggled Sunday-shaped field
+  impossible to sneak through, on top of no such field ever existing).
+- **`404`**: `classArmId` doesn't resolve within the caller's tenant.
+
+**Response `200`**: `{ classArmId, classArmName, classLevelName, includesSaturday }`.
+
+Audited (`classSchoolDays.set`).
+
+---
+
 ## Misc
 
 ### `GET /health`

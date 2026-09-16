@@ -23,6 +23,7 @@ import { HelpPage } from "./features/help/HelpPage";
 import { SettingsLayout } from "./features/settings/SettingsLayout";
 import { SchoolProfilePage } from "./features/settings/SchoolProfilePage";
 import { AcademicSettingsPage } from "./features/settings/AcademicSettingsPage";
+import { CalendarSettingsPage } from "./features/settings/CalendarSettingsPage";
 import { PortalAccountsSettingsPage } from "./features/portal-accounts/PortalAccountsSettingsPage";
 import { ClassArmCredentialSlipsPage } from "./features/portal-accounts/ClassArmCredentialSlipsPage";
 import { AccountChangePasswordPage } from "./features/auth/AccountChangePasswordPage";
@@ -90,6 +91,7 @@ export function AppRoutes() {
           <Route index element={<Navigate to="/settings/school" replace />} />
           <Route path="school" element={<SchoolProfilePage />} />
           <Route path="academic" element={<AcademicSettingsPage />} />
+          <Route path="calendar" element={<CalendarSettingsPage />} />
           <Route
             path="portal-accounts"
             element={<PortalAccountsSettingsPage />}

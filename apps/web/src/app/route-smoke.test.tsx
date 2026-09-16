@@ -157,6 +157,11 @@ function mockApi() {
       if (path === "/api/v1/sessions") return PAGINATED_EMPTY;
       if (path === "/api/v1/terms") return PAGINATED_EMPTY;
 
+      if (path === "/api/v1/calendar/periods") return [];
+      if (path === "/api/v1/calendar/breaks") return [];
+      if (path === "/api/v1/calendar/holidays") return [];
+      if (path === "/api/v1/calendar/class-school-days") return [];
+
       // SPEC_V0.7.1.md §3 (item 20) — /me/grades is reachable by any
       // authenticated role at the URL bar (the real gate is server-side,
       // same "UX lock, not the security boundary" pattern used everywhere
@@ -191,6 +196,7 @@ const ROUTES = [
   "/personnel",
   "/settings/school",
   "/settings/academic",
+  "/settings/calendar",
   "/help",
 ];
 

@@ -5634,3 +5634,92 @@ Full web suite: 307/307 (49 files) after — net +3 over the 304 baseline
 (2 new cases in `ClassGradesPage.test.tsx` for the own-subjects filter, 1
 new case in `EvaluationPicker.test.tsx` for the `canCreateOrEdit`/
 `canDelete` decoupling).
+
+## 2026-09-16 — v0.8 step 1: calendar foundation (periods, breaks, holidays, per-class school-days) as a genuinely new module tree
+Decision: four new Prisma models — `Period`, `Break`, `Holiday`,
+`ClassSchoolDays` — under a brand-new `CalendarModule`
+(`apps/api/src/calendar/`), zero shared files with `grades`/`exams`. `Term`
+already carried `startsOn`/`endsOn` (from the v0.4/v0.5 term-close work),
+confirmed by reading `schema.prisma` before writing any code — no
+duplicate date columns added anywhere. `Period`/`Break.startsAt`/`endsAt`
+are `"HH:mm"` strings (`@db.VarChar(5)`), not a native Postgres `TIME`
+column: zero-padded HH:mm already sorts/compares correctly as a plain
+string in both SQL and JS, avoiding Prisma's `@db.Time` round-trip as a
+full JS `Date` pinned to the 1970-01-01 epoch — a pattern with no existing
+precedent in this codebase to build on. `ClassSchoolDays` is one row per
+class arm with a single `includesSaturday: Boolean` field — Mon-Fri is
+implicit/fixed, and Sunday is **structurally** unrepresentable: there is
+no column, DTO field, or code path anywhere capable of expressing it, not
+a validation rule that rejects it after the fact. `Holiday.sessionId` is
+required, `termId` optional/nullable — an inter-term break (Christmas/
+Sallah) doesn't belong to one specific `Term` row the way a public
+holiday mid-term does. Holiday dates are NOT bounds-checked against their
+session's/term's date range (a holiday spanning a session rollover, e.g.
+December into January, is legitimate — a bounds check would wrongly
+reject the normal case) and two holidays are allowed to cover the same
+dates (harmless — only period/break overlap corrupts an actual daily
+schedule). `CalendarService.assertNoOverlap` checks a new/edited period
+or break against every OTHER period AND break for the school as one
+combined timeline (half-open interval overlap: `a.startsAt < b.endsAt &&
+b.startsAt < a.endsAt`, so back-to-back slots sharing a boundary are not
+a false-positive overlap) — a school can't have a class "in Period 3" and
+"at Lunch" at the same clock time. All four resources: `SCHOOL_ADMIN` +
+`PROPRIETOR` only (`@Roles()` at the controller level), no `TEACHER` path
+in this step — read views for other roles are a later v0.8 step.
+
+Reason: SPEC_V0.8.md §7 item 1 frames this explicitly as foundation-only,
+independent of the grade engine/publish model/their walls — confirmed by
+construction (a fresh module directory, not an extension of any existing
+one) rather than just by discipline. The four flagged design questions
+(time storage, school-days shape, holiday scoping, overlap scope) were
+resolved with Dami before writing code, each picking the simpler of two
+real options rather than the more "general" one: `HH:mm` strings over a
+native TIME column, a boolean over a generic weekday-set join table
+(nothing in the spec or the later `TimetableSlot` design asks for
+dropping Mon-Fri, only adding Saturday), nullable `termId` over a forced
+one-term-only FK, and combined period+break overlap validation.
+
+**Frontend.** New `/settings/calendar` tab (`SettingsLayout.tsx`), gated
+by the existing `isSchoolAdmin()` helper (already covers both
+SCHOOL_ADMIN and PROPRIETOR — no new role-check code needed). Four
+sections (`PeriodsSection`/`BreaksSection`/`HolidaysSection`/
+`ClassSchoolDaysSection`) composed in `CalendarSettingsPage.tsx`, mirroring
+`AcademicSettingsPage`'s shape. These sections deliberately do NOT use the
+shared `DataTable` component: `DataTable`'s pagination props
+(page/pageSize/total/onPageChange) are mandatory, but the new endpoints
+return a plain unpaginated array (small, bounded config lists — a
+school's bell schedule, breaks, and per-class Saturday toggle are never
+going to paginate) — forcing fake pagination props onto a dataset that
+will never have a second page would be the wrong kind of reuse. Each
+section instead renders a plain table reusing `DataTable`'s visual
+classes for consistency, with its own loading/error/empty states
+(CLAUDE.md §6). `HolidayFormDialog`/`EvaluationFormDialog`-style create/
+edit dialog: initially built with `sessionId`/`termId` folded into the
+Zod-validated form schema via `defaultValues` on unregistered fields —
+this silently failed validation with no visible error (the dialog just
+never closed) because those fields were never `register()`-ed, so
+react-hook-form's submitted values didn't reliably carry them. Fixed by
+splitting a `holidayFormSchema`/`HolidayFormInput` (name/dates only) from
+the full `HolidayInput`, merging `sessionId`/`termId` in at submit time
+from props — the exact shape `EvaluationFormDialog` already used
+(`{ ...values, classArmId, subjectId, termId }`) for the identical reason,
+confirmed by re-reading that component after the failure rather than
+inventing a workaround.
+
+**Test impact.** Backend: new `calendar.e2e-spec.ts` (33 tests) covering
+CRUD per resource, time-order/malformed-time/overlap 400s, the Sunday-
+smuggling `forbidNonWhitelisted` proof (persists nothing), tenant scoping
+(404 not 403) both directions, TEACHER categorical 403 on every resource,
+and one dedicated STUDENT+PARENT 403 test (not repeated per-route, since
+`RolesGuard` is a single uniform `requiredRoles.includes(role)` check with
+zero per-role branching — proving TEACHER's exclusion categorically
+already proves the code path STUDENT/PARENT would hit). Full backend e2e
+suite: 508/508 (39 suites) after, up from the 475 baseline. Full web
+suite: 321/321 (53 files) after, up from the 307 baseline (+14: 4 new
+test files — `PeriodsSection.test.tsx` (4), `BreaksSection.test.tsx` (3),
+`HolidaysSection.test.tsx` (3), `ClassSchoolDaysSection.test.tsx` (3) —
+plus +1 in the existing `route-smoke.test.tsx`, an `it.each(ROUTES)` table
+that gained one more generated case from adding `/settings/calendar` to
+its route list). Note a one-off `vitest run`'s default multi-worker pool
+hit a Node heap OOM unrelated to this change — confirmed clean (321/321)
+under `--pool=forks --poolOptions.forks.singleFork`.
