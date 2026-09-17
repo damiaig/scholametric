@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Award, Trophy, Users, BookOpen, Hammer } from "lucide-react";
+import { Award, Trophy, Users, BookOpen, Hammer, CalendarClock } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { StatCard } from "../../components/ui/stat-card";
@@ -101,6 +101,18 @@ export function StudentDashboard() {
                       <BookOpen className="h-5 w-5" aria-hidden="true" />
                     </div>
                     <p className="font-semibold text-text">Grades</p>
+                  </CardContent>
+                </Card>
+              </Link>
+
+              {/* v0.8 step 3 (SPEC_V0.8.md §7 item 3) */}
+              <Link to="/me/timetable" className="block">
+                <Card className="transition-colors hover:border-primary/40">
+                  <CardContent className="flex items-center gap-4 p-6">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                      <CalendarClock className="h-5 w-5" aria-hidden="true" />
+                    </div>
+                    <p className="font-semibold text-text">Timetable</p>
                   </CardContent>
                 </Card>
               </Link>

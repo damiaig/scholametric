@@ -2388,6 +2388,64 @@ double-booking or collision it was causing for a subsequent create.
 
 Audited (`timetableSlot.create`/`.update`/`.delete`).
 
+### `GET /me/timetable?from=&to=`, `GET /me/children/:childId/timetable?from=&to=`, `GET /me/teaching-timetable?from=&to=` (v0.8 step 3, SPEC_V0.8.md §7 item 3)
+
+On-read composition: a resolved, day-by-day schedule for `[from, to]`,
+computed **on read, never materialized per-date**. Both `STUDENT`/`PARENT`
+routes resolve to one class; `TEACHER`'s resolves across every class they
+teach. `sessionId` is never a request param — always "the current
+session," resolved server-side (same one-liner `GET /me/teaching` already
+uses). `from`/`to` are both required (no implicit "this week" default) and
+capped at 31 days apart (`400` otherwise).
+
+**Resolution, per date:**
+1. A `Holiday` covering this date wins outright — `isSchoolDay: false`,
+   `nonSchoolReason: "HOLIDAY"`, `holidayName` populated, zero periods.
+2. Sunday is always non-school (`"WEEKEND"`) — the same guarantee
+   `Weekday`'s missing `SUNDAY` member already gives structurally, just
+   surfaced explicitly here so the UI shows a reason, not an ambiguous
+   blank day.
+3. **Saturday resolves differently depending on which route**:
+   - `/me/timetable` / `/me/children/:childId/timetable` (one class): the
+     class's own `ClassSchoolDays.includesSaturday` decides the WHOLE
+     day — identical to the Step 2 builder's own gate.
+   - `/me/teaching-timetable` (cross-class): Saturday is NOT a whole-day
+     exclusion. Each slot is filtered **individually** by its own class's
+     flag — a teacher spanning a Saturday-enabled class and a Mon-Fri-only
+     one sees the first class's slot and NOT the second's, on the same
+     Saturday. Marking the whole day off would be wrong the moment two of
+     a teacher's classes disagree on the policy.
+4. A school day pairs every `Period` (ordered by `sortOrder`) with its
+   matching `TimetableSlot` for that weekday (`null` = free period) and
+   returns every school-wide `Break`, unfiltered.
+
+**The visibility wall — no id is ever a request parameter:**
+- `GET /me/timetable`: `classArmId` is resolved server-side from the
+  STUDENT's own current-session enrollment. There is no `classArmId`
+  field on this route at all — nothing exists to request another class
+  with. No current enrollment → **`404`** ("Not currently enrolled in a
+  class"), not an empty `200`.
+- `GET /me/children/:childId/timetable`: `childId` runs through the exact
+  same own-child allow-list (`assertChildBelongsToCaller`) grades/exams
+  self-views already use, checked BEFORE any class resolution. A real
+  student belonging to a different family and a nonexistent id both
+  `404` identically.
+- `GET /me/teaching-timetable`: `teacherUserId` is always
+  `@CurrentUser().userId` — never a request field.
+
+**Response `200`** — `ClassTimetableResponse` (`STUDENT`/`PARENT`
+routes): `{ classArmId, className, from, to, days: ResolvedTimetableDay[] }`.
+`TeacherTimetableResponse` (`TEACHER` route): `{ teacherUserId, from, to, days }`.
+Each `ResolvedTimetableDay`: `{ date, dayOfWeek, isSchoolDay, nonSchoolReason, holidayName, periods, breaks }`.
+Each resolved period: `{ periodId, periodName, startsAt, endsAt, subjectId, subjectName, teacherUserId, teacherName, classArmId, className }` —
+`classArmId`/`className` are populated only in the teacher's cross-class
+view (redundant on a single-class view, since every period is implicitly
+the caller's own class there).
+
+**Response `400`**: `from > to`; the range exceeds 31 days.
+**Response `403`**: wrong role for the route (categorical — `STUDENT`
+can't reach `/me/teaching-timetable`, etc.).
+
 ---
 
 ## Misc

@@ -9,6 +9,7 @@ import {
   Settings,
   GraduationCap,
   CircleHelp,
+  CalendarClock,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { isSchoolAdmin } from "../../lib/roles";
@@ -45,6 +46,23 @@ const PORTAL_GRADES_ITEM = {
   label: "Grades",
   icon: BookOpen,
 };
+// v0.8 step 3 (SPEC_V0.8.md §7 item 3) — this is the point where the
+// reasoning that kept Step 2's builder off the sidebar (an infrequent
+// admin setup action, Dashboard card only) flips: TEACHER/STUDENT/PARENT
+// now have real, everyday-relevant timetable content for the first time,
+// same category as Grades above — so they get the same permanent sidebar
+// treatment. Admin does NOT get a sidebar entry here; the builder stays a
+// Dashboard card (unchanged from Step 2).
+const TEACHER_TIMETABLE_ITEM = {
+  to: "/timetable/mine",
+  label: "Timetable",
+  icon: CalendarClock,
+};
+const PORTAL_TIMETABLE_ITEM = {
+  to: "/me/timetable",
+  label: "Timetable",
+  icon: CalendarClock,
+};
 const PERSONNEL_ITEM = { to: "/personnel", label: "Personnel", icon: IdCard };
 const SETTINGS_ITEM = {
   to: "/settings/school",
@@ -73,6 +91,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
     ? [
         ...BASE_NAV_ITEMS.filter((item) => item.to === "/dashboard"),
         PORTAL_GRADES_ITEM,
+        PORTAL_TIMETABLE_ITEM,
         ...BASE_NAV_ITEMS.filter((item) => item.to === "/help"),
       ]
     : user?.role === "TEACHER"
@@ -81,6 +100,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             (item) => ({ ...item, label: "My Classes" }),
           ),
           GRADES_ITEM,
+          TEACHER_TIMETABLE_ITEM,
           ...BASE_NAV_ITEMS.filter((item) => item.to !== "/dashboard"),
         ]
       : isSchoolAdmin(user?.role)

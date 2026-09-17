@@ -29,6 +29,8 @@ import { ClassArmCredentialSlipsPage } from "./features/portal-accounts/ClassArm
 import { AccountChangePasswordPage } from "./features/auth/AccountChangePasswordPage";
 import { TimetableLandingPage } from "./features/timetable/TimetableLandingPage";
 import { TimetableBuilderPage } from "./features/timetable/TimetableBuilderPage";
+import { TeacherTimetablePage } from "./features/timetable/TeacherTimetablePage";
+import { MyTimetablePage } from "./features/timetable/MyTimetablePage";
 
 // Extracted from <App> (which just wraps this in <BrowserRouter>) so the
 // route-smoke test can mount the exact same route tree inside a
@@ -47,6 +49,13 @@ export function AppRoutes() {
         <Route path="/students/:id" element={<StudentDetailPage />} />
         <Route path="/students/:id/report-card" element={<ReportCardPage />} />
         <Route path="/me/grades" element={<MyGradesPage />} />
+        {/* v0.8 step 3 (SPEC_V0.8.md §7 item 3) — same "reachable by any
+            authenticated role at the URL bar, server 403 is the real gate"
+            pattern /me/grades already established: no client route guard
+            on either of these, unlike /timetable (Step 2's builder) and
+            /timetable/arms/:id below, which stay inside RequireSchoolAdmin. */}
+        <Route path="/me/timetable" element={<MyTimetablePage />} />
+        <Route path="/timetable/mine" element={<TeacherTimetablePage />} />
         <Route path="/teachers" element={<TeachersListPage />} />
         <Route path="/teachers/:id" element={<TeacherDetailPage />} />
         <Route path="/classes" element={<ClassesPage />} />

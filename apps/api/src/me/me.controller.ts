@@ -6,6 +6,7 @@ import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { GetStudentResultsQueryDto } from "../grades/dto/get-student-results-query.dto";
 import { GetStudentSubjectExamsQueryDto } from "../exams/dto/get-student-subject-exams-query.dto";
 import { GetYearExamsQueryDto } from "../exams/dto/get-year-exams-query.dto";
+import { GetTimetableRangeDto } from "../calendar/dto/get-timetable-range.dto";
 import { MeService } from "./me.service";
 
 // No @Roles() at the class level — every authenticated role may ask
@@ -60,6 +61,23 @@ export class MeController {
     return this.meService.getMyYearExams(user, query);
   }
 
+  // v0.8 step 3 (SPEC_V0.8.md §7 item 3) — the student's own class's
+  // resolved weekly schedule. No classArmId param anywhere on this route.
+  @Roles(UserRole.STUDENT)
+  @Get("timetable")
+  timetable(@CurrentUser() user: AuthenticatedUser, @Query() query: GetTimetableRangeDto) {
+    return this.meService.getMyTimetable(user.userId, query);
+  }
+
+  // v0.8 step 3 — mirrors /me/teaching's own naming convention (the
+  // teacher-flavored /me/* route gets an explicit word, unlike STUDENT's
+  // plain names above).
+  @Roles(UserRole.TEACHER)
+  @Get("teaching-timetable")
+  teachingTimetable(@CurrentUser() user: AuthenticatedUser, @Query() query: GetTimetableRangeDto) {
+    return this.meService.getMyTeachingTimetable(user.userId, query);
+  }
+
   // v0.6 step 4 (SPEC_V0.6.md §2.4) — the child-switcher's data.
   @Roles(UserRole.PARENT)
   @Get("children")
@@ -107,5 +125,18 @@ export class MeController {
     @Query() query: GetYearExamsQueryDto,
   ) {
     return this.meService.getChildYearExams(user, childId, query);
+  }
+
+  // v0.8 step 3 — assertChildBelongsToCaller (inside getChildTimetable)
+  // runs before any class resolution, same ordering as every other
+  // children/:childId/* route above.
+  @Roles(UserRole.PARENT)
+  @Get("children/:childId/timetable")
+  childTimetable(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("childId", ParseUUIDPipe) childId: string,
+    @Query() query: GetTimetableRangeDto,
+  ) {
+    return this.meService.getChildTimetable(user.userId, childId, query);
   }
 }

@@ -9,6 +9,8 @@ import type { GetStudentResultsQueryDto } from "../grades/dto/get-student-result
 import { ExamsService, type StudentSubjectExamsResponse, type YearExamsResponse } from "../exams/exams.service";
 import type { GetStudentSubjectExamsQueryDto } from "../exams/dto/get-student-subject-exams-query.dto";
 import type { GetYearExamsQueryDto } from "../exams/dto/get-year-exams-query.dto";
+import { CalendarService, type ClassTimetableResponse, type TeacherTimetableResponse } from "../calendar/calendar.service";
+import type { GetTimetableRangeDto } from "../calendar/dto/get-timetable-range.dto";
 
 export interface MyClassTeacherOfEntry {
   classArmId: string;
@@ -96,6 +98,7 @@ export class MeService {
     private readonly tenantContext: TenantContext,
     private readonly gradesService: GradesService,
     private readonly examsService: ExamsService,
+    private readonly calendarService: CalendarService,
   ) {}
 
   // The identity-resolution seam every /me/* STUDENT endpoint below goes
@@ -191,6 +194,24 @@ export class MeService {
     };
   }
 
+  // v0.8 step 3 (SPEC_V0.8.md §7 item 3) — the same current-enrollment
+  // resolution buildProfile above already does, trimmed to just the id
+  // CalendarService.resolveClassSchedule needs. No current-session
+  // enrollment -> 404 ("not currently enrolled"), not an empty 200: a
+  // timetable has nothing meaningful to say without a class, unlike
+  // buildProfile's own currentClassArmLabel, which tolerates null.
+  private async resolveStudentCurrentClassArmId(studentId: string): Promise<string> {
+    const schoolId = this.tenantContext.schoolId;
+    const enrollment = await this.prisma.studentEnrollment.findFirst({
+      where: forSchool(schoolId, { studentId, session: { isCurrent: true } }),
+      select: { classArmId: true },
+    });
+    if (!enrollment) {
+      throw new NotFoundException("Not currently enrolled in a class.");
+    }
+    return enrollment.classArmId;
+  }
+
   private async buildAcademicContext(studentId: string): Promise<MyAcademicContext> {
     const schoolId = this.tenantContext.schoolId;
     const enrollments = await this.prisma.studentEnrollment.findMany({
@@ -257,6 +278,18 @@ export class MeService {
     return this.examsService.getStudentYearExams(studentId, query, user);
   }
 
+  // v0.8 step 3 (SPEC_V0.8.md §7 item 3) — the STUDENT's own class's
+  // resolved weekly schedule. classArmId is resolved server-side from the
+  // caller's own current enrollment (resolveStudentCurrentClassArmId,
+  // just above resolveOwnStudentId's own kind of guard) — there is no
+  // classArmId field on this route at all, so there is no id a caller
+  // could substitute another class's with.
+  async getMyTimetable(userId: string, query: GetTimetableRangeDto): Promise<ClassTimetableResponse> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
+    return this.calendarService.resolveClassSchedule(classArmId, query.from, query.to);
+  }
+
   // v0.6 step 4 — the child-switcher's data: every MyProfile the caller's
   // own linked children resolve to (§ resolveOwnChildIds above). A
   // guardian linked to zero students (shouldn't happen post-v0.6-step-1,
@@ -300,6 +333,16 @@ export class MeService {
   async getChildYearExams(user: AuthenticatedUser, childId: string, query: GetYearExamsQueryDto): Promise<YearExamsResponse> {
     await this.assertChildBelongsToCaller(user.userId, childId);
     return this.examsService.getStudentYearExams(childId, query, user);
+  }
+
+  // Same reuse as getChildReportCard above: assertChildBelongsToCaller
+  // runs FIRST, before classArmId is ever resolved for this childId — a
+  // childId outside the caller's linked set 404s there, identically to a
+  // nonexistent one, before this method's own class-resolution query runs.
+  async getChildTimetable(userId: string, childId: string, query: GetTimetableRangeDto): Promise<ClassTimetableResponse> {
+    await this.assertChildBelongsToCaller(userId, childId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(childId);
+    return this.calendarService.resolveClassSchedule(classArmId, query.from, query.to);
   }
 
   // Reuses the same class-teacher/subject-teacher join shape as
@@ -358,5 +401,13 @@ export class MeService {
       currentTermId: currentTerm?.id ?? null,
       currentTermName: currentTerm?.name ?? null,
     };
+  }
+
+  // v0.8 step 3 (SPEC_V0.8.md §7 item 3) — a TEACHER's own resolved
+  // weekly schedule, across every class they teach. teacherUserId is
+  // always @CurrentUser().userId (the JWT subject), never a request
+  // field — mirrors findMyTeaching's own "self, from the token" shape.
+  async getMyTeachingTimetable(userId: string, query: GetTimetableRangeDto): Promise<TeacherTimetableResponse> {
+    return this.calendarService.resolveTeacherSchedule(userId, query.from, query.to);
   }
 }

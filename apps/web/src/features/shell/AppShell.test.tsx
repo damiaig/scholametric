@@ -241,6 +241,60 @@ describe("AppShell", () => {
     );
   });
 
+  // v0.8 step 3 (SPEC_V0.8.md §7 item 3) — Timetable gets the SAME
+  // dedicated sidebar treatment as Grades above, for the SAME three
+  // roles, at the point where they get real everyday content for the
+  // first time. SCHOOL_ADMIN/PROPRIETOR are deliberately excluded — the
+  // Step 2 builder stays a Dashboard card, not a sidebar item.
+  it("TEACHER sees a Timetable link pointing at /timetable/mine", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: "Timetable" })).toHaveAttribute("href", "/timetable/mine");
+  });
+
+  it("STUDENT sees a Timetable link pointing at /me/timetable", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "STUDENT" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: "Timetable" })).toHaveAttribute("href", "/me/timetable");
+  });
+
+  it("PARENT sees a Timetable link pointing at /me/timetable", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "PARENT" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: "Timetable" })).toHaveAttribute("href", "/me/timetable");
+  });
+
+  it("SCHOOL_ADMIN/PROPRIETOR do NOT get a Timetable sidebar item — the builder stays a Dashboard card only", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return CURRENT_USER;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    await screen.findByRole("link", { name: "Dashboard" });
+    expect(screen.queryByRole("link", { name: "Timetable" })).not.toBeInTheDocument();
+  });
+
   // SPEC_V0.5.1.md §2.7, v0.5.1 step 6 — Help is in BASE_NAV_ITEMS, visible
   // to every role (HelpPage itself branches content by role).
   it("Help is visible in the sidebar for both SCHOOL_ADMIN and TEACHER", async () => {

@@ -169,6 +169,11 @@ function mockApi() {
       // else in this app); this fixture's fixed SCHOOL_ADMIN user falls to
       // the PARENT branch (not STUDENT), which calls GET /me/children.
       if (path === "/api/v1/me/children") return { children: [] };
+      // v0.8 step 3 — same "reachable by any role" shape; /me/timetable
+      // falls to ChildTimetable with zero children (no further call), but
+      // /timetable/mine (TeacherTimetablePage) always calls this directly
+      // regardless of the fixture's actual role.
+      if (path === "/api/v1/me/teaching-timetable") return { teacherUserId: "u1", from: "2026-01-01", to: "2026-01-01", days: [] };
 
       throw new Error(
         `route-smoke.test.tsx: unexpected apiRequest call: ${method} ${path}`,
@@ -194,8 +199,10 @@ const ROUTES = [
   "/grades/review",
   "/grades/exam-approvals",
   "/me/grades",
+  "/me/timetable",
   "/timetable",
   "/timetable/arms/route-smoke-id",
+  "/timetable/mine",
   "/personnel",
   "/settings/school",
   "/settings/academic",

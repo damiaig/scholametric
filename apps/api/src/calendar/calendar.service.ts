@@ -16,6 +16,7 @@ import { SetClassSchoolDaysDto } from "./dto/set-class-school-days.dto";
 import { CreateTimetableSlotDto } from "./dto/create-timetable-slot.dto";
 import { UpdateTimetableSlotDto } from "./dto/update-timetable-slot.dto";
 import { GetTimetableSlotsQueryDto } from "./dto/get-timetable-slots-query.dto";
+import { assertTimetableRangeValid } from "./dto/get-timetable-range.dto";
 
 export interface ClassSchoolDaysRow {
   classArmId: string;
@@ -38,6 +39,70 @@ export interface TimetableSlotRow {
 }
 
 type TimetableSlotWithRelations = TimetableSlot & { period: Period; subject: Subject; teacherUser: User };
+
+// v0.8 step 3 (SPEC_V0.8.md §7 item 3) — on-read composition. AnyWeekday
+// (unlike the Weekday enum) includes SUNDAY: a resolved calendar day still
+// has to report itself AS a Sunday, even though no slot can ever exist on
+// one — Weekday's own missing SUNDAY member is what makes a slot on it
+// structurally impossible, not this response-only type.
+export type AnyWeekday = Weekday | "SUNDAY";
+
+const WEEKDAY_BY_JS_INDEX: AnyWeekday[] = [
+  "SUNDAY",
+  Weekday.MONDAY,
+  Weekday.TUESDAY,
+  Weekday.WEDNESDAY,
+  Weekday.THURSDAY,
+  Weekday.FRIDAY,
+  Weekday.SATURDAY,
+];
+
+export interface ResolvedPeriodEntry {
+  periodId: string;
+  periodName: string;
+  startsAt: string;
+  endsAt: string;
+  subjectId: string | null;
+  subjectName: string | null;
+  teacherUserId: string | null;
+  teacherName: string | null;
+  // Populated only in the teacher's cross-class view — a class view's
+  // periods are all implicitly the caller's own class already.
+  classArmId: string | null;
+  className: string | null;
+}
+
+export interface ResolvedBreakEntry {
+  breakId: string;
+  name: string;
+  startsAt: string;
+  endsAt: string;
+}
+
+export interface ResolvedTimetableDay {
+  date: string;
+  dayOfWeek: AnyWeekday;
+  isSchoolDay: boolean;
+  nonSchoolReason: "HOLIDAY" | "WEEKEND" | null;
+  holidayName: string | null;
+  periods: ResolvedPeriodEntry[];
+  breaks: ResolvedBreakEntry[];
+}
+
+export interface ClassTimetableResponse {
+  classArmId: string;
+  className: string;
+  from: string;
+  to: string;
+  days: ResolvedTimetableDay[];
+}
+
+export interface TeacherTimetableResponse {
+  teacherUserId: string;
+  from: string;
+  to: string;
+  days: ResolvedTimetableDay[];
+}
 
 // A shared time interval shape both Period and Break satisfy — the
 // overlap check below treats them as one combined daily timeline
@@ -357,6 +422,174 @@ export class CalendarService {
     await this.findTimetableSlotOrThrow(schoolId, id);
     await this.prisma.timetableSlot.delete({ where: { id } });
     return { id };
+  }
+
+  // ---- On-read composition (v0.8 step 3, SPEC_V0.8.md §7 item 3) ----
+
+  // One class's full week, resolved for [from, to]. Called ONLY from
+  // MeService (STUDENT's own class / PARENT's linked child's class) —
+  // classArmId always arrives server-resolved from the caller's own
+  // current enrollment, never a request param, so there is no id here for
+  // a caller to substitute another class with.
+  async resolveClassSchedule(classArmId: string, from: string, to: string): Promise<ClassTimetableResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    assertTimetableRangeValid(from, to);
+
+    const arm = await this.prisma.classArm.findFirst({ where: forSchool(schoolId, { id: classArmId }), include: { classLevel: true } });
+    if (!arm) {
+      throw new NotFoundException("Class not found.");
+    }
+    const session = await this.getCurrentSessionOrThrow(schoolId);
+
+    const [periods, breaks, holidays, schoolDays, slots] = await Promise.all([
+      this.prisma.period.findMany({ where: forSchool(schoolId), orderBy: [{ sortOrder: "asc" }, { id: "asc" }] }),
+      this.prisma.break.findMany({ where: forSchool(schoolId), orderBy: [{ startsAt: "asc" }, { id: "asc" }] }),
+      this.prisma.holiday.findMany({ where: forSchool(schoolId, { sessionId: session.id }) }),
+      this.prisma.classSchoolDays.findUnique({ where: { classArmId } }),
+      this.prisma.timetableSlot.findMany({
+        where: forSchool(schoolId, { classArmId, sessionId: session.id }),
+        include: { subject: true, teacherUser: true },
+      }),
+    ]);
+    const includesSaturday = schoolDays?.includesSaturday ?? false;
+
+    const days = this.enumerateDates(from, to).map((date) => {
+      const holidayMatch = this.findHolidayFor(holidays, date);
+      if (holidayMatch) {
+        return this.buildNonSchoolDay(date, this.weekdayOf(date), "HOLIDAY", holidayMatch.name);
+      }
+      const weekday = this.weekdayOf(date);
+      if (weekday === "SUNDAY" || (weekday === Weekday.SATURDAY && !includesSaturday)) {
+        return this.buildNonSchoolDay(date, weekday, "WEEKEND", null);
+      }
+
+      const slotsByPeriod = new Map(slots.filter((slot) => slot.dayOfWeek === weekday).map((slot) => [slot.periodId, slot]));
+      return {
+        date,
+        dayOfWeek: weekday,
+        isSchoolDay: true,
+        nonSchoolReason: null,
+        holidayName: null,
+        periods: periods.map((period) => {
+          const slot = slotsByPeriod.get(period.id);
+          return {
+            periodId: period.id,
+            periodName: period.name,
+            startsAt: period.startsAt,
+            endsAt: period.endsAt,
+            subjectId: slot?.subjectId ?? null,
+            subjectName: slot?.subject.name ?? null,
+            teacherUserId: slot?.teacherUserId ?? null,
+            teacherName: slot ? `${slot.teacherUser.firstName} ${slot.teacherUser.lastName}` : null,
+            classArmId: null,
+            className: null,
+          };
+        }),
+        breaks: breaks.map((brk) => ({ breakId: brk.id, name: brk.name, startsAt: brk.startsAt, endsAt: brk.endsAt })),
+      };
+    });
+
+    return { classArmId: arm.id, className: `${arm.classLevel.name} ${arm.name}`, from, to, days };
+  }
+
+  // A teacher's own slots across every class they teach, resolved for
+  // [from, to]. teacherUserId always arrives as the JWT subject
+  // (@CurrentUser().userId in MeController), never a request param.
+  //
+  // Saturday is deliberately NOT a whole-day exclusion here, unlike the
+  // class view above: a teacher can span classes with DIFFERENT
+  // includesSaturday policies (confirmed design — Step 2's own seed has
+  // one teacher teaching both a Saturday-enabled and a Mon-Fri-only arm).
+  // Each slot is filtered individually by ITS OWN class's Saturday
+  // setting; a class that opted out simply has no slot that day (a free
+  // period), rather than the caller's whole Saturday disappearing because
+  // of one unrelated class's policy.
+  async resolveTeacherSchedule(teacherUserId: string, from: string, to: string): Promise<TeacherTimetableResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    assertTimetableRangeValid(from, to);
+
+    const session = await this.getCurrentSessionOrThrow(schoolId);
+    const [periods, breaks, holidays, slots] = await Promise.all([
+      this.prisma.period.findMany({ where: forSchool(schoolId), orderBy: [{ sortOrder: "asc" }, { id: "asc" }] }),
+      this.prisma.break.findMany({ where: forSchool(schoolId), orderBy: [{ startsAt: "asc" }, { id: "asc" }] }),
+      this.prisma.holiday.findMany({ where: forSchool(schoolId, { sessionId: session.id }) }),
+      this.prisma.timetableSlot.findMany({
+        where: forSchool(schoolId, { teacherUserId, sessionId: session.id }),
+        include: { subject: true, classArm: { include: { classLevel: true, classSchoolDays: true } } },
+      }),
+    ]);
+
+    const days = this.enumerateDates(from, to).map((date) => {
+      const holidayMatch = this.findHolidayFor(holidays, date);
+      if (holidayMatch) {
+        return this.buildNonSchoolDay(date, this.weekdayOf(date), "HOLIDAY", holidayMatch.name);
+      }
+      const weekday = this.weekdayOf(date);
+      if (weekday === "SUNDAY") {
+        return this.buildNonSchoolDay(date, weekday, "WEEKEND", null);
+      }
+
+      const daySlots = slots.filter(
+        (slot) => slot.dayOfWeek === weekday && (weekday !== Weekday.SATURDAY || slot.classArm.classSchoolDays?.includesSaturday),
+      );
+      const slotsByPeriod = new Map(daySlots.map((slot) => [slot.periodId, slot]));
+      return {
+        date,
+        dayOfWeek: weekday,
+        isSchoolDay: true,
+        nonSchoolReason: null,
+        holidayName: null,
+        periods: periods.map((period) => {
+          const slot = slotsByPeriod.get(period.id);
+          return {
+            periodId: period.id,
+            periodName: period.name,
+            startsAt: period.startsAt,
+            endsAt: period.endsAt,
+            subjectId: slot?.subjectId ?? null,
+            subjectName: slot?.subject.name ?? null,
+            teacherUserId: slot ? teacherUserId : null,
+            teacherName: null,
+            classArmId: slot?.classArmId ?? null,
+            className: slot ? `${slot.classArm.classLevel.name} ${slot.classArm.name}` : null,
+          };
+        }),
+        breaks: breaks.map((brk) => ({ breakId: brk.id, name: brk.name, startsAt: brk.startsAt, endsAt: brk.endsAt })),
+      };
+    });
+
+    return { teacherUserId, from, to, days };
+  }
+
+  private buildNonSchoolDay(date: string, dayOfWeek: AnyWeekday, reason: "HOLIDAY" | "WEEKEND", holidayName: string | null): ResolvedTimetableDay {
+    return { date, dayOfWeek, isSchoolDay: false, nonSchoolReason: reason, holidayName, periods: [], breaks: [] };
+  }
+
+  private enumerateDates(from: string, to: string): string[] {
+    const dates: string[] = [];
+    for (let cursor = Date.parse(`${from}T00:00:00Z`); cursor <= Date.parse(`${to}T00:00:00Z`); cursor += 86_400_000) {
+      dates.push(new Date(cursor).toISOString().slice(0, 10));
+    }
+    return dates;
+  }
+
+  private weekdayOf(date: string): AnyWeekday {
+    return WEEKDAY_BY_JS_INDEX[new Date(`${date}T00:00:00Z`).getUTCDay()];
+  }
+
+  private findHolidayFor(holidays: Holiday[], date: string): Holiday | undefined {
+    return holidays.find((holiday) => holiday.startDate.toISOString().slice(0, 10) <= date && date <= holiday.endDate.toISOString().slice(0, 10));
+  }
+
+  // Mirrors subject-assignments.service.ts's own getCurrentSessionOrThrow
+  // exactly (same message) — a school with no current session configured
+  // has nothing meaningful to resolve a "current" timetable against.
+  private async getCurrentSessionOrThrow(schoolId: string) {
+    const session = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
+    if (!session) {
+      throw new BadRequestException("No current academic session configured for this school.");
+    }
+    return session;
   }
 
   // ---- Shared validation ----

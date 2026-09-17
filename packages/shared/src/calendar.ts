@@ -163,3 +163,64 @@ export interface CreateTimetableSlotInput extends TimetableSlotFormInput {
 export interface UpdateTimetableSlotInput extends TimetableSlotFormInput {
   teacherUserId: string;
 }
+
+// v0.8 step 3 (SPEC_V0.8.md §7 item 3) — on-read composition: a resolved,
+// day-by-day schedule for a date range. Computed on read, never
+// materialized per-date. Includes SUNDAY (unlike WeekdayValue above,
+// which deliberately excludes it) because a resolved calendar day still
+// needs to report itself AS a Sunday, even though no slot can ever exist
+// on one.
+export const ANY_WEEKDAYS = [...WEEKDAYS, "SUNDAY"] as const;
+export type AnyWeekdayValue = (typeof ANY_WEEKDAYS)[number];
+
+export const ANY_WEEKDAY_LABELS: Record<AnyWeekdayValue, string> = { ...WEEKDAY_LABELS, SUNDAY: "Sunday" };
+
+export type NonSchoolReason = "HOLIDAY" | "WEEKEND";
+
+export interface ResolvedPeriodEntry {
+  periodId: string;
+  periodName: string;
+  startsAt: string;
+  endsAt: string;
+  subjectId: string | null;
+  subjectName: string | null;
+  teacherUserId: string | null;
+  teacherName: string | null;
+  // Populated only in the teacher's cross-class view — a class view's
+  // periods are all implicitly the caller's own class, so repeating it on
+  // every row would be redundant.
+  classArmId: string | null;
+  className: string | null;
+}
+
+export interface ResolvedBreakEntry {
+  breakId: string;
+  name: string;
+  startsAt: string;
+  endsAt: string;
+}
+
+export interface ResolvedTimetableDay {
+  date: string;
+  dayOfWeek: AnyWeekdayValue;
+  isSchoolDay: boolean;
+  nonSchoolReason: NonSchoolReason | null;
+  holidayName: string | null;
+  periods: ResolvedPeriodEntry[];
+  breaks: ResolvedBreakEntry[];
+}
+
+export interface ClassTimetableResponse {
+  classArmId: string;
+  className: string;
+  from: string;
+  to: string;
+  days: ResolvedTimetableDay[];
+}
+
+export interface TeacherTimetableResponse {
+  teacherUserId: string;
+  from: string;
+  to: string;
+  days: ResolvedTimetableDay[];
+}

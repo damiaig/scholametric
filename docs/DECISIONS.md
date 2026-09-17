@@ -5836,3 +5836,107 @@ TEACHER 403 / cross-tenant 404 on every route. Full backend e2e suite:
 `TimetableLandingPage.test.tsx` (3), `TimetableBuilderPage.test.tsx` (8)
 — plus 1 new `route-smoke.test.tsx` case and 1 new assertion in the
 existing `DashboardPage.test.tsx` admin-cards test).
+
+## 2026-09-17 — v0.8 step 3: on-read composition + the first non-admin timetable read views (teacher/student/parent)
+Decision: two new `CalendarService` methods — `resolveClassSchedule(classArmId, from, to)`
+and `resolveTeacherSchedule(teacherUserId, from, to)` — compute a day-by-day
+schedule for a date range **entirely on read**, never materialized per-date.
+Both resolve "current session" server-side (the exact one-liner
+`findMyTeaching` already uses), so `sessionId` is never a request param
+anywhere in this step. For each date: a `Holiday` match wins outright
+(`nonSchoolReason: "HOLIDAY"`, `holidayName` populated, zero periods);
+Sunday is always non-school (`"WEEKEND"`) — redundant with `Weekday`'s own
+missing `SUNDAY` member, but marked explicitly so the UI shows a clear
+reason rather than an ambiguous empty grid; a school day pairs every
+`Period` (Step 1, ordered by `sortOrder`) with its matching `TimetableSlot`
+for that weekday (`null` = free period) and returns every school-wide
+`Break` unfiltered (the spec's own "periods+breaks+slots per date").
+`GetTimetableRangeDto` requires both `from`/`to` (no implicit "this week"
+server-side) and caps the range at 31 days (`assertTimetableRangeValid`).
+
+**Saturday resolves differently per view — the one genuinely non-obvious
+design point this step turned on.** The class view (`resolveClassSchedule`)
+treats Saturday as a whole-day decision: one class, one
+`ClassSchoolDays.includesSaturday` flag, deciding the entire day at once —
+identical to Step 2's own school-day gate. The teacher view
+(`resolveTeacherSchedule`) does NOT globally exclude Saturday: a teacher
+can span classes with different Saturday policies (Step 2's own seed
+already has `teacher@sunrise.test` teaching both a Saturday-enabled and a
+Mon-Fri-only arm), so each slot is filtered **individually** by its own
+class's flag — a Saturday-disabled class's slot is simply absent (a free
+period) that day, while a same-day slot from a Saturday-enabled class
+still appears. Marking the whole teacher-Saturday off would have been
+wrong the moment a teacher's classes disagreed on the policy; confirmed
+before building, proven by a dedicated e2e with exactly that mixed case
+(one teacher, two classes, two different Saturday settings, same
+Saturday).
+
+**The visibility wall is structural, not a filter applied after the
+fact.** `classArmId`/`teacherUserId` never appear as request
+parameters anywhere in this step — every id is resolved server-side from
+the JWT (`@CurrentUser().userId`) or the caller's own current enrollment
+(new `MeService.resolveStudentCurrentClassArmId`, trimmed from
+`buildProfile`'s existing enrollment lookup). A STUDENT has no field to
+substitute another class's id into; a PARENT's `childId` runs through
+`assertChildBelongsToCaller` — the exact same own-child wall grades/exams
+self-views already use — before any class resolution happens at all. No
+current-session enrollment resolves to `404` ("Not currently enrolled in
+a class"), not an empty `200`: a timetable has nothing meaningful to
+report without a class, unlike `buildProfile`'s own
+`currentClassArmLabel`, which tolerates `null` for a lighter-weight field.
+
+**Routes live in `MeController`/`MeService`, never in `CalendarController`**
+— matches this codebase's own precedent with zero exceptions: every
+self-view for STUDENT/PARENT already lives in `MeController`, calling into
+another module's service injected as a constructor dependency
+(`GradesService`, `ExamsService`). `CalendarModule` gained
+`exports: [CalendarService]` (mirroring `GradesModule`/`ExamsModule`
+exactly) and was added to `MeModule`'s imports — the only wiring change
+outside the calendar/me modules themselves. Three routes: `GET
+/me/timetable` (`STUDENT`), `GET /me/children/:childId/timetable`
+(`PARENT`), `GET /me/teaching-timetable` (`TEACHER` — the explicit-word
+naming mirrors `/me/teaching`'s own existing convention, since STUDENT's
+routes stay plain-named).
+
+**Frontend.** New `TimetableWeekView` (periods × days grid, read-only —
+no click-to-assign, unlike Step 2's builder) shared across all three
+consuming pages: `TeacherTimetablePage` (`/timetable/mine`),
+`MyTimetablePage` (`/me/timetable`, forking `MyTimetable`/`ChildTimetable`
+exactly like `MyGradesPage` already forks — including the identical
+`?childId=` child-switcher). A non-school day's header shows the holiday
+name or "Weekend" instead of leaving periods ambiguously blank.
+`getCurrentWeekRange()` computes the client-side "this week" default
+(Monday-Sunday) — the API itself never defaults the range.
+
+**Nav placement flips from Step 2.** Step 2 deliberately kept the
+timetable builder off the sidebar (an infrequent admin setup action,
+Dashboard card only) — this step is exactly the point where that
+reasoning inverts: TEACHER/STUDENT/PARENT now have real, everyday-relevant
+timetable content for the first time, the same category `Grades` earned
+its own permanent sidebar slot for. `Sidebar.tsx` gained
+`TEACHER_TIMETABLE_ITEM`/`PORTAL_TIMETABLE_ITEM` next to the existing
+Grades items, for exactly those three roles — `SCHOOL_ADMIN`/`PROPRIETOR`
+deliberately do NOT get one; the Step 2 builder stays a Dashboard card,
+unchanged. `TeacherDashboard`/`StudentDashboard`/`ParentDashboard` each
+gained a "Timetable" card alongside their existing "Grades" one
+(`TeacherDashboard`'s 3-card action row widened to 4 columns the same way
+the admin dashboard's did in Step 2, to avoid an orphaned single-card
+row).
+
+**Test impact.** Backend: new `timetable-views.e2e-spec.ts` (13 tests)
+built around one fixed, verified real calendar week (2026-09-14 Monday
+through 2026-09-20 Sunday) so holiday/weekend/Saturday exclusion could be
+proven against concrete dates rather than "whatever today happens to
+be." Covers: Monday slot shown, holiday-excluded Wednesday (name
+populated), Sunday excluded, Saturday shown once a class opts in,
+breaks returned on every school day, no-enrollment `404`, range
+validation (`from > to`, `>31` days), the mixed-Saturday-policy teacher
+proof, a second teacher seeing only their own slot, Hillcrest/Sunrise
+tenant isolation, the parent's different-family-child `404` (allow-list,
+not existence-checking), and categorical role guards on all three
+routes. Full backend e2e suite: 540/540 (41 suites) after, up from the
+527 baseline. Full web suite: 352/352 (58 files) after, up from 334 (3
+new test files — `TeacherTimetablePage.test.tsx` (2),
+`MyTimetablePage.test.tsx` (4), `TimetableWeekView.test.tsx` (6) — plus 4
+new `AppShell.test.tsx` sidebar-item cases and 2 new `route-smoke.test.tsx`
+cases).
