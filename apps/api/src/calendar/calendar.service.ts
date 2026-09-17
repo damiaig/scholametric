@@ -1,9 +1,10 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import type { Break, ClassArm, Holiday, Period } from "@prisma/client";
+import { Prisma, UserRole, Weekday, type Break, type ClassArm, type Holiday, type Period, type Subject, type TimetableSlot, type User } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
+import { getAssignedSubjectMap } from "../grades/subject-assignment.util";
 import { CreatePeriodDto } from "./dto/create-period.dto";
 import { UpdatePeriodDto } from "./dto/update-period.dto";
 import { CreateBreakDto } from "./dto/create-break.dto";
@@ -12,6 +13,9 @@ import { CreateHolidayDto } from "./dto/create-holiday.dto";
 import { UpdateHolidayDto } from "./dto/update-holiday.dto";
 import { GetHolidaysQueryDto } from "./dto/get-holidays-query.dto";
 import { SetClassSchoolDaysDto } from "./dto/set-class-school-days.dto";
+import { CreateTimetableSlotDto } from "./dto/create-timetable-slot.dto";
+import { UpdateTimetableSlotDto } from "./dto/update-timetable-slot.dto";
+import { GetTimetableSlotsQueryDto } from "./dto/get-timetable-slots-query.dto";
 
 export interface ClassSchoolDaysRow {
   classArmId: string;
@@ -19,6 +23,21 @@ export interface ClassSchoolDaysRow {
   classLevelName: string;
   includesSaturday: boolean;
 }
+
+export interface TimetableSlotRow {
+  id: string;
+  classArmId: string;
+  sessionId: string;
+  dayOfWeek: Weekday;
+  periodId: string;
+  periodName: string;
+  subjectId: string;
+  subjectName: string;
+  teacherUserId: string;
+  teacherName: string;
+}
+
+type TimetableSlotWithRelations = TimetableSlot & { period: Period; subject: Subject; teacherUser: User };
 
 // A shared time interval shape both Period and Break satisfy — the
 // overlap check below treats them as one combined daily timeline
@@ -250,6 +269,96 @@ export class CalendarService {
     return { classArmId: arm.id, classArmName: arm.name, classLevelName: arm.classLevel.name, includesSaturday: dto.includesSaturday };
   }
 
+  // ---- Timetable slots (v0.8 step 2, SPEC_V0.8.md §7 item 2) ----
+
+  private static readonly SLOT_INCLUDE = { period: true, subject: true, teacherUser: true } as const;
+
+  async listTimetableSlots(query: GetTimetableSlotsQueryDto): Promise<TimetableSlotRow[]> {
+    const schoolId = this.tenantContext.schoolId;
+    await this.assertClassArmInTenant(schoolId, query.classArmId);
+    await this.assertSessionInTenant(schoolId, query.sessionId);
+
+    const slots = await this.prisma.timetableSlot.findMany({
+      where: forSchool(schoolId, { classArmId: query.classArmId, sessionId: query.sessionId }),
+      include: CalendarService.SLOT_INCLUDE,
+      orderBy: [{ period: { sortOrder: "asc" } }, { dayOfWeek: "asc" }],
+    });
+    return slots.map((slot) => this.toTimetableSlotRow(slot));
+  }
+
+  async createTimetableSlot(dto: CreateTimetableSlotDto): Promise<TimetableSlotRow> {
+    const schoolId = this.tenantContext.schoolId;
+    await this.assertClassArmInTenant(schoolId, dto.classArmId);
+    await this.assertSessionInTenant(schoolId, dto.sessionId);
+    await this.assertPeriodInTenant(schoolId, dto.periodId);
+    await this.assertSubjectInTenant(schoolId, dto.subjectId);
+    await this.assertTeacherInTenant(schoolId, dto.teacherUserId);
+
+    await this.assertSchoolDayAllowed(dto.classArmId, dto.dayOfWeek);
+    await this.assertTeacherTeachesSubject(schoolId, dto.classArmId, dto.sessionId, dto.subjectId, dto.teacherUserId);
+    await this.assertNoSlotCollision(schoolId, dto.classArmId, dto.dayOfWeek, dto.periodId, dto.sessionId);
+    await this.assertNoTeacherDoubleBooking(schoolId, dto.teacherUserId, dto.dayOfWeek, dto.periodId, dto.sessionId);
+
+    try {
+      const slot = await this.prisma.timetableSlot.create({
+        data: forSchool(schoolId, {
+          classArmId: dto.classArmId,
+          sessionId: dto.sessionId,
+          dayOfWeek: dto.dayOfWeek,
+          periodId: dto.periodId,
+          subjectId: dto.subjectId,
+          teacherUserId: dto.teacherUserId,
+        }),
+        include: CalendarService.SLOT_INCLUDE,
+      });
+      return this.toTimetableSlotRow(slot);
+    } catch (error) {
+      this.rethrowSchedulingConflict(error);
+    }
+  }
+
+  // Day/period/classArm/session are immutable (see UpdateTimetableSlotDto's
+  // own doc comment) — only re-validates what subjectId/teacherUserId
+  // changes can actually affect: the teacher-teaches-subject pairing and
+  // teacher double-booking. The school-day check and slot-collision check
+  // are skipped: neither classArmId nor dayOfWeek/periodId can change here,
+  // so re-running them would just re-confirm what create() already proved.
+  async updateTimetableSlot(id: string, dto: UpdateTimetableSlotDto): Promise<TimetableSlotRow> {
+    const schoolId = this.tenantContext.schoolId;
+    const existing = await this.findTimetableSlotOrThrow(schoolId, id);
+
+    const subjectId = dto.subjectId ?? existing.subjectId;
+    const teacherUserId = dto.teacherUserId ?? existing.teacherUserId;
+
+    if (dto.subjectId) {
+      await this.assertSubjectInTenant(schoolId, dto.subjectId);
+    }
+    if (dto.teacherUserId) {
+      await this.assertTeacherInTenant(schoolId, dto.teacherUserId);
+    }
+
+    await this.assertTeacherTeachesSubject(schoolId, existing.classArmId, existing.sessionId, subjectId, teacherUserId);
+    await this.assertNoTeacherDoubleBooking(schoolId, teacherUserId, existing.dayOfWeek, existing.periodId, existing.sessionId, id);
+
+    try {
+      const slot = await this.prisma.timetableSlot.update({
+        where: { id },
+        data: { subjectId: dto.subjectId, teacherUserId: dto.teacherUserId },
+        include: CalendarService.SLOT_INCLUDE,
+      });
+      return this.toTimetableSlotRow(slot);
+    } catch (error) {
+      this.rethrowSchedulingConflict(error);
+    }
+  }
+
+  async deleteTimetableSlot(id: string): Promise<{ id: string }> {
+    const schoolId = this.tenantContext.schoolId;
+    await this.findTimetableSlotOrThrow(schoolId, id);
+    await this.prisma.timetableSlot.delete({ where: { id } });
+    return { id };
+  }
+
   // ---- Shared validation ----
 
   private assertTimeOrder(startsAt: string, endsAt: string): void {
@@ -318,5 +427,157 @@ export class CalendarService {
       throw new NotFoundException("Holiday not found.");
     }
     return holiday;
+  }
+
+  // ---- Timetable slot validation ----
+
+  private async assertClassArmInTenant(schoolId: string, classArmId: string): Promise<void> {
+    const classArm = await this.prisma.classArm.findFirst({ where: forSchool(schoolId, { id: classArmId }) });
+    if (!classArm) {
+      throw new NotFoundException("Class not found.");
+    }
+  }
+
+  private async assertPeriodInTenant(schoolId: string, periodId: string): Promise<void> {
+    const period = await this.prisma.period.findFirst({ where: forSchool(schoolId, { id: periodId }) });
+    if (!period) {
+      throw new NotFoundException("Period not found.");
+    }
+  }
+
+  private async assertSubjectInTenant(schoolId: string, subjectId: string): Promise<void> {
+    const subject = await this.prisma.subject.findFirst({ where: forSchool(schoolId, { id: subjectId, deletedAt: null }) });
+    if (!subject) {
+      throw new NotFoundException("Subject not found.");
+    }
+  }
+
+  // Mirrors subject-assignments.service.ts's own assertTeacherInTenant
+  // exactly (role: TEACHER, deletedAt: null, a real staffProfile) — the
+  // same shape, same error message, so a bad teacherUserId reads
+  // identically everywhere it's checked in this codebase.
+  private async assertTeacherInTenant(schoolId: string, teacherUserId: string): Promise<void> {
+    const teacher = await this.prisma.user.findFirst({
+      where: forSchool(schoolId, { id: teacherUserId, role: UserRole.TEACHER, deletedAt: null }),
+      include: { staffProfile: true },
+    });
+    if (!teacher || !teacher.staffProfile) {
+      throw new NotFoundException("Teacher not found.");
+    }
+  }
+
+  // Mon-Fri is always allowed. Saturday requires this class arm's
+  // ClassSchoolDays.includesSaturday — proves Step 1 and Step 2 compose
+  // (a class can't get a Saturday slot until an admin opts it in via
+  // PUT /calendar/class-school-days/:classArmId).
+  private async assertSchoolDayAllowed(classArmId: string, dayOfWeek: Weekday): Promise<void> {
+    if (dayOfWeek !== Weekday.SATURDAY) {
+      return;
+    }
+    const config = await this.prisma.classSchoolDays.findUnique({ where: { classArmId } });
+    if (!config?.includesSaturday) {
+      throw new BadRequestException("This class doesn't have school on Saturday.");
+    }
+  }
+
+  // Reuses getAssignedSubjectMap — the exact same canonical source
+  // assertTeacherAssignment (grades/exams score entry) reads from, so this
+  // can never drift from "who teaches what for this class" as understood
+  // everywhere else in the app. No assignment at all -> 404 (mirrors
+  // assertTeacherAssignment's own admin-branch behavior: the subject isn't
+  // staffed for this class, a missing-resource condition). An assignment
+  // exists but names a different teacher -> 400 (the caller's chosen
+  // teacherUserId is simply the wrong input, not a missing resource).
+  private async assertTeacherTeachesSubject(
+    schoolId: string,
+    classArmId: string,
+    sessionId: string,
+    subjectId: string,
+    teacherUserId: string,
+  ): Promise<void> {
+    const assignedSubjects = await getAssignedSubjectMap(this.prisma, { schoolId, classArmId, sessionId });
+    const assignment = assignedSubjects.get(subjectId);
+    if (!assignment) {
+      throw new NotFoundException("No teacher is assigned to teach this subject for this class.");
+    }
+    if (assignment.teacherUserId !== teacherUserId) {
+      throw new BadRequestException(`This teacher isn't assigned to teach ${assignment.subjectName} for this class.`);
+    }
+  }
+
+  // One thing happening per class/day/period — pre-checked for a clean
+  // message; @@unique([classArmId, dayOfWeek, periodId, sessionId]) is the
+  // real guarantee (see rethrowSchedulingConflict for the race window).
+  private async assertNoSlotCollision(
+    schoolId: string,
+    classArmId: string,
+    dayOfWeek: Weekday,
+    periodId: string,
+    sessionId: string,
+    excludeId?: string,
+  ): Promise<void> {
+    const existing = await this.prisma.timetableSlot.findFirst({
+      where: forSchool(schoolId, { classArmId, dayOfWeek, periodId, sessionId, ...(excludeId ? { id: { not: excludeId } } : {}) }),
+      include: { subject: true },
+    });
+    if (existing) {
+      throw new BadRequestException(`This class already has ${existing.subject.name} scheduled at this time.`);
+    }
+  }
+
+  // No teacher double-booking across ANY class in the school — pre-checked
+  // for a clean message; @@unique([teacherUserId, dayOfWeek, periodId,
+  // sessionId]) is the real guarantee.
+  private async assertNoTeacherDoubleBooking(
+    schoolId: string,
+    teacherUserId: string,
+    dayOfWeek: Weekday,
+    periodId: string,
+    sessionId: string,
+    excludeId?: string,
+  ): Promise<void> {
+    const existing = await this.prisma.timetableSlot.findFirst({
+      where: forSchool(schoolId, { teacherUserId, dayOfWeek, periodId, sessionId, ...(excludeId ? { id: { not: excludeId } } : {}) }),
+      include: { classArm: { include: { classLevel: true } } },
+    });
+    if (existing) {
+      throw new BadRequestException(`This teacher is already teaching ${existing.classArm.classLevel.name} ${existing.classArm.name} at this time.`);
+    }
+  }
+
+  // The pre-checks above are the common path; this is the race-window
+  // fallback if two concurrent requests both pass their pre-check before
+  // either commits. Deliberately mapped to the SAME 400 family as the
+  // pre-checks (not throwIfUniqueConstraint's 409) — from the caller's
+  // perspective it's the identical "this conflicts with another slot"
+  // error, whichever of the two code paths happened to catch it.
+  private rethrowSchedulingConflict(error: unknown): never {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      throw new BadRequestException("This slot conflicts with another timetable entry.");
+    }
+    throw error;
+  }
+
+  private async findTimetableSlotOrThrow(schoolId: string, id: string): Promise<TimetableSlot> {
+    const slot = await this.prisma.timetableSlot.findFirst({ where: forSchool(schoolId, { id }) });
+    if (!slot) {
+      throw new NotFoundException("Timetable slot not found.");
+    }
+    return slot;
+  }
+
+  private toTimetableSlotRow(slot: TimetableSlotWithRelations): TimetableSlotRow {
+    return {
+      id: slot.id,
+      classArmId: slot.classArmId,
+      sessionId: slot.sessionId,
+      dayOfWeek: slot.dayOfWeek,
+      periodId: slot.periodId,
+      periodName: slot.period.name,
+      subjectId: slot.subjectId,
+      subjectName: slot.subject.name,
+      teacherUserId: slot.teacherUserId,
+      teacherName: `${slot.teacherUser.firstName} ${slot.teacherUser.lastName}`,
+    };
   }
 }

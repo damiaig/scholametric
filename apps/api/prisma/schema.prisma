@@ -122,6 +122,7 @@ model School {
   breaks                    Break[]
   holidays                  Holiday[]
   classSchoolDays           ClassSchoolDays[]
+  timetableSlots            TimetableSlot[]
 
   @@map("schools")
 }
@@ -176,6 +177,7 @@ model User {
   evaluationScoresEntered   EvaluationScore[]          @relation("EvaluationScoreEnteredBy")
   examsCreated              Exam[]                     @relation("ExamCreatedBy")
   examScoresEntered         ExamScore[]                @relation("ExamScoreEnteredBy")
+  timetableSlots            TimetableSlot[]
 
   @@unique([schoolId, email])
   @@unique([schoolId, username])
@@ -227,6 +229,7 @@ model AcademicSession {
   termExamResults           TermExamResult[]
   yearExamResults           YearExamResult[]
   holidays                  Holiday[]
+  timetableSlots            TimetableSlot[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -310,6 +313,7 @@ model ClassArm {
   termSubjectExamResults    TermSubjectExamResult[]
   termExamResults           TermExamResult[]
   classSchoolDays           ClassSchoolDays?
+  timetableSlots            TimetableSlot[]
 
   @@unique([classLevelId, name])
   @@index([schoolId])
@@ -439,6 +443,7 @@ model Subject {
   evaluations            Evaluation[]
   exams                  Exam[]
   termSubjectExamResults TermSubjectExamResult[]
+  timetableSlots         TimetableSlot[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -955,7 +960,8 @@ model Period {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  school School @relation(fields: [schoolId], references: [id])
+  school         School          @relation(fields: [schoolId], references: [id])
+  timetableSlots TimetableSlot[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -1025,4 +1031,56 @@ model ClassSchoolDays {
 
   @@index([schoolId])
   @@map("class_school_days")
+}
+
+// v0.8 step 2 (SPEC_V0.8.md §7 item 2) — no SUNDAY member. This is not a
+// validation rule that rejects Sunday; the value is structurally absent
+// from the type itself, so Postgres cannot hold it in this column under
+// any code path, including a raw write that bypasses the API entirely.
+enum Weekday {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+}
+
+// The repeating weekly timetable template — one row per (class, weekday,
+// period) assignment. sessionId-scoped only (no termId), mirroring
+// SubjectTeacherAssignment exactly (the canonical source this model's own
+// teacher-teaches-subject check reuses): one template per class per
+// session, used by every term in it. Hard delete — nothing references a
+// slot by id yet (Step 4's TimetableException is keyed by
+// classArmId+date+periodId per SPEC_V0.8.md §2, not a slot FK).
+model TimetableSlot {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  schoolId      String   @map("school_id") @db.Uuid
+  classArmId    String   @map("class_arm_id") @db.Uuid
+  sessionId     String   @map("session_id") @db.Uuid
+  dayOfWeek     Weekday  @map("day_of_week")
+  periodId      String   @map("period_id") @db.Uuid
+  subjectId     String   @map("subject_id") @db.Uuid
+  teacherUserId String   @map("teacher_user_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  school      School          @relation(fields: [schoolId], references: [id])
+  classArm    ClassArm        @relation(fields: [classArmId], references: [id])
+  session     AcademicSession @relation(fields: [sessionId], references: [id])
+  period      Period          @relation(fields: [periodId], references: [id])
+  subject     Subject         @relation(fields: [subjectId], references: [id])
+  teacherUser User            @relation(fields: [teacherUserId], references: [id])
+
+  // One thing happening in this class at this day+period — the app
+  // pre-checks for a clean 400 message, this constraint is the real
+  // guarantee.
+  @@unique([classArmId, dayOfWeek, periodId, sessionId])
+  // No teacher double-booking — DB-enforced, not just app logic. No
+  // schoolId in the tuple: a teacherUserId only ever belongs to one
+  // school, same precedent as SubjectTeacherAssignment's own unique
+  // constraint (subjectId+classArmId+sessionId, no schoolId either).
+  @@unique([teacherUserId, dayOfWeek, periodId, sessionId])
+  @@index([schoolId])
+  @@map("timetable_slots")
 }

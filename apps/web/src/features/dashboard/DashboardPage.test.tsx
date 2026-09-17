@@ -102,6 +102,7 @@ describe("DashboardPage", () => {
     expect(screen.getByText("Sunrise College · 2026/2027 (First term)")).toBeInTheDocument();
     expect(screen.getByText("Students by class level")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Review & Publish/ })).toHaveAttribute("href", "/grades/review");
+    expect(screen.getByRole("link", { name: /Build timetable/ })).toHaveAttribute("href", "/timetable");
     expect(screen.getByText("104 provisioned")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Provision/ })).toHaveAttribute("href", "/settings/portal-accounts");
   });

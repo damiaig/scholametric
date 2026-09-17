@@ -11,6 +11,9 @@ import { CreateHolidayDto } from "./dto/create-holiday.dto";
 import { UpdateHolidayDto } from "./dto/update-holiday.dto";
 import { GetHolidaysQueryDto } from "./dto/get-holidays-query.dto";
 import { SetClassSchoolDaysDto } from "./dto/set-class-school-days.dto";
+import { CreateTimetableSlotDto } from "./dto/create-timetable-slot.dto";
+import { UpdateTimetableSlotDto } from "./dto/update-timetable-slot.dto";
+import { GetTimetableSlotsQueryDto } from "./dto/get-timetable-slots-query.dto";
 
 // v0.8 step 1 (SPEC_V0.8.md §7 item 1) — the calendar domain's foundation.
 // SCHOOL_ADMIN + PROPRIETOR only, no TEACHER path in this step (read views
@@ -108,5 +111,30 @@ export class CalendarController {
   @Put("class-school-days/:classArmId")
   setClassSchoolDays(@Param("classArmId", ParseUUIDPipe) classArmId: string, @Body() dto: SetClassSchoolDaysDto) {
     return this.calendarService.setClassSchoolDays(classArmId, dto);
+  }
+
+  // ---- Timetable slots (v0.8 step 2) ----
+
+  @Get("timetable-slots")
+  listTimetableSlots(@Query() query: GetTimetableSlotsQueryDto) {
+    return this.calendarService.listTimetableSlots(query);
+  }
+
+  @Audit("timetableSlot", "create")
+  @Post("timetable-slots")
+  createTimetableSlot(@Body() dto: CreateTimetableSlotDto) {
+    return this.calendarService.createTimetableSlot(dto);
+  }
+
+  @Audit("timetableSlot", "update")
+  @Patch("timetable-slots/:id")
+  updateTimetableSlot(@Param("id", ParseUUIDPipe) id: string, @Body() dto: UpdateTimetableSlotDto) {
+    return this.calendarService.updateTimetableSlot(id, dto);
+  }
+
+  @Audit("timetableSlot", "delete")
+  @Delete("timetable-slots/:id")
+  deleteTimetableSlot(@Param("id", ParseUUIDPipe) id: string) {
+    return this.calendarService.deleteTimetableSlot(id);
   }
 }

@@ -5723,3 +5723,116 @@ that gained one more generated case from adding `/settings/calendar` to
 its route list). Note a one-off `vitest run`'s default multi-worker pool
 hit a Node heap OOM unrelated to this change — confirmed clean (321/321)
 under `--pool=forks --poolOptions.forks.singleFork`.
+
+## 2026-09-17 — v0.8 step 2: the repeating weekly timetable template (TimetableSlot + proprietor builder)
+Decision: one new Prisma enum `Weekday` (MONDAY-SATURDAY, **no SUNDAY
+member at all**) and one new model `TimetableSlot`, sessionId-scoped only
+(no termId) — mirrors `SubjectTeacherAssignment` exactly (unique on
+`subjectId+classArmId+sessionId`, no term), since that's the canonical
+source this model's own teacher-teaches-subject check reuses. One weekly
+template per class per session, used by every term in it. Sunday-never is
+enforced at the strongest possible layer: not a validation rule that
+rejects the value, but a type that cannot hold it — `@IsEnum(Weekday)`
+400s "SUNDAY" at the DTO layer, and Postgres itself has no such enum
+literal in the column, so not even a raw Prisma write bypassing the API
+could produce it.
+
+Two integrity rules are DB-enforced, not just app-checked:
+`@@unique([classArmId, dayOfWeek, periodId, sessionId])` (one thing
+happening in a class at a given day+period) and
+`@@unique([teacherUserId, dayOfWeek, periodId, sessionId])` (no teacher
+double-booked across any class in the school — no `schoolId` in the
+tuple, since a `teacherUserId` only ever belongs to one school, same
+precedent as `SubjectTeacherAssignment`'s own constraint). `CalendarService`
+pre-checks both for a clean `400` message; the constraints are the real
+guarantee, with a `P2002` race-window fallback mapped to the SAME `400`
+family (not `throwIfUniqueConstraint`'s `409`) — from the caller's
+perspective it's the identical "this conflicts with another slot" error
+regardless of which of the two code paths caught it.
+
+**Teacher-teaches-subject reuses `getAssignedSubjectMap`**
+(`grades/subject-assignment.util.ts`) — the exact canonical source
+`assertTeacherAssignment` already reads from — imported read-only into
+`calendar`, the only place this step touches anything outside its own
+module tree. No assignment at all for the subject → `404` (mirrors
+`assertTeacherAssignment`'s own admin-branch behavior: a missing-resource
+condition); an assignment exists but names a different teacher than the
+one given → `400` (the caller's input is simply wrong, not missing).
+`assertTeacherInTenant` mirrors `subject-assignments.service.ts`'s own
+helper of the same name exactly (role: TEACHER, `deletedAt: null`, a real
+`staffProfile`) — a bad teacher id reads identically everywhere it's
+checked in this codebase.
+
+**Saturday composes with Step 1**: a Saturday slot 400s
+("This class doesn't have school on Saturday.") unless
+`ClassSchoolDays.includesSaturday` is true for that class arm — proven by
+an e2e that gets blocked, flips the flag via Step 1's own
+`PUT /calendar/class-school-days/:classArmId`, then succeeds with the
+identical payload.
+
+`PATCH` reassigns `subjectId`/`teacherUserId` only — day/period/classArm/
+session are fixed at creation, same convention as evaluations' immutable
+scoping fields. "Moving" a slot in the builder is a delete-then-create of
+a different grid cell, not a PATCH; this kept the validation surface to
+exactly what changing subject/teacher can affect (re-check
+teacher-teaches-subject and teacher-double-booking only — the school-day
+and slot-collision checks are skipped since neither classArmId nor
+dayOfWeek/periodId can change here).
+
+**Frontend.** New `apps/web/src/features/timetable/` feature folder — NOT
+nested under `/classes/arms/:id`, and NOT linked from
+`ClassArmDetailPage` at all. `ClassArmDetailPage` stopped hosting
+feature-area action links in v0.7.2 step 2 (grading UI moved out to its
+own `/grades` namespace entirely, leaving only genuinely page-local
+actions like credential slips inline) — adding a Timetable link there
+would have reintroduced exactly the pattern that step deliberately
+removed. Instead: `TimetableLandingPage` (`/timetable`, gated by
+`RequireSchoolAdmin`) reuses `useClasses()` — the SAME hook
+`GradesLandingPage`'s own `AdminGradesView` calls, zero new endpoint — for
+an identical school-wide class browser, linking to
+`TimetableBuilderPage` (`/timetable/arms/:id`) instead of
+`/grades/arms/:id`. Entry point is a Dashboard card ("Build timetable →"),
+matching "Review & Publish"/"Exam approvals"'s own shape (an occasional
+admin setup action), not a new permanent sidebar item — Grades earned its
+sidebar slot because every role needs it for everyday use; building a
+timetable is infrequent admin setup, and the roadmap's later steps (the
+live daily agenda, Step 6) are the more likely candidate for a permanent
+everyday nav slot once every role has a reason to check it daily. The
+existing 3-card dashboard action row widened from `sm:grid-cols-3` to
+`sm:grid-cols-2 lg:grid-cols-4` to fit the new card without an orphaned
+single-item row.
+
+The builder dialog (`TimetableSlotFormDialog`) offers **only a Subject
+dropdown** — `teacherUserId` is derived from the chosen subject via
+`ClassArmDetail.subjectTeachers` (already fetched, zero new query), never
+independently picked. Since the backend enforces exactly one teacher per
+`(subject, classArm, session)` anyway, a separate teacher control could
+only ever construct a combination the backend guarantees will `400` —
+removing it removes a whole class of dead-end UI states, not just a
+convenience. Double-booking is NOT pre-checked client-side (would require
+fetching every other class's slots); the dialog surfaces the backend's
+`400` message directly via the existing `FieldError`/alert pattern. Same
+"plain table, not `DataTable`" reasoning as Step 1's settings sections —
+the grid's shape (rows × dynamic weekday columns, inline cell buttons)
+doesn't fit `DataTable`'s row-list contract at all, let alone its
+pagination props.
+
+**Test impact.** Backend: new `timetable-slots.e2e-spec.ts` (19 tests) —
+reuses the seed's EXISTING `subject_teacher_assignment` rows (Mathematics/
+`teacher@sunrise.test` and English Language/`teacher2@sunrise.test` are
+both already assigned across JSS 1 A and JSS 2 A) rather than creating
+scratch assignments, since the same teacher already teaching in two
+different arms is exactly what the cross-class double-booking proof
+needs. Covers: valid-week build, PROPRIETOR-can-also-create, Sunday
+rejected (structural), class-slot collision, cross-class teacher
+double-booking, teacher-wrong-subject (400) vs teacher-not-assigned-at-all
+(404), Saturday gate + Step-1 composition, all 5 tenant-scoped fields
+(classArmId/sessionId/periodId/subjectId/teacherUserId) 404 both
+directions, PATCH re-validation (including against-itself not
+false-positiving), delete freeing a double-booking, and categorical
+TEACHER 403 / cross-tenant 404 on every route. Full backend e2e suite:
+527/527 (40 suites) after, up from the 508 baseline. Full web suite:
+334/334 (55 files) after, up from 321 (2 new test files —
+`TimetableLandingPage.test.tsx` (3), `TimetableBuilderPage.test.tsx` (8)
+— plus 1 new `route-smoke.test.tsx` case and 1 new assertion in the
+existing `DashboardPage.test.tsx` admin-cards test).

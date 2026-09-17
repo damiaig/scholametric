@@ -27,6 +27,8 @@ import { CalendarSettingsPage } from "./features/settings/CalendarSettingsPage";
 import { PortalAccountsSettingsPage } from "./features/portal-accounts/PortalAccountsSettingsPage";
 import { ClassArmCredentialSlipsPage } from "./features/portal-accounts/ClassArmCredentialSlipsPage";
 import { AccountChangePasswordPage } from "./features/auth/AccountChangePasswordPage";
+import { TimetableLandingPage } from "./features/timetable/TimetableLandingPage";
+import { TimetableBuilderPage } from "./features/timetable/TimetableBuilderPage";
 
 // Extracted from <App> (which just wraps this in <BrowserRouter>) so the
 // route-smoke test can mount the exact same route tree inside a
@@ -85,6 +87,15 @@ export function AppRoutes() {
             path="/classes/arms/:id/credential-slips"
             element={<ClassArmCredentialSlipsPage />}
           />
+          {/* v0.8 step 2 (SPEC_V0.8.md §7 item 2) — its own top-level
+              namespace, not nested under /classes/arms/:id, same reasoning
+              as /grades/arms/:id's own move away from the class page
+              (v0.7.2 step 2): a feature area with its own landing/browser
+              page gets its own namespace; the class page itself stays
+              read-only for feature actions. SCHOOL_ADMIN/PROPRIETOR only
+              for now — no TEACHER path until a later v0.8 step. */}
+          <Route path="/timetable" element={<TimetableLandingPage />} />
+          <Route path="/timetable/arms/:id" element={<TimetableBuilderPage />} />
         </Route>
 
         <Route path="/settings" element={<SettingsLayout />}>

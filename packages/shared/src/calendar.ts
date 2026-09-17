@@ -102,3 +102,64 @@ export const setClassSchoolDaysInputSchema = z.object({
   includesSaturday: z.boolean(),
 });
 export type SetClassSchoolDaysInput = z.infer<typeof setClassSchoolDaysInputSchema>;
+
+// v0.8 step 2 (SPEC_V0.8.md §7 item 2) — the repeating weekly timetable
+// template. Deliberately six values, no SUNDAY — mirrors the backend's
+// Weekday enum (schema.prisma), which has no SUNDAY member at all. This
+// array is display/iteration order for the builder grid, not a validator;
+// the structural guarantee lives in the Prisma enum + class-validator's
+// @IsEnum(Weekday) on the backend, not here.
+export const WEEKDAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"] as const;
+export type WeekdayValue = (typeof WEEKDAYS)[number];
+
+export const WEEKDAY_LABELS: Record<WeekdayValue, string> = {
+  MONDAY: "Monday",
+  TUESDAY: "Tuesday",
+  WEDNESDAY: "Wednesday",
+  THURSDAY: "Thursday",
+  FRIDAY: "Friday",
+  SATURDAY: "Saturday",
+};
+
+// Denormalized for direct grid rendering — periodName/subjectName/
+// teacherName come pre-joined from the API, no frontend N+1.
+export interface TimetableSlot {
+  id: string;
+  classArmId: string;
+  sessionId: string;
+  dayOfWeek: WeekdayValue;
+  periodId: string;
+  periodName: string;
+  subjectId: string;
+  subjectName: string;
+  teacherUserId: string;
+  teacherName: string;
+}
+
+// The builder dialog's ONLY field is Subject — teacherUserId is derived
+// from the class's existing subject-teacher assignment (ClassArmDetail.
+// subjectTeachers, already fetched), never independently picked. The
+// backend enforces exactly one teacher per (subject, classArm, session)
+// anyway, so a separate teacher control could only ever construct a
+// combination the backend guarantees will 400 — this removes that whole
+// class of dead-end states, not just a convenience.
+export const timetableSlotFormSchema = z.object({
+  subjectId: z.string().uuid("Pick a subject"),
+});
+export type TimetableSlotFormInput = z.infer<typeof timetableSlotFormSchema>;
+
+// classArmId/sessionId/dayOfWeek/periodId come from which grid cell was
+// clicked (context, not user input) — same "form schema is a subset of
+// the request schema" shape as HolidayInput/HolidayFormInput above.
+// teacherUserId is the frontend's own lookup result, not typed by anyone.
+export interface CreateTimetableSlotInput extends TimetableSlotFormInput {
+  classArmId: string;
+  sessionId: string;
+  dayOfWeek: WeekdayValue;
+  periodId: string;
+  teacherUserId: string;
+}
+
+export interface UpdateTimetableSlotInput extends TimetableSlotFormInput {
+  teacherUserId: string;
+}

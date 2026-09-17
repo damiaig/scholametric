@@ -2329,6 +2329,65 @@ update) the config for that class arm.
 
 Audited (`classSchoolDays.set`).
 
+### `GET /calendar/timetable-slots?classArmId=&sessionId=`, `POST /calendar/timetable-slots`, `PATCH` / `DELETE /calendar/timetable-slots/:id` (v0.8 step 2, SPEC_V0.8.md §7 item 2)
+
+The repeating weekly timetable template — one row per (class, weekday,
+period) assignment. `sessionId`-scoped only, no `termId` — mirrors
+`SubjectTeacherAssignment` exactly (one template per class per session,
+reused by every term in it).
+
+**`GET`** — both query params required. Returns every slot for that
+class's week, denormalized (`periodName`/`subjectName`/`teacherName`
+pre-joined) for direct grid rendering — no frontend N+1. Ordered by
+period `sortOrder` then weekday.
+
+**`POST`** — body: `{ classArmId, sessionId, dayOfWeek, periodId, subjectId, teacherUserId }`.
+`dayOfWeek` is one of `MONDAY`-`SATURDAY` — **`SUNDAY` is not a value this
+enum has**, not a value the API rejects after the fact. There is no
+column, DTO type, or code path anywhere that can express it, so not even
+a raw write bypassing the API could produce it.
+
+Validated in this order:
+1. **Tenant scope** (`404` each): `classArmId`, `sessionId`, `periodId`,
+   `subjectId` all resolve within the caller's school; `teacherUserId`
+   resolves to an active `TEACHER` in the caller's school with a real
+   staff profile.
+2. **Sunday** — blocked at the DTO layer (`@IsEnum`), never reaches
+   service code.
+3. **School-day check** (`400`): a `SATURDAY` slot requires this class
+   arm's `ClassSchoolDays.includesSaturday` — see `PUT
+   /calendar/class-school-days/:classArmId` above. Mon-Fri always allowed.
+4. **Teacher-teaches-subject**: no `subject_teacher_assignment` at all for
+   `(subjectId, classArmId, sessionId)` → **`404`** ("No teacher is
+   assigned to teach this subject for this class") — the subject isn't
+   staffed for this class, a missing-resource condition, same framing as
+   score-entry's own assignment check. An assignment exists but names a
+   *different* teacher than `teacherUserId` → **`400`** — the caller's
+   input is simply wrong, not missing.
+5. **Class-slot collision** (`400`): another slot already occupies this
+   exact `(classArmId, dayOfWeek, periodId, sessionId)` —
+   `@@unique([classArmId, dayOfWeek, periodId, sessionId])` is the real,
+   DB-enforced guarantee; this is the friendly pre-check.
+6. **Teacher double-booking** (`400`): this `teacherUserId` already has a
+   slot at `(dayOfWeek, periodId, sessionId)` in ANY class in the school —
+   `@@unique([teacherUserId, dayOfWeek, periodId, sessionId])` is the
+   real, DB-enforced guarantee.
+
+**`PATCH`** — body: `{ subjectId?, teacherUserId? }` only. `classArmId`/
+`sessionId`/`dayOfWeek`/`periodId` are fixed at creation (same convention
+as evaluations' immutable scoping fields) — "moving" a slot in the
+builder is a delete-then-create of a different grid cell, not a `PATCH`.
+Re-validates checks 4 and 6 above against the new values (excluding this
+slot itself); skips 2/3/5 since neither `classArmId` nor `dayOfWeek`/
+`periodId` can change here.
+
+**`DELETE`** — hard delete; freeing a slot immediately un-blocks whatever
+double-booking or collision it was causing for a subsequent create.
+
+**Response `200`/`201`**: `{ id, classArmId, sessionId, dayOfWeek, periodId, periodName, subjectId, subjectName, teacherUserId, teacherName }`.
+
+Audited (`timetableSlot.create`/`.update`/`.delete`).
+
 ---
 
 ## Misc
