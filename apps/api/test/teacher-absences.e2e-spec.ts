@@ -57,6 +57,7 @@ describe("Teacher absence + replacement (e2e) — SPEC_V0.8.md §4, v0.8 step 4"
 
   let studentToken: string;
   let studentId: string;
+  let otherClassStudentToken: string;
 
   const createdSlotIds: string[] = [];
   const createdPeriodIds: string[] = [];
@@ -170,6 +171,29 @@ describe("Teacher absence + replacement (e2e) — SPEC_V0.8.md §4, v0.8 step 4"
     });
     createdUserIds.push(studentUser.id);
     studentToken = await loginAs(app, "E2ETASTUDENT", "sunrise");
+
+    // A second student, enrolled in jss1A — the "another class is
+    // unaffected" adversarial proof: jss1A has its own MONDAY/periodA slot
+    // (englishTeacher) that no absence ever touches.
+    const otherClassStudent = await prisma.student.create({
+      data: {
+        schoolId: sunriseId,
+        admissionNumber: "E2E-TA/StudentB",
+        firstName: "Unaffected",
+        lastName: "Student",
+        gender: Gender.MALE,
+        dateOfBirth: new Date("2012-01-01"),
+        guardianName: "E2E Guardian",
+        guardianPhone: "+2348039000002",
+      },
+    });
+    createdStudentIds.push(otherClassStudent.id);
+    await prisma.studentEnrollment.create({ data: { schoolId: sunriseId, studentId: otherClassStudent.id, classArmId: jss1AArmId, sessionId: sunriseSessionId } });
+    const otherClassStudentUser = await prisma.user.create({
+      data: { schoolId: sunriseId, role: UserRole.STUDENT, username: "E2ETASTUDENTB", studentId: otherClassStudent.id, firstName: "Unaffected", lastName: "Student", passwordHash, mustChangePassword: false },
+    });
+    createdUserIds.push(otherClassStudentUser.id);
+    otherClassStudentToken = await loginAs(app, "E2ETASTUDENTB", "sunrise");
   });
 
   afterAll(async () => {
@@ -252,6 +276,20 @@ describe("Teacher absence + replacement (e2e) — SPEC_V0.8.md §4, v0.8 step 4"
       expect(studentPeriodA.subjectName).toBe("Mathematics"); // original preserved
       expect(studentPeriodA.teacherName).toBe("Bola Ogundare"); // original preserved
       expect(studentPeriodA.note).toBeNull(); // never leaked to the student
+    });
+
+    it("a DIFFERENT class at the SAME date/period is unaffected — the exception overlay is classArmId-scoped, not date/period-scoped", async () => {
+      const otherClassView = await request(app.getHttpServer())
+        .get("/api/v1/me/timetable")
+        .query({ from: MONDAY, to: MONDAY })
+        .set(auth(otherClassStudentToken));
+      expect(otherClassView.body.classArmId).toBe(jss1AArmId);
+      const otherClassMonday = dayFor(otherClassView.body, MONDAY);
+      const otherClassPeriodA = otherClassMonday.periods.find((p) => p.periodId === periodAId)!;
+      expect(otherClassPeriodA.status).toBeNull(); // no exception here — jss2A's absence doesn't leak across classes
+      expect(otherClassPeriodA.exceptionId).toBeNull();
+      expect(otherClassPeriodA.subjectName).toBe("English Language");
+      expect(otherClassPeriodA.teacherName).toBe("Ngozi Chukwuma");
     });
 
     it("409s marking the same period/date absent twice, and the DB still has exactly one exception row", async () => {
