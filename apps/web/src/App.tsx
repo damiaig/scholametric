@@ -31,6 +31,7 @@ import { TimetableLandingPage } from "./features/timetable/TimetableLandingPage"
 import { TimetableBuilderPage } from "./features/timetable/TimetableBuilderPage";
 import { TeacherTimetablePage } from "./features/timetable/TeacherTimetablePage";
 import { MyTimetablePage } from "./features/timetable/MyTimetablePage";
+import { AbsencesPage } from "./features/timetable/AbsencesPage";
 
 // Extracted from <App> (which just wraps this in <BrowserRouter>) so the
 // route-smoke test can mount the exact same route tree inside a
@@ -105,6 +106,10 @@ export function AppRoutes() {
               for now — no TEACHER path until a later v0.8 step. */}
           <Route path="/timetable" element={<TimetableLandingPage />} />
           <Route path="/timetable/arms/:id" element={<TimetableBuilderPage />} />
+          {/* v0.8 step 4 (SPEC_V0.8.md §4) — linked from TimetableLandingPage
+              only, same "occasional admin action" dashboard-card-not-sidebar
+              precedent as the builder above. */}
+          <Route path="/timetable/absences" element={<AbsencesPage />} />
         </Route>
 
         <Route path="/settings" element={<SettingsLayout />}>

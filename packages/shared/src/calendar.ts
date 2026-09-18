@@ -177,6 +177,14 @@ export const ANY_WEEKDAY_LABELS: Record<AnyWeekdayValue, string> = { ...WEEKDAY_
 
 export type NonSchoolReason = "HOLIDAY" | "WEEKEND";
 
+// v0.8 step 4 (SPEC_V0.8.md §4) — the exception overlay on a resolved
+// period. null means "no exception, taught as scheduled." subjectId/
+// subjectName/teacherUserId/teacherName above always stay the ORIGINAL
+// slot's values, even when cancelled/replaced. note is populated only in
+// the teacher's own view (GET /me/teaching-timetable) — the class/student/
+// parent views never receive it.
+export type TimetableExceptionStatus = "CANCELLED" | "REPLACED";
+
 export interface ResolvedPeriodEntry {
   periodId: string;
   periodName: string;
@@ -191,6 +199,14 @@ export interface ResolvedPeriodEntry {
   // every row would be redundant.
   classArmId: string | null;
   className: string | null;
+  status: TimetableExceptionStatus | null;
+  exceptionId: string | null;
+  note: string | null;
+  replacementTeacherUserId: string | null;
+  replacementTeacherName: string | null;
+  replacementSubjectId: string | null;
+  replacementSubjectName: string | null;
+  activityLabel: string | null;
 }
 
 export interface ResolvedBreakEntry {
@@ -224,3 +240,60 @@ export interface TeacherTimetableResponse {
   to: string;
   days: ResolvedTimetableDay[];
 }
+
+// v0.8 step 4 (SPEC_V0.8.md §4) — teacher absence (auto-approved) +
+// proprietor replacement, the exception layer laid on top of Step 2's
+// repeating template. No classArmId anywhere here — the affected class is
+// always resolved server-side from the caller's own TimetableSlot.
+
+export interface TeacherAbsenceRow {
+  id: string;
+  teacherUserId: string;
+  teacherName: string;
+  date: string;
+  // exceptionId links each period straight to PATCH
+  // /calendar/timetable-exceptions/:id — every absence period was created
+  // 1:1 with a TimetableException at absence-creation time.
+  periods: { periodId: string; periodName: string; classArmId: string; className: string; exceptionId: string; status: TimetableExceptionStatus }[];
+  note: string;
+  createdAt: string;
+}
+
+export const createTeacherAbsenceSchema = z.object({
+  date: z.string().min(1, "Date is required"),
+  periodIds: z.array(z.string().uuid()).min(1, "Pick at least one period"),
+  note: z.string().trim().min(1, "A note is required").max(500),
+});
+export type CreateTeacherAbsenceInput = z.infer<typeof createTeacherAbsenceSchema>;
+
+export type TimetableExceptionTypeValue = "CANCELLED_TEACHER_ABSENT" | "REPLACED";
+
+export interface TimetableExceptionRow {
+  id: string;
+  classArmId: string;
+  className: string;
+  date: string;
+  periodId: string;
+  periodName: string;
+  type: TimetableExceptionTypeValue;
+  teacherUserId: string;
+  teacherName: string;
+  note: string | null;
+  replacementTeacherUserId: string | null;
+  replacementTeacherName: string | null;
+  replacementSubjectId: string | null;
+  replacementSubjectName: string | null;
+  activityLabel: string | null;
+}
+
+// Replacement can be another teacher, a different subject/activity label,
+// or both — all optional. Sending every field back to null/empty reverts
+// the exception to CANCELLED (there is no delete). uuid().nullable() lets
+// the "clear this field" case round-trip through the form as an explicit
+// null rather than an absent key.
+export const replaceTimetableExceptionSchema = z.object({
+  replacementTeacherUserId: z.string().uuid().nullable().optional(),
+  replacementSubjectId: z.string().uuid().nullable().optional(),
+  activityLabel: z.string().trim().max(200).nullable().optional(),
+});
+export type ReplaceTimetableExceptionInput = z.infer<typeof replaceTimetableExceptionSchema>;

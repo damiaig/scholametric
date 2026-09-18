@@ -2437,14 +2437,84 @@ capped at 31 days apart (`400` otherwise).
 routes): `{ classArmId, className, from, to, days: ResolvedTimetableDay[] }`.
 `TeacherTimetableResponse` (`TEACHER` route): `{ teacherUserId, from, to, days }`.
 Each `ResolvedTimetableDay`: `{ date, dayOfWeek, isSchoolDay, nonSchoolReason, holidayName, periods, breaks }`.
-Each resolved period: `{ periodId, periodName, startsAt, endsAt, subjectId, subjectName, teacherUserId, teacherName, classArmId, className }` —
+Each resolved period: `{ periodId, periodName, startsAt, endsAt, subjectId, subjectName, teacherUserId, teacherName, classArmId, className, status, exceptionId, note, replacementTeacherUserId, replacementTeacherName, replacementSubjectId, replacementSubjectName, activityLabel }` —
 `classArmId`/`className` are populated only in the teacher's cross-class
 view (redundant on a single-class view, since every period is implicitly
-the caller's own class there).
+the caller's own class there). `status`/`exceptionId`/`replacement*`/
+`activityLabel` are the v0.8 step 4 exception overlay (see below) — `null`
+means "no exception, taught as scheduled"; `subjectId`/`subjectName`/
+`teacherUserId`/`teacherName` always stay the ORIGINAL slot's values, even
+when cancelled/replaced. `note` is populated ONLY on `/me/teaching-timetable`
+(the absent teacher's own view) — never on the class/student/parent routes.
 
 **Response `400`**: `from > to`; the range exceeds 31 days.
 **Response `403`**: wrong role for the route (categorical — `STUDENT`
 can't reach `/me/teaching-timetable`, etc.).
+
+### `POST /calendar/teacher-absences`, `GET /calendar/teacher-absences?from=&to=`, `PATCH /calendar/timetable-exceptions/:id` (v0.8 step 4, SPEC_V0.8.md §4)
+
+Teacher absence (auto-approved) + proprietor replacement — the exception
+layer laid on top of Step 2's repeating template, overlaid onto Step 3's
+on-read composition (see the resolved-period fields above).
+
+**`POST /calendar/teacher-absences`** (`TEACHER` only — overrides this
+controller's usual `SCHOOL_ADMIN`/`PROPRIETOR` default). Body:
+`{ date, periodIds: string[], note }`, `note` required (1-500 chars). No
+`classArmId` field — each period's affected class is resolved server-side
+from the CALLER's own `TimetableSlot` for `(teacherUserId, date's
+weekday, periodId, current session)`, so there is no field through which
+a teacher could name a colleague's class. Every period is validated
+BEFORE any write (all-or-nothing):
+1. **`404`** — no `TimetableSlot` for this teacher at this weekday+period
+   (includes a Sunday date, which can never match one — `Weekday` has no
+   `SUNDAY` member, so this is structural, not a special-cased rejection).
+2. **`400`** — this specific date isn't currently a school day for that
+   slot's class (a holiday, or a since-disabled Saturday) even though the
+   recurring slot still exists for that weekday.
+3. **`409`** — a `TimetableException` already exists for this
+   `(classArmId, date, periodId)`.
+
+On success, creates one `TeacherAbsence` row (the submission record) and
+one `CANCELLED_TEACHER_ABSENT` `TimetableException` per period, in a
+single transaction. **Response `201`**: `{ id, teacherUserId, teacherName,
+date, periods: [{ periodId, periodName, classArmId, className,
+exceptionId, status }], note, createdAt }`.
+
+**`GET /calendar/teacher-absences?from=&to=`** (`SCHOOL_ADMIN`/
+`PROPRIETOR`). Same range validation as `/me/timetable` above. The one
+place the absence `note` is ever exposed outside the absent teacher's own
+view. **Response `200`**: an array of the same shape `POST` returns,
+joined against the `TimetableException`s each period produced (so the
+frontend can link straight to `PATCH .../timetable-exceptions/:id`
+without a separate "list exceptions" endpoint) — `status` reflects
+`CANCELLED` or `REPLACED` as of now, not just at creation time.
+
+**`PATCH /calendar/timetable-exceptions/:id`** (`SCHOOL_ADMIN`/
+`PROPRIETOR`). Body: `{ replacementTeacherUserId?, replacementSubjectId?,
+activityLabel? }`, all independently optional AND nullable — omitting a
+field leaves it unchanged; sending `null` clears it. Sending all three as
+null (or omitting all three when none were ever set) reverts the
+exception to `CANCELLED_TEACHER_ABSENT` — **there is no `DELETE`
+endpoint**, this is the only revert path. Setting a
+`replacementTeacherUserId` validates:
+- **`404`** — doesn't resolve to an active `TEACHER` in the caller's
+  school.
+- **`400`** — already has a normal `TimetableSlot` at this exact
+  weekday+period (their everyday teaching duty), OR is already covering
+  as a replacement on another `TimetableException` at this exact
+  date+period. A cover teacher can be double-booked either way.
+
+`replacementSubjectId`, if set, must resolve within the caller's school
+(**`404`** otherwise) — no teacher-teaches-subject check for a
+replacement (unlike the original template), since a proprietor covering a
+class with any available teacher or a free-form activity is a deliberate
+exception, not a new permanent assignment. **Response `200`**:
+`TimetableExceptionRow` — `{ id, classArmId, className, date, periodId,
+periodName, type, teacherUserId, teacherName, note, replacementTeacherUserId,
+replacementTeacherName, replacementSubjectId, replacementSubjectName,
+activityLabel }`.
+
+Audited (`teacherAbsence.create`/`timetableException.replace`).
 
 ---
 

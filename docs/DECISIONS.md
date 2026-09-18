@@ -5940,3 +5940,136 @@ new test files — `TeacherTimetablePage.test.tsx` (2),
 `MyTimetablePage.test.tsx` (4), `TimetableWeekView.test.tsx` (6) — plus 4
 new `AppShell.test.tsx` sidebar-item cases and 2 new `route-smoke.test.tsx`
 cases).
+
+## 2026-09-18 — v0.8 step 4: teacher absence (auto-approved) + proprietor replacement, the exception layer
+
+**Two new tables, one new enum, additive.** `TimetableExceptionType`
+(`CANCELLED_TEACHER_ABSENT` | `REPLACED`), `TeacherAbsence` (the
+teacher-facing submission — `teacherUserId`, `date`, `periodIds` as a
+native Postgres array so one submission covering several periods is one
+row, `note`, `autoApproved` always `true` today), and `TimetableException`
+(the actual date-specific override, keyed by `@@unique([classArmId, date,
+periodId])` — not a `TimetableSlot` FK, matching the comment already on
+`TimetableSlot` anticipating this). No FK between the two tables:
+`TimetableException` carries its own copy of `teacherUserId`/`note`, so
+nothing needs to join through `TeacherAbsence` to answer "why is this
+cancelled" — `TeacherAbsence` stays purely the submission's own audit
+trail. `TimetableException` has exactly two named `User` relations
+(`teacherUser`, `replacementTeacherUser`); every other FK is unambiguous
+and needs no relation name. The recurring `students_first_name_trgm_idx`/
+`students_last_name_trgm_idx` `DROP INDEX` false-positive reappeared in
+the generated migration SQL and was stripped again (see Step 1's entry).
+
+**No `classArmId` field anywhere in the absence-creation request — the
+harder guarantee than a check.** `CreateTeacherAbsenceDto` is `{ date,
+periodIds, note }` only. The affected class for each period is resolved
+server-side from the CALLER's own `TimetableSlot` for `(teacherUserId,
+dayOfWeek, periodId, sessionId)` — there is no field through which a
+teacher could even attempt to name a colleague's class, let alone cancel
+it. A period the caller doesn't teach 404s exactly like a bad periodId
+would, with no separate authorization check needed to reject "someone
+else's class" as a concept it can't express in the first place.
+
+**Sunday is free (structural); holiday/Saturday-disabled need a real
+check.** Unlike a bad periodId, a Sunday date needs no explicit rejection
+either — `Weekday` has no `SUNDAY` member, so the `TimetableSlot` lookup
+is skipped entirely (not even attempted) once `weekdayOf(date) ===
+"SUNDAY"`, and falls through to the same 404 a missing slot would. But a
+holiday or a since-disabled Saturday is different: the recurring
+`TimetableSlot` for that weekday can perfectly well still exist even
+though this SPECIFIC date isn't currently a school day (the exact
+same "create-time vs read-time" gap Step 3's own comment on
+`resolveTeacherSchedule` already documented for the Saturday flag) — so
+this needed a real, DB-backed check, not a type-level impossibility.
+
+**`isSchoolDayForClass` extracted as a shared, pure helper — verified
+byte-for-byte identical.** Step 3's `resolveClassSchedule` had its
+holiday-then-weekend day-level check written inline; it's now
+`CalendarService.isSchoolDayForClass(weekday, includesSaturday, holidays,
+date)`, a pure function taking already-fetched context (no new
+query-per-date introduced by the extraction). `resolveClassSchedule`'s
+day loop calls it unchanged in behavior — same holiday-first-then-weekend
+order, same output shape fed into the same `buildNonSchoolDay` call.
+`resolveTeacherSchedule`'s day-level check (which only ever excluded
+Sunday/holiday, never Saturday — Saturday is a PER-SLOT exclusion there)
+now calls the same helper with `includesSaturday` forced `true`, which
+correctly reduces to "Sunday/holiday only" without a second code path.
+`createTeacherAbsence` reuses the same helper via a small async wrapper
+(`isSchoolDayForClassOnDate`) that fetches one class's holidays/Saturday
+flag and delegates — same rule, evaluated for one date instead of a
+whole range. Full backend e2e suite passed unchanged before AND after
+this refactor (540/540, then 555/555 once the new tests were added) —
+the extraction changed zero observable behavior.
+
+**Composition order: exceptions overlay Step 3's own read path, keyed
+identically.** `resolveClassSchedule`/`resolveTeacherSchedule` each fetch
+`TimetableException` rows for their own scope (class view: by
+`classArmId` + date range; teacher view: by the ORIGINAL absent
+`teacherUserId` + date range — deliberately NOT by "any exception this
+teacher is now covering as a replacement," which is out of scope until a
+later step) and overlay them onto `ResolvedPeriodEntry` via the exact
+same `(classArmId, date, periodId)` key `TimetableException`'s own unique
+constraint uses. `subjectId`/`subjectName`/`teacherUserId`/`teacherName`
+on the entry always stay the ORIGINAL slot's values, cancelled or not —
+new fields (`status`, `exceptionId`, `note`, `replacementTeacherUserId`/
+`replacementTeacherName`, `replacementSubjectId`/`replacementSubjectName`,
+`activityLabel`) carry the overlay. `note` is populated ONLY by
+`resolveTeacherSchedule` (always the absent teacher's own view, by
+construction — `resolveClassSchedule` never sets it, not a field-level
+redaction step after the fact).
+
+**Replacement: two independent checks, one new endpoint, no DELETE.**
+`PATCH /calendar/timetable-exceptions/:id` (`SCHOOL_ADMIN`/`PROPRIETOR`)
+takes `{ replacementTeacherUserId?, replacementSubjectId?, activityLabel?
+}`, all independently nullable. A replacement teacher is checked against
+BOTH a normal `TimetableSlot` at that weekday+period (their everyday
+teaching duty) AND every other `TimetableException` where they're already
+covering as a replacement at that exact date+period — a cover teacher can
+be double-booked either way. Sending all three fields as null (or
+omitting all three that were never set) reverts the exception back to
+`CANCELLED_TEACHER_ABSENT` — confirmed there is no DELETE endpoint for
+this; revert-via-PATCH is the only path, by design.
+
+**Admin absence list enriched with the exception join, not a new
+endpoint.** `GET /calendar/teacher-absences?from=&to=` was going to return
+just `{ periodId, periodName }` per period, but the frontend's Replace
+action needs an `exceptionId` to PATCH — rather than add a second "list
+exceptions" endpoint, `listTeacherAbsences` now joins back to
+`TimetableException` by `(teacherUserId, date, periodId)` (every absence
+period was created 1:1 with an exception at absence-creation time) and
+returns `classArmId`/`className`/`exceptionId`/`status` per period too.
+This is the one place the absence `note` is ever exposed outside the
+absent teacher's own view — confirmed as the correct, deliberate privacy
+boundary (never to students/parents via the resolved schedule).
+
+**Frontend.** `TimetableWeekView` gained CANCELLED (`text-danger`,
+struck-through original) and REPLACED (`text-warning`, replacement shown
+with the original struck through as "was …") cell states — additive,
+existing fixtures/tests updated to the new (larger) `ResolvedPeriodEntry`
+shape rather than made optional, since the backend always returns these
+fields. `TeacherTimetablePage` gained a "Mark absent" button opening
+`AbsenceMarkingDialog`, which offers only dates/periods already visible
+in the currently-loaded week (no separate "what do I teach on an
+arbitrary date" lookup exists) and filters out periods already
+cancelled/replaced. New `AbsencesPage` (`/timetable/absences`,
+`RequireSchoolAdmin`, linked from `TimetableLandingPage` only — same
+"occasional admin action, no sidebar/Dashboard-card" precedent as Step
+2's builder) lists this week's absences with a per-period Replace action
+opening `ReplacementFormDialog` (teacher/subject/activity picker, or
+"Revert to cancelled" once already replaced).
+
+**Test impact.** Backend: new `teacher-absences.e2e-spec.ts` (15 tests) —
+a real colleague's-class 404 (no field to name it with), Sunday 404,
+holiday 400, Saturday-disabled-at-read-time 400 (slot still exists),
+successful cancellation composing on both the teacher's own view and the
+class/student view (note visible only to the former), double-mark 409
+with a DB re-read proving exactly one row, admin list with note,
+Hillcrest/Sunrise tenant isolation on the list, replacement
+double-booking 400, replacement tenant-scope 404, cross-tenant PATCH 404,
+a full replace-then-revert round trip, and categorical role guards on all
+three routes. Full backend e2e suite: 555/555 (42 suites) after, up from
+the 540 baseline. Full web suite: 366/366 (61 files) after, up from 352
+(4 new test files — `AbsenceMarkingDialog.test.tsx` (4),
+`ReplacementFormDialog.test.tsx` (3), `AbsencesPage.test.tsx` (4) — plus 2
+new `TimetableWeekView.test.tsx` cases, 1 new `TimetableLandingPage.test.tsx`
+case, and 1 new `route-smoke.test.tsx` case).

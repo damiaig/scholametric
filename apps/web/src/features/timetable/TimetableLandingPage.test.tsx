@@ -54,6 +54,7 @@ describe("TimetableLandingPage", () => {
     expect(screen.getByText("SSS 2")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /JSS 1 A/ })).toHaveAttribute("href", "/timetable/arms/arm2");
     expect(screen.getByRole("link", { name: /SSS 2 A/ })).toHaveAttribute("href", "/timetable/arms/arm1");
+    expect(screen.getByRole("link", { name: "Teacher absences" })).toHaveAttribute("href", "/timetable/absences");
   });
 
   it("shows the empty state when no classes exist yet", async () => {

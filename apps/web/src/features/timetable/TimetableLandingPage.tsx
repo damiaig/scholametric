@@ -18,7 +18,17 @@ export function TimetableLandingPage() {
 
   return (
     <div>
-      <PageHeader title="Timetable" description={user?.school.name} />
+      <PageHeader
+        title="Timetable"
+        description={user?.school.name}
+        actions={
+          <Link to="/timetable/absences">
+            <Button type="button" variant="outline">
+              Teacher absences
+            </Button>
+          </Link>
+        }
+      />
 
       {classes.isLoading && <PickerSkeleton />}
 

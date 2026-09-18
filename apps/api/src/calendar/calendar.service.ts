@@ -1,5 +1,18 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma, UserRole, Weekday, type Break, type ClassArm, type Holiday, type Period, type Subject, type TimetableSlot, type User } from "@prisma/client";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  Prisma,
+  TimetableExceptionType,
+  UserRole,
+  Weekday,
+  type Break,
+  type ClassArm,
+  type Holiday,
+  type Period,
+  type Subject,
+  type TimetableException,
+  type TimetableSlot,
+  type User,
+} from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
@@ -16,7 +29,9 @@ import { SetClassSchoolDaysDto } from "./dto/set-class-school-days.dto";
 import { CreateTimetableSlotDto } from "./dto/create-timetable-slot.dto";
 import { UpdateTimetableSlotDto } from "./dto/update-timetable-slot.dto";
 import { GetTimetableSlotsQueryDto } from "./dto/get-timetable-slots-query.dto";
-import { assertTimetableRangeValid } from "./dto/get-timetable-range.dto";
+import { GetTimetableRangeDto, assertTimetableRangeValid } from "./dto/get-timetable-range.dto";
+import { CreateTeacherAbsenceDto } from "./dto/create-teacher-absence.dto";
+import { ReplaceTimetableExceptionDto } from "./dto/replace-timetable-exception.dto";
 
 export interface ClassSchoolDaysRow {
   classArmId: string;
@@ -57,6 +72,8 @@ const WEEKDAY_BY_JS_INDEX: AnyWeekday[] = [
   Weekday.SATURDAY,
 ];
 
+export type TimetableExceptionStatus = "CANCELLED" | "REPLACED";
+
 export interface ResolvedPeriodEntry {
   periodId: string;
   periodName: string;
@@ -70,6 +87,21 @@ export interface ResolvedPeriodEntry {
   // periods are all implicitly the caller's own class already.
   classArmId: string | null;
   className: string | null;
+  // v0.8 step 4 (SPEC_V0.8.md §4) — the exception overlay. null status
+  // means "no exception, taught as scheduled." subjectId/subjectName/
+  // teacherUserId/teacherName above are always the ORIGINAL slot's values,
+  // unchanged by cancellation/replacement. note is populated ONLY in
+  // resolveTeacherSchedule (the absent teacher's own view) — resolveClass-
+  // Schedule (student/parent) never sets it, by construction, not by a
+  // field-level redaction step.
+  status: TimetableExceptionStatus | null;
+  exceptionId: string | null;
+  note: string | null;
+  replacementTeacherUserId: string | null;
+  replacementTeacherName: string | null;
+  replacementSubjectId: string | null;
+  replacementSubjectName: string | null;
+  activityLabel: string | null;
 }
 
 export interface ResolvedBreakEntry {
@@ -103,6 +135,44 @@ export interface TeacherTimetableResponse {
   to: string;
   days: ResolvedTimetableDay[];
 }
+
+export interface TeacherAbsenceRow {
+  id: string;
+  teacherUserId: string;
+  teacherName: string;
+  date: string;
+  // exceptionId/classArmId/status let the admin's absences list link
+  // straight to PATCH /calendar/timetable-exceptions/:id for a given
+  // period, without a separate "list exceptions" endpoint — every period
+  // here was created 1:1 with a TimetableException at absence-creation
+  // time, so this is a join back to that same row, not new state.
+  periods: { periodId: string; periodName: string; classArmId: string; className: string; exceptionId: string; status: TimetableExceptionStatus }[];
+  note: string;
+  createdAt: string;
+}
+
+export interface TimetableExceptionRow {
+  id: string;
+  classArmId: string;
+  className: string;
+  date: string;
+  periodId: string;
+  periodName: string;
+  type: TimetableExceptionType;
+  teacherUserId: string;
+  teacherName: string;
+  note: string | null;
+  replacementTeacherUserId: string | null;
+  replacementTeacherName: string | null;
+  replacementSubjectId: string | null;
+  replacementSubjectName: string | null;
+  activityLabel: string | null;
+}
+
+type TimetableExceptionWithRelations = TimetableException & {
+  replacementTeacherUser: User | null;
+  replacementSubject: Subject | null;
+};
 
 // A shared time interval shape both Period and Break satisfy — the
 // overlap check below treats them as one combined daily timeline
@@ -441,7 +511,7 @@ export class CalendarService {
     }
     const session = await this.getCurrentSessionOrThrow(schoolId);
 
-    const [periods, breaks, holidays, schoolDays, slots] = await Promise.all([
+    const [periods, breaks, holidays, schoolDays, slots, exceptions] = await Promise.all([
       this.prisma.period.findMany({ where: forSchool(schoolId), orderBy: [{ sortOrder: "asc" }, { id: "asc" }] }),
       this.prisma.break.findMany({ where: forSchool(schoolId), orderBy: [{ startsAt: "asc" }, { id: "asc" }] }),
       this.prisma.holiday.findMany({ where: forSchool(schoolId, { sessionId: session.id }) }),
@@ -450,17 +520,19 @@ export class CalendarService {
         where: forSchool(schoolId, { classArmId, sessionId: session.id }),
         include: { subject: true, teacherUser: true },
       }),
+      this.prisma.timetableException.findMany({
+        where: forSchool(schoolId, { classArmId, date: this.dateRangeFilter(from, to) }),
+        include: { replacementTeacherUser: true, replacementSubject: true },
+      }),
     ]);
     const includesSaturday = schoolDays?.includesSaturday ?? false;
+    const exceptionByKey = this.buildExceptionOverlay(exceptions);
 
     const days = this.enumerateDates(from, to).map((date) => {
-      const holidayMatch = this.findHolidayFor(holidays, date);
-      if (holidayMatch) {
-        return this.buildNonSchoolDay(date, this.weekdayOf(date), "HOLIDAY", holidayMatch.name);
-      }
       const weekday = this.weekdayOf(date);
-      if (weekday === "SUNDAY" || (weekday === Weekday.SATURDAY && !includesSaturday)) {
-        return this.buildNonSchoolDay(date, weekday, "WEEKEND", null);
+      const dayStatus = this.isSchoolDayForClass(weekday, includesSaturday, holidays, date);
+      if (!dayStatus.isSchoolDay) {
+        return this.buildNonSchoolDay(date, weekday, dayStatus.reason!, dayStatus.holidayName);
       }
 
       const slotsByPeriod = new Map(slots.filter((slot) => slot.dayOfWeek === weekday).map((slot) => [slot.periodId, slot]));
@@ -472,6 +544,7 @@ export class CalendarService {
         holidayName: null,
         periods: periods.map((period) => {
           const slot = slotsByPeriod.get(period.id);
+          const exception = exceptionByKey.get(this.exceptionKey(classArmId, date, period.id));
           return {
             periodId: period.id,
             periodName: period.name,
@@ -483,6 +556,7 @@ export class CalendarService {
             teacherName: slot ? `${slot.teacherUser.firstName} ${slot.teacherUser.lastName}` : null,
             classArmId: null,
             className: null,
+            ...this.exceptionOverlayFields(exception, false),
           };
         }),
         breaks: breaks.map((brk) => ({ breakId: brk.id, name: brk.name, startsAt: brk.startsAt, endsAt: brk.endsAt })),
@@ -509,7 +583,7 @@ export class CalendarService {
     assertTimetableRangeValid(from, to);
 
     const session = await this.getCurrentSessionOrThrow(schoolId);
-    const [periods, breaks, holidays, slots] = await Promise.all([
+    const [periods, breaks, holidays, slots, exceptions] = await Promise.all([
       this.prisma.period.findMany({ where: forSchool(schoolId), orderBy: [{ sortOrder: "asc" }, { id: "asc" }] }),
       this.prisma.break.findMany({ where: forSchool(schoolId), orderBy: [{ startsAt: "asc" }, { id: "asc" }] }),
       this.prisma.holiday.findMany({ where: forSchool(schoolId, { sessionId: session.id }) }),
@@ -517,16 +591,28 @@ export class CalendarService {
         where: forSchool(schoolId, { teacherUserId, sessionId: session.id }),
         include: { subject: true, classArm: { include: { classLevel: true, classSchoolDays: true } } },
       }),
+      // Only exceptions where THIS teacher is the ORIGINAL absent teacher —
+      // a class this teacher is now covering as a replacement is
+      // deliberately NOT overlaid into their own view here (deferred to a
+      // later step); resolveTeacherSchedule only ever shows what happened
+      // to their own slots.
+      this.prisma.timetableException.findMany({
+        where: forSchool(schoolId, { teacherUserId, date: this.dateRangeFilter(from, to) }),
+        include: { replacementTeacherUser: true, replacementSubject: true },
+      }),
     ]);
+    const exceptionByKey = this.buildExceptionOverlay(exceptions);
 
     const days = this.enumerateDates(from, to).map((date) => {
-      const holidayMatch = this.findHolidayFor(holidays, date);
-      if (holidayMatch) {
-        return this.buildNonSchoolDay(date, this.weekdayOf(date), "HOLIDAY", holidayMatch.name);
-      }
       const weekday = this.weekdayOf(date);
-      if (weekday === "SUNDAY") {
-        return this.buildNonSchoolDay(date, weekday, "WEEKEND", null);
+      // Day-level check only excludes Sunday/holiday here — unlike the
+      // class view, Saturday is never excluded at the whole-day level
+      // (includesSaturday: true forces that branch off); the per-slot
+      // filter below is what actually applies each slot's OWN class's
+      // Saturday policy, since one teacher can span classes that disagree.
+      const dayStatus = this.isSchoolDayForClass(weekday, true, holidays, date);
+      if (!dayStatus.isSchoolDay) {
+        return this.buildNonSchoolDay(date, weekday, dayStatus.reason!, dayStatus.holidayName);
       }
 
       const daySlots = slots.filter(
@@ -541,6 +627,7 @@ export class CalendarService {
         holidayName: null,
         periods: periods.map((period) => {
           const slot = slotsByPeriod.get(period.id);
+          const exception = slot ? exceptionByKey.get(this.exceptionKey(slot.classArmId, date, period.id)) : undefined;
           return {
             periodId: period.id,
             periodName: period.name,
@@ -552,6 +639,7 @@ export class CalendarService {
             teacherName: null,
             classArmId: slot?.classArmId ?? null,
             className: slot ? `${slot.classArm.classLevel.name} ${slot.classArm.name}` : null,
+            ...this.exceptionOverlayFields(exception, true),
           };
         }),
         breaks: breaks.map((brk) => ({ breakId: brk.id, name: brk.name, startsAt: brk.startsAt, endsAt: brk.endsAt })),
@@ -559,6 +647,273 @@ export class CalendarService {
     });
 
     return { teacherUserId, from, to, days };
+  }
+
+  // ---- Teacher absence + replacement (v0.8 step 4, SPEC_V0.8.md §4) ----
+
+  // Every period is validated BEFORE any write (all-or-nothing): a bad
+  // periodId in a multi-period submission fails the whole request, not
+  // just that one period. No classArmId in the DTO — the affected class is
+  // resolved per period from the CALLER's own TimetableSlot, so there is
+  // no field through which a teacher could name a colleague's class.
+  async createTeacherAbsence(teacherUserId: string, dto: CreateTeacherAbsenceDto): Promise<TeacherAbsenceRow> {
+    const schoolId = this.tenantContext.schoolId;
+    const session = await this.getCurrentSessionOrThrow(schoolId);
+    const weekday = this.weekdayOf(dto.date);
+
+    const resolved: { periodId: string; periodName: string; classArmId: string; className: string }[] = [];
+    for (const periodId of dto.periodIds) {
+      // Weekday has no SUNDAY member — a Sunday date can never match a
+      // real TimetableSlot, so this 404s exactly like a bad periodId would,
+      // with no separate "Sunday isn't allowed" check needed.
+      const slot =
+        weekday === "SUNDAY"
+          ? null
+          : await this.prisma.timetableSlot.findFirst({
+              where: forSchool(schoolId, { teacherUserId, dayOfWeek: weekday, periodId, sessionId: session.id }),
+              include: { period: true, classArm: { include: { classLevel: true } } },
+            });
+      if (!slot) {
+        throw new NotFoundException("You don't teach a class at this period on this day.");
+      }
+
+      const dayStatus = await this.isSchoolDayForClassOnDate(schoolId, slot.classArmId, dto.date);
+      if (!dayStatus) {
+        throw new BadRequestException("This isn't a school day for this class.");
+      }
+
+      const existingException = await this.prisma.timetableException.findFirst({
+        where: forSchool(schoolId, { classArmId: slot.classArmId, date: new Date(`${dto.date}T00:00:00Z`), periodId }),
+      });
+      if (existingException) {
+        throw new ConflictException("This period already has an exception recorded for this date.");
+      }
+
+      resolved.push({ periodId, periodName: slot.period.name, classArmId: slot.classArmId, className: `${slot.classArm.classLevel.name} ${slot.classArm.name}` });
+    }
+
+    let absence: Prisma.TeacherAbsenceGetPayload<{ include: { teacherUser: true } }>;
+    let createdExceptionIds: string[];
+    try {
+      const [createdAbsence, ...createdExceptions] = await this.prisma.$transaction([
+        this.prisma.teacherAbsence.create({
+          data: forSchool(schoolId, {
+            teacherUserId,
+            date: new Date(`${dto.date}T00:00:00Z`),
+            periodIds: dto.periodIds,
+            note: dto.note,
+          }),
+          include: { teacherUser: true },
+        }),
+        ...resolved.map((entry) =>
+          this.prisma.timetableException.create({
+            data: forSchool(schoolId, {
+              classArmId: entry.classArmId,
+              date: new Date(`${dto.date}T00:00:00Z`),
+              periodId: entry.periodId,
+              type: TimetableExceptionType.CANCELLED_TEACHER_ABSENT,
+              teacherUserId,
+              note: dto.note,
+            }),
+          }),
+        ),
+      ]);
+      absence = createdAbsence;
+      createdExceptionIds = createdExceptions.map((exception) => exception.id);
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        throw new ConflictException("This period already has an exception recorded for this date.");
+      }
+      throw error;
+    }
+
+    return {
+      id: absence.id,
+      teacherUserId: absence.teacherUserId,
+      teacherName: `${absence.teacherUser.firstName} ${absence.teacherUser.lastName}`,
+      date: dto.date,
+      periods: resolved.map((entry, index) => ({
+        periodId: entry.periodId,
+        periodName: entry.periodName,
+        classArmId: entry.classArmId,
+        className: entry.className,
+        exceptionId: createdExceptionIds[index],
+        status: "CANCELLED" as const,
+      })),
+      note: absence.note,
+      createdAt: absence.createdAt.toISOString(),
+    };
+  }
+
+  // SCHOOL_ADMIN/PROPRIETOR-only admin list — the one place the absence
+  // note is ever exposed outside the absent teacher's own view.
+  async listTeacherAbsences(query: GetTimetableRangeDto): Promise<TeacherAbsenceRow[]> {
+    const schoolId = this.tenantContext.schoolId;
+    assertTimetableRangeValid(query.from, query.to);
+
+    const [absences, periods, exceptions] = await Promise.all([
+      this.prisma.teacherAbsence.findMany({
+        where: forSchool(schoolId, { date: this.dateRangeFilter(query.from, query.to) }),
+        include: { teacherUser: true },
+        orderBy: [{ date: "asc" }, { createdAt: "asc" }],
+      }),
+      this.prisma.period.findMany({ where: forSchool(schoolId) }),
+      // Every absence period was created 1:1 with a TimetableException at
+      // absence-creation time — joined back here by (teacherUserId, date,
+      // periodId) so the admin list can link straight to PATCH .../
+      // timetable-exceptions/:id without a separate "list exceptions"
+      // endpoint. teacherUserId on the exception still names the ORIGINAL
+      // absent teacher even once REPLACED, so this join survives a
+      // replacement too.
+      this.prisma.timetableException.findMany({
+        where: forSchool(schoolId, { date: this.dateRangeFilter(query.from, query.to) }),
+        include: { classArm: { include: { classLevel: true } } },
+      }),
+    ]);
+    const periodNameById = new Map(periods.map((period) => [period.id, period.name]));
+    const exceptionByKey = new Map(
+      exceptions.map((exception) => [`${exception.teacherUserId}|${exception.date.toISOString().slice(0, 10)}|${exception.periodId}`, exception]),
+    );
+
+    return absences.map((absence) => {
+      const date = absence.date.toISOString().slice(0, 10);
+      return {
+        id: absence.id,
+        teacherUserId: absence.teacherUserId,
+        teacherName: `${absence.teacherUser.firstName} ${absence.teacherUser.lastName}`,
+        date,
+        periods: absence.periodIds.map((periodId) => {
+          const exception = exceptionByKey.get(`${absence.teacherUserId}|${date}|${periodId}`);
+          return {
+            periodId,
+            periodName: periodNameById.get(periodId) ?? "Unknown period",
+            classArmId: exception?.classArmId ?? "",
+            className: exception ? `${exception.classArm.classLevel.name} ${exception.classArm.name}` : "",
+            exceptionId: exception?.id ?? "",
+            status: exception?.type === TimetableExceptionType.REPLACED ? ("REPLACED" as const) : ("CANCELLED" as const),
+          };
+        }),
+        note: absence.note,
+        createdAt: absence.createdAt.toISOString(),
+      };
+    });
+  }
+
+  // Assigning a replacement teacher and/or subject/activity moves the
+  // exception from CANCELLED to REPLACED. Sending all three fields as null
+  // (or omitting all three that were never set) reverts it back to
+  // CANCELLED — there is no DELETE endpoint (SPEC_V0.8.md §4, confirmed).
+  async replaceTimetableException(id: string, dto: ReplaceTimetableExceptionDto): Promise<TimetableExceptionRow> {
+    const schoolId = this.tenantContext.schoolId;
+    const existing = await this.prisma.timetableException.findFirst({ where: forSchool(schoolId, { id }) });
+    if (!existing) {
+      throw new NotFoundException("Timetable exception not found.");
+    }
+
+    const replacementTeacherUserId = dto.replacementTeacherUserId !== undefined ? dto.replacementTeacherUserId : existing.replacementTeacherUserId;
+    const replacementSubjectId = dto.replacementSubjectId !== undefined ? dto.replacementSubjectId : existing.replacementSubjectId;
+    const activityLabel = dto.activityLabel !== undefined ? dto.activityLabel : existing.activityLabel;
+    const isRevert = !replacementTeacherUserId && !replacementSubjectId && !activityLabel;
+
+    if (!isRevert) {
+      if (replacementTeacherUserId) {
+        await this.assertTeacherInTenant(schoolId, replacementTeacherUserId);
+        await this.assertReplacementTeacherAvailable(schoolId, replacementTeacherUserId, existing.date, existing.periodId, existing.id);
+      }
+      if (replacementSubjectId) {
+        await this.assertSubjectInTenant(schoolId, replacementSubjectId);
+      }
+    }
+
+    const updated = await this.prisma.timetableException.update({
+      where: { id },
+      data: {
+        type: isRevert ? TimetableExceptionType.CANCELLED_TEACHER_ABSENT : TimetableExceptionType.REPLACED,
+        replacementTeacherUserId: replacementTeacherUserId ?? null,
+        replacementSubjectId: replacementSubjectId ?? null,
+        activityLabel: activityLabel ?? null,
+      },
+      include: { classArm: { include: { classLevel: true } }, period: true, teacherUser: true, replacementTeacherUser: true, replacementSubject: true },
+    });
+    return this.toTimetableExceptionRow(updated);
+  }
+
+  // Same rules a resolved schedule would apply to this (classArmId, date)
+  // pair — reuses the pure isSchoolDayForClass helper above, just fetching
+  // its inputs for one date/class instead of a whole range.
+  private async isSchoolDayForClassOnDate(schoolId: string, classArmId: string, date: string): Promise<boolean> {
+    const session = await this.getCurrentSessionOrThrow(schoolId);
+    const [holidays, schoolDays] = await Promise.all([
+      this.prisma.holiday.findMany({ where: forSchool(schoolId, { sessionId: session.id }) }),
+      this.prisma.classSchoolDays.findUnique({ where: { classArmId } }),
+    ]);
+    const weekday = this.weekdayOf(date);
+    return this.isSchoolDayForClass(weekday, schoolDays?.includesSaturday ?? false, holidays, date).isSchoolDay;
+  }
+
+  // Checks the replacement teacher against BOTH a normal TimetableSlot
+  // (their everyday teaching duty at this weekday+period) AND every other
+  // TimetableException where they're already covering as a replacement at
+  // this exact date+period — a cover teacher can't be double-booked either.
+  private async assertReplacementTeacherAvailable(
+    schoolId: string,
+    replacementTeacherUserId: string,
+    date: Date,
+    periodId: string,
+    excludeExceptionId: string,
+  ): Promise<void> {
+    const dateStr = date.toISOString().slice(0, 10);
+    const weekday = this.weekdayOf(dateStr);
+    if (weekday !== "SUNDAY") {
+      const session = await this.getCurrentSessionOrThrow(schoolId);
+      const conflictingSlot = await this.prisma.timetableSlot.findFirst({
+        where: forSchool(schoolId, { teacherUserId: replacementTeacherUserId, dayOfWeek: weekday, periodId, sessionId: session.id }),
+        include: { classArm: { include: { classLevel: true } } },
+      });
+      if (conflictingSlot) {
+        throw new BadRequestException(`This teacher already teaches ${conflictingSlot.classArm.classLevel.name} ${conflictingSlot.classArm.name} at this time.`);
+      }
+    }
+
+    const conflictingException = await this.prisma.timetableException.findFirst({
+      where: forSchool(schoolId, { replacementTeacherUserId, date, periodId, id: { not: excludeExceptionId } }),
+      include: { classArm: { include: { classLevel: true } } },
+    });
+    if (conflictingException) {
+      throw new BadRequestException(
+        `This teacher is already covering ${conflictingException.classArm.classLevel.name} ${conflictingException.classArm.name} at this time.`,
+      );
+    }
+  }
+
+  private toTimetableExceptionRow(
+    exception: TimetableException & {
+      classArm: ClassArm & { classLevel: { name: string } };
+      period: Period;
+      teacherUser: User;
+      replacementTeacherUser: User | null;
+      replacementSubject: Subject | null;
+    },
+  ): TimetableExceptionRow {
+    return {
+      id: exception.id,
+      classArmId: exception.classArmId,
+      className: `${exception.classArm.classLevel.name} ${exception.classArm.name}`,
+      date: exception.date.toISOString().slice(0, 10),
+      periodId: exception.periodId,
+      periodName: exception.period.name,
+      type: exception.type,
+      teacherUserId: exception.teacherUserId,
+      teacherName: `${exception.teacherUser.firstName} ${exception.teacherUser.lastName}`,
+      note: exception.note,
+      replacementTeacherUserId: exception.replacementTeacherUserId,
+      replacementTeacherName: exception.replacementTeacherUser
+        ? `${exception.replacementTeacherUser.firstName} ${exception.replacementTeacherUser.lastName}`
+        : null,
+      replacementSubjectId: exception.replacementSubjectId,
+      replacementSubjectName: exception.replacementSubject?.name ?? null,
+      activityLabel: exception.activityLabel,
+    };
   }
 
   private buildNonSchoolDay(date: string, dayOfWeek: AnyWeekday, reason: "HOLIDAY" | "WEEKEND", holidayName: string | null): ResolvedTimetableDay {
@@ -579,6 +934,80 @@ export class CalendarService {
 
   private findHolidayFor(holidays: Holiday[], date: string): Holiday | undefined {
     return holidays.find((holiday) => holiday.startDate.toISOString().slice(0, 10) <= date && date <= holiday.endDate.toISOString().slice(0, 10));
+  }
+
+  // v0.8 step 4 (SPEC_V0.8.md §4) — extracted verbatim from Step 3's
+  // resolveClassSchedule (holiday check first, then weekend), and now
+  // shared by resolveTeacherSchedule's day-level check too. Pure: holidays
+  // and includesSaturday are supplied by the caller (already fetched once
+  // per request), so this extraction adds no query-per-date. Also reused
+  // by createTeacherAbsence to validate a single (classArmId, date) pair
+  // against the same rules a resolved schedule would apply.
+  private isSchoolDayForClass(
+    weekday: AnyWeekday,
+    includesSaturday: boolean,
+    holidays: Holiday[],
+    date: string,
+  ): { isSchoolDay: boolean; reason: "HOLIDAY" | "WEEKEND" | null; holidayName: string | null } {
+    const holidayMatch = this.findHolidayFor(holidays, date);
+    if (holidayMatch) {
+      return { isSchoolDay: false, reason: "HOLIDAY", holidayName: holidayMatch.name };
+    }
+    if (weekday === "SUNDAY" || (weekday === Weekday.SATURDAY && !includesSaturday)) {
+      return { isSchoolDay: false, reason: "WEEKEND", holidayName: null };
+    }
+    return { isSchoolDay: true, reason: null, holidayName: null };
+  }
+
+  private dateRangeFilter(from: string, to: string): Prisma.DateTimeFilter {
+    return { gte: new Date(`${from}T00:00:00Z`), lte: new Date(`${to}T00:00:00Z`) };
+  }
+
+  private exceptionKey(classArmId: string, date: string, periodId: string): string {
+    return `${classArmId}|${date}|${periodId}`;
+  }
+
+  private buildExceptionOverlay(exceptions: TimetableExceptionWithRelations[]): Map<string, TimetableExceptionWithRelations> {
+    return new Map(
+      exceptions.map((exception) => [this.exceptionKey(exception.classArmId, exception.date.toISOString().slice(0, 10), exception.periodId), exception]),
+    );
+  }
+
+  // includeNote is false for resolveClassSchedule (student/parent — the
+  // note is never their business) and true for resolveTeacherSchedule
+  // (always the absent teacher's own view of their own slot, per the
+  // teacherUserId-scoped query above).
+  private exceptionOverlayFields(
+    exception: TimetableExceptionWithRelations | undefined,
+    includeNote: boolean,
+  ): Pick<
+    ResolvedPeriodEntry,
+    "status" | "exceptionId" | "note" | "replacementTeacherUserId" | "replacementTeacherName" | "replacementSubjectId" | "replacementSubjectName" | "activityLabel"
+  > {
+    if (!exception) {
+      return {
+        status: null,
+        exceptionId: null,
+        note: null,
+        replacementTeacherUserId: null,
+        replacementTeacherName: null,
+        replacementSubjectId: null,
+        replacementSubjectName: null,
+        activityLabel: null,
+      };
+    }
+    return {
+      status: exception.type === TimetableExceptionType.REPLACED ? "REPLACED" : "CANCELLED",
+      exceptionId: exception.id,
+      note: includeNote ? exception.note : null,
+      replacementTeacherUserId: exception.replacementTeacherUserId,
+      replacementTeacherName: exception.replacementTeacherUser
+        ? `${exception.replacementTeacherUser.firstName} ${exception.replacementTeacherUser.lastName}`
+        : null,
+      replacementSubjectId: exception.replacementSubjectId,
+      replacementSubjectName: exception.replacementSubject?.name ?? null,
+      activityLabel: exception.activityLabel,
+    };
   }
 
   // Mirrors subject-assignments.service.ts's own getCurrentSessionOrThrow

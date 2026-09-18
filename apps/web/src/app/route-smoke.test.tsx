@@ -162,6 +162,7 @@ function mockApi() {
       if (path === "/api/v1/calendar/holidays") return [];
       if (path === "/api/v1/calendar/class-school-days") return [];
       if (path === "/api/v1/calendar/timetable-slots") return [];
+      if (path === "/api/v1/calendar/teacher-absences") return [];
 
       // SPEC_V0.7.1.md §3 (item 20) — /me/grades is reachable by any
       // authenticated role at the URL bar (the real gate is server-side,
@@ -202,6 +203,7 @@ const ROUTES = [
   "/me/timetable",
   "/timetable",
   "/timetable/arms/route-smoke-id",
+  "/timetable/absences",
   "/timetable/mine",
   "/personnel",
   "/settings/school",

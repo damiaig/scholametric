@@ -123,6 +123,8 @@ model School {
   holidays                  Holiday[]
   classSchoolDays           ClassSchoolDays[]
   timetableSlots            TimetableSlot[]
+  teacherAbsences           TeacherAbsence[]
+  timetableExceptions       TimetableException[]
 
   @@map("schools")
 }
@@ -160,24 +162,27 @@ model User {
   createdAt          DateTime   @default(now()) @map("created_at")
   updatedAt          DateTime   @updatedAt @map("updated_at")
 
-  school                    School                     @relation(fields: [schoolId], references: [id])
-  student                   Student?                   @relation(fields: [studentId], references: [id])
-  guardian                  Guardian?                  @relation(fields: [guardianId], references: [id])
-  refreshTokens             RefreshToken[]
-  auditLogs                 AuditLog[]
-  staffProfile              StaffProfile?
-  classTeacherAssignments   ClassTeacherAssignment[]
-  subjectTeacherAssignments SubjectTeacherAssignment[]
-  termsClosed               Term[]                     @relation("TermClosedBy")
-  termUnlocksUnlocked       TermUnlock[]               @relation("TermUnlockUnlockedBy")
-  termUnlocksRelocked       TermUnlock[]               @relation("TermUnlockRelockedBy")
-  termRemarksAsTeacher      TermRemark[]               @relation("TermRemarkTeacherBy")
-  termRemarksAsPrincipal    TermRemark[]               @relation("TermRemarkPrincipalBy")
-  evaluationsCreated        Evaluation[]               @relation("EvaluationCreatedBy")
-  evaluationScoresEntered   EvaluationScore[]          @relation("EvaluationScoreEnteredBy")
-  examsCreated              Exam[]                     @relation("ExamCreatedBy")
-  examScoresEntered         ExamScore[]                @relation("ExamScoreEnteredBy")
-  timetableSlots            TimetableSlot[]
+  school                           School                     @relation(fields: [schoolId], references: [id])
+  student                          Student?                   @relation(fields: [studentId], references: [id])
+  guardian                         Guardian?                  @relation(fields: [guardianId], references: [id])
+  refreshTokens                    RefreshToken[]
+  auditLogs                        AuditLog[]
+  staffProfile                     StaffProfile?
+  classTeacherAssignments          ClassTeacherAssignment[]
+  subjectTeacherAssignments        SubjectTeacherAssignment[]
+  termsClosed                      Term[]                     @relation("TermClosedBy")
+  termUnlocksUnlocked              TermUnlock[]               @relation("TermUnlockUnlockedBy")
+  termUnlocksRelocked              TermUnlock[]               @relation("TermUnlockRelockedBy")
+  termRemarksAsTeacher             TermRemark[]               @relation("TermRemarkTeacherBy")
+  termRemarksAsPrincipal           TermRemark[]               @relation("TermRemarkPrincipalBy")
+  evaluationsCreated               Evaluation[]               @relation("EvaluationCreatedBy")
+  evaluationScoresEntered          EvaluationScore[]          @relation("EvaluationScoreEnteredBy")
+  examsCreated                     Exam[]                     @relation("ExamCreatedBy")
+  examScoresEntered                ExamScore[]                @relation("ExamScoreEnteredBy")
+  timetableSlots                   TimetableSlot[]
+  teacherAbsences                  TeacherAbsence[]
+  timetableExceptionsAsTeacher     TimetableException[]       @relation("TimetableExceptionTeacher")
+  timetableExceptionsAsReplacement TimetableException[]       @relation("TimetableExceptionReplacementTeacher")
 
   @@unique([schoolId, email])
   @@unique([schoolId, username])
@@ -314,6 +319,7 @@ model ClassArm {
   termExamResults           TermExamResult[]
   classSchoolDays           ClassSchoolDays?
   timetableSlots            TimetableSlot[]
+  timetableExceptions       TimetableException[]
 
   @@unique([classLevelId, name])
   @@index([schoolId])
@@ -435,15 +441,16 @@ model Subject {
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
-  school                 School                     @relation(fields: [schoolId], references: [id])
-  classLevels            SubjectClassLevel[]
-  teacherAssignments     SubjectTeacherAssignment[]
-  termSubjectResults     TermSubjectResult[]
-  termUnlocks            TermUnlock[]
-  evaluations            Evaluation[]
-  exams                  Exam[]
-  termSubjectExamResults TermSubjectExamResult[]
-  timetableSlots         TimetableSlot[]
+  school                           School                     @relation(fields: [schoolId], references: [id])
+  classLevels                      SubjectClassLevel[]
+  teacherAssignments               SubjectTeacherAssignment[]
+  termSubjectResults               TermSubjectResult[]
+  termUnlocks                      TermUnlock[]
+  evaluations                      Evaluation[]
+  exams                            Exam[]
+  termSubjectExamResults           TermSubjectExamResult[]
+  timetableSlots                   TimetableSlot[]
+  timetableExceptionsAsReplacement TimetableException[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -960,8 +967,9 @@ model Period {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  school         School          @relation(fields: [schoolId], references: [id])
-  timetableSlots TimetableSlot[]
+  school              School               @relation(fields: [schoolId], references: [id])
+  timetableSlots      TimetableSlot[]
+  timetableExceptions TimetableException[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -1083,4 +1091,86 @@ model TimetableSlot {
   @@unique([teacherUserId, dayOfWeek, periodId, sessionId])
   @@index([schoolId])
   @@map("timetable_slots")
+}
+
+// v0.8 step 4 (SPEC_V0.8.md §4) — the exception layer, laid on top of the
+// repeating TimetableSlot template. Two new tables only, additive.
+enum TimetableExceptionType {
+  CANCELLED_TEACHER_ABSENT
+  REPLACED
+}
+
+// The absence record a teacher creates by marking themselves absent for
+// one or more periods on one date, with a note. periodIds is a native
+// Postgres array — one submission covering several periods is one row,
+// matching the DTO shape (date + periodIds[] + note) and the admin list
+// endpoint's "date, periodId(s), note" grouping. autoApproved is always
+// true today (SPEC_V0.8.md §4 — no approval gate) and exists only so a
+// future approval flow wouldn't need a schema change. Not linked to the
+// TimetableException rows it produces by FK — each exception already
+// carries its own copy of teacherUserId/note, so no join is needed to
+// answer "why is this cancelled," and this table stays purely the
+// teacher-facing/admin-facing audit trail of the submission itself.
+model TeacherAbsence {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  schoolId      String   @map("school_id") @db.Uuid
+  teacherUserId String   @map("teacher_user_id") @db.Uuid
+  date          DateTime @db.Date
+  periodIds     String[] @map("period_ids") @db.Uuid
+  note          String
+  autoApproved  Boolean  @default(true) @map("auto_approved")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  school      School @relation(fields: [schoolId], references: [id])
+  teacherUser User   @relation(fields: [teacherUserId], references: [id])
+
+  @@index([schoolId, teacherUserId, date])
+  @@map("teacher_absences")
+}
+
+// A date-specific override for one (classArmId, date, periodId) — never
+// modifies the underlying TimetableSlot. Keyed by classArmId+date+periodId
+// (not a slot FK) per the comment on TimetableSlot above; resolveClass/
+// TeacherSchedule join back to the template purely by matching the date's
+// weekday + periodId, same as the template lookup itself already does.
+// teacherUserId is the ORIGINAL slot's teacher (the one who is absent) —
+// kept denormalized so a CANCELLED exception with no replacement yet can
+// still answer "whose absence caused this" and so the teacher's own view
+// can filter to "my cancellations" without re-deriving it from the
+// now-possibly-different replacement. note is proprietor-facing + the
+// absent teacher's own view only (SPEC_V0.8.md §4) — resolveClassSchedule
+// (the student/parent path) must never surface it. Two named User
+// relations here (teacherUser, replacementTeacherUser) since a row can
+// reference two different users; every other FK on this table is
+// unambiguous and needs no relation name.
+model TimetableException {
+  id                       String                 @id @default(uuid(7)) @db.Uuid
+  schoolId                 String                 @map("school_id") @db.Uuid
+  classArmId               String                 @map("class_arm_id") @db.Uuid
+  date                     DateTime               @db.Date
+  periodId                 String                 @map("period_id") @db.Uuid
+  type                     TimetableExceptionType
+  teacherUserId            String                 @map("teacher_user_id") @db.Uuid
+  note                     String?
+  replacementTeacherUserId String?                @map("replacement_teacher_user_id") @db.Uuid
+  replacementSubjectId     String?                @map("replacement_subject_id") @db.Uuid
+  activityLabel            String?                @map("activity_label")
+  createdAt                DateTime               @default(now()) @map("created_at")
+  updatedAt                DateTime               @updatedAt @map("updated_at")
+
+  school                 School   @relation(fields: [schoolId], references: [id])
+  classArm               ClassArm @relation(fields: [classArmId], references: [id])
+  period                 Period   @relation(fields: [periodId], references: [id])
+  teacherUser            User     @relation("TimetableExceptionTeacher", fields: [teacherUserId], references: [id])
+  replacementTeacherUser User?    @relation("TimetableExceptionReplacementTeacher", fields: [replacementTeacherUserId], references: [id])
+  replacementSubject     Subject? @relation(fields: [replacementSubjectId], references: [id])
+
+  // One outcome per class period per date — the app pre-checks for a clean
+  // 409 message, this constraint is the real guarantee (same pattern as
+  // TimetableSlot's own uniques above).
+  @@unique([classArmId, date, periodId])
+  @@index([schoolId, date])
+  @@index([teacherUserId, date])
+  @@map("timetable_exceptions")
 }

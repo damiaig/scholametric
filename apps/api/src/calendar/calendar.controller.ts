@@ -2,6 +2,8 @@ import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Put, 
 import { UserRole } from "@prisma/client";
 import { Roles } from "../common/decorators/roles.decorator";
 import { Audit } from "../common/decorators/audit.decorator";
+import { CurrentUser } from "../common/decorators/current-user.decorator";
+import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { CalendarService } from "./calendar.service";
 import { CreatePeriodDto } from "./dto/create-period.dto";
 import { UpdatePeriodDto } from "./dto/update-period.dto";
@@ -14,6 +16,9 @@ import { SetClassSchoolDaysDto } from "./dto/set-class-school-days.dto";
 import { CreateTimetableSlotDto } from "./dto/create-timetable-slot.dto";
 import { UpdateTimetableSlotDto } from "./dto/update-timetable-slot.dto";
 import { GetTimetableSlotsQueryDto } from "./dto/get-timetable-slots-query.dto";
+import { GetTimetableRangeDto } from "./dto/get-timetable-range.dto";
+import { CreateTeacherAbsenceDto } from "./dto/create-teacher-absence.dto";
+import { ReplaceTimetableExceptionDto } from "./dto/replace-timetable-exception.dto";
 
 // v0.8 step 1 (SPEC_V0.8.md §7 item 1) — the calendar domain's foundation.
 // SCHOOL_ADMIN + PROPRIETOR only, no TEACHER path in this step (read views
@@ -136,5 +141,28 @@ export class CalendarController {
   @Delete("timetable-slots/:id")
   deleteTimetableSlot(@Param("id", ParseUUIDPipe) id: string) {
     return this.calendarService.deleteTimetableSlot(id);
+  }
+
+  // ---- Teacher absence + replacement (v0.8 step 4) ----
+
+  // TEACHER-only, overriding this controller's class-level SCHOOL_ADMIN/
+  // PROPRIETOR restriction — a teacher marks THEMSELVES absent; there is no
+  // classArmId anywhere in this request (see CreateTeacherAbsenceDto).
+  @Roles(UserRole.TEACHER)
+  @Audit("teacherAbsence", "create")
+  @Post("teacher-absences")
+  createTeacherAbsence(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateTeacherAbsenceDto) {
+    return this.calendarService.createTeacherAbsence(user.userId, dto);
+  }
+
+  @Get("teacher-absences")
+  listTeacherAbsences(@Query() query: GetTimetableRangeDto) {
+    return this.calendarService.listTeacherAbsences(query);
+  }
+
+  @Audit("timetableException", "replace")
+  @Patch("timetable-exceptions/:id")
+  replaceTimetableException(@Param("id", ParseUUIDPipe) id: string, @Body() dto: ReplaceTimetableExceptionDto) {
+    return this.calendarService.replaceTimetableException(id, dto);
   }
 }

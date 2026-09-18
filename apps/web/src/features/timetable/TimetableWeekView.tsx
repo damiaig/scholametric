@@ -58,6 +58,25 @@ export function TimetableWeekView({ days, periods, showClass = false }: Timetabl
                     <td key={day.date} className="px-4 py-3 text-text">
                       {!day.isSchoolDay || !entry?.subjectName ? (
                         <span className="text-muted">—</span>
+                      ) : entry.status === "CANCELLED" ? (
+                        <div>
+                          <div className="font-medium text-danger">Cancelled — teacher absent</div>
+                          <div className="text-xs text-muted line-through">
+                            {entry.subjectName} · {entry.teacherName}
+                            {showClass && entry.className ? ` · ${entry.className}` : ""}
+                          </div>
+                        </div>
+                      ) : entry.status === "REPLACED" ? (
+                        <div>
+                          <div className="font-medium text-warning">{entry.activityLabel ?? entry.replacementSubjectName ?? entry.subjectName}</div>
+                          <div className="text-xs text-muted">
+                            {entry.replacementTeacherName ?? "Covered"}
+                            {showClass && entry.className ? ` · ${entry.className}` : ""}
+                          </div>
+                          <div className="text-xs text-muted line-through">
+                            was {entry.subjectName} · {entry.teacherName}
+                          </div>
+                        </div>
                       ) : (
                         <div>
                           <div className="font-medium">{entry.subjectName}</div>
