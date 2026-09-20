@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Users, BookOpen, ClipboardPen, CalendarClock } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
@@ -6,10 +7,13 @@ import { Button } from "../../components/ui/button";
 import { StatCard } from "../../components/ui/stat-card";
 import { getErrorMessage } from "../../lib/api-client";
 import { useCurrentUser } from "../shell/use-current-user";
+import { useTeachingTimetable } from "../timetable/use-timetable-views";
+import { getAgendaRange } from "../timetable/current-week-range";
 import { useMyTeaching } from "./use-my-teaching";
 import { MyClassesView } from "./MyClassesView";
 import { RecentlyPostedCard } from "./RecentlyPostedCard";
 import { useRecentlyPosted } from "./use-recently-posted";
+import { TodayAgendaCard } from "./TodayAgendaCard";
 
 // v0.7.1 step 3 (SPEC_V0.7.1.md §6 step 3, items 2.2/2.3) — replaces the
 // bare MyClassesView-only /dashboard for TEACHER with metric cards + the
@@ -21,6 +25,8 @@ export function TeacherDashboard() {
   const { data: user } = useCurrentUser();
   const teaching = useMyTeaching();
   const recentlyPosted = useRecentlyPosted(teaching.data);
+  const todayRange = useMemo(() => getAgendaRange(new Date(), 1), []);
+  const todayTimetable = useTeachingTimetable(todayRange);
 
   const classCount = teaching.data
     ? new Set([
@@ -92,6 +98,16 @@ export function TeacherDashboard() {
               </Card>
             </Link>
           </div>
+
+          <TodayAgendaCard
+            data={todayTimetable.data}
+            isLoading={todayTimetable.isLoading}
+            isError={todayTimetable.isError}
+            error={todayTimetable.error}
+            onRetry={() => todayTimetable.refetch()}
+            linkHref="/timetable/mine"
+            showClass
+          />
 
           <Card>
             <CardContent className="p-6">

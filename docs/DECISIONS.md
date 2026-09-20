@@ -6073,3 +6073,109 @@ the 540 baseline. Full web suite: 366/366 (61 files) after, up from 352
 `ReplacementFormDialog.test.tsx` (3), `AbsencesPage.test.tsx` (4) — plus 2
 new `TimetableWeekView.test.tsx` cases, 1 new `TimetableLandingPage.test.tsx`
 case, and 1 new `route-smoke.test.tsx` case).
+
+## 2026-09-19 — v0.8 step 5 (final build step): live daily agenda + UI polish + the covering-teacher visibility gap
+
+**No new endpoint, no migration.** The agenda is the exact same
+`ClassTimetableResponse`/`TeacherTimetableResponse` Step 3 already
+returns from `GET /me/timetable` / `GET /me/children/:childId/timetable` /
+`GET /me/teaching-timetable`, requested with `{from: today, to:
+today+6}` (`getAgendaRange()`, new in `current-week-range.ts`) instead of
+the calendar-week range — presentation-only reuse, confirmed no new
+resolution logic anywhere in this step except the one backend touch
+below.
+
+**The one backend touch: `resolveTeacherSchedule` now also sees what a
+teacher is covering.** Deferred from Step 4. A second, caller-scoped
+query added to the same `Promise.all`:
+`timetableException.findMany({ where: { replacementTeacherUserId:
+teacherUserId, date: range } })` — `teacherUserId` here is always
+`@CurrentUser().userId`, never a request param, identical wall shape to
+every other scoping field on this method. The caller's resulting
+schedule is a pure union:
+`{own TimetableSlots} ∪ {exceptions WHERE replacementTeacherUserId =
+caller}` — neither operand can ever include a class the caller isn't
+explicitly tied to by their own id, so this is an additional
+caller-scoped SOURCE, not a broadened scope. A teacher with zero coverage
+assignments gets `[]` from the new query and the merge is a no-op —
+byte-for-byte the same result as before this step. Own-slot lookup still
+runs first; the coverage lookup is only consulted for a period where the
+caller has no own slot, which Step 4's own
+`assertReplacementTeacherAvailable` already makes the *only* reachable
+case (it rejects assigning a cover who has a normal slot at that exact
+weekday+period). The original absent teacher is still `teacherName` on
+the synthesized entry ("original stays original," Step 4's own
+invariant); the caller's own name fills `replacementTeacherName`
+(one extra `findUniqueOrThrow`, only run when there's actually a
+coverage assignment to resolve). `note` stays `null` on every synthesized
+entry — Step 4's privacy rule (absent teacher's own view only) extends
+unchanged to this new consumer, not relaxed for it. New
+`timetable-coverage.e2e-spec.ts` (4 tests): the assigned cover sees the
+covered period (REPLACED, original subject/teacher preserved, note
+null, replacement fields are their own); the coverage assignment is
+additive (the cover's own unrelated slot elsewhere is unaffected); an
+uninvolved teacher sees nothing extra (no phantom class); the own-slots +
+tenant wall holds through the NEW query path specifically (a Hillcrest
+teacher's view excludes both the Sunrise slot and the Sunrise coverage
+exception).
+
+**A real bug caught while writing that test file, not shipped:** the
+first draft's `afterAll` deleted `subjectTeacherAssignment` rows by a
+possibly-`undefined` scalar id (`{ where: { id: createdSubjectAssignmentId
+} }`) with no array wrapping. When `beforeAll` threw partway through
+(a 409 from a prior failed run's leftover state), that id was never
+assigned — and Prisma treats an `undefined` field value as "no filter,"
+turning the call into `deleteMany({})`: it wiped every
+`subject_teacher_assignment` row for every school in
+`scholametric_test`. Caught immediately (other tests started failing),
+diagnosed via a throwaway `ts-node` query script, and fixed by guarding
+every `afterAll` delete in that file behind a truthy/non-empty check
+before running it — restated as a comment in the file so it isn't
+rediscovered the hard way twice. Recovery was automatic (the next
+`npx jest` invocation's `globalSetup` reseeds unconditionally); no
+production impact, since this only ever touches the isolated test
+database. The same bare-scalar-in-`afterAll` shape exists in a couple of
+already-passing e2e files from earlier steps (e.g.
+`classArmId: jss2AArmId` with no `{ in: [...] }` wrapping) — left
+as-is (not in this step's scope, and the id in those cases is set very
+early in `beforeAll`, before anything that could plausibly throw), but
+worth knowing the failure mode exists if one of those ever needs editing.
+
+**Frontend.** `describePeriodStatus` (new, `period-status.ts`) extracted
+from `TimetableWeekView`'s inline CANCELLED/REPLACED copy — pure text
+composition only, no JSX — so the grid and the new agenda list can never
+drift in wording. `TimetableWeekView.test.tsx` passed unchanged before
+and after the extraction, confirming it. New `AgendaDayCard` (one day,
+periods+breaks merged into a single time-ordered list, Pronote-style) is
+reused as-is by both `AgendaView` (today + upcoming, grouped into two
+sections, every day gets a full card — none collapsed or skipped, even a
+holiday/weekend) and the new dashboard `TodayAgendaCard` (a single-day
+wrapper with its own loading/error/link-to-full-agenda chrome).
+`MyTimetablePage` (both `MyTimetable`/`ChildTimetable` forks) and
+`TeacherTimetablePage` gained an `Agenda`/`Full week` `Tabs` switcher
+(existing `components/ui/tabs.tsx` primitive, already used by
+`ClassGradesPage`) — Agenda is the default. Both ranges are fetched
+*unconditionally*, not gated by the active tab: `TeacherTimetablePage`'s
+"Mark absent" button needs the agenda-range data regardless of which tab
+is showing, and offering dates from "today + upcoming" is a better fit
+for that flow than the calendar week — a deliberate, small deviation from
+the plan's "only the active tab's query is enabled" framing, made because
+the absence dialog has its own genuine dependency on that data. `Today's
+schedule` strips added to `StudentDashboard`/`TeacherDashboard`/
+`ParentDashboard` (not admin/proprietor — same precedent as Step 3's
+sidebar placement), each reusing its own dashboard's existing per-role
+hook (`useMyTimetable`/`useTeachingTimetable`/`useChildTimetable`) with
+`getAgendaRange(new Date(), 1)`.
+
+**Test impact.** Backend: new `timetable-coverage.e2e-spec.ts` (4 tests,
+detailed above). Full backend e2e suite: 560/560 (43 suites) after, up
+from the 556 baseline. Full web suite: 389/389 (65 files) after, up from
+366 (4 new test files — `AgendaDayCard.test.tsx` (7), `AgendaView.test.tsx`
+(3), `TodayAgendaCard.test.tsx` (3), `current-week-range.test.ts` (3) —
+plus 2 new cases each in `TeacherTimetablePage.test.tsx`/
+`MyTimetablePage.test.tsx` for the tab switch, and 1 new happy-path case
+each in `StudentDashboard.test.tsx`/`TeacherDashboard.test.tsx`/
+`ParentDashboard.test.tsx` for the "Today's schedule" strip).
+
+Per §7's build order, item 6 (acceptance walk, then tag v0.8) is next —
+not a code step.

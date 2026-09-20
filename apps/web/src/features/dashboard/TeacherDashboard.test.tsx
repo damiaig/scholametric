@@ -135,10 +135,51 @@ function mathResults(status: "PUBLISHED" | "DRAFT") {
   };
 }
 
+// v0.8 step 5 — the dashboard's "Today" agenda strip reuses GET
+// /me/teaching-timetable with a one-day range.
+const TIMETABLE_RESPONSE = {
+  teacherUserId: "u2",
+  from: "2026-01-01",
+  to: "2026-01-01",
+  days: [
+    {
+      date: "2026-01-01",
+      dayOfWeek: "MONDAY",
+      isSchoolDay: true,
+      nonSchoolReason: null,
+      holidayName: null,
+      periods: [
+        {
+          periodId: "p1",
+          periodName: "Period 1",
+          startsAt: "08:00",
+          endsAt: "08:45",
+          subjectId: "sub1",
+          subjectName: "Physics",
+          teacherUserId: "u2",
+          teacherName: null,
+          classArmId: "arm2",
+          className: "JSS 1 A",
+          status: null,
+          exceptionId: null,
+          note: null,
+          replacementTeacherUserId: null,
+          replacementTeacherName: null,
+          replacementSubjectId: null,
+          replacementSubjectName: null,
+          activityLabel: null,
+        },
+      ],
+      breaks: [],
+    },
+  ],
+};
+
 function baseMock(overrides: Record<string, unknown> = {}) {
   mockedApiRequest.mockImplementation(
     async (path: string, opts?: { query?: Record<string, unknown> }) => {
       if (path.includes("/auth/me")) return USER;
+      if (path.includes("/me/teaching-timetable")) return TIMETABLE_RESPONSE;
       if (path.includes("/me/teaching")) return TEACHING;
       if (path === "/api/v1/grades/evaluations") {
         const subjectId = opts?.query?.subjectId;
@@ -192,6 +233,17 @@ afterEach(() => {
 });
 
 describe("TeacherDashboard", () => {
+  it("shows today's schedule, with a link to the full timetable", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    baseMock();
+
+    renderWithProviders(<TeacherDashboard />);
+
+    expect(await screen.findByText("Today's schedule")).toBeInTheDocument();
+    expect(screen.getByText("Physics")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Full agenda →" })).toHaveAttribute("href", "/timetable/mine");
+  });
+
   it("renders 'Classes I teach' and 'Subjects' metric cards computed as a union/count from /me/teaching, plus the Enter-grades card", async () => {
     authStore.setTokens({
       accessToken: "access-token",
@@ -248,6 +300,7 @@ describe("TeacherDashboard", () => {
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
+      if (path.includes("/me/teaching-timetable")) return TIMETABLE_RESPONSE;
       if (path.includes("/me/teaching"))
         return {
           classTeacherOf: [],
@@ -311,6 +364,7 @@ describe("TeacherDashboard", () => {
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
+      if (path.includes("/me/teaching-timetable")) return TIMETABLE_RESPONSE;
       if (path.includes("/me/teaching")) return TEACHING;
       if (path === "/api/v1/grades/evaluations") return EMPTY_EVALUATIONS;
       if (path === "/api/v1/exams") return EMPTY_EXAMS;

@@ -17,3 +17,16 @@ export function getCurrentWeekRange(today: Date = new Date()): { from: string; t
 function formatDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
+
+// v0.8 step 5 (SPEC_V0.8.md §7 item 5) — "today" plus the next `days - 1`
+// calendar days, as "YYYY-MM-DD" strings. Same reuse-not-rebuild shape as
+// getCurrentWeekRange above: this reuses the exact same resolved-schedule
+// endpoints (GET /me/timetable etc.), just with a different [from, to] —
+// no new resolution logic. Every day in the window gets a full agenda
+// card, including non-school days (holiday/weekend) — nothing here is
+// collapsed or skipped.
+export function getAgendaRange(today: Date = new Date(), days = 7): { from: string; to: string } {
+  const end = new Date(today);
+  end.setDate(today.getDate() + (days - 1));
+  return { from: formatDate(today), to: formatDate(end) };
+}

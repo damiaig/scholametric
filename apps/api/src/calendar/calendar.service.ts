@@ -174,6 +174,17 @@ type TimetableExceptionWithRelations = TimetableException & {
   replacementSubject: Subject | null;
 };
 
+// v0.8 step 5 (SPEC_V0.8.md §7 item 5) — a coverage assignment as seen
+// from the REPLACEMENT teacher's own side: teacherUser here is always the
+// ORIGINAL absent teacher ("original stays original," same invariant the
+// class view already uses), classArm is needed for className since the
+// caller has no own slot at this period to read it from.
+type CoverageExceptionWithRelations = TimetableException & {
+  teacherUser: User;
+  replacementSubject: Subject | null;
+  classArm: ClassArm & { classLevel: { name: string } };
+};
+
 // A shared time interval shape both Period and Break satisfy — the
 // overlap check below treats them as one combined daily timeline
 // (SPEC_V0.8.md §7 item 1: a school's day is one shared clock, a class
@@ -583,7 +594,7 @@ export class CalendarService {
     assertTimetableRangeValid(from, to);
 
     const session = await this.getCurrentSessionOrThrow(schoolId);
-    const [periods, breaks, holidays, slots, exceptions] = await Promise.all([
+    const [periods, breaks, holidays, slots, exceptions, coverageExceptions] = await Promise.all([
       this.prisma.period.findMany({ where: forSchool(schoolId), orderBy: [{ sortOrder: "asc" }, { id: "asc" }] }),
       this.prisma.break.findMany({ where: forSchool(schoolId), orderBy: [{ startsAt: "asc" }, { id: "asc" }] }),
       this.prisma.holiday.findMany({ where: forSchool(schoolId, { sessionId: session.id }) }),
@@ -591,17 +602,43 @@ export class CalendarService {
         where: forSchool(schoolId, { teacherUserId, sessionId: session.id }),
         include: { subject: true, classArm: { include: { classLevel: true, classSchoolDays: true } } },
       }),
-      // Only exceptions where THIS teacher is the ORIGINAL absent teacher —
-      // a class this teacher is now covering as a replacement is
-      // deliberately NOT overlaid into their own view here (deferred to a
-      // later step); resolveTeacherSchedule only ever shows what happened
-      // to their own slots.
+      // Only exceptions where THIS teacher is the ORIGINAL absent teacher.
       this.prisma.timetableException.findMany({
         where: forSchool(schoolId, { teacherUserId, date: this.dateRangeFilter(from, to) }),
         include: { replacementTeacherUser: true, replacementSubject: true },
       }),
+      // v0.8 step 5 — exceptions where THIS teacher is the ASSIGNED COVER.
+      // Scoped by replacementTeacherUserId = the JWT subject, never a
+      // request param — same wall shape as every other scoping field on
+      // this method. A teacher with none of these gets [] here, and the
+      // merge below is a no-op — identical to pre-Step-5 behavior.
+      this.prisma.timetableException.findMany({
+        where: forSchool(schoolId, { replacementTeacherUserId: teacherUserId, date: this.dateRangeFilter(from, to) }),
+        include: { teacherUser: true, replacementSubject: true, classArm: { include: { classLevel: true } } },
+      }),
     ]);
     const exceptionByKey = this.buildExceptionOverlay(exceptions);
+    const coverageByKey = this.buildCoverageOverlay(coverageExceptions);
+
+    // Resolving the ORIGINAL subject for each covered (classArmId,
+    // weekday, periodId) — exceptions don't store subjectId, only the
+    // template TimetableSlot does. Only queried when there's actually a
+    // coverage assignment to resolve (zero cost in the common case).
+    const coverageClassArmIds = [...new Set(coverageExceptions.map((exception) => exception.classArmId))];
+    const [coverageOriginalSlots, self] = await Promise.all([
+      coverageClassArmIds.length
+        ? this.prisma.timetableSlot.findMany({
+            where: forSchool(schoolId, { classArmId: { in: coverageClassArmIds }, sessionId: session.id }),
+            include: { subject: true },
+          })
+        : Promise.resolve([]),
+      coverageExceptions.length
+        ? this.prisma.user.findUniqueOrThrow({ where: { id: teacherUserId }, select: { firstName: true, lastName: true } })
+        : Promise.resolve(null),
+    ]);
+    const originalSlotByKey = new Map(
+      coverageOriginalSlots.map((slot) => [`${slot.classArmId}|${slot.dayOfWeek}|${slot.periodId}`, slot]),
+    );
 
     const days = this.enumerateDates(from, to).map((date) => {
       const weekday = this.weekdayOf(date);
@@ -627,19 +664,71 @@ export class CalendarService {
         holidayName: null,
         periods: periods.map((period) => {
           const slot = slotsByPeriod.get(period.id);
-          const exception = slot ? exceptionByKey.get(this.exceptionKey(slot.classArmId, date, period.id)) : undefined;
+          if (slot) {
+            const exception = exceptionByKey.get(this.exceptionKey(slot.classArmId, date, period.id));
+            return {
+              periodId: period.id,
+              periodName: period.name,
+              startsAt: period.startsAt,
+              endsAt: period.endsAt,
+              subjectId: slot.subjectId,
+              subjectName: slot.subject.name,
+              teacherUserId,
+              teacherName: null,
+              classArmId: slot.classArmId,
+              className: `${slot.classArm.classLevel.name} ${slot.classArm.name}`,
+              ...this.exceptionOverlayFields(exception, true),
+            };
+          }
+
+          // No own slot here — this teacher's OWN template has nothing at
+          // this weekday+period, in ANY class (a genuine free period,
+          // unless a coverage assignment fills it — see below). Own-slot
+          // precedence above is what makes this branch reachable only for
+          // periods the caller doesn't normally teach; Step 4's own
+          // assertReplacementTeacherAvailable already forbids assigning a
+          // cover who has a normal slot at this exact weekday+period, so
+          // the two branches can never both apply to the same period.
+          const coverage = coverageByKey.get(`${date}|${period.id}`);
+          if (coverage) {
+            const originalSlot = originalSlotByKey.get(`${coverage.classArmId}|${weekday}|${period.id}`);
+            return {
+              periodId: period.id,
+              periodName: period.name,
+              startsAt: period.startsAt,
+              endsAt: period.endsAt,
+              subjectId: originalSlot?.subjectId ?? null,
+              subjectName: originalSlot?.subject.name ?? null,
+              teacherUserId: coverage.teacherUserId,
+              teacherName: `${coverage.teacherUser.firstName} ${coverage.teacherUser.lastName}`,
+              classArmId: coverage.classArmId,
+              className: `${coverage.classArm.classLevel.name} ${coverage.classArm.name}`,
+              status: "REPLACED" as const,
+              exceptionId: coverage.id,
+              // Never shown to the covering teacher — this is the absent
+              // teacher's private note, not theirs (Step 4's privacy rule
+              // extends unchanged to this new consumer).
+              note: null,
+              replacementTeacherUserId: teacherUserId,
+              replacementTeacherName: self ? `${self.firstName} ${self.lastName}` : null,
+              replacementSubjectId: coverage.replacementSubjectId,
+              replacementSubjectName: coverage.replacementSubject?.name ?? null,
+              activityLabel: coverage.activityLabel,
+            };
+          }
+
           return {
             periodId: period.id,
             periodName: period.name,
             startsAt: period.startsAt,
             endsAt: period.endsAt,
-            subjectId: slot?.subjectId ?? null,
-            subjectName: slot?.subject.name ?? null,
-            teacherUserId: slot ? teacherUserId : null,
+            subjectId: null,
+            subjectName: null,
+            teacherUserId: null,
             teacherName: null,
-            classArmId: slot?.classArmId ?? null,
-            className: slot ? `${slot.classArm.classLevel.name} ${slot.classArm.name}` : null,
-            ...this.exceptionOverlayFields(exception, true),
+            classArmId: null,
+            className: null,
+            ...this.exceptionOverlayFields(undefined, true),
           };
         }),
         breaks: breaks.map((brk) => ({ breakId: brk.id, name: brk.name, startsAt: brk.startsAt, endsAt: brk.endsAt })),
@@ -971,6 +1060,14 @@ export class CalendarService {
     return new Map(
       exceptions.map((exception) => [this.exceptionKey(exception.classArmId, exception.date.toISOString().slice(0, 10), exception.periodId), exception]),
     );
+  }
+
+  // v0.8 step 5 — keyed by (date, periodId) only, NOT classArmId: this is
+  // looked up from the COVERING teacher's own agenda, which doesn't know
+  // in advance which class it's covering at a given period the way
+  // buildExceptionOverlay's class-view/own-slot callers do.
+  private buildCoverageOverlay(exceptions: CoverageExceptionWithRelations[]): Map<string, CoverageExceptionWithRelations> {
+    return new Map(exceptions.map((exception) => [`${exception.date.toISOString().slice(0, 10)}|${exception.periodId}`, exception]));
   }
 
   // includeNote is false for resolveClassSchedule (student/parent — the

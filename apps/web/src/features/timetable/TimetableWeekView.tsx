@@ -1,6 +1,7 @@
 import type { Period, ResolvedTimetableDay } from "@scholametric/shared";
 import { ANY_WEEKDAY_LABELS } from "@scholametric/shared";
 import { formatDate } from "../../lib/format-date";
+import { describePeriodStatus } from "./period-status";
 
 interface TimetableWeekViewProps {
   days: ResolvedTimetableDay[];
@@ -54,36 +55,32 @@ export function TimetableWeekView({ days, periods, showClass = false }: Timetabl
                 </td>
                 {days.map((day) => {
                   const entry = day.periods.find((p) => p.periodId === period.id);
+                  if (!day.isSchoolDay || !entry?.subjectName) {
+                    return (
+                      <td key={day.date} className="px-4 py-3 text-text">
+                        <span className="text-muted">—</span>
+                      </td>
+                    );
+                  }
+
+                  const desc = describePeriodStatus(entry, showClass);
                   return (
                     <td key={day.date} className="px-4 py-3 text-text">
-                      {!day.isSchoolDay || !entry?.subjectName ? (
-                        <span className="text-muted">—</span>
-                      ) : entry.status === "CANCELLED" ? (
+                      {desc.kind === "CANCELLED" ? (
                         <div>
-                          <div className="font-medium text-danger">Cancelled — teacher absent</div>
-                          <div className="text-xs text-muted line-through">
-                            {entry.subjectName} · {entry.teacherName}
-                            {showClass && entry.className ? ` · ${entry.className}` : ""}
-                          </div>
+                          <div className="font-medium text-danger">{desc.headline}</div>
+                          <div className="text-xs text-muted line-through">{desc.subline}</div>
                         </div>
-                      ) : entry.status === "REPLACED" ? (
+                      ) : desc.kind === "REPLACED" ? (
                         <div>
-                          <div className="font-medium text-warning">{entry.activityLabel ?? entry.replacementSubjectName ?? entry.subjectName}</div>
-                          <div className="text-xs text-muted">
-                            {entry.replacementTeacherName ?? "Covered"}
-                            {showClass && entry.className ? ` · ${entry.className}` : ""}
-                          </div>
-                          <div className="text-xs text-muted line-through">
-                            was {entry.subjectName} · {entry.teacherName}
-                          </div>
+                          <div className="font-medium text-warning">{desc.headline}</div>
+                          <div className="text-xs text-muted">{desc.subline}</div>
+                          <div className="text-xs text-muted line-through">{desc.strikethrough}</div>
                         </div>
                       ) : (
                         <div>
-                          <div className="font-medium">{entry.subjectName}</div>
-                          <div className="text-xs text-muted">
-                            {entry.teacherName}
-                            {showClass && entry.className ? ` · ${entry.className}` : ""}
-                          </div>
+                          <div className="font-medium">{desc.headline}</div>
+                          <div className="text-xs text-muted">{desc.subline}</div>
                         </div>
                       )}
                     </td>

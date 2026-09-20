@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Award, Trophy, Users, BookOpen, Hammer, CalendarClock } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
@@ -7,6 +7,8 @@ import { StatCard } from "../../components/ui/stat-card";
 import { Spinner } from "../../components/ui/spinner";
 import { formatScore } from "../grades/format-score";
 import { useCurrentUser } from "../shell/use-current-user";
+import { useChildTimetable } from "../timetable/use-timetable-views";
+import { getAgendaRange } from "../timetable/current-week-range";
 import { useMyChildren } from "./use-my-children";
 import { useChildTerms } from "./use-child-terms";
 import { useChildReportCard } from "../grades/use-child-report-card";
@@ -15,6 +17,7 @@ import { resolveCurrentTerm } from "./resolve-current-term";
 import { buildGradesBySubject } from "./recent-grades";
 import { GradesBySubjectCard } from "./GradesBySubjectCard";
 import { ChildSwitcher } from "./ChildSwitcher";
+import { TodayAgendaCard } from "./TodayAgendaCard";
 
 function positionLabel(position: number | null): string {
   return position === null ? "Not yet ranked" : `#${position}`;
@@ -40,6 +43,8 @@ export function ParentDashboard() {
 
   const terms = useChildTerms(childId || null);
   const current = resolveCurrentTerm(terms.data);
+  const todayRange = useMemo(() => getAgendaRange(new Date(), 1), []);
+  const todayTimetable = useChildTimetable(childId ? { childId, ...todayRange } : null);
 
   const reportCard = useChildReportCard(childId && current ? { childId, termId: current.termId, sessionId: current.sessionId } : null);
   const yearExams = useChildYearExams(childId && current ? { childId, sessionId: current.sessionId } : null);
@@ -97,6 +102,17 @@ export function ParentDashboard() {
               tone="secondary"
             />
             <StatCard icon={Trophy} label="Position" value={positionLabel(displayPosition)} tone="accent" />
+          </div>
+
+          <div className="mb-6">
+            <TodayAgendaCard
+              data={todayTimetable.data}
+              isLoading={todayTimetable.isLoading}
+              isError={todayTimetable.isError}
+              error={todayTimetable.error}
+              onRetry={() => todayTimetable.refetch()}
+              linkHref={`/me/timetable?childId=${childId}`}
+            />
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

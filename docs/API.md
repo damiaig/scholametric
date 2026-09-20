@@ -2516,6 +2516,41 @@ activityLabel }`.
 
 Audited (`teacherAbsence.create`/`timetableException.replace`).
 
+### `GET /me/teaching-timetable?from=&to=` — covering-teacher visibility (v0.8 step 5, SPEC_V0.8.md §7 item 5)
+
+No new endpoint or request contract — this widens what the existing
+route (documented above) can return for a `TEACHER` caller. Previously,
+a period the caller doesn't have their own `TimetableSlot` for always
+resolved to a free period (`subjectId: null`, etc.), even if the caller
+had been assigned as `replacementTeacherUserId` on another class's
+exception for that date/period. Now:
+
+`schedule(caller) = {caller's own TimetableSlots} ∪ {TimetableExceptions WHERE replacementTeacherUserId = caller}`
+
+Both operands are scoped by `@CurrentUser().userId` — never a request
+param — so this is an additional caller-scoped source, not a broadened
+one; a teacher with no coverage assignments gets an identical result to
+before this step. For a covered period: `subjectId`/`subjectName` come
+from the ORIGINAL `TimetableSlot` (the class's regular subject);
+`teacherUserId`/`teacherName` are the ORIGINAL absent teacher's (same
+"original stays original" rule the exception overlay already uses);
+`status: "REPLACED"`; `replacementTeacherUserId`/`replacementTeacherName`
+are the CALLER's own; `replacementSubjectId`/`replacementSubjectName`/
+`activityLabel` come from the exception; **`note` is always `null`** —
+the absence note is the original absent teacher's private note (Step
+4), never the covering teacher's business, and that rule is unchanged
+here. Own-slot lookup always takes precedence over a coverage match
+(Step 4's own `assertReplacementTeacherAvailable` already makes a
+same-period collision between the two unreachable).
+
+**The live daily agenda + dashboard "Today" strip (v0.8 step 5) add no
+endpoints at all** — the agenda view and the home-dashboard "Today's
+schedule" card both call the exact same three routes documented above
+(`GET /me/timetable`, `GET /me/children/:childId/timetable`, `GET
+/me/teaching-timetable`), just with `{from: today, to: today+6}` (agenda)
+or `{from: today, to: today}` (dashboard strip) instead of the calendar
+week — pure client-side presentation of the same resolved schedule.
+
 ---
 
 ## Misc

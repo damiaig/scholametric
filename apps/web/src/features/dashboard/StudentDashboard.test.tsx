@@ -98,6 +98,47 @@ const YEAR_EXAMS = {
   generalClassAverage: 70,
 };
 
+// v0.8 step 5 — the dashboard's "Today" agenda strip reuses GET
+// /me/timetable with a one-day range; a minimal but real-shaped fixture.
+const TIMETABLE_RESPONSE = {
+  classArmId: "arm1",
+  className: "JSS 1 A",
+  from: "2026-01-01",
+  to: "2026-01-01",
+  days: [
+    {
+      date: "2026-01-01",
+      dayOfWeek: "MONDAY",
+      isSchoolDay: true,
+      nonSchoolReason: null,
+      holidayName: null,
+      periods: [
+        {
+          periodId: "p1",
+          periodName: "Period 1",
+          startsAt: "08:00",
+          endsAt: "08:45",
+          subjectId: "sub1",
+          subjectName: "Mathematics",
+          teacherUserId: "t1",
+          teacherName: "Bola Ogundare",
+          classArmId: "arm1",
+          className: "JSS 1 A",
+          status: null,
+          exceptionId: null,
+          note: null,
+          replacementTeacherUserId: null,
+          replacementTeacherName: null,
+          replacementSubjectId: null,
+          replacementSubjectName: null,
+          activityLabel: null,
+        },
+      ],
+      breaks: [],
+    },
+  ],
+};
+
 function mockApi() {
   mockedApiRequest.mockImplementation(async (path: string) => {
     if (path.includes("/auth/me")) return USER;
@@ -105,6 +146,7 @@ function mockApi() {
     if (path.includes("/me/terms")) return TERMS;
     if (path.includes("/me/report-card")) return REPORT_CARD;
     if (path.includes("/me/year-exams")) return YEAR_EXAMS;
+    if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
     throw new Error(`unexpected apiRequest call: ${path}`);
   });
 }
@@ -140,6 +182,7 @@ describe("StudentDashboard", () => {
         return { ...REPORT_CARD, subjects: [], overall: null, runningAverageScore: null, runningClassAverageScore: null, runningPosition: null };
       }
       if (path.includes("/me/year-exams")) return { ...YEAR_EXAMS, terms: [] };
+      if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
@@ -165,6 +208,7 @@ describe("StudentDashboard", () => {
         return { ...REPORT_CARD, overall: null, runningAverageScore: 42, runningClassAverageScore: null, runningPosition: null };
       }
       if (path.includes("/me/year-exams")) return YEAR_EXAMS;
+      if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
@@ -188,6 +232,7 @@ describe("StudentDashboard", () => {
         return { ...REPORT_CARD, overall: null, runningAverageScore: 42, runningClassAverageScore: 39, runningPosition: 3 };
       }
       if (path.includes("/me/year-exams")) return YEAR_EXAMS;
+      if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
@@ -211,6 +256,17 @@ describe("StudentDashboard", () => {
     expect(screen.getByText("Mathematics · Evaluation")).toBeInTheDocument();
     expect(screen.getByText("Mathematics · Exam")).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "View all →" })[0]).toHaveAttribute("href", "/me/grades");
+  });
+
+  it("shows today's schedule, with a link to the full agenda", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockApi();
+
+    renderWithProviders(<StudentDashboard />);
+
+    expect(await screen.findByText("Today's schedule")).toBeInTheDocument();
+    expect(screen.getByText("Mathematics")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Full agenda →" })).toHaveAttribute("href", "/me/timetable");
   });
 
   it("Grades and Homework link cards render, Homework labeled 'Coming soon' with no fetch", async () => {
@@ -266,6 +322,7 @@ describe("StudentDashboard", () => {
       if (path.includes("/me/terms")) return TERMS;
       if (path.includes("/me/report-card")) return hostileReportCard;
       if (path.includes("/me/year-exams")) return hostileYearExams;
+      if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 

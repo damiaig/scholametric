@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Period, TeacherTimetableResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
@@ -60,7 +61,7 @@ afterEach(() => {
 });
 
 describe("TeacherTimetablePage", () => {
-  it("renders the resolved week, showing which class each slot belongs to", async () => {
+  it("defaults to the Agenda tab, showing which class each period belongs to", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/calendar/periods") return [PERIOD_1];
@@ -70,9 +71,40 @@ describe("TeacherTimetablePage", () => {
 
     renderWithProviders(<TeacherTimetablePage />);
 
-    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+    expect(await screen.findByText("Today")).toBeInTheDocument();
+    expect(screen.getByText("Mathematics")).toBeInTheDocument();
     expect(screen.getByText(/Bola Ogundare/)).toBeInTheDocument();
     expect(screen.getByText(/JSS 2 A/)).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("switches to the Full week tab, rendering the grid instead", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
+      if (path === "/api/v1/me/teaching-timetable") return RESPONSE;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<TeacherTimetablePage />);
+    await screen.findByText("Today");
+
+    await user.click(screen.getByRole("tab", { name: "Full week" }));
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.queryByText("Today")).not.toBeInTheDocument();
+  });
+
+  it("offers 'Mark absent' regardless of which tab is active", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
+      if (path === "/api/v1/me/teaching-timetable") return RESPONSE;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<TeacherTimetablePage />);
+    expect(await screen.findByRole("button", { name: "Mark absent" })).toBeInTheDocument();
   });
 
   it("shows an error state with retry when the timetable fails to load", async () => {

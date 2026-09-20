@@ -93,9 +93,51 @@ const YEAR_EXAMS = {
   generalClassAverage: null,
 };
 
+// v0.8 step 5 — the dashboard's "Today" agenda strip reuses GET
+// /me/children/:childId/timetable with a one-day range.
+const TIMETABLE_RESPONSE = {
+  classArmId: "arm1",
+  className: "JSS 1 A",
+  from: "2026-01-01",
+  to: "2026-01-01",
+  days: [
+    {
+      date: "2026-01-01",
+      dayOfWeek: "MONDAY",
+      isSchoolDay: true,
+      nonSchoolReason: null,
+      holidayName: null,
+      periods: [
+        {
+          periodId: "p1",
+          periodName: "Period 1",
+          startsAt: "08:00",
+          endsAt: "08:45",
+          subjectId: "sub1",
+          subjectName: "Chemistry",
+          teacherUserId: "t1",
+          teacherName: "Bola Ogundare",
+          classArmId: "arm1",
+          className: "JSS 1 A",
+          status: null,
+          exceptionId: null,
+          note: null,
+          replacementTeacherUserId: null,
+          replacementTeacherName: null,
+          replacementSubjectId: null,
+          replacementSubjectName: null,
+          activityLabel: null,
+        },
+      ],
+      breaks: [],
+    },
+  ],
+};
+
 function mockApi() {
   mockedApiRequest.mockImplementation(async (path: string) => {
     if (path.includes("/auth/me")) return USER;
+    if (path.includes("/timetable")) return TIMETABLE_RESPONSE;
     if (path.includes("/me/children/child-1/terms")) return TERMS;
     if (path.includes("/me/children/child-2/terms")) return TERMS;
     if (path.includes("/me/children/child-1/report-card")) return reportCardFor("child-1", 60);
@@ -114,6 +156,17 @@ afterEach(() => {
 });
 
 describe("ParentDashboard", () => {
+  it("shows the selected child's today schedule, with a link to the full agenda", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockApi();
+
+    renderWithProviders(<ParentDashboard />);
+
+    expect(await screen.findByText("Today's schedule")).toBeInTheDocument();
+    expect(screen.getByText("Chemistry")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Full agenda →" })).toHaveAttribute("href", "/me/timetable?childId=child-1");
+  });
+
   it("defaults to the first linked child and shows their metric cards + grades card", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockApi();
@@ -148,6 +201,7 @@ describe("ParentDashboard", () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
+      if (path.includes("/timetable")) return TIMETABLE_RESPONSE;
       if (path.includes("/me/children/child-1/terms")) return TERMS;
       if (path.includes("/me/children/child-1/report-card")) {
         return { ...reportCardFor("child-1", 60), overall: null, runningAverageScore: 45, runningClassAverageScore: null, runningPosition: null };
@@ -169,6 +223,7 @@ describe("ParentDashboard", () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
+      if (path.includes("/timetable")) return TIMETABLE_RESPONSE;
       if (path.includes("/me/children/child-1/terms")) return TERMS;
       if (path.includes("/me/children/child-1/report-card")) {
         return { ...reportCardFor("child-1", 60), overall: null, runningAverageScore: 45, runningClassAverageScore: 39, runningPosition: 3 };

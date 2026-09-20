@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 describe("MyTimetablePage", () => {
-  it("STUDENT: renders own class's resolved week, no child-switcher", async () => {
+  it("STUDENT: defaults to the Agenda tab, no child-switcher", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return STUDENT_USER;
@@ -94,8 +94,27 @@ describe("MyTimetablePage", () => {
 
     renderWithProviders(<MyTimetablePage />);
 
-    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+    expect(await screen.findByText("Today")).toBeInTheDocument();
+    expect(screen.getByText("Mathematics")).toBeInTheDocument();
     expect(screen.queryByLabelText("Child")).not.toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("STUDENT: switches to the Full week tab, rendering the grid instead", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return STUDENT_USER;
+      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
+      if (path === "/api/v1/me/timetable") return response("JSS 2 A");
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<MyTimetablePage />);
+    await screen.findByText("Today");
+
+    await user.click(screen.getByRole("tab", { name: "Full week" }));
+    expect(await screen.findByRole("table")).toBeInTheDocument();
   });
 
   it("PARENT: shows the child-switcher, defaults to the first child, and loads that child's timetable", async () => {
@@ -112,6 +131,24 @@ describe("MyTimetablePage", () => {
 
     expect(await screen.findByLabelText("Child")).toBeInTheDocument();
     expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+  });
+
+  it("PARENT: switches to the Full week tab, rendering the grid instead", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return PARENT_USER;
+      if (path === "/api/v1/me/children") return CHILDREN;
+      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
+      if (path === "/api/v1/me/children/child1/timetable") return response("JSS 2 A");
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<MyTimetablePage />);
+    await screen.findByText("Mathematics");
+
+    await user.click(screen.getByRole("tab", { name: "Full week" }));
+    expect(await screen.findByRole("table")).toBeInTheDocument();
   });
 
   it("PARENT: no children shows the empty state, not an error", async () => {

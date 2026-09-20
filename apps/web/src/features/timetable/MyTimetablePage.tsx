@@ -1,56 +1,73 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Label } from "../../components/ui/label";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
+import { Tabs } from "../../components/ui/tabs";
 import { getErrorMessage } from "../../lib/api-client";
 import { useCurrentUser } from "../shell/use-current-user";
 import { usePeriods } from "../settings/use-periods";
 import { useMyChildren } from "../dashboard/use-my-children";
 import { useMyTimetable, useChildTimetable } from "./use-timetable-views";
-import { getCurrentWeekRange } from "./current-week-range";
+import { getCurrentWeekRange, getAgendaRange } from "./current-week-range";
 import { TimetableWeekView } from "./TimetableWeekView";
+import { AgendaView } from "./AgendaView";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-64";
 
-// v0.8 step 3 (SPEC_V0.8.md §7 item 3) — the STUDENT's own class's
-// resolved weekly schedule. No classArmId param anywhere — self, resolved
-// server-side from the token.
-function MyTimetable() {
-  const { from, to } = useMemo(() => getCurrentWeekRange(), []);
-  const periods = usePeriods();
-  const timetable = useMyTimetable({ from, to });
+const VIEW_TABS = [
+  { value: "agenda", label: "Agenda" },
+  { value: "week", label: "Full week" },
+];
 
-  const isLoading = periods.isLoading || timetable.isLoading;
-  const isError = periods.isError || timetable.isError;
+// v0.8 step 3 (SPEC_V0.8.md §7 item 3) — the STUDENT's own class's
+// resolved schedule. No classArmId param anywhere — self, resolved
+// server-side from the token. v0.8 step 5 adds the Agenda tab (today +
+// upcoming, the default) alongside the original full-week grid — both
+// reuse the same GET /me/timetable resolver, just a different range.
+function MyTimetable() {
+  const [tab, setTab] = useState("agenda");
+  const weekRange = useMemo(() => getCurrentWeekRange(), []);
+  const agendaRange = useMemo(() => getAgendaRange(), []);
+  const periods = usePeriods();
+  const weekTimetable = useMyTimetable(weekRange);
+  const agendaTimetable = useMyTimetable(agendaRange);
+  const active = tab === "week" ? weekTimetable : agendaTimetable;
+
+  const isLoading = periods.isLoading || active.isLoading;
+  const isError = periods.isError || active.isError;
 
   return (
     <div>
-      <PageHeader title="Timetable" description={timetable.data?.className ?? "This week"} />
+      <PageHeader title="Timetable" description={active.data?.className ?? (tab === "week" ? "This week" : "Today & upcoming")} />
 
-      {isLoading && (
-        <p className="flex items-center gap-2 text-sm text-muted">
-          <Spinner /> Loading your timetable…
-        </p>
-      )}
+      <Tabs value={tab} onValueChange={setTab} items={VIEW_TABS} aria-label="Timetable view">
+        {isLoading && (
+          <p className="flex items-center gap-2 text-sm text-muted">
+            <Spinner /> Loading your timetable…
+          </p>
+        )}
 
-      {isError && (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
-            <p className="text-sm text-danger">
-              {getErrorMessage(timetable.error ?? periods.error, "Couldn't load your timetable.")}
-            </p>
-            <Button type="button" variant="outline" size="sm" onClick={() => timetable.refetch()}>
-              Try again
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+        {isError && (
+          <Card>
+            <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+              <p className="text-sm text-danger">
+                {getErrorMessage(active.error ?? periods.error, "Couldn't load your timetable.")}
+              </p>
+              <Button type="button" variant="outline" size="sm" onClick={() => active.refetch()}>
+                Try again
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
-      {!isLoading && !isError && periods.data && timetable.data && <TimetableWeekView days={timetable.data.days} periods={periods.data} />}
+        {!isLoading && !isError && periods.data && active.data && (
+          tab === "week" ? <TimetableWeekView days={active.data.days} periods={periods.data} /> : <AgendaView days={active.data.days} />
+        )}
+      </Tabs>
     </div>
   );
 }
@@ -75,9 +92,13 @@ function ChildTimetable() {
   }, [children.data, childId]);
 
   const selectedChild = children.data?.children.find((child) => child.studentId === childId) ?? null;
-  const { from, to } = useMemo(() => getCurrentWeekRange(), []);
+  const [tab, setTab] = useState("agenda");
+  const weekRange = useMemo(() => getCurrentWeekRange(), []);
+  const agendaRange = useMemo(() => getAgendaRange(), []);
   const periods = usePeriods();
-  const timetable = useChildTimetable(childId ? { childId, from, to } : null);
+  const weekTimetable = useChildTimetable(childId ? { childId, ...weekRange } : null);
+  const agendaTimetable = useChildTimetable(childId ? { childId, ...agendaRange } : null);
+  const timetable = tab === "week" ? weekTimetable : agendaTimetable;
 
   function handleChildChange(nextChildId: string) {
     const next = new URLSearchParams(searchParams);
@@ -87,7 +108,7 @@ function ChildTimetable() {
 
   const isLoading = periods.isLoading || timetable.isLoading;
   const isError = periods.isError || timetable.isError;
-  const headerDescription = timetable.data?.className ?? selectedChild?.currentClassArmLabel ?? "This week";
+  const headerDescription = timetable.data?.className ?? selectedChild?.currentClassArmLabel ?? (tab === "week" ? "This week" : "Today & upcoming");
 
   return (
     <div>
@@ -124,27 +145,31 @@ function ChildTimetable() {
         </div>
       )}
 
-      {childId && isLoading && (
-        <p className="flex items-center gap-2 text-sm text-muted">
-          <Spinner /> Loading timetable…
-        </p>
-      )}
-
-      {childId && isError && (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
-            <p className="text-sm text-danger">
-              {getErrorMessage(timetable.error ?? periods.error, "Couldn't load this timetable.")}
+      {childId && (
+        <Tabs value={tab} onValueChange={setTab} items={VIEW_TABS} aria-label="Timetable view">
+          {isLoading && (
+            <p className="flex items-center gap-2 text-sm text-muted">
+              <Spinner /> Loading timetable…
             </p>
-            <Button type="button" variant="outline" size="sm" onClick={() => timetable.refetch()}>
-              Try again
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+          )}
 
-      {childId && !isLoading && !isError && periods.data && timetable.data && (
-        <TimetableWeekView days={timetable.data.days} periods={periods.data} />
+          {isError && (
+            <Card>
+              <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
+                <p className="text-sm text-danger">
+                  {getErrorMessage(timetable.error ?? periods.error, "Couldn't load this timetable.")}
+                </p>
+                <Button type="button" variant="outline" size="sm" onClick={() => timetable.refetch()}>
+                  Try again
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {!isLoading && !isError && periods.data && timetable.data && (
+            tab === "week" ? <TimetableWeekView days={timetable.data.days} periods={periods.data} /> : <AgendaView days={timetable.data.days} />
+          )}
+        </Tabs>
       )}
     </div>
   );
