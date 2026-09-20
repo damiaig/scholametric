@@ -1,11 +1,16 @@
-import type { Period, ResolvedTimetableDay } from "@scholametric/shared";
+import type { ResolvedTimetableDay } from "@scholametric/shared";
 import { ANY_WEEKDAY_LABELS } from "@scholametric/shared";
 import { formatDate } from "../../lib/format-date";
 import { describePeriodStatus } from "./period-status";
+import type { WeekViewPeriod } from "./derive-week-periods";
 
 interface TimetableWeekViewProps {
   days: ResolvedTimetableDay[];
-  periods: Period[];
+  // Deliberately NOT the full admin `Period` type (packages/shared) — only
+  // id/name/startsAt/endsAt are ever read below, which is exactly what
+  // deriveWeekPeriods() produces from an already-fetched timetable
+  // response, with no GET /calendar/periods call required to render this.
+  periods: WeekViewPeriod[];
   /** Show which class a period belongs to (the teacher's cross-class view) — omitted for a single-class view, where it would be redundant. */
   showClass?: boolean;
 }

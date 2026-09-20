@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ClassTimetableResponse, MyChildrenResponse, Period } from "@scholametric/shared";
+import type { ClassTimetableResponse, MyChildrenResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
@@ -26,8 +26,6 @@ const STUDENT_USER = {
 };
 
 const PARENT_USER = { ...STUDENT_USER, id: "u3", role: "PARENT" };
-
-const PERIOD_1: Period = { id: "p1", schoolId: "s1", name: "Period 1", startsAt: "08:00", endsAt: "08:45", sortOrder: 1, createdAt: "t", updatedAt: "t" };
 
 function response(className: string): ClassTimetableResponse {
   return {
@@ -83,11 +81,15 @@ afterEach(() => {
 });
 
 describe("MyTimetablePage", () => {
-  it("STUDENT: defaults to the Agenda tab, no child-switcher", async () => {
+  // v0.8 walk-found bug: this page used to call GET /calendar/periods
+  // (SCHOOL_ADMIN/PROPRIETOR only) to build the week grid's rows, which
+  // 403'd for a STUDENT/PARENT. There's deliberately no mock for that path
+  // in these tests — if the page ever calls it again, the catch-all
+  // `throw` below fails the test immediately with a clear message.
+  it("STUDENT: defaults to the Agenda tab, no child-switcher, no GET /calendar/periods call", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return STUDENT_USER;
-      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
       if (path === "/api/v1/me/timetable") return response("JSS 2 A");
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -100,11 +102,10 @@ describe("MyTimetablePage", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
-  it("STUDENT: switches to the Full week tab, rendering the grid instead", async () => {
+  it("STUDENT: switches to the Full week tab, rendering the grid built from the timetable response alone", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return STUDENT_USER;
-      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
       if (path === "/api/v1/me/timetable") return response("JSS 2 A");
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -115,6 +116,29 @@ describe("MyTimetablePage", () => {
 
     await user.click(screen.getByRole("tab", { name: "Full week" }));
     expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.getByText("Period 1")).toBeInTheDocument();
+    expect(screen.getByText("Mathematics")).toBeInTheDocument();
+  });
+
+  // Belt-and-braces on top of the no-mock enforcement above: even if
+  // something DID try to call the admin-only endpoint, a 403 there must
+  // not break this page.
+  it("STUDENT: renders the Full week grid even if GET /calendar/periods would 403", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return STUDENT_USER;
+      if (path === "/api/v1/me/timetable") return response("JSS 2 A");
+      if (path === "/api/v1/calendar/periods") throw new Error("Forbidden");
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<MyTimetablePage />);
+    await screen.findByText("Today");
+    await user.click(screen.getByRole("tab", { name: "Full week" }));
+
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load your timetable.")).not.toBeInTheDocument();
   });
 
   it("PARENT: shows the child-switcher, defaults to the first child, and loads that child's timetable", async () => {
@@ -122,7 +146,6 @@ describe("MyTimetablePage", () => {
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return PARENT_USER;
       if (path === "/api/v1/me/children") return CHILDREN;
-      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
       if (path === "/api/v1/me/children/child1/timetable") return response("JSS 2 A");
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -133,12 +156,11 @@ describe("MyTimetablePage", () => {
     expect(await screen.findByText("Mathematics")).toBeInTheDocument();
   });
 
-  it("PARENT: switches to the Full week tab, rendering the grid instead", async () => {
+  it("PARENT: switches to the Full week tab, rendering the grid built from the timetable response alone", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return PARENT_USER;
       if (path === "/api/v1/me/children") return CHILDREN;
-      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
       if (path === "/api/v1/me/children/child1/timetable") return response("JSS 2 A");
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -175,7 +197,6 @@ describe("MyTimetablePage", () => {
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return PARENT_USER;
       if (path === "/api/v1/me/children") return children;
-      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
       if (path === "/api/v1/me/children/child1/timetable") return response("JSS 2 A");
       if (path === "/api/v1/me/children/child2/timetable") return response("JSS 1 B");
       throw new Error(`unexpected apiRequest call: ${path}`);

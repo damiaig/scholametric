@@ -6179,3 +6179,66 @@ each in `StudentDashboard.test.tsx`/`TeacherDashboard.test.tsx`/
 
 Per §7's build order, item 6 (acceptance walk, then tag v0.8) is next —
 not a code step.
+
+## 2026-09-20 — v0.8 walk-found fix: STUDENT/PARENT/TEACHER 403 on the full Timetable page (periods dependency)
+
+**Symptom.** Logged in as a STUDENT, the dashboard's "Today's schedule"
+strip worked; the full `/me/timetable` page (both tabs) 403'd. Same
+`/me/timetable` endpoint, one call site worked and the other didn't —
+the 403 was never from `/me/timetable` itself.
+
+**Root cause.** `MyTimetablePage`/`TeacherTimetablePage` each called
+`usePeriods()` (`GET /calendar/periods`) unconditionally, on mount, to
+drive the "Full week" grid's rows — a leftover Step-1 dependency
+(`PeriodsSection`/`TimetableBuilderPage`'s own admin-only data source).
+`GET /calendar/periods` sits under `CalendarController`'s class-level
+`@Roles(SCHOOL_ADMIN, PROPRIETOR)` with no method-level override —
+deliberate since Step 1, and confirmed staying that way (Option B: fix
+the pages, not the guard). Steps 3 and 5 built STUDENT/PARENT/TEACHER-
+facing pages on top of that same hook without anyone noticing the role
+mismatch, because `isError = periods.isError || active.isError` folded
+`periods`'s 403 into the page's own error state — surfacing as "the
+timetable page 403s" even though the actual timetable call succeeded.
+The dashboard strip never hit this because `AgendaDayCard` reads
+`periodName`/`startsAt`/`endsAt` straight off the resolved schedule's own
+entries — it never needed a separate periods fetch to begin with.
+
+**Fix — no admin endpoint touched.** New `deriveWeekPeriods(days)`
+(`derive-week-periods.ts`): `resolveClassSchedule`/`resolveTeacherSchedule`
+already pair EVERY `Period` with its slot-or-null for each SCHOOL day
+(Step 3 — `periods.map(...)` runs unconditionally once a day passes the
+holiday/weekend check; only `buildNonSchoolDay` short-circuits to
+`periods: []`). The first school day in an already-fetched timetable
+response is therefore a complete, correctly-ordered period list on its
+own — verified directly against `calendar.service.ts` before writing the
+fix, not assumed. `TimetableWeekView`'s `periods` prop narrowed from the
+full admin `Period` type to a 4-field `WeekViewPeriod` shape (`id`,
+`name`, `startsAt`, `endsAt` — the only fields it ever reads); a real
+`Period` object still satisfies it structurally, so nothing else calling
+the component needed to change. `usePeriods()` removed entirely from
+`MyTimetablePage` (both `MyTimetable`/`ChildTimetable` forks) and
+`TeacherTimetablePage` — the SAME latent 403 existed on the teacher page
+too (also called `usePeriods()` unconditionally), fixed identically.
+
+**The one edge case, flagged before fixing, not glossed over.** If EVERY
+day in the requested range is a holiday/weekend (a whole week or agenda
+window inside a school break), `deriveWeekPeriods` returns `[]` — there's
+no school day to read a period list from. `TimetableWeekView`'s existing
+empty state ("No periods have been set up yet") already renders for an
+empty array without crashing, so this degenerate case fails soft, not
+hard; the copy is slightly imprecise for that specific case ("periods
+exist, this week just has none of them") but showing nothing is correct
+either way, since there's genuinely nothing to display. Not worth a
+special-cased message for a week-long-holiday edge case.
+
+**Test impact.** New `derive-week-periods.test.ts` (3 tests, including the
+all-holiday `[]` case). `MyTimetablePage.test.tsx`/
+`TeacherTimetablePage.test.tsx`: the dead `GET /calendar/periods` mocks
+removed — deliberately, since the catch-all `throw new Error("unexpected
+apiRequest call")` now enforces "this page never calls it" directly (a
+regression here fails the test immediately, not silently); one new test
+per page additionally mocks that endpoint to reject and confirms the
+grid still renders, proving the page doesn't merely avoid calling it by
+accident. Full web suite: 394/394 (66 files) after, up from 389. Backend
+untouched by this fix — full e2e suite re-run to confirm (560/560, 43
+suites, unchanged).

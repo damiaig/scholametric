@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Period, TeacherTimetableResponse } from "@scholametric/shared";
+import type { TeacherTimetableResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
@@ -13,8 +13,6 @@ vi.mock("../../lib/api-client", async (importOriginal) => {
 });
 
 const mockedApiRequest = vi.mocked(apiRequest);
-
-const PERIOD_1: Period = { id: "p1", schoolId: "s1", name: "Period 1", startsAt: "08:00", endsAt: "08:45", sortOrder: 1, createdAt: "t", updatedAt: "t" };
 
 const RESPONSE: TeacherTimetableResponse = {
   teacherUserId: "t1",
@@ -61,10 +59,14 @@ afterEach(() => {
 });
 
 describe("TeacherTimetablePage", () => {
-  it("defaults to the Agenda tab, showing which class each period belongs to", async () => {
+  // v0.8 walk-found bug: this page used to call GET /calendar/periods
+  // (SCHOOL_ADMIN/PROPRIETOR only) to build the week grid's rows, which
+  // 403'd for a TEACHER. There's deliberately no mock for that path here —
+  // if the page ever calls it again, the catch-all `throw` below fails
+  // the test immediately with a clear message, not a silent pass.
+  it("defaults to the Agenda tab, showing which class each period belongs to — no GET /calendar/periods call", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
       if (path === "/api/v1/me/teaching-timetable") return RESPONSE;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -78,10 +80,9 @@ describe("TeacherTimetablePage", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
-  it("switches to the Full week tab, rendering the grid instead", async () => {
+  it("switches to the Full week tab, rendering the grid built from the timetable response alone", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
       if (path === "/api/v1/me/teaching-timetable") return RESPONSE;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -92,13 +93,35 @@ describe("TeacherTimetablePage", () => {
 
     await user.click(screen.getByRole("tab", { name: "Full week" }));
     expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.getByText("Period 1")).toBeInTheDocument();
+    expect(screen.getByText("Mathematics")).toBeInTheDocument();
     expect(screen.queryByText("Today")).not.toBeInTheDocument();
+  });
+
+  // Belt-and-braces on top of the no-mock enforcement above: even if
+  // something DID try to call the admin-only endpoint, a 403 there must
+  // not break this page — proves the grid genuinely doesn't depend on it,
+  // not just that the test happens not to exercise the call.
+  it("renders the Full week grid even if GET /calendar/periods would 403", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/me/teaching-timetable") return RESPONSE;
+      if (path === "/api/v1/calendar/periods") throw new Error("Forbidden");
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<TeacherTimetablePage />);
+    await screen.findByText("Today");
+    await user.click(screen.getByRole("tab", { name: "Full week" }));
+
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load your timetable.")).not.toBeInTheDocument();
   });
 
   it("offers 'Mark absent' regardless of which tab is active", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
       if (path === "/api/v1/me/teaching-timetable") return RESPONSE;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -110,7 +133,6 @@ describe("TeacherTimetablePage", () => {
   it("shows an error state with retry when the timetable fails to load", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/calendar/periods") return [PERIOD_1];
       if (path === "/api/v1/me/teaching-timetable") throw new Error("boom");
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
