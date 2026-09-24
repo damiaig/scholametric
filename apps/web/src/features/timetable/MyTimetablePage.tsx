@@ -10,10 +10,11 @@ import { getErrorMessage } from "../../lib/api-client";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useMyChildren } from "../dashboard/use-my-children";
 import { useMyTimetable, useChildTimetable } from "./use-timetable-views";
-import { getCurrentWeekRange, getAgendaRange } from "./current-week-range";
+import { getCurrentWeekRange, getAgendaRange, addWeeks, describeWeekOffset } from "./current-week-range";
 import { TimetableWeekView } from "./TimetableWeekView";
 import { AgendaView } from "./AgendaView";
 import { deriveWeekPeriods } from "./derive-week-periods";
+import { WeekNavigation } from "./WeekNavigation";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-64";
@@ -30,21 +31,34 @@ const VIEW_TABS = [
 // reuse the same GET /me/timetable resolver, just a different range.
 // Walk-found fix: NO GET /calendar/periods call here — that route is
 // SCHOOL_ADMIN/PROPRIETOR-only and stays that way; the week grid's period
-// rows are derived from this response instead (deriveWeekPeriods).
+// rows are derived from this response instead (deriveWeekPeriods). Also
+// walk-found: week navigation — ONE shared weekOffset drives both tabs'
+// ranges (via addWeeks(), the seam getCurrentWeekRange/getAgendaRange
+// already exposed), so switching tabs while browsing a future/past week
+// keeps showing the same shifted window.
 function MyTimetable() {
   const [tab, setTab] = useState("agenda");
-  const weekRange = useMemo(() => getCurrentWeekRange(), []);
-  const agendaRange = useMemo(() => getAgendaRange(), []);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const weekRange = useMemo(() => getCurrentWeekRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
+  const agendaRange = useMemo(() => getAgendaRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
   const weekTimetable = useMyTimetable(weekRange);
   const agendaTimetable = useMyTimetable(agendaRange);
   const active = tab === "week" ? weekTimetable : agendaTimetable;
 
   const isLoading = active.isLoading;
   const isError = active.isError;
+  const defaultLabel = tab === "week" ? "This week" : "Today & upcoming";
 
   return (
     <div>
-      <PageHeader title="Timetable" description={active.data?.className ?? (tab === "week" ? "This week" : "Today & upcoming")} />
+      <PageHeader title="Timetable" description={active.data?.className ?? defaultLabel} />
+
+      <WeekNavigation
+        label={describeWeekOffset(weekOffset, defaultLabel, active.data)}
+        onPrevious={() => setWeekOffset((offset) => offset - 1)}
+        onNext={() => setWeekOffset((offset) => offset + 1)}
+        onToday={() => setWeekOffset(0)}
+      />
 
       <Tabs value={tab} onValueChange={setTab} items={VIEW_TABS} aria-label="Timetable view">
         {isLoading && (
@@ -97,8 +111,9 @@ function ChildTimetable() {
 
   const selectedChild = children.data?.children.find((child) => child.studentId === childId) ?? null;
   const [tab, setTab] = useState("agenda");
-  const weekRange = useMemo(() => getCurrentWeekRange(), []);
-  const agendaRange = useMemo(() => getAgendaRange(), []);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const weekRange = useMemo(() => getCurrentWeekRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
+  const agendaRange = useMemo(() => getAgendaRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
   const weekTimetable = useChildTimetable(childId ? { childId, ...weekRange } : null);
   const agendaTimetable = useChildTimetable(childId ? { childId, ...agendaRange } : null);
   const timetable = tab === "week" ? weekTimetable : agendaTimetable;
@@ -111,7 +126,8 @@ function ChildTimetable() {
 
   const isLoading = timetable.isLoading;
   const isError = timetable.isError;
-  const headerDescription = timetable.data?.className ?? selectedChild?.currentClassArmLabel ?? (tab === "week" ? "This week" : "Today & upcoming");
+  const defaultLabel = tab === "week" ? "This week" : "Today & upcoming";
+  const headerDescription = timetable.data?.className ?? selectedChild?.currentClassArmLabel ?? defaultLabel;
 
   return (
     <div>
@@ -146,6 +162,15 @@ function ChildTimetable() {
             ))}
           </select>
         </div>
+      )}
+
+      {childId && (
+        <WeekNavigation
+          label={describeWeekOffset(weekOffset, defaultLabel, timetable.data)}
+          onPrevious={() => setWeekOffset((offset) => offset - 1)}
+          onNext={() => setWeekOffset((offset) => offset + 1)}
+          onToday={() => setWeekOffset(0)}
+        />
       )}
 
       {childId && (

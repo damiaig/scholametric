@@ -103,6 +103,10 @@ describe("DashboardPage", () => {
     expect(screen.getByText("Students by class level")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Review & Publish/ })).toHaveAttribute("href", "/grades/review");
     expect(screen.getByRole("link", { name: /Build timetable/ })).toHaveAttribute("href", "/timetable");
+    // Walk-found fix — both grouped alongside "Build timetable" as the
+    // dashboard's one comprehensive front door to the calendar domain.
+    expect(screen.getByRole("link", { name: /Absences & cover/ })).toHaveAttribute("href", "/timetable/absences");
+    expect(screen.getByRole("link", { name: /Calendar settings/ })).toHaveAttribute("href", "/settings/calendar");
     expect(screen.getByText("104 provisioned")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Provision/ })).toHaveAttribute("href", "/settings/portal-accounts");
   });

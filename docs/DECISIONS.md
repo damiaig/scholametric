@@ -6242,3 +6242,70 @@ grid still renders, proving the page doesn't merely avoid calling it by
 accident. Full web suite: 394/394 (66 files) after, up from 389. Backend
 untouched by this fix — full e2e suite re-run to confirm (560/560, 43
 suites, unchanged).
+
+## 2026-09-24 — v0.8 walk-found fix pass (3 gaps): Absences discoverability, week navigation, calendar discoverability
+
+Three unrelated discoverability gaps found in the same walk, fixed as one
+pass since none touch the others' files. All frontend-only — confirmed
+before writing any code (see the plan turn): the backend already accepts
+any `from`/`to` (`GetTimetableRangeDto` has no floor/ceiling beyond the
+existing 31-day span check), and `AbsencesPage`/`CalendarSettingsPage`
+were both already built and passing.
+
+**1. AbsencesPage had no direct entry point.** Not literally unreachable
+— `TimetableLandingPage` already linked to it — but two clicks deep
+inside a page whose real purpose is the weekly-template builder, which is
+exactly why the walk missed it. Fixed by adding an "Absences & cover →"
+card to `AdminDashboard`, matching "Build timetable →"'s own shape
+exactly. The buried link on `TimetableLandingPage` stays (harmless).
+
+**2. No week navigation — stuck on "now."** Confirmed in all three role
+forks (`MyTimetable`, `ChildTimetable`, `TeacherTimetablePage`): the range
+was computed exactly once via `useMemo(() => getCurrentWeekRange(), [])`
+— no state, no prev/next control. Fixed with one shared `weekOffset`
+state per page and a new `addWeeks(date, weeks)` helper
+(`current-week-range.ts`) that composes with the existing
+`getCurrentWeekRange`/`getAgendaRange` unchanged (both already took an
+optional `today` override — that was the seam). New shared
+`WeekNavigation` component (‹ Previous / label / Next ›, reused by all
+three pages so wording can't drift) and `describeWeekOffset()` (shows the
+tab's default label at offset 0, the resolved from–to dates once
+navigated). The offset is ONE value driving BOTH tabs' ranges — switching
+Agenda ↔ Full week while browsing a future/past week keeps the same
+shifted window, not independent per-tab state.
+
+Two flagged calls, both confirmed as-proposed: **Mark-absent follows the
+navigated window** (marking a future absence while browsing ahead is
+useful, not a bug — Step 4's server-side validation still applies
+regardless of where the request originated from); **navigation is
+unbounded** (no session/term clamping) — deliberately minimal, revisit
+post-tag only if empty far-future weeks feel wrong in practice.
+
+**3. Calendar discoverability (admin/proprietor).** `CalendarSettingsPage`
+(periods/breaks/holidays/school-days) lived only behind Settings → a
+Calendar tab — no reason for an admin to think to look there, and
+disconnected from the timetable builder/absences (two separate paths for
+one domain, neither linking to the other). Decided AGAINST a sidebar
+item — Step 2/3 already established "occasional admin action → Dashboard
+card, not sidebar" TWICE in this exact domain; a sidebar item would
+contradict that precedent and the admin sidebar is already fairly full.
+Added "Calendar settings →" as a THIRD card, grouped with "Build
+timetable →" and "Absences & cover →" — Dashboard becomes the one
+comprehensive front door to the whole calendar domain. `Settings →
+Calendar` stays exactly where it is; this only adds a shortcut.
+
+**Test impact.** New `WeekNavigation.test.tsx` (3), `describeWeekOffset`
+cases folded into `current-week-range.test.ts` (+3, total 10). Dedicated
+navigation tests added to `MyTimetablePage.test.tsx` (STUDENT + PARENT)
+and `TeacherTimetablePage.test.tsx` proving: the requested range shifts
+by exactly 7 days on Next/Previous, the shift applies to BOTH tabs'
+queries even though only one is visible (the shared-offset proof), and
+Today resets it — computed against `addWeeks(new Date(), n)` composed
+with the same range functions the pages use, not hardcoded dates, so the
+assertions hold regardless of which real day the suite runs on.
+`DashboardPage.test.tsx` asserts both new cards' hrefs. Full web suite:
+407/407 (67 files) after, up from 394. Backend untouched — full e2e suite
+re-run to confirm: 559/560 passed on the full run (one failure in
+`exams-publish.e2e-spec.ts`, unrelated to this change — passed 19/19
+clean when re-run in isolation, a known flake class already documented
+earlier in this file, not a regression).

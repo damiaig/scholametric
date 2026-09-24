@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { screen, cleanup } from "@testing-library/react";
+import { screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { TeacherTimetableResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
 import { TeacherTimetablePage } from "./TeacherTimetablePage";
+import { addWeeks, getAgendaRange, getCurrentWeekRange } from "./current-week-range";
 
 vi.mock("../../lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api-client")>();
@@ -117,6 +118,44 @@ describe("TeacherTimetablePage", () => {
 
     expect(await screen.findByRole("table")).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load your timetable.")).not.toBeInTheDocument();
+  });
+
+  // v0.8 walk-found fix — no prev/next week control existed at all before
+  // this. ONE shared weekOffset drives both tabs' ranges (via addWeeks()),
+  // so this also proves the offset is shared: clicking Next while on the
+  // Agenda tab shifts the (currently hidden) Full week query too.
+  it("week navigation: Next/Previous shift both tabs' requested range by 7 days, shared across tabs; Today resets", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const requestedRanges: { from: string; to: string }[] = [];
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
+      if (path === "/api/v1/me/teaching-timetable") {
+        if (opts?.query) requestedRanges.push({ from: String(opts.query.from), to: String(opts.query.to) });
+        return RESPONSE;
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<TeacherTimetablePage />);
+    await screen.findByText("Today");
+
+    const thisWeekAgenda = getAgendaRange(addWeeks(new Date(), 0));
+    const thisWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 0));
+    await waitFor(() => expect(requestedRanges).toContainEqual(thisWeekAgenda));
+    expect(requestedRanges).toContainEqual(thisWeekGrid);
+
+    await user.click(screen.getByRole("button", { name: "Next week" }));
+    const nextWeekAgenda = getAgendaRange(addWeeks(new Date(), 1));
+    const nextWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 1));
+    await waitFor(() => expect(requestedRanges).toContainEqual(nextWeekAgenda));
+    expect(requestedRanges).toContainEqual(nextWeekGrid); // shared offset — the hidden Full week tab shifted too
+
+    await user.click(screen.getByRole("button", { name: "Previous week" }));
+    await waitFor(() => expect(requestedRanges.filter((r) => r.from === thisWeekAgenda.from).length).toBeGreaterThan(1));
+
+    await user.click(screen.getByRole("button", { name: "Next week" }));
+    await user.click(screen.getByRole("button", { name: "Reset to today" }));
+    await waitFor(() => expect(requestedRanges.filter((r) => r.from === thisWeekAgenda.from).length).toBeGreaterThan(2));
   });
 
   it("offers 'Mark absent' regardless of which tab is active", async () => {

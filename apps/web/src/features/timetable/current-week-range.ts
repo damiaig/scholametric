@@ -1,3 +1,5 @@
+import { formatDate as formatDisplayDate } from "../../lib/format-date";
+
 // v0.8 step 3 — this week's Monday-Sunday range, as "YYYY-MM-DD" strings,
 // computed client-side (the API never defaults the range itself — both
 // from/to are always explicit query params, same as every other
@@ -29,4 +31,30 @@ export function getAgendaRange(today: Date = new Date(), days = 7): { from: stri
   const end = new Date(today);
   end.setDate(today.getDate() + (days - 1));
   return { from: formatDate(today), to: formatDate(end) };
+}
+
+// v0.8 walk-found fix — the seam getCurrentWeekRange()/getAgendaRange()
+// already exposed (an optional `today` override) is exactly what week
+// navigation needs: shift the anchor date by whole weeks, then feed it
+// back into the same two functions unchanged. No new range-computation
+// logic, no backend change — from/to are still always explicit, still
+// always a valid ≤31-day span regardless of how far the offset goes.
+export function addWeeks(date: Date, weeks: number): Date {
+  const shifted = new Date(date);
+  shifted.setDate(date.getDate() + weeks * 7);
+  return shifted;
+}
+
+// Shared by all three role pages: at offset 0, show the tab's own default
+// label ("This week" / "Today & upcoming"); once navigated, show the
+// resolved from–to dates instead (already in the response — no extra
+// computation) so it's clear exactly which window is on screen.
+export function describeWeekOffset(weekOffset: number, defaultLabel: string, range: { from: string; to: string } | undefined): string {
+  if (weekOffset === 0) {
+    return defaultLabel;
+  }
+  if (!range) {
+    return "…";
+  }
+  return `${formatDisplayDate(range.from)} – ${formatDisplayDate(range.to)}`;
 }

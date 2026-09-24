@@ -1,6 +1,6 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Link } from "react-router-dom";
-import { CircleAlert, Users, GraduationCap, School, ClipboardCheck, FileCheck, KeyRound, CalendarClock } from "lucide-react";
+import { CircleAlert, Users, GraduationCap, School, ClipboardCheck, FileCheck, KeyRound, CalendarClock, UserX, CalendarCog } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -133,6 +133,39 @@ function AdminDashboard() {
                     <CalendarClock className="h-5 w-5" aria-hidden="true" />
                   </div>
                   <p className="font-semibold text-text">Build timetable →</p>
+                </CardContent>
+              </Card>
+            </Link>
+
+            {/* Walk-found fix (v0.8, before tag) — AbsencesPage already
+                existed (Step 4) and worked once reached, but the only path
+                to it was a link buried inside the timetable builder page.
+                Grouped here with the other two calendar-domain cards so
+                Dashboard is the one comprehensive front door, same
+                "occasional admin action" card pattern, no sidebar item. */}
+            <Link to="/timetable/absences" className="block">
+              <Card className="h-full transition-colors hover:border-primary/40">
+                <CardContent className="flex h-full items-center gap-4 p-6">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <UserX className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                  <p className="font-semibold text-text">Absences &amp; cover →</p>
+                </CardContent>
+              </Card>
+            </Link>
+
+            {/* Walk-found fix — periods/breaks/holidays/school-days lived
+                ONLY under Settings → Calendar, a tab an admin has no reason
+                to think to check. A shortcut card here, not a sidebar item
+                (same reasoning as the two cards above) and not a move —
+                Settings → Calendar stays exactly where it is. */}
+            <Link to="/settings/calendar" className="block">
+              <Card className="h-full transition-colors hover:border-primary/40">
+                <CardContent className="flex h-full items-center gap-4 p-6">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <CalendarCog className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                  <p className="font-semibold text-text">Calendar settings →</p>
                 </CardContent>
               </Card>
             </Link>

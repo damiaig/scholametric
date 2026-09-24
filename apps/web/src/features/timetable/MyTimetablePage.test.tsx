@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { screen, cleanup } from "@testing-library/react";
+import { screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ClassTimetableResponse, MyChildrenResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
 import { MyTimetablePage } from "./MyTimetablePage";
+import { addWeeks, getAgendaRange, getCurrentWeekRange } from "./current-week-range";
 
 vi.mock("../../lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api-client")>();
@@ -141,6 +142,39 @@ describe("MyTimetablePage", () => {
     expect(screen.queryByText("Couldn't load your timetable.")).not.toBeInTheDocument();
   });
 
+  // v0.8 walk-found fix — no prev/next week control existed at all before
+  // this. ONE shared weekOffset drives both tabs' ranges.
+  it("STUDENT: week navigation shifts the requested range by 7 days, shared across tabs; Today resets", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const requestedRanges: { from: string; to: string }[] = [];
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
+      if (path.includes("/auth/me")) return STUDENT_USER;
+      if (path === "/api/v1/me/timetable") {
+        if (opts?.query) requestedRanges.push({ from: String(opts.query.from), to: String(opts.query.to) });
+        return response("JSS 2 A");
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<MyTimetablePage />);
+    await screen.findByText("Today");
+
+    const thisWeekAgenda = getAgendaRange(addWeeks(new Date(), 0));
+    const thisWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 0));
+    await waitFor(() => expect(requestedRanges).toContainEqual(thisWeekAgenda));
+    expect(requestedRanges).toContainEqual(thisWeekGrid);
+
+    await user.click(screen.getByRole("button", { name: "Next week" }));
+    const nextWeekAgenda = getAgendaRange(addWeeks(new Date(), 1));
+    const nextWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 1));
+    await waitFor(() => expect(requestedRanges).toContainEqual(nextWeekAgenda));
+    expect(requestedRanges).toContainEqual(nextWeekGrid); // shared offset — the hidden Full week tab shifted too
+
+    await user.click(screen.getByRole("button", { name: "Reset to today" }));
+    await waitFor(() => expect(requestedRanges.filter((r) => r.from === thisWeekAgenda.from).length).toBeGreaterThan(1));
+  });
+
   it("PARENT: shows the child-switcher, defaults to the first child, and loads that child's timetable", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
@@ -171,6 +205,35 @@ describe("MyTimetablePage", () => {
 
     await user.click(screen.getByRole("tab", { name: "Full week" }));
     expect(await screen.findByRole("table")).toBeInTheDocument();
+  });
+
+  it("PARENT: week navigation shifts the selected child's requested range by 7 days, shared across tabs", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const requestedRanges: { from: string; to: string }[] = [];
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
+      if (path.includes("/auth/me")) return PARENT_USER;
+      if (path === "/api/v1/me/children") return CHILDREN;
+      if (path === "/api/v1/me/children/child1/timetable") {
+        if (opts?.query) requestedRanges.push({ from: String(opts.query.from), to: String(opts.query.to) });
+        return response("JSS 2 A");
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<MyTimetablePage />);
+    await screen.findByText("Mathematics");
+
+    const thisWeekAgenda = getAgendaRange(addWeeks(new Date(), 0));
+    const thisWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 0));
+    await waitFor(() => expect(requestedRanges).toContainEqual(thisWeekAgenda));
+    expect(requestedRanges).toContainEqual(thisWeekGrid);
+
+    await user.click(screen.getByRole("button", { name: "Next week" }));
+    const nextWeekAgenda = getAgendaRange(addWeeks(new Date(), 1));
+    const nextWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 1));
+    await waitFor(() => expect(requestedRanges).toContainEqual(nextWeekAgenda));
+    expect(requestedRanges).toContainEqual(nextWeekGrid);
   });
 
   it("PARENT: no children shows the empty state, not an error", async () => {

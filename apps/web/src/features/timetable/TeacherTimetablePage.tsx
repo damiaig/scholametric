@@ -6,10 +6,11 @@ import { Spinner } from "../../components/ui/spinner";
 import { Tabs } from "../../components/ui/tabs";
 import { getErrorMessage } from "../../lib/api-client";
 import { useTeachingTimetable } from "./use-timetable-views";
-import { getCurrentWeekRange, getAgendaRange } from "./current-week-range";
+import { getCurrentWeekRange, getAgendaRange, addWeeks, describeWeekOffset } from "./current-week-range";
 import { TimetableWeekView } from "./TimetableWeekView";
 import { AgendaView } from "./AgendaView";
 import { deriveWeekPeriods } from "./derive-week-periods";
+import { WeekNavigation } from "./WeekNavigation";
 import { AbsenceMarkingDialog } from "./AbsenceMarkingDialog";
 
 const VIEW_TABS = [
@@ -24,16 +25,19 @@ const VIEW_TABS = [
 // reuse the SAME GET /me/teaching-timetable resolver, just with a
 // different date range. Both ranges are fetched unconditionally (not
 // gated by the active tab): "Mark absent" is available regardless of
-// which tab is showing, and it offers dates from the agenda range
-// (today + upcoming), which is the more natural fit for "mark yourself
-// absent for today or one of the next few days" than the calendar week.
+// which tab is showing.
 // Walk-found fix: NO GET /calendar/periods call — that route is
 // SCHOOL_ADMIN/PROPRIETOR-only and stays that way; the week grid's period
-// rows are derived from this response instead (deriveWeekPeriods).
+// rows are derived from this response instead (deriveWeekPeriods). Also
+// walk-found: week navigation — ONE shared weekOffset drives both tabs'
+// ranges, so "Mark absent" now offers dates from whatever window is
+// currently on screen (confirmed: marking a FUTURE absence while browsing
+// ahead is useful, not a bug — server guards still apply regardless).
 export function TeacherTimetablePage() {
   const [tab, setTab] = useState("agenda");
-  const weekRange = useMemo(() => getCurrentWeekRange(), []);
-  const agendaRange = useMemo(() => getAgendaRange(), []);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const weekRange = useMemo(() => getCurrentWeekRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
+  const agendaRange = useMemo(() => getAgendaRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
   const weekTimetable = useTeachingTimetable(weekRange);
   const agendaTimetable = useTeachingTimetable(agendaRange);
   const [isAbsenceDialogOpen, setAbsenceDialogOpen] = useState(false);
@@ -41,12 +45,13 @@ export function TeacherTimetablePage() {
   const active = tab === "week" ? weekTimetable : agendaTimetable;
   const isLoading = active.isLoading;
   const isError = active.isError;
+  const defaultLabel = tab === "week" ? "This week" : "Today & upcoming";
 
   return (
     <div>
       <PageHeader
         title="My Timetable"
-        description={tab === "week" ? "This week" : "Today & upcoming"}
+        description={defaultLabel}
         actions={
           agendaTimetable.data && (
             <Button type="button" onClick={() => setAbsenceDialogOpen(true)}>
@@ -54,6 +59,13 @@ export function TeacherTimetablePage() {
             </Button>
           )
         }
+      />
+
+      <WeekNavigation
+        label={describeWeekOffset(weekOffset, defaultLabel, active.data)}
+        onPrevious={() => setWeekOffset((offset) => offset - 1)}
+        onNext={() => setWeekOffset((offset) => offset + 1)}
+        onToday={() => setWeekOffset(0)}
       />
 
       {agendaTimetable.data && (
