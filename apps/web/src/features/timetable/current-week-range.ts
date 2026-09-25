@@ -1,19 +1,24 @@
 import { formatDate as formatDisplayDate } from "../../lib/format-date";
 
-// v0.8 step 3 — this week's Monday-Sunday range, as "YYYY-MM-DD" strings,
-// computed client-side (the API never defaults the range itself — both
-// from/to are always explicit query params, same as every other
-// date-scoping param in this codebase). Sunday is included even though
-// it's always non-school-day: the resolved response still reports it, and
-// a 7-day grid reads more naturally than a 6-day one with a gap.
+// v0.8 walk-found fix — this week's Monday-Saturday range, as "YYYY-MM-DD"
+// strings, computed client-side (the API never defaults the range itself —
+// both from/to are always explicit query params, same as every other
+// date-scoping param in this codebase). Sunday is deliberately never
+// requested at all — the Weekday enum has no SUNDAY slot, and the
+// Full-week grid never shows a Sunday column, so there's nothing to gain
+// from fetching it. Saturday IS still requested even for classes/teachers
+// without a Saturday timetable — TimetableWeekView's caller decides
+// whether to render that day (see filterWeekDays), reusing the same
+// isSchoolDay/nonSchoolReason signal the response already carries rather
+// than a second lookup.
 export function getCurrentWeekRange(today: Date = new Date()): { from: string; to: string } {
   const day = today.getDay(); // 0 = Sunday
   const mondayOffset = day === 0 ? -6 : 1 - day;
   const monday = new Date(today);
   monday.setDate(today.getDate() + mondayOffset);
-  const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
-  return { from: formatDate(monday), to: formatDate(sunday) };
+  const saturday = new Date(monday);
+  saturday.setDate(monday.getDate() + 5);
+  return { from: formatDate(monday), to: formatDate(saturday) };
 }
 
 function formatDate(date: Date): string {

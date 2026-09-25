@@ -10,6 +10,7 @@ import { getCurrentWeekRange, getAgendaRange, addWeeks, describeWeekOffset } fro
 import { TimetableWeekView } from "./TimetableWeekView";
 import { AgendaView } from "./AgendaView";
 import { deriveWeekPeriods } from "./derive-week-periods";
+import { filterWeekDays } from "./filter-week-days";
 import { WeekNavigation } from "./WeekNavigation";
 import { AbsenceMarkingDialog } from "./AbsenceMarkingDialog";
 
@@ -63,7 +64,6 @@ export function TeacherTimetablePage() {
 
       <WeekNavigation
         label={describeWeekOffset(weekOffset, defaultLabel, active.data)}
-        onPrevious={() => setWeekOffset((offset) => offset - 1)}
         onNext={() => setWeekOffset((offset) => offset + 1)}
         onToday={() => setWeekOffset(0)}
       />
@@ -92,7 +92,11 @@ export function TeacherTimetablePage() {
 
         {!isLoading && !isError && active.data && (
           tab === "week" ? (
-            <TimetableWeekView days={active.data.days} periods={deriveWeekPeriods(active.data.days)} showClass />
+            <TimetableWeekView
+              days={filterWeekDays(active.data.days, "teacher")}
+              periods={deriveWeekPeriods(filterWeekDays(active.data.days, "teacher"))}
+              showClass
+            />
           ) : (
             <AgendaView days={active.data.days} showClass />
           )

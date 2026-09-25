@@ -14,6 +14,7 @@ import { getCurrentWeekRange, getAgendaRange, addWeeks, describeWeekOffset } fro
 import { TimetableWeekView } from "./TimetableWeekView";
 import { AgendaView } from "./AgendaView";
 import { deriveWeekPeriods } from "./derive-week-periods";
+import { filterWeekDays } from "./filter-week-days";
 import { WeekNavigation } from "./WeekNavigation";
 
 const SELECT_CLASS =
@@ -55,7 +56,6 @@ function MyTimetable() {
 
       <WeekNavigation
         label={describeWeekOffset(weekOffset, defaultLabel, active.data)}
-        onPrevious={() => setWeekOffset((offset) => offset - 1)}
         onNext={() => setWeekOffset((offset) => offset + 1)}
         onToday={() => setWeekOffset(0)}
       />
@@ -80,7 +80,7 @@ function MyTimetable() {
 
         {!isLoading && !isError && active.data && (
           tab === "week" ? (
-            <TimetableWeekView days={active.data.days} periods={deriveWeekPeriods(active.data.days)} />
+            <TimetableWeekView days={filterWeekDays(active.data.days, "class")} periods={deriveWeekPeriods(filterWeekDays(active.data.days, "class"))} />
           ) : (
             <AgendaView days={active.data.days} />
           )
@@ -167,7 +167,6 @@ function ChildTimetable() {
       {childId && (
         <WeekNavigation
           label={describeWeekOffset(weekOffset, defaultLabel, timetable.data)}
-          onPrevious={() => setWeekOffset((offset) => offset - 1)}
           onNext={() => setWeekOffset((offset) => offset + 1)}
           onToday={() => setWeekOffset(0)}
         />
@@ -194,7 +193,7 @@ function ChildTimetable() {
 
           {!isLoading && !isError && timetable.data && (
             tab === "week" ? (
-              <TimetableWeekView days={timetable.data.days} periods={deriveWeekPeriods(timetable.data.days)} />
+              <TimetableWeekView days={filterWeekDays(timetable.data.days, "class")} periods={deriveWeekPeriods(filterWeekDays(timetable.data.days, "class"))} />
             ) : (
               <AgendaView days={timetable.data.days} />
             )

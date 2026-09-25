@@ -6309,3 +6309,69 @@ re-run to confirm: 559/560 passed on the full run (one failure in
 `exams-publish.e2e-spec.ts`, unrelated to this change — passed 19/19
 clean when re-run in isolation, a known flake class already documented
 earlier in this file, not a regression).
+
+## 2026-09-25 — v0.8 walk-found fix: forward-only week navigation, Mon-Fri/Sat framing, no Sunday column
+
+Four related navigation gaps from the same walk, fixed as one pass since
+they all touch the same seam (`current-week-range.ts` +
+`WeekNavigation`/`TimetableWeekView` callers). Frontend-only — confirmed
+before writing code: `getCurrentWeekRange`'s existing Monday-snap was
+already correct, so this was a cap-and-filter fix, not a rewrite.
+
+**1. Previous removed permanently.** The calendar is timetable-only —
+homework will never land on it — so the past never has anything new to
+show. `WeekNavigation`'s `onPrevious` prop and button are gone from the
+component's own contract (not hidden, not disabled), so no code path can
+ever drive `weekOffset` negative. Forward + today-reset remain, on all
+three role pages, via the same shared-offset architecture from the prior
+pass.
+
+**2. `getCurrentWeekRange` now caps at Saturday, not Sunday.** The
+Monday-snap logic was already correct (`mondayOffset = day === 0 ? -6 : 1
+- day` finds that week's Monday regardless of which day "today" falls
+on) — the bug was the END of the range always reaching `Monday + 6`
+(Sunday). Changed to `Monday + 5` (Saturday). This means Sunday is now
+dropped **at the source** — never requested from the backend at all, not
+filtered client-side — matching the fact that the Weekday enum has no
+SUNDAY slot to begin with.
+
+**3. Saturday is conditionally rendered, reusing Step 3's own asymmetry —
+new `filterWeekDays(days, mode)`.** `TimetableWeekView` itself is
+untouched (still a dumb renderer of whatever `days` it's given); the
+three pages now filter the resolved Saturday entry out before passing
+`days`/`deriveWeekPeriods(days)` to it:
+  - `mode: "class"` (student/parent): Saturday is `ClassSchoolDays
+    .includesSaturday`, a whole-day flag already folded into the
+    response — drop the column when `nonSchoolReason === "WEEKEND"`.
+  - `mode: "teacher"`: Saturday is per-slot, never whole-day-excluded
+    server-side for a teacher (`isSchoolDay` is always `true` there) — no
+    "WEEKEND" signal exists to reuse, so drop the column instead when
+    nothing on that Saturday has a `subjectName` (the teacher genuinely
+    teaches nothing that day).
+
+**Known, accepted cosmetic edge (flagged during planning, deliberately
+not fixed):** a class WITHOUT Saturday enabled whose Saturday also
+happens to be a holiday still shows a holiday-labeled Saturday column —
+the backend's holiday check wins priority over the weekend-exclusion
+check, so `nonSchoolReason` reports `"HOLIDAY"` either way and the two
+cases aren't distinguishable from the response alone. Rare overlap,
+cosmetic only; not worth a second lookup call for.
+
+**4. Day-header dates on a paged-forward week** — checked, not changed.
+`getCurrentWeekRange(addWeeks(new Date(), weekOffset))` already produces
+the correct Monday for the shifted week (shifting by whole weeks doesn't
+change which weekday "today" lands on), and each `day.date` in the
+response is a real resolved calendar date. No bug found; covered by a
+test instead of a speculative fix.
+
+**Test impact.** New `filter-week-days.test.ts` (7 cases: both modes'
+Saturday branches, weekdays never dropped). `current-week-range.test.ts`
+updated for the Mon-Sat range (+1 case). `WeekNavigation.test.tsx`: no
+`onPrevious` prop, explicit assertion that no "Previous week" button
+exists at all. `MyTimetablePage.test.tsx`/`TeacherTimetablePage.test.tsx`:
+Previous-click assertions removed; new grid tests prove Mon-Fri render
+with correct dates, a WEEKEND-excluded/all-free Saturday is dropped, and
+Sunday never appears. Full web suite: 418/418 (68 files) after, up from
+407. Backend untouched — zero `apps/api/` diff confirmed via `git diff
+--stat`; full e2e suite re-run to confirm: 560/560 clean (the
+`exams-publish.e2e-spec.ts` flake from the prior pass did not recur).

@@ -15,6 +15,14 @@ describe("getAgendaRange", () => {
   });
 });
 
+describe("getCurrentWeekRange", () => {
+  it("snaps to that week's Monday and caps at Saturday — no Sunday, regardless of which weekday 'today' is", () => {
+    expect(getCurrentWeekRange(new Date(2026, 8, 14))).toEqual({ from: "2026-09-14", to: "2026-09-19" }); // Monday itself
+    expect(getCurrentWeekRange(new Date(2026, 8, 17))).toEqual({ from: "2026-09-14", to: "2026-09-19" }); // Thursday
+    expect(getCurrentWeekRange(new Date(2026, 8, 20))).toEqual({ from: "2026-09-14", to: "2026-09-19" }); // Sunday — snaps BACK to that week's Monday, not forward
+  });
+});
+
 describe("addWeeks", () => {
   it("shifts forward by whole weeks", () => {
     expect(addWeeks(new Date(2026, 8, 14), 1).getDate()).toBe(21);
@@ -35,7 +43,7 @@ describe("addWeeks", () => {
 
   it("composes with getCurrentWeekRange/getAgendaRange to shift the whole navigable window", () => {
     const nextWeekAnchor = addWeeks(new Date(2026, 8, 14), 1); // Monday
-    expect(getCurrentWeekRange(nextWeekAnchor)).toEqual({ from: "2026-09-21", to: "2026-09-27" });
+    expect(getCurrentWeekRange(nextWeekAnchor)).toEqual({ from: "2026-09-21", to: "2026-09-26" });
     expect(getAgendaRange(nextWeekAnchor)).toEqual({ from: "2026-09-21", to: "2026-09-27" });
   });
 });

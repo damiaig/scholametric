@@ -69,6 +69,60 @@ function response(className: string): ClassTimetableResponse {
   };
 }
 
+// v0.8 walk-found fix — a Mon-Sat week where this class's Saturday is
+// WEEKEND-excluded (includesSaturday: false), to prove the Full-week grid
+// drops that column while still showing Mon-Fri with their correct dates.
+// Sunday isn't part of this fixture at all — the real backend never
+// returns it either, since getCurrentWeekRange no longer requests it.
+function weekResponse(): ClassTimetableResponse {
+  const weekdays: Array<[string, string]> = [
+    ["2026-09-14", "MONDAY"],
+    ["2026-09-15", "TUESDAY"],
+    ["2026-09-16", "WEDNESDAY"],
+    ["2026-09-17", "THURSDAY"],
+    ["2026-09-18", "FRIDAY"],
+  ];
+  return {
+    classArmId: "arm1",
+    className: "JSS 2 A",
+    from: "2026-09-14",
+    to: "2026-09-19",
+    days: [
+      ...weekdays.map(([date, dayOfWeek]) => ({
+        date,
+        dayOfWeek: dayOfWeek as ClassTimetableResponse["days"][number]["dayOfWeek"],
+        isSchoolDay: true,
+        nonSchoolReason: null,
+        holidayName: null,
+        periods: [
+          {
+            periodId: "p1",
+            periodName: "Period 1",
+            startsAt: "08:00",
+            endsAt: "08:45",
+            subjectId: "sub1",
+            subjectName: "Mathematics",
+            teacherUserId: "t1",
+            teacherName: "Bola Ogundare",
+            classArmId: null,
+            className: null,
+            status: null,
+            exceptionId: null,
+            note: null,
+            replacementTeacherUserId: null,
+            replacementTeacherName: null,
+            replacementSubjectId: null,
+            replacementSubjectName: null,
+            activityLabel: null,
+          },
+        ],
+        breaks: [],
+      })),
+      { date: "2026-09-19", dayOfWeek: "SATURDAY", isSchoolDay: false, nonSchoolReason: "WEEKEND", holidayName: null, periods: [], breaks: [] },
+    ],
+  };
+}
+
 const CHILDREN: MyChildrenResponse = {
   children: [
     { studentId: "child1", firstName: "Ada", lastName: "Okafor", admissionNumber: "A1", gender: "FEMALE", dateOfBirth: "2012-01-01", status: "ACTIVE", currentClassArmLabel: "JSS 2 A" },
@@ -140,6 +194,31 @@ describe("MyTimetablePage", () => {
 
     expect(await screen.findByRole("table")).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load your timetable.")).not.toBeInTheDocument();
+  });
+
+  // v0.8 walk-found fix — a class without Saturday enabled must show
+  // Mon-Fri only: no Saturday column (WEEKEND-excluded), and no Sunday
+  // column at all (never requested/returned in the first place).
+  it("STUDENT: Full week grid shows Mon-Fri with correct dates, no Saturday (WEEKEND) and no Sunday column", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return STUDENT_USER;
+      if (path === "/api/v1/me/timetable") return weekResponse();
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<MyTimetablePage />);
+    await screen.findByText("Today");
+    await user.click(screen.getByRole("tab", { name: "Full week" }));
+    await screen.findByRole("table");
+
+    expect(screen.getByText("Monday")).toBeInTheDocument();
+    expect(screen.getByText("Friday")).toBeInTheDocument();
+    expect(screen.getByText(/Sep 14, 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/Sep 18, 2026/)).toBeInTheDocument();
+    expect(screen.queryByText("Saturday")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sunday")).not.toBeInTheDocument();
   });
 
   // v0.8 walk-found fix — no prev/next week control existed at all before
