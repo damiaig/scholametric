@@ -6375,3 +6375,98 @@ Sunday never appears. Full web suite: 418/418 (68 files) after, up from
 407. Backend untouched — zero `apps/api/` diff confirmed via `git diff
 --stat`; full e2e suite re-run to confirm: 560/560 clean (the
 `exams-publish.e2e-spec.ts` flake from the prior pass did not recur).
+
+## 2026-09-26 — v0.8.1 step 1: day-based agenda + styled flatpickr + navigation floor + "Today" fix
+
+SPEC_V0.8.1.md's step 1 (§2.1, 2.2, 2.3, 2.4, 2.5) — the Agenda tab
+becomes day-based, gets a styled date-picker, a "not before today"
+navigation floor, a corrected "Today" label, and the (already-existing,
+now per-single-day) non-school-day rendering. Frontend-only, confirmed
+before writing code: the three timetable endpoints already accept any
+`from ≤ to` — a single-day request is just `from === to`, no new
+endpoint, no resolver change.
+
+**Agenda's range.** `getAgendaRange(anchor, 1)` already produces exactly
+`{from: anchor, to: anchor}` — the same call `TodayAgendaCard`'s
+dashboard strip already makes. What changed is the anchor: the Agenda tab
+used to share `weekOffset` (an integer count of weeks) with the Full-week
+tab; a date-picker lets the user jump to *any* day, which an integer
+offset can't represent, so the Agenda tab now owns its own `agendaDate`
+state — the actual target date, as a `"YYYY-MM-DD"` string — and derives
+its query directly (`{from: agendaDate, to: agendaDate}`), no
+`getCurrentWeekRange`/`getAgendaRange` call needed for it at all anymore.
+Three new pure helpers in `current-week-range.ts`: `todayDateString`,
+`isToday` (both take an injectable `today`, same pattern as
+`getCurrentWeekRange`/`getAgendaRange` — no fake timers anywhere in this
+step's tests), and `addDaysToDateString` (a string-in-string-out sibling
+to `addWeeks`).
+
+**This decouples the two tabs' navigation — deliberate, ruled at plan
+time.** Full-week keeps `weekOffset` untouched; `WeekNavigation` now
+renders only while `tab === "week"`. The two nav-fix passes' own "shared
+weekOffset across both tabs" tests were **removed, not just extended** —
+they asserted behavior this step intentionally reverses (a day and a
+week-offset stopped being the same unit once a picker can land on any
+date). Replaced with paired tests per page proving each tab's own nav
+only moves its own query, the other's is untouched.
+
+**`AgendaView.tsx` rewritten.** Old job (group `days` into "Today" +
+"Upcoming" sections) is gone — it now owns a single day's nav row
+(Previous-disabled-on-today / date-picker / Next / a "Today" shortcut
+shown only once navigated away) plus one `AgendaDayCard`. `TimetableWeekView`,
+`filterWeekDays`, `WeekNavigation` — all untouched, confirmed via diff.
+
+**`AgendaDayCard`'s header** — "Today" now only when `day.date` really is
+today (`isToday`), not unconditionally the weekday name; the date itself
+stays in its existing small subtext span (no layout rework). `compact`
+mode (the dashboard strips) is untouched — always genuinely today by
+construction. Both `AgendaDayCard` and `AgendaView` take an optional
+injectable `today?: Date` purely for test determinism; production call
+sites never pass it.
+
+**Consequential fix, not one of the eight spec items but a direct
+casualty of making Agenda single-day:** `TeacherTimetablePage`'s "Mark
+absent" used to source its date options from `agendaTimetable.data.days`
+(the old rolling window) — now that's one day, so it sources from
+`weekTimetable.data.days` instead (already fetched unconditionally
+regardless of active tab). Net improvement: a full Mon-Fri/Sat week of
+dates to mark absence on, not a narrower rolling window. Flagged at plan
+time, ruled yes.
+
+**Styled flatpickr — one dependency, one wrapper.** Added `flatpickr`
+(the base library — the separate `react-flatpickr` package was
+deliberately NOT added, keeping this to exactly one new dependency) plus
+one shared `components/ui/styled-date-picker.tsx`: a `readOnly` input
+(can't be typed into — flatpickr's own calendar is the only way to set a
+value) styled to match the app's tokens via `styled-date-picker.css`
+overriding flatpickr's own class hooks. `minDate` accepts either an ISO
+`"YYYY-MM-DD"` string or flatpickr's own `"today"` keyword — a real bug
+surfaced and fixed while writing its test: passing a plain ISO string
+straight through to flatpickr's `minDate` failed silently ("Invalid date
+provided") because flatpickr parses a bare string minDate against its
+OWN configured `dateFormat` (set here to a friendly `"M j, Y"` display
+format, not ISO) — fixed by converting any non-`"today"` string to a
+`Date` before handing it to flatpickr.
+
+**Non-school-day rendering (§2.5)** needed no new code — `AgendaDayCard`
+already rendered "No school — Weekend/Holiday" for any non-school day,
+and nothing anywhere skips a day; this step's tests just re-confirm it
+under the new single-day props.
+
+**Test boundary, deliberate:** the real flatpickr widget is mounted and
+driven in exactly one file, `styled-date-picker.test.tsx` (renders,
+`minDate` disables/permits the right cells, a picked day fires `onChange`
+with the ISO date, an external `value` change moves the widget without a
+fresh instance). Every other consumer (`AgendaView.test.tsx`,
+`MyTimetablePage.test.tsx`, `TeacherTimetablePage.test.tsx`) mocks
+`StyledDatePicker` down to its `value`/`onChange` contract — page tests
+shouldn't depend on driving a real calendar widget.
+
+**Test impact.** New `styled-date-picker.test.tsx` (6), 3 new pure
+helpers' cases folded into `current-week-range.test.ts`. `AgendaDayCard.test.tsx`
+and `AgendaView.test.tsx` rewritten for the day-based props/injectable
+`today`. `MyTimetablePage.test.tsx`/`TeacherTimetablePage.test.tsx`: the
+old shared-offset tests replaced with decoupled-nav pairs per page, plus
+one new test proving "Mark absent" still offers a full week. Full web
+suite: 439/439 (69 files) after, up from 418. Backend untouched — zero
+`apps/api/` diff confirmed via `git diff --stat`.

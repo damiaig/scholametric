@@ -4,13 +4,16 @@ import { ANY_WEEKDAY_LABELS } from "@scholametric/shared";
 import { Card, CardContent } from "../../components/ui/card";
 import { formatDate } from "../../lib/format-date";
 import { describePeriodStatus } from "./period-status";
+import { isToday } from "./current-week-range";
 
 interface AgendaDayCardProps {
   day: ResolvedTimetableDay;
   /** Show which class a period belongs to (the teacher's cross-class agenda) — omitted for a single-class agenda, where it would be redundant. */
   showClass?: boolean;
-  /** A small "Today" label instead of the weekday/date header — used on the dashboard strip. */
+  /** A small "Today" label instead of the weekday/date header — used on the dashboard strip, which is always genuinely today by construction. */
   compact?: boolean;
+  /** Injectable "now", same pattern as getCurrentWeekRange/getAgendaRange — lets tests assert the Today/weekday header deterministically without fake timers. */
+  today?: Date;
 }
 
 type AgendaRow =
@@ -20,8 +23,12 @@ type AgendaRow =
 // v0.8 step 5 (SPEC_V0.8.md §7 item 5) — one day, Pronote-style: periods
 // and breaks merged into a single time-ordered list (unlike the grid,
 // which shows breaks as a single caption line). Reused as-is by both the
-// full AgendaView (today + upcoming) and the dashboard's single-day strip.
-export function AgendaDayCard({ day, showClass = false, compact = false }: AgendaDayCardProps) {
+// day-based AgendaView and the dashboard's single-day strip.
+// v0.8.1 step 1 (SPEC_V0.8.1.md §2.4) — the non-compact header now shows
+// "Today" only when `day.date` is actually today, not unconditionally the
+// weekday name; a navigated day shows its real weekday (the date itself
+// was already shown separately below it either way — no layout change).
+export function AgendaDayCard({ day, showClass = false, compact = false, today = new Date() }: AgendaDayCardProps) {
   const rows: AgendaRow[] = [
     ...day.periods.map((entry) => ({
       kind: "period" as const,
@@ -38,7 +45,7 @@ export function AgendaDayCard({ day, showClass = false, compact = false }: Agend
     <Card>
       <CardContent className="p-4 sm:p-6">
         <div className="mb-3 flex items-baseline justify-between">
-          <h3 className="font-semibold text-text">{compact ? "Today" : ANY_WEEKDAY_LABELS[day.dayOfWeek]}</h3>
+          <h3 className="font-semibold text-text">{compact || isToday(day.date, today) ? "Today" : ANY_WEEKDAY_LABELS[day.dayOfWeek]}</h3>
           <span className="text-xs text-muted">{formatDate(day.date)}</span>
         </div>
 

@@ -6,12 +6,22 @@ import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
 import { MyTimetablePage } from "./MyTimetablePage";
-import { addWeeks, getAgendaRange, getCurrentWeekRange } from "./current-week-range";
+import { addDaysToDateString, addWeeks, getCurrentWeekRange, todayDateString } from "./current-week-range";
 
 vi.mock("../../lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api-client")>();
   return { ...actual, apiRequest: vi.fn() };
 });
+
+// The real flatpickr widget is proven once, in styled-date-picker.test.tsx
+// — page-level tests mock it down to its value/onChange contract.
+vi.mock("../../components/ui/styled-date-picker", () => ({
+  StyledDatePicker: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
+    <button type="button" aria-label="Choose a date" onClick={() => onChange("2026-12-25")}>
+      {value}
+    </button>
+  ),
+}));
 
 const mockedApiRequest = vi.mocked(apiRequest);
 
@@ -28,16 +38,26 @@ const STUDENT_USER = {
 
 const PARENT_USER = { ...STUDENT_USER, id: "u3", role: "PARENT" };
 
-function response(className: string): ClassTimetableResponse {
+const WEEKDAY_BY_INDEX = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"] as const;
+function weekdayFor(dateString: string): (typeof WEEKDAY_BY_INDEX)[number] {
+  const [year, month, day] = dateString.split("-").map(Number);
+  return WEEKDAY_BY_INDEX[new Date(year, month - 1, day).getDay()];
+}
+
+// Defaults to the real "today" — the page's Agenda tab requests that date
+// on mount, so a test that doesn't care which exact date is used (most of
+// them) still gets a fixture that's valid for a "Today" assertion should
+// one ever check it, with no hardcoded date to go stale.
+function response(className: string, date: string = todayDateString()): ClassTimetableResponse {
   return {
     classArmId: "arm1",
     className,
-    from: "2026-09-14",
-    to: "2026-09-14",
+    from: date,
+    to: date,
     days: [
       {
-        date: "2026-09-14",
-        dayOfWeek: "MONDAY",
+        date,
+        dayOfWeek: weekdayFor(date),
         isSchoolDay: true,
         nonSchoolReason: null,
         holidayName: null,
@@ -74,6 +94,9 @@ function response(className: string): ClassTimetableResponse {
 // drops that column while still showing Mon-Fri with their correct dates.
 // Sunday isn't part of this fixture at all — the real backend never
 // returns it either, since getCurrentWeekRange no longer requests it.
+// Fixed calendar dates throughout — the Full-week grid's date-label and
+// Saturday-exclusion logic doesn't depend on which real day the suite
+// runs on, unlike the Agenda-tab tests below.
 function weekResponse(): ClassTimetableResponse {
   const weekdays: Array<[string, string]> = [
     ["2026-09-14", "MONDAY"],
@@ -141,7 +164,7 @@ describe("MyTimetablePage", () => {
   // 403'd for a STUDENT/PARENT. There's deliberately no mock for that path
   // in these tests — if the page ever calls it again, the catch-all
   // `throw` below fails the test immediately with a clear message.
-  it("STUDENT: defaults to the Agenda tab, no child-switcher, no GET /calendar/periods call", async () => {
+  it("STUDENT: defaults to the Agenda tab showing today, no child-switcher, no GET /calendar/periods call", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return STUDENT_USER;
@@ -151,8 +174,8 @@ describe("MyTimetablePage", () => {
 
     renderWithProviders(<MyTimetablePage />);
 
-    expect(await screen.findByText("Today")).toBeInTheDocument();
-    expect(screen.getByText("Mathematics")).toBeInTheDocument();
+    expect(await screen.findByText("Mathematics")).toBeInTheDocument();
+    expect(screen.getByText("Today")).toBeInTheDocument();
     expect(screen.queryByLabelText("Child")).not.toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
@@ -167,7 +190,7 @@ describe("MyTimetablePage", () => {
     const user = userEvent.setup();
 
     renderWithProviders(<MyTimetablePage />);
-    await screen.findByText("Today");
+    await screen.findByText("Mathematics");
 
     await user.click(screen.getByRole("tab", { name: "Full week" }));
     expect(await screen.findByRole("table")).toBeInTheDocument();
@@ -189,7 +212,7 @@ describe("MyTimetablePage", () => {
     const user = userEvent.setup();
 
     renderWithProviders(<MyTimetablePage />);
-    await screen.findByText("Today");
+    await screen.findByText("Mathematics");
     await user.click(screen.getByRole("tab", { name: "Full week" }));
 
     expect(await screen.findByRole("table")).toBeInTheDocument();
@@ -209,7 +232,7 @@ describe("MyTimetablePage", () => {
     const user = userEvent.setup();
 
     renderWithProviders(<MyTimetablePage />);
-    await screen.findByText("Today");
+    await screen.findByText("Mathematics");
     await user.click(screen.getByRole("tab", { name: "Full week" }));
     await screen.findByRole("table");
 
@@ -221,37 +244,91 @@ describe("MyTimetablePage", () => {
     expect(screen.queryByText("Sunday")).not.toBeInTheDocument();
   });
 
-  // v0.8 walk-found fix — no prev/next week control existed at all before
-  // this. ONE shared weekOffset drives both tabs' ranges.
-  it("STUDENT: week navigation shifts the requested range by 7 days, shared across tabs; Today resets", async () => {
+  // v0.8.1 step 1 (SPEC_V0.8.1.md §2.1) — Full-week keeps its own
+  // weekOffset nav, entirely independent of the Agenda tab's day state now
+  // (they used to share one weekOffset — intentionally decoupled this
+  // step, since a day and a week-offset aren't the same unit once a
+  // date-picker can jump to any day).
+  it("STUDENT: Full week's Next-week navigation shifts only the week query; the Agenda tab's date is untouched", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
-    const requestedRanges: { from: string; to: string }[] = [];
+    const weekRanges: { from: string; to: string }[] = [];
+    const agendaDates: string[] = [];
     mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
       if (path.includes("/auth/me")) return STUDENT_USER;
       if (path === "/api/v1/me/timetable") {
-        if (opts?.query) requestedRanges.push({ from: String(opts.query.from), to: String(opts.query.to) });
-        return response("JSS 2 A");
+        const from = String(opts?.query?.from);
+        const to = String(opts?.query?.to);
+        if (from === to) {
+          agendaDates.push(from);
+          return response("JSS 2 A", from);
+        }
+        weekRanges.push({ from, to });
+        return weekResponse();
       }
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
     const user = userEvent.setup();
 
     renderWithProviders(<MyTimetablePage />);
-    await screen.findByText("Today");
+    await screen.findByText("Mathematics");
+    await user.click(screen.getByRole("tab", { name: "Full week" }));
+    await screen.findByRole("table");
 
-    const thisWeekAgenda = getAgendaRange(addWeeks(new Date(), 0));
-    const thisWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 0));
-    await waitFor(() => expect(requestedRanges).toContainEqual(thisWeekAgenda));
-    expect(requestedRanges).toContainEqual(thisWeekGrid);
+    const thisWeek = getCurrentWeekRange(addWeeks(new Date(), 0));
+    await waitFor(() => expect(weekRanges).toContainEqual(thisWeek));
 
     await user.click(screen.getByRole("button", { name: "Next week" }));
-    const nextWeekAgenda = getAgendaRange(addWeeks(new Date(), 1));
-    const nextWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 1));
-    await waitFor(() => expect(requestedRanges).toContainEqual(nextWeekAgenda));
-    expect(requestedRanges).toContainEqual(nextWeekGrid); // shared offset — the hidden Full week tab shifted too
+    const nextWeek = getCurrentWeekRange(addWeeks(new Date(), 1));
+    await waitFor(() => expect(weekRanges).toContainEqual(nextWeek));
 
-    await user.click(screen.getByRole("button", { name: "Reset to today" }));
-    await waitFor(() => expect(requestedRanges.filter((r) => r.from === thisWeekAgenda.from).length).toBeGreaterThan(1));
+    // the agenda's single-day request never changed — one date throughout
+    expect(new Set(agendaDates).size).toBe(1);
+  });
+
+  // v0.8.1 step 1 (SPEC_V0.8.1.md §2.1, 2.3) — the Agenda tab's day-by-day
+  // nav, its own independent state: Next/Previous/pick-a-date/Today, and
+  // the floor (Previous disabled on today).
+  it("STUDENT: Agenda day navigation (Next/Previous/pick/Today) shifts only the day query; Full week's range is untouched", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const agendaDates: string[] = [];
+    const weekRanges: { from: string; to: string }[] = [];
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
+      if (path.includes("/auth/me")) return STUDENT_USER;
+      if (path === "/api/v1/me/timetable") {
+        const from = String(opts?.query?.from);
+        const to = String(opts?.query?.to);
+        if (from === to) {
+          agendaDates.push(from);
+          return response("JSS 2 A", from);
+        }
+        weekRanges.push({ from, to });
+        return weekResponse();
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<MyTimetablePage />);
+    await screen.findByText("Mathematics");
+
+    const today = todayDateString();
+    await waitFor(() => expect(agendaDates).toContain(today));
+    expect(screen.getByRole("button", { name: "Previous day" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Today" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next day" }));
+    const tomorrow = addDaysToDateString(today, 1);
+    await waitFor(() => expect(agendaDates).toContain(tomorrow));
+    expect(screen.getByRole("button", { name: "Previous day" })).not.toBeDisabled();
+
+    await user.click(screen.getByLabelText("Choose a date"));
+    await waitFor(() => expect(agendaDates).toContain("2026-12-25"));
+
+    await user.click(screen.getByRole("button", { name: "Today" }));
+    await waitFor(() => expect(agendaDates.filter((d) => d === today).length).toBeGreaterThan(1));
+
+    // Full week's own range never shifted throughout any of this navigation
+    expect(new Set(weekRanges.map((r) => `${r.from}|${r.to}`)).size).toBe(1);
   });
 
   it("PARENT: shows the child-switcher, defaults to the first child, and loads that child's timetable", async () => {
@@ -286,15 +363,22 @@ describe("MyTimetablePage", () => {
     expect(await screen.findByRole("table")).toBeInTheDocument();
   });
 
-  it("PARENT: week navigation shifts the selected child's requested range by 7 days, shared across tabs", async () => {
+  it("PARENT: Full week's Next-week navigation shifts only the week query for the selected child; the Agenda tab's date is untouched", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
-    const requestedRanges: { from: string; to: string }[] = [];
+    const weekRanges: { from: string; to: string }[] = [];
+    const agendaDates: string[] = [];
     mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
       if (path.includes("/auth/me")) return PARENT_USER;
       if (path === "/api/v1/me/children") return CHILDREN;
       if (path === "/api/v1/me/children/child1/timetable") {
-        if (opts?.query) requestedRanges.push({ from: String(opts.query.from), to: String(opts.query.to) });
-        return response("JSS 2 A");
+        const from = String(opts?.query?.from);
+        const to = String(opts?.query?.to);
+        if (from === to) {
+          agendaDates.push(from);
+          return response("JSS 2 A", from);
+        }
+        weekRanges.push({ from, to });
+        return weekResponse();
       }
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -302,17 +386,17 @@ describe("MyTimetablePage", () => {
 
     renderWithProviders(<MyTimetablePage />);
     await screen.findByText("Mathematics");
+    await user.click(screen.getByRole("tab", { name: "Full week" }));
+    await screen.findByRole("table");
 
-    const thisWeekAgenda = getAgendaRange(addWeeks(new Date(), 0));
-    const thisWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 0));
-    await waitFor(() => expect(requestedRanges).toContainEqual(thisWeekAgenda));
-    expect(requestedRanges).toContainEqual(thisWeekGrid);
+    const thisWeek = getCurrentWeekRange(addWeeks(new Date(), 0));
+    await waitFor(() => expect(weekRanges).toContainEqual(thisWeek));
 
     await user.click(screen.getByRole("button", { name: "Next week" }));
-    const nextWeekAgenda = getAgendaRange(addWeeks(new Date(), 1));
-    const nextWeekGrid = getCurrentWeekRange(addWeeks(new Date(), 1));
-    await waitFor(() => expect(requestedRanges).toContainEqual(nextWeekAgenda));
-    expect(requestedRanges).toContainEqual(nextWeekGrid);
+    const nextWeek = getCurrentWeekRange(addWeeks(new Date(), 1));
+    await waitFor(() => expect(weekRanges).toContainEqual(nextWeek));
+
+    expect(new Set(agendaDates).size).toBe(1);
   });
 
   it("PARENT: no children shows the empty state, not an error", async () => {

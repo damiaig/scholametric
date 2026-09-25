@@ -1,0 +1,39 @@
+/* v0.8.1 step 1 — restyles flatpickr's own DOM (imported alongside its base
+   stylesheet) to match the app's design tokens instead of its default
+   theme. Targets flatpickr's own class hooks; this file is the ONE place
+   that does so, reused by every StyledDatePicker instance. */
+
+.flatpickr-calendar {
+  font-family: inherit;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 12px rgba(17, 24, 39, 0.12);
+}
+
+.flatpickr-months .flatpickr-month,
+.flatpickr-current-month,
+.flatpickr-weekdays {
+  background: #ffffff;
+  color: #111827;
+}
+
+.flatpickr-day.today {
+  border-color: #1e4ed8;
+}
+
+.flatpickr-day.selected,
+.flatpickr-day.selected:hover {
+  background: #1e4ed8;
+  border-color: #1e4ed8;
+  color: #ffffff;
+}
+
+.flatpickr-day.flatpickr-disabled,
+.flatpickr-day.flatpickr-disabled:hover {
+  color: #6b7280;
+  opacity: 0.4;
+}
+
+.flatpickr-day:hover {
+  background: #f8fafc;
+}

@@ -63,3 +63,24 @@ export function describeWeekOffset(weekOffset: number, defaultLabel: string, ran
   }
   return `${formatDisplayDate(range.from)} – ${formatDisplayDate(range.to)}`;
 }
+
+// v0.8.1 step 1 — the Agenda tab's navigated state is the actual target
+// date itself (a "YYYY-MM-DD" string), not an offset: a date-picker lets
+// the user jump to any day, not just a multiple of a nav step, so
+// weekOffset's integer-offset shape doesn't fit here. These three helpers
+// are that string-based day-nav's whole surface, mirroring the existing
+// injectable-`today`-parameter pattern (getCurrentWeekRange/getAgendaRange)
+// so tests never need fake timers.
+export function todayDateString(today: Date = new Date()): string {
+  return formatDate(today);
+}
+
+export function isToday(dateString: string, today: Date = new Date()): boolean {
+  return dateString === todayDateString(today);
+}
+
+export function addDaysToDateString(dateString: string, days: number): string {
+  const [year, month, day] = dateString.split("-").map(Number);
+  const shifted = new Date(year, month - 1, day + days);
+  return formatDate(shifted);
+}

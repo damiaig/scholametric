@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { addWeeks, describeWeekOffset, getAgendaRange, getCurrentWeekRange } from "./current-week-range";
+import { addDaysToDateString, addWeeks, describeWeekOffset, getAgendaRange, getCurrentWeekRange, isToday, todayDateString } from "./current-week-range";
 
 describe("getAgendaRange", () => {
   it("returns today through today+6 days by default", () => {
@@ -45,6 +45,41 @@ describe("addWeeks", () => {
     const nextWeekAnchor = addWeeks(new Date(2026, 8, 14), 1); // Monday
     expect(getCurrentWeekRange(nextWeekAnchor)).toEqual({ from: "2026-09-21", to: "2026-09-26" });
     expect(getAgendaRange(nextWeekAnchor)).toEqual({ from: "2026-09-21", to: "2026-09-27" });
+  });
+});
+
+describe("todayDateString", () => {
+  it("formats the given date as YYYY-MM-DD", () => {
+    expect(todayDateString(new Date(2026, 8, 14))).toBe("2026-09-14");
+  });
+});
+
+describe("isToday", () => {
+  it("is true when the date string matches the injected today", () => {
+    expect(isToday("2026-09-14", new Date(2026, 8, 14))).toBe(true);
+  });
+
+  it("is false for any other date", () => {
+    expect(isToday("2026-09-15", new Date(2026, 8, 14))).toBe(false);
+  });
+});
+
+describe("addDaysToDateString", () => {
+  it("shifts forward by whole days", () => {
+    expect(addDaysToDateString("2026-09-14", 1)).toBe("2026-09-15");
+  });
+
+  it("shifts backward for a negative count", () => {
+    expect(addDaysToDateString("2026-09-14", -1)).toBe("2026-09-13");
+  });
+
+  it("rolls over a month boundary correctly in both directions", () => {
+    expect(addDaysToDateString("2026-09-30", 1)).toBe("2026-10-01");
+    expect(addDaysToDateString("2026-10-01", -1)).toBe("2026-09-30");
+  });
+
+  it("is a no-op for a shift of 0", () => {
+    expect(addDaysToDateString("2026-09-14", 0)).toBe("2026-09-14");
   });
 });
 

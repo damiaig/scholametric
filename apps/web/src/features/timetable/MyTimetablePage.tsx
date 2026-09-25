@@ -10,7 +10,7 @@ import { getErrorMessage } from "../../lib/api-client";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useMyChildren } from "../dashboard/use-my-children";
 import { useMyTimetable, useChildTimetable } from "./use-timetable-views";
-import { getCurrentWeekRange, getAgendaRange, addWeeks, describeWeekOffset } from "./current-week-range";
+import { getCurrentWeekRange, addWeeks, describeWeekOffset, todayDateString, addDaysToDateString } from "./current-week-range";
 import { TimetableWeekView } from "./TimetableWeekView";
 import { AgendaView } from "./AgendaView";
 import { deriveWeekPeriods } from "./derive-week-periods";
@@ -27,38 +27,41 @@ const VIEW_TABS = [
 
 // v0.8 step 3 (SPEC_V0.8.md §7 item 3) — the STUDENT's own class's
 // resolved schedule. No classArmId param anywhere — self, resolved
-// server-side from the token. v0.8 step 5 adds the Agenda tab (today +
-// upcoming, the default) alongside the original full-week grid — both
-// reuse the same GET /me/timetable resolver, just a different range.
-// Walk-found fix: NO GET /calendar/periods call here — that route is
-// SCHOOL_ADMIN/PROPRIETOR-only and stays that way; the week grid's period
-// rows are derived from this response instead (deriveWeekPeriods). Also
-// walk-found: week navigation — ONE shared weekOffset drives both tabs'
-// ranges (via addWeeks(), the seam getCurrentWeekRange/getAgendaRange
-// already exposed), so switching tabs while browsing a future/past week
-// keeps showing the same shifted window.
+// server-side from the token. Walk-found fix: NO GET /calendar/periods
+// call here — that route is SCHOOL_ADMIN/PROPRIETOR-only and stays that
+// way; the week grid's period rows are derived from this response instead
+// (deriveWeekPeriods).
+// v0.8.1 step 1 (SPEC_V0.8.1.md §2.1) — the Agenda tab is now day-based:
+// its own independent `agendaDate` state (a "YYYY-MM-DD" string — the
+// date-picker lets it jump to ANY day, not just a multiple of a nav step,
+// so weekOffset's integer-offset shape doesn't fit it). This DECOUPLES
+// the two tabs' navigation — Full-week keeps weekOffset, Agenda pages by
+// day — since a day and a week-offset stopped being the same unit; each
+// tab's own nav control now shows only while that tab is active.
 function MyTimetable() {
   const [tab, setTab] = useState("agenda");
   const [weekOffset, setWeekOffset] = useState(0);
+  const [agendaDate, setAgendaDate] = useState(() => todayDateString());
   const weekRange = useMemo(() => getCurrentWeekRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
-  const agendaRange = useMemo(() => getAgendaRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
   const weekTimetable = useMyTimetable(weekRange);
-  const agendaTimetable = useMyTimetable(agendaRange);
+  const agendaTimetable = useMyTimetable({ from: agendaDate, to: agendaDate });
   const active = tab === "week" ? weekTimetable : agendaTimetable;
 
   const isLoading = active.isLoading;
   const isError = active.isError;
-  const defaultLabel = tab === "week" ? "This week" : "Today & upcoming";
+  const defaultLabel = tab === "week" ? "This week" : "Agenda";
 
   return (
     <div>
       <PageHeader title="Timetable" description={active.data?.className ?? defaultLabel} />
 
-      <WeekNavigation
-        label={describeWeekOffset(weekOffset, defaultLabel, active.data)}
-        onNext={() => setWeekOffset((offset) => offset + 1)}
-        onToday={() => setWeekOffset(0)}
-      />
+      {tab === "week" && (
+        <WeekNavigation
+          label={describeWeekOffset(weekOffset, "This week", weekTimetable.data)}
+          onNext={() => setWeekOffset((offset) => offset + 1)}
+          onToday={() => setWeekOffset(0)}
+        />
+      )}
 
       <Tabs value={tab} onValueChange={setTab} items={VIEW_TABS} aria-label="Timetable view">
         {isLoading && (
@@ -82,7 +85,13 @@ function MyTimetable() {
           tab === "week" ? (
             <TimetableWeekView days={filterWeekDays(active.data.days, "class")} periods={deriveWeekPeriods(filterWeekDays(active.data.days, "class"))} />
           ) : (
-            <AgendaView days={active.data.days} />
+            <AgendaView
+              day={active.data.days[0]}
+              onPrevDay={() => setAgendaDate((date) => addDaysToDateString(date, -1))}
+              onNextDay={() => setAgendaDate((date) => addDaysToDateString(date, 1))}
+              onPickDate={setAgendaDate}
+              onToday={() => setAgendaDate(todayDateString())}
+            />
           )
         )}
       </Tabs>
@@ -112,10 +121,10 @@ function ChildTimetable() {
   const selectedChild = children.data?.children.find((child) => child.studentId === childId) ?? null;
   const [tab, setTab] = useState("agenda");
   const [weekOffset, setWeekOffset] = useState(0);
+  const [agendaDate, setAgendaDate] = useState(() => todayDateString());
   const weekRange = useMemo(() => getCurrentWeekRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
-  const agendaRange = useMemo(() => getAgendaRange(addWeeks(new Date(), weekOffset)), [weekOffset]);
   const weekTimetable = useChildTimetable(childId ? { childId, ...weekRange } : null);
-  const agendaTimetable = useChildTimetable(childId ? { childId, ...agendaRange } : null);
+  const agendaTimetable = useChildTimetable(childId ? { childId, from: agendaDate, to: agendaDate } : null);
   const timetable = tab === "week" ? weekTimetable : agendaTimetable;
 
   function handleChildChange(nextChildId: string) {
@@ -126,7 +135,7 @@ function ChildTimetable() {
 
   const isLoading = timetable.isLoading;
   const isError = timetable.isError;
-  const defaultLabel = tab === "week" ? "This week" : "Today & upcoming";
+  const defaultLabel = tab === "week" ? "This week" : "Agenda";
   const headerDescription = timetable.data?.className ?? selectedChild?.currentClassArmLabel ?? defaultLabel;
 
   return (
@@ -164,9 +173,9 @@ function ChildTimetable() {
         </div>
       )}
 
-      {childId && (
+      {childId && tab === "week" && (
         <WeekNavigation
-          label={describeWeekOffset(weekOffset, defaultLabel, timetable.data)}
+          label={describeWeekOffset(weekOffset, "This week", weekTimetable.data)}
           onNext={() => setWeekOffset((offset) => offset + 1)}
           onToday={() => setWeekOffset(0)}
         />
@@ -195,7 +204,13 @@ function ChildTimetable() {
             tab === "week" ? (
               <TimetableWeekView days={filterWeekDays(timetable.data.days, "class")} periods={deriveWeekPeriods(filterWeekDays(timetable.data.days, "class"))} />
             ) : (
-              <AgendaView days={timetable.data.days} />
+              <AgendaView
+                day={timetable.data.days[0]}
+                onPrevDay={() => setAgendaDate((date) => addDaysToDateString(date, -1))}
+                onNextDay={() => setAgendaDate((date) => addDaysToDateString(date, 1))}
+                onPickDate={setAgendaDate}
+                onToday={() => setAgendaDate(todayDateString())}
+              />
             )
           )}
         </Tabs>

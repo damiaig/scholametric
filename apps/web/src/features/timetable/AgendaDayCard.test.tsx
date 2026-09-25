@@ -81,11 +81,24 @@ describe("AgendaDayCard", () => {
     expect(items[2]).toContain("Free period");
   });
 
-  it("shows the weekday header by default, or 'Today' in compact mode", () => {
-    render(<AgendaDayCard day={SCHOOL_DAY} />);
+  // v0.8.1 step 1 (SPEC_V0.8.1.md §2.4) — "Today" only shows for the
+  // actually-current date, not unconditionally; `today` is injected (same
+  // pattern as getCurrentWeekRange/getAgendaRange) so this is deterministic
+  // regardless of which real day the suite runs on.
+  it("shows the weekday header when the day isn't today", () => {
+    render(<AgendaDayCard day={SCHOOL_DAY} today={new Date(2026, 8, 15)} />);
     expect(screen.getByText("Monday")).toBeInTheDocument();
-    cleanup();
-    render(<AgendaDayCard day={SCHOOL_DAY} compact />);
+    expect(screen.queryByText("Today")).not.toBeInTheDocument();
+  });
+
+  it("shows 'Today' when the day IS actually today", () => {
+    render(<AgendaDayCard day={SCHOOL_DAY} today={new Date(2026, 8, 14)} />);
+    expect(screen.getByText("Today")).toBeInTheDocument();
+    expect(screen.queryByText("Monday")).not.toBeInTheDocument();
+  });
+
+  it("compact mode always shows 'Today', regardless of the injected date (the dashboard strip is always genuinely today)", () => {
+    render(<AgendaDayCard day={SCHOOL_DAY} compact today={new Date(2026, 8, 15)} />);
     expect(screen.getByText("Today")).toBeInTheDocument();
   });
 
