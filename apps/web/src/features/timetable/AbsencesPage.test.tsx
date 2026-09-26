@@ -14,14 +14,30 @@ vi.mock("../../lib/api-client", async (importOriginal) => {
 
 const mockedApiRequest = vi.mocked(apiRequest);
 
+// v0.8.1 step 3 — genuinely future/past relative to the real clock (not a
+// fake timer), same convention as the backend e2e fix for the same
+// feature: a fixed hardcoded date would eventually go stale once real
+// time passes it, exactly the bug this step is about.
+function futureDateString(daysAhead: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + daysAhead);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 const ABSENCE: TeacherAbsenceRow = {
   id: "abs1",
   teacherUserId: "t1",
   teacherName: "Bola Ogundare",
-  date: "2026-09-14",
-  periods: [{ periodId: "p1", periodName: "Period 1", classArmId: "arm1", className: "JSS 2 A", exceptionId: "exc1", status: "CANCELLED" }],
+  date: futureDateString(30),
+  periods: [{ periodId: "p1", periodName: "Period 1", endsAt: "08:45", classArmId: "arm1", className: "JSS 2 A", exceptionId: "exc1", status: "CANCELLED" }],
   note: "Down with malaria",
   createdAt: "2026-09-14T00:00:00.000Z",
+};
+
+const PAST_ABSENCE: TeacherAbsenceRow = {
+  ...ABSENCE,
+  id: "abs2",
+  date: futureDateString(-30),
 };
 
 beforeEach(() => {
@@ -65,6 +81,32 @@ describe("AbsencesPage", () => {
     renderWithProviders(<AbsencesPage />);
     expect(await screen.findByText("Couldn't load absences.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  // v0.8.1 step 3 (SPEC_V0.8.1.md §2.8) — can't cover a class that's
+  // already happened.
+  it("shows 'Passed', not a Replace button, for a period whose date+endsAt is in the past", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/calendar/teacher-absences") return [PAST_ABSENCE];
+      throw new Error(`unexpected call: ${path}`);
+    });
+    renderWithProviders(<AbsencesPage />);
+
+    expect(await screen.findByText("Period 1 · JSS 2 A")).toBeInTheDocument();
+    expect(screen.getByText("Passed")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Replace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit replacement" })).not.toBeInTheDocument();
+  });
+
+  it("still shows Replace for a period in the future", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/calendar/teacher-absences") return [ABSENCE];
+      throw new Error(`unexpected call: ${path}`);
+    });
+    renderWithProviders(<AbsencesPage />);
+
+    expect(await screen.findByRole("button", { name: "Replace" })).toBeInTheDocument();
+    expect(screen.queryByText("Passed")).not.toBeInTheDocument();
   });
 
   it("opens the replacement dialog for the clicked period", async () => {

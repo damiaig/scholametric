@@ -1,9 +1,10 @@
 import { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import bcrypt from "bcrypt";
-import { Gender, UserRole } from "@prisma/client";
+import { Gender, TimetableExceptionType, UserRole } from "@prisma/client";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs, SEED_PASSWORD } from "./utils/login";
+import { futureMonday } from "./utils/future-date";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 interface ResolvedPeriod {
@@ -353,10 +354,48 @@ describe("Teacher absence + replacement (e2e) — SPEC_V0.8.md §4, v0.8 step 4"
 
   describe("PATCH /calendar/timetable-exceptions/:id", () => {
     let exceptionId: string;
+    // v0.8.1 step 3 (SPEC_V0.8.1.md §2.8) — the replace endpoint now
+    // rejects a past-dated period (defense in depth for the web's own
+    // hidden-button rule). MONDAY (2026-09-14) is a fixed fixture date
+    // that's since become genuinely past relative to the real clock —
+    // fine for every other describe block in this file (weekday/holiday
+    // logic only, year-agnostic), but this block's replace calls would
+    // now 400 under the new guard. Moved to a dynamically-computed future
+    // Monday (still a real Monday, so the same TimetableSlot still
+    // applies) so this block keeps proving the SUCCESS path; the new
+    // "rejects a past period" test below uses the original, now-past
+    // MONDAY directly — no need to invent a separate past date.
+    const FUTURE_MONDAY = futureMonday();
 
     beforeAll(async () => {
       const exception = await prisma.timetableException.findFirstOrThrow({ where: { classArmId: jss2AArmId, periodId: periodAId, date: new Date(`${MONDAY}T00:00:00Z`) } });
+      await prisma.timetableException.update({ where: { id: exception.id }, data: { date: new Date(`${FUTURE_MONDAY}T00:00:00Z`) } });
       exceptionId = exception.id;
+    });
+
+    // A direct insert, not a POST /calendar/teacher-absences call — that
+    // endpoint has no past-date restriction of its own (unaffected by this
+    // step), and the guard here only reads the exception row's own
+    // date/period, so a raw fixture proves the same thing without needing
+    // a whole second teacher login. Cleaned up by this file's existing
+    // afterAll (`classArmId: { in: [jss1AArmId, jss2AArmId] }`).
+    it("400s a replace targeting a period whose date has already passed", async () => {
+      const pastException = await prisma.timetableException.create({
+        data: {
+          schoolId: sunriseId,
+          classArmId: jss2AArmId,
+          date: new Date(`${MONDAY}T00:00:00Z`),
+          periodId: periodBId,
+          type: TimetableExceptionType.CANCELLED_TEACHER_ABSENT,
+          teacherUserId: mathTeacherId,
+          note: "past period test fixture",
+        },
+      });
+      const response = await request(app.getHttpServer())
+        .patch(`/api/v1/calendar/timetable-exceptions/${pastException.id}`)
+        .set(auth(sunriseAdminToken))
+        .send({ activityLabel: "Too late" });
+      expect(response.status).toBe(400);
     });
 
     it("400s a replacement teacher who's already teaching at this exact day+period", async () => {
@@ -391,8 +430,8 @@ describe("Teacher absence + replacement (e2e) — SPEC_V0.8.md §4, v0.8 step 4"
       expect(response.status).toBe(200);
       expect(response.body.type).toBe("REPLACED");
 
-      const studentView = await request(app.getHttpServer()).get("/api/v1/me/timetable").query({ from: MONDAY, to: MONDAY }).set(auth(studentToken));
-      const studentPeriodA = dayFor(studentView.body, MONDAY).periods.find((p) => p.periodId === periodAId)!;
+      const studentView = await request(app.getHttpServer()).get("/api/v1/me/timetable").query({ from: FUTURE_MONDAY, to: FUTURE_MONDAY }).set(auth(studentToken));
+      const studentPeriodA = dayFor(studentView.body, FUTURE_MONDAY).periods.find((p) => p.periodId === periodAId)!;
       expect(studentPeriodA.status).toBe("REPLACED");
       expect(studentPeriodA.replacementTeacherName).toBe("Ahmed Suleiman");
       expect(studentPeriodA.activityLabel).toBe("Prep/Study period");
@@ -400,8 +439,8 @@ describe("Teacher absence + replacement (e2e) — SPEC_V0.8.md §4, v0.8 step 4"
       expect(studentPeriodA.teacherName).toBe("Bola Ogundare"); // original preserved
       expect(studentPeriodA.note).toBeNull();
 
-      const teacherView = await request(app.getHttpServer()).get("/api/v1/me/teaching-timetable").query({ from: MONDAY, to: MONDAY }).set(auth(mathTeacherToken));
-      const teacherPeriodA = dayFor(teacherView.body, MONDAY).periods.find((p) => p.periodId === periodAId)!;
+      const teacherView = await request(app.getHttpServer()).get("/api/v1/me/teaching-timetable").query({ from: FUTURE_MONDAY, to: FUTURE_MONDAY }).set(auth(mathTeacherToken));
+      const teacherPeriodA = dayFor(teacherView.body, FUTURE_MONDAY).periods.find((p) => p.periodId === periodAId)!;
       expect(teacherPeriodA.status).toBe("REPLACED");
       expect(teacherPeriodA.note).toBe("Down with malaria");
     });
@@ -415,8 +454,8 @@ describe("Teacher absence + replacement (e2e) — SPEC_V0.8.md §4, v0.8 step 4"
       expect(response.body.type).toBe("CANCELLED_TEACHER_ABSENT");
       expect(response.body.replacementTeacherUserId).toBeNull();
 
-      const studentView = await request(app.getHttpServer()).get("/api/v1/me/timetable").query({ from: MONDAY, to: MONDAY }).set(auth(studentToken));
-      const studentPeriodA = dayFor(studentView.body, MONDAY).periods.find((p) => p.periodId === periodAId)!;
+      const studentView = await request(app.getHttpServer()).get("/api/v1/me/timetable").query({ from: FUTURE_MONDAY, to: FUTURE_MONDAY }).set(auth(studentToken));
+      const studentPeriodA = dayFor(studentView.body, FUTURE_MONDAY).periods.find((p) => p.periodId === periodAId)!;
       expect(studentPeriodA.status).toBe("CANCELLED");
       expect(studentPeriodA.replacementTeacherName).toBeNull();
     });

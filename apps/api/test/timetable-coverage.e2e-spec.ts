@@ -2,6 +2,7 @@ import { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs } from "./utils/login";
+import { futureMonday } from "./utils/future-date";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 interface ResolvedPeriod {
@@ -32,8 +33,14 @@ interface ResolvedDay {
 // assigned as a REPLACEMENT sees the covered period in their OWN
 // /me/teaching-timetable, without widening what they can see beyond
 // "their own slots" ∪ "exceptions where they are the assigned cover"
-// (both scoped by @CurrentUser().userId, never a request param). MONDAY
-// 2026-09-14 is the same verified week every other v0.8 e2e file uses.
+// (both scoped by @CurrentUser().userId, never a request param).
+// v0.8.1 step 3 (SPEC_V0.8.1.md §2.8) — MONDAY used to be the fixed
+// "2026-09-14" every v0.8 e2e file shared; this file's own beforeAll
+// replaces an absence immediately after creating it, and the new
+// can't-replace-a-past-period guard would reject that once real time
+// passed 2026-09-14 (which it since has). Moved to a dynamically-computed
+// future Monday — still a real Monday, so the same weekday-anchored
+// TimetableSlot logic below is untouched.
 describe("Covering-teacher visibility (e2e) — SPEC_V0.8.md §7 item 5, v0.8 step 5", () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -61,8 +68,12 @@ describe("Covering-teacher visibility (e2e) — SPEC_V0.8.md §7 item 5, v0.8 st
   const createdPeriodIds: string[] = [];
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
-  const MONDAY = "2026-09-14";
-  const TUESDAY = "2026-09-15";
+  const MONDAY = futureMonday();
+  const TUESDAY = (() => {
+    const date = new Date(`${MONDAY}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + 1);
+    return date.toISOString().slice(0, 10);
+  })();
 
   function dayFor(body: { days: ResolvedDay[] }, date: string): ResolvedDay {
     const day = body.days.find((d) => d.date === date);

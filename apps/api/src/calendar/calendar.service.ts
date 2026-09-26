@@ -13,6 +13,7 @@ import {
   type TimetableSlot,
   type User,
 } from "@prisma/client";
+import { isPeriodTimePast } from "@scholametric/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
@@ -146,7 +147,7 @@ export interface TeacherAbsenceRow {
   // period, without a separate "list exceptions" endpoint — every period
   // here was created 1:1 with a TimetableException at absence-creation
   // time, so this is a join back to that same row, not new state.
-  periods: { periodId: string; periodName: string; classArmId: string; className: string; exceptionId: string; status: TimetableExceptionStatus }[];
+  periods: { periodId: string; periodName: string; endsAt: string; classArmId: string; className: string; exceptionId: string; status: TimetableExceptionStatus }[];
   note: string;
   createdAt: string;
 }
@@ -750,7 +751,7 @@ export class CalendarService {
     const session = await this.getCurrentSessionOrThrow(schoolId);
     const weekday = this.weekdayOf(dto.date);
 
-    const resolved: { periodId: string; periodName: string; classArmId: string; className: string }[] = [];
+    const resolved: { periodId: string; periodName: string; endsAt: string; classArmId: string; className: string }[] = [];
     for (const periodId of dto.periodIds) {
       // Weekday has no SUNDAY member — a Sunday date can never match a
       // real TimetableSlot, so this 404s exactly like a bad periodId would,
@@ -778,7 +779,13 @@ export class CalendarService {
         throw new ConflictException("This period already has an exception recorded for this date.");
       }
 
-      resolved.push({ periodId, periodName: slot.period.name, classArmId: slot.classArmId, className: `${slot.classArm.classLevel.name} ${slot.classArm.name}` });
+      resolved.push({
+        periodId,
+        periodName: slot.period.name,
+        endsAt: slot.period.endsAt,
+        classArmId: slot.classArmId,
+        className: `${slot.classArm.classLevel.name} ${slot.classArm.name}`,
+      });
     }
 
     let absence: Prisma.TeacherAbsenceGetPayload<{ include: { teacherUser: true } }>;
@@ -824,6 +831,7 @@ export class CalendarService {
       periods: resolved.map((entry, index) => ({
         periodId: entry.periodId,
         periodName: entry.periodName,
+        endsAt: entry.endsAt,
         classArmId: entry.classArmId,
         className: entry.className,
         exceptionId: createdExceptionIds[index],
@@ -860,6 +868,11 @@ export class CalendarService {
       }),
     ]);
     const periodNameById = new Map(periods.map((period) => [period.id, period.name]));
+    // v0.8.1 step 3 (SPEC_V0.8.1.md §2.8) — endsAt lets the client (and the
+    // replace endpoint's own guard) decide whether a period has already
+    // passed. No new query — `periods` is already fetched above for
+    // periodNameById.
+    const periodEndsAtById = new Map(periods.map((period) => [period.id, period.endsAt]));
     const exceptionByKey = new Map(
       exceptions.map((exception) => [`${exception.teacherUserId}|${exception.date.toISOString().slice(0, 10)}|${exception.periodId}`, exception]),
     );
@@ -876,6 +889,7 @@ export class CalendarService {
           return {
             periodId,
             periodName: periodNameById.get(periodId) ?? "Unknown period",
+            endsAt: periodEndsAtById.get(periodId) ?? "",
             classArmId: exception?.classArmId ?? "",
             className: exception ? `${exception.classArm.classLevel.name} ${exception.classArm.name}` : "",
             exceptionId: exception?.id ?? "",
@@ -894,9 +908,17 @@ export class CalendarService {
   // CANCELLED — there is no DELETE endpoint (SPEC_V0.8.md §4, confirmed).
   async replaceTimetableException(id: string, dto: ReplaceTimetableExceptionDto): Promise<TimetableExceptionRow> {
     const schoolId = this.tenantContext.schoolId;
-    const existing = await this.prisma.timetableException.findFirst({ where: forSchool(schoolId, { id }) });
+    const existing = await this.prisma.timetableException.findFirst({ where: forSchool(schoolId, { id }), include: { period: true } });
     if (!existing) {
       throw new NotFoundException("Timetable exception not found.");
+    }
+    // v0.8.1 step 3 (SPEC_V0.8.1.md §2.8) — can't cover a class that's
+    // already happened. Blocks setting, editing, AND reverting a
+    // replacement alike (isRevert below is irrelevant here) — once the
+    // period is over, nothing about it is modifiable. Defense in depth for
+    // the web's own hidden-button rule: a stale page could still POST.
+    if (isPeriodTimePast(existing.date.toISOString().slice(0, 10), existing.period.endsAt)) {
+      throw new BadRequestException("This period has already passed and can no longer be modified.");
     }
 
     const replacementTeacherUserId = dto.replacementTeacherUserId !== undefined ? dto.replacementTeacherUserId : existing.replacementTeacherUserId;

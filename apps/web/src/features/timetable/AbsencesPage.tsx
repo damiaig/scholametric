@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { CalendarOff } from "lucide-react";
+import { isPeriodTimePast } from "@scholametric/shared";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -20,6 +21,11 @@ interface ReplacementTarget {
 // teacher absence this week, with a Replace action per affected period.
 // This week only, same scope as TeacherTimetablePage's own week view —
 // no separate date navigator required by this step.
+// v0.8.1 step 3 (SPEC_V0.8.1.md §2.8) — can't cover a class that's
+// already happened: once isPeriodTimePast (shared with the backend's own
+// guard on the same endpoint) says a period is over, its action button is
+// replaced with "Passed" — applies to setting, editing, AND reverting a
+// replacement alike, not just the not-yet-replaced case.
 export function AbsencesPage() {
   const { from, to } = useMemo(() => getCurrentWeekRange(), []);
   const absences = useTeacherAbsences({ from, to });
@@ -67,32 +73,39 @@ export function AbsencesPage() {
                 <p className="text-sm text-muted">&ldquo;{absence.note}&rdquo;</p>
 
                 <div className="flex flex-col gap-2">
-                  {absence.periods.map((period) => (
-                    <div key={period.periodId} className="flex items-center justify-between gap-3 rounded-md border border-muted/20 px-3 py-2">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-text">
-                          {period.periodName} · {period.className}
-                        </p>
-                        <p className={period.status === "REPLACED" ? "text-xs text-warning" : "text-xs text-danger"}>
-                          {period.status === "REPLACED" ? "Replaced" : "Cancelled"}
-                        </p>
+                  {absence.periods.map((period) => {
+                    const isPast = isPeriodTimePast(absence.date, period.endsAt);
+                    return (
+                      <div key={period.periodId} className="flex items-center justify-between gap-3 rounded-md border border-muted/20 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-text">
+                            {period.periodName} · {period.className}
+                          </p>
+                          <p className={period.status === "REPLACED" ? "text-xs text-warning" : "text-xs text-danger"}>
+                            {period.status === "REPLACED" ? "Replaced" : "Cancelled"}
+                          </p>
+                        </div>
+                        {isPast ? (
+                          <span className="text-xs text-muted">Passed</span>
+                        ) : (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setTarget({
+                                exceptionId: period.exceptionId,
+                                periodLabel: `${period.periodName} · ${period.className} · ${formatDate(absence.date)}`,
+                                isReplaced: period.status === "REPLACED",
+                              })
+                            }
+                          >
+                            {period.status === "REPLACED" ? "Edit replacement" : "Replace"}
+                          </Button>
+                        )}
                       </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          setTarget({
-                            exceptionId: period.exceptionId,
-                            periodLabel: `${period.periodName} · ${period.className} · ${formatDate(absence.date)}`,
-                            isReplaced: period.status === "REPLACED",
-                          })
-                        }
-                      >
-                        {period.status === "REPLACED" ? "Edit replacement" : "Replace"}
-                      </Button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </CardContent>
             </Card>

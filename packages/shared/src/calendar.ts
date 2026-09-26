@@ -254,7 +254,7 @@ export interface TeacherAbsenceRow {
   // exceptionId links each period straight to PATCH
   // /calendar/timetable-exceptions/:id — every absence period was created
   // 1:1 with a TimetableException at absence-creation time.
-  periods: { periodId: string; periodName: string; classArmId: string; className: string; exceptionId: string; status: TimetableExceptionStatus }[];
+  periods: { periodId: string; periodName: string; endsAt: string; classArmId: string; className: string; exceptionId: string; status: TimetableExceptionStatus }[];
   note: string;
   createdAt: string;
 }
@@ -297,3 +297,19 @@ export const replaceTimetableExceptionSchema = z.object({
   activityLabel: z.string().trim().max(200).nullable().optional(),
 });
 export type ReplaceTimetableExceptionInput = z.infer<typeof replaceTimetableExceptionSchema>;
+
+// v0.8.1 step 3 (SPEC_V0.8.1.md §2.8) — ONE rule, used by both the web
+// (hides Replace/Edit replacement) and the API (rejects a late PATCH
+// /calendar/timetable-exceptions/:id) so it can't drift between the two.
+// `endsAt`, not `startsAt` — a period is only "passed" once fully over,
+// not mid-lesson. Deliberately Date.UTC, not a local-timezone
+// constructor: this runs in two different processes (a browser and a
+// server) that could disagree on "local" time, which would be a worse bug
+// than a fixed, known offset from true school wall-clock time. There's no
+// per-school timezone anywhere in this system yet — this is a coarse
+// "has this obviously already happened" gate, not a precise one.
+export function isPeriodTimePast(date: string, endsAt: string, now: Date = new Date()): boolean {
+  const [year, month, day] = date.split("-").map(Number);
+  const [hours, minutes] = endsAt.split(":").map(Number);
+  return Date.UTC(year, month - 1, day, hours, minutes) < now.getTime();
+}

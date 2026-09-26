@@ -2477,8 +2477,11 @@ BEFORE any write (all-or-nothing):
 On success, creates one `TeacherAbsence` row (the submission record) and
 one `CANCELLED_TEACHER_ABSENT` `TimetableException` per period, in a
 single transaction. **Response `201`**: `{ id, teacherUserId, teacherName,
-date, periods: [{ periodId, periodName, classArmId, className,
-exceptionId, status }], note, createdAt }`.
+date, periods: [{ periodId, periodName, endsAt, classArmId, className,
+exceptionId, status }], note, createdAt }`. `endsAt` (v0.8.1 step 3,
+SPEC_V0.8.1.md §2.8) lets the caller decide whether a period has already
+passed — see the `PATCH` entry below, which enforces the same rule
+server-side.
 
 **`GET /calendar/teacher-absences?from=&to=`** (`SCHOOL_ADMIN`/
 `PROPRIETOR`). Same range validation as `/me/timetable` above. The one
@@ -2495,8 +2498,14 @@ activityLabel? }`, all independently optional AND nullable — omitting a
 field leaves it unchanged; sending `null` clears it. Sending all three as
 null (or omitting all three when none were ever set) reverts the
 exception to `CANCELLED_TEACHER_ABSENT` — **there is no `DELETE`
-endpoint**, this is the only revert path. Setting a
-`replacementTeacherUserId` validates:
+endpoint**, this is the only revert path.
+- **`400`** (v0.8.1 step 3, SPEC_V0.8.1.md §2.8) — the target period's
+  date + `endsAt` is already in the past (`isPeriodTimePast`, shared with
+  the web's own hidden-Replace-button rule — defense in depth for a stale
+  page). Checked first, before any of the validation below; applies
+  uniformly to setting, editing, or reverting a replacement alike.
+
+Setting a `replacementTeacherUserId` validates:
 - **`404`** — doesn't resolve to an active `TEACHER` in the caller's
   school.
 - **`400`** — already has a normal `TimetableSlot` at this exact

@@ -6557,3 +6557,85 @@ three removed cards' `href` assertions replaced with
 unchanged. `styled-date-picker.test.tsx`: 2 new cases for the empty-value
 fix. Full web suite: 446/446 (70 files) after, up from 439. Backend
 untouched — zero `apps/api/` diff confirmed via `git diff --stat`.
+
+## 2026-09-26 — v0.8.1 step 3 (LAST v0.8.1 build step): replace-after-passed
+
+SPEC_V0.8.1.md's step 3 (§2.8) — can't cover a class that's already
+happened. Genuinely touches the backend this time (a rejected-endpoint
+guard + a DTO field addition), unlike steps 1-2's frontend-only shape —
+confirmed narrow and additive: only `replaceTimetableException` gained a
+new rejection path; `listTeacherAbsences`/`createTeacherAbsence` only
+gained a field neither endpoint's resolution logic reads.
+
+**Two things surfaced while reading the code that the spec's own framing
+got wrong — both fixed as part of this step, not worked around:**
+
+1. **The period end-time wasn't in the response at all.** The spec
+   assumed "the absence date + period time are both in the
+   `/calendar/teacher-absences` response" — reading the actual
+   `TeacherAbsenceRow` type showed only `periodName`, no `startsAt`/
+   `endsAt`. Fixed by extending the SAME `Period` fetch `listTeacherAbsences`
+   already does (for `periodNameById`) to also capture `endsAt`, and
+   threading the same field through `createTeacherAbsence`'s own period
+   resolution (`slot.period.endsAt`, already fetched there too). Zero new
+   queries either side.
+
+2. **Two existing, currently-passing e2e files would have broken the
+   moment the guard shipped.** `teacher-absences.e2e-spec.ts` and
+   `timetable-coverage.e2e-spec.ts` both hardcode `MONDAY = "2026-09-14"`
+   as their fixture anchor — harmless for every feature before this one
+   (pure weekday/holiday logic, year-agnostic), but genuinely in the past
+   relative to the real clock by the time this step was built. Every
+   prior feature never needed a real past/future check; this is the
+   first one that does, so the suite's "hardcode a plausible date"
+   convention had never been tested against real-clock drift before.
+   Fixed with a new shared test helper, `test/utils/future-date.ts`'s
+   `futureMonday(weeksAhead = 4)` (a real Monday, computed from `new
+   Date()` at suite-run time, not another hardcoded string — closes this
+   fragility permanently rather than just relocating it) — used to move
+   `teacher-absences.e2e-spec.ts`'s PATCH-block exception forward (7
+   references, confined to that describe block) and
+   `timetable-coverage.e2e-spec.ts`'s whole-file MONDAY/TUESDAY anchor (11
+   references, the whole file hinges on one shared beforeAll). The new
+   "past replace is rejected" test in `teacher-absences.e2e-spec.ts`
+   reuses the *original*, now-naturally-past `MONDAY` directly via a raw
+   Prisma-inserted exception row (not a second teacher login) — no new
+   past date needed inventing.
+
+**One rule, shared, not reimplemented twice.** `isPeriodTimePast(date,
+endsAt, now)` in `packages/shared/src/calendar.ts`, imported by both
+`AbsencesPage.tsx` (hides the button) and `calendar.service.ts`'s
+`replaceTimetableException` (rejects the PATCH) — the same function, not
+parallel logic that could drift. `endsAt`, not `startsAt` — a period is
+only "passed" once fully over. Built on `Date.UTC(...)`, not a local-time
+constructor — deliberately, since this runs in two different processes
+(browser + server) that could otherwise disagree on "local" time; a
+fixed ~1hr offset from true Nigerian (WAT) wall-clock is an acceptable,
+*consistent* imprecision, cross-runtime disagreement would not be. No
+per-school timezone field exists anywhere in this system; none added.
+
+**The guard applies uniformly** — setting, editing, and reverting a
+replacement are all blocked once the period's passed, not just "new
+replacement." Placed first in `replaceTimetableException`, before the
+teacher-availability/tenant checks; 400, matching this service's existing
+`BadRequestException` convention for "the request doesn't make sense."
+`existing`'s fetch gained `include: { period: true }` (needed for
+`endsAt`) — purely additive, nothing downstream narrowed.
+
+**Confirmed untouched:** `resolveClassSchedule`/`resolveTeacherSchedule`
+(resolution), every tenant/own-class wall, `createTeacherAbsence`'s own
+validation (no past-date restriction there — unaffected by this step).
+
+**Test impact.** New `isPeriodTimePast` unit tests (6 cases: before/after/
+different-day/exact-boundary) in `apps/web` (imported from
+`@scholametric/shared`, which has no test runner configured of its own —
+matches how this package's other pure helpers are actually exercised, via
+a consuming app, not a dedicated in-package suite).
+`AbsencesPage.test.tsx`: its `ABSENCE` fixture moved off a hardcoded past
+date to a dynamically-future one (same fragility class as finding 2,
+caught before it shipped) plus 2 new tests (past → "Passed", no button;
+future → button present). `teacher-absences.e2e-spec.ts`: +1 test (561
+total, up from 560), PATCH-block fixture fixed as described above.
+`timetable-coverage.e2e-spec.ts`: fixture fixed, no new test needed (its
+whole premise already re-proves the future-succeeds path). Full web
+suite: 71 files, 454/454. Full backend e2e suite: 43 files, 561/561.
