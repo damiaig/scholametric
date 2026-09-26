@@ -11,6 +11,26 @@ vi.mock("../../lib/api-client", async (importOriginal) => {
   return { ...actual, apiRequest: vi.fn() };
 });
 
+// v0.8.1 step 2 (SPEC_V0.8.1.md §2.6) — StyledDatePicker's own correctness
+// (flatpickr, minDate, picking a day) is proven once in
+// styled-date-picker.test.tsx. Here it's mocked down to a plain native
+// input forwarding value/onChange faithfully — NOT a fixed-date stub like
+// the Step 1 page tests use, since this file needs to type ARBITRARY
+// dates per field (start vs end), not just jump to one canned date.
+vi.mock("../../components/ui/styled-date-picker", () => ({
+  StyledDatePicker: ({
+    id,
+    value,
+    onChange,
+    placeholder,
+  }: {
+    id?: string;
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+  }) => <input id={id} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />,
+}));
+
 const mockedApiRequest = vi.mocked(apiRequest);
 
 function session(partial: Partial<AcademicSession> & Pick<AcademicSession, "id" | "name" | "isCurrent">): AcademicSession {
@@ -91,5 +111,31 @@ describe("HolidaysSection", () => {
       "/api/v1/calendar/holidays",
       expect.objectContaining({ method: "POST", body: expect.objectContaining({ sessionId: "sess1", name: "Public holiday" }) }),
     );
+  });
+
+  // v0.8.1 step 2 — proves the startDate<=endDate cross-field zod refine
+  // still fires now that the fields are wired through Controller instead
+  // of register(): the rule lives in holidayFormSchema, independent of the
+  // input mechanism, so switching to StyledDatePicker shouldn't affect it.
+  it("rejects an end date before the start date, no POST sent", async () => {
+    const user = userEvent.setup();
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/sessions") return SESSIONS;
+      if (path === "/api/v1/calendar/holidays") return [];
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<HolidaysSection />);
+    await screen.findByDisplayValue("2025/2026");
+
+    await user.click(screen.getByRole("button", { name: /New holiday/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Name"), "Backwards holiday");
+    await user.type(within(dialog).getByLabelText("Starts"), "2026-10-10");
+    await user.type(within(dialog).getByLabelText("Ends"), "2026-10-01");
+    await user.click(within(dialog).getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByText("Start date must be on or before the end date.")).toBeInTheDocument();
+    expect(mockedApiRequest).not.toHaveBeenCalledWith("/api/v1/calendar/holidays", expect.objectContaining({ method: "POST" }));
   });
 });

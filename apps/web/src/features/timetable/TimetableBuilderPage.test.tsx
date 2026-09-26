@@ -126,6 +126,27 @@ describe("TimetableBuilderPage", () => {
     expect(await screen.findByText(/No subject teachers are assigned/)).toBeInTheDocument();
   });
 
+  // v0.8.1 step 2 — /timetable is now the hub (TimetableHubPage), and the
+  // class-arm picker this button returns to moved to /timetable/build.
+  // No test asserted this button's destination before the rename — a real
+  // gap, closed here rather than just chasing the string change.
+  it("'Back to Timetable' navigates to /timetable/build, not the hub at /timetable", async () => {
+    mockLoad();
+    const user = userEvent.setup();
+    renderWithProviders(
+      <Routes>
+        <Route path="/timetable/arms/:id" element={<TimetableBuilderPage />} />
+        <Route path="/timetable/build" element={<p>Class picker page</p>} />
+        <Route path="/timetable" element={<p>Hub page</p>} />
+      </Routes>,
+      { route: "/timetable/arms/arm1" },
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Back to Timetable" }));
+    expect(await screen.findByText("Class picker page")).toBeInTheDocument();
+    expect(screen.queryByText("Hub page")).not.toBeInTheDocument();
+  });
+
   it("an existing slot renders subject + teacher in its cell", async () => {
     mockLoad({ slots: [MATH_MONDAY_SLOT] });
     renderPage();

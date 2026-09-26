@@ -1,6 +1,6 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Link } from "react-router-dom";
-import { CircleAlert, Users, GraduationCap, School, ClipboardCheck, FileCheck, KeyRound, CalendarClock, UserX, CalendarCog } from "lucide-react";
+import { CircleAlert, Users, GraduationCap, School, ClipboardCheck, FileCheck, KeyRound } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -97,7 +97,13 @@ function AdminDashboard() {
             />
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* v0.8.1 step 2 (SPEC_V0.8.1.md §2.7) — the three calendar-domain
+              cards (Build timetable / Absences & cover / Calendar settings)
+              that used to live here are gone, consolidated into the
+              sidebar's new "Timetable" item → TimetableHubPage. Grid
+              dropped from 4 to 3 columns to match the 3 cards remaining —
+              a 4-column grid would leave a dangling empty slot. */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <Link to="/grades/review" className="block">
               <Card className="h-full transition-colors hover:border-primary/40">
                 <CardContent className="flex h-full items-center gap-4 p-6">
@@ -116,56 +122,6 @@ function AdminDashboard() {
                     <FileCheck className="h-5 w-5" aria-hidden="true" />
                   </div>
                   <p className="font-semibold text-text">Exam approvals →</p>
-                </CardContent>
-              </Card>
-            </Link>
-
-            {/* v0.8 step 2 (SPEC_V0.8.md §7 item 2) — same "occasional admin
-                setup action" shape as the two cards above, not a permanent
-                sidebar item: building a timetable is infrequent, and the
-                roadmap's later steps (live daily agenda, Step 6) are more
-                likely candidates for a permanent everyday nav slot once
-                every role has a reason to check it daily. */}
-            <Link to="/timetable" className="block">
-              <Card className="h-full transition-colors hover:border-primary/40">
-                <CardContent className="flex h-full items-center gap-4 p-6">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                    <CalendarClock className="h-5 w-5" aria-hidden="true" />
-                  </div>
-                  <p className="font-semibold text-text">Build timetable →</p>
-                </CardContent>
-              </Card>
-            </Link>
-
-            {/* Walk-found fix (v0.8, before tag) — AbsencesPage already
-                existed (Step 4) and worked once reached, but the only path
-                to it was a link buried inside the timetable builder page.
-                Grouped here with the other two calendar-domain cards so
-                Dashboard is the one comprehensive front door, same
-                "occasional admin action" card pattern, no sidebar item. */}
-            <Link to="/timetable/absences" className="block">
-              <Card className="h-full transition-colors hover:border-primary/40">
-                <CardContent className="flex h-full items-center gap-4 p-6">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                    <UserX className="h-5 w-5" aria-hidden="true" />
-                  </div>
-                  <p className="font-semibold text-text">Absences &amp; cover →</p>
-                </CardContent>
-              </Card>
-            </Link>
-
-            {/* Walk-found fix — periods/breaks/holidays/school-days lived
-                ONLY under Settings → Calendar, a tab an admin has no reason
-                to think to check. A shortcut card here, not a sidebar item
-                (same reasoning as the two cards above) and not a move —
-                Settings → Calendar stays exactly where it is. */}
-            <Link to="/settings/calendar" className="block">
-              <Card className="h-full transition-colors hover:border-primary/40">
-                <CardContent className="flex h-full items-center gap-4 p-6">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                    <CalendarCog className="h-5 w-5" aria-hidden="true" />
-                  </div>
-                  <p className="font-semibold text-text">Calendar settings →</p>
                 </CardContent>
               </Card>
             </Link>

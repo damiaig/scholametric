@@ -57,4 +57,20 @@ describe("StyledDatePicker", () => {
     rerender(<StyledDatePicker value="2026-09-20" onChange={vi.fn()} aria-label="Choose a date" />);
     await waitFor(() => expect(screen.getByLabelText("Choose a date")).toHaveValue("Sep 20, 2026"));
   });
+
+  // v0.8.1 step 2 (SPEC_V0.8.1.md §2.6) — a blank form field (e.g. a new
+  // holiday not yet dated) passes value="" rather than some arbitrary
+  // default date; the widget must start empty, not crash or show a
+  // garbage date, and clear itself if the value is reset back to "".
+  it("an empty value renders blank, with the given placeholder, instead of an arbitrary date", () => {
+    render(<StyledDatePicker value="" onChange={vi.fn()} placeholder="Select a date…" aria-label="Choose a date" />);
+    expect(screen.getByLabelText("Choose a date")).toHaveValue("");
+    expect(screen.getByLabelText("Choose a date")).toHaveAttribute("placeholder", "Select a date…");
+  });
+
+  it("clears back to blank when value is reset to '' after a date was picked", async () => {
+    const { rerender } = render(<StyledDatePicker value="2026-09-14" onChange={vi.fn()} aria-label="Choose a date" />);
+    rerender(<StyledDatePicker value="" onChange={vi.fn()} aria-label="Choose a date" />);
+    await waitFor(() => expect(screen.getByLabelText("Choose a date")).toHaveValue(""));
+  });
 });

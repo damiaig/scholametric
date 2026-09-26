@@ -12,23 +12,19 @@ import { useClasses } from "../classes/use-classes";
 // at the route. Reuses useClasses() — the SAME hook GradesLandingPage's own
 // AdminGradesView calls — no new query, same school-wide class browser
 // shape, just linking to /timetable/arms/:id instead of /grades/arms/:id.
+// v0.8.1 step 2 (SPEC_V0.8.1.md §2.7) — moved from /timetable to
+// /timetable/build: TimetableHubPage now owns /timetable as the one
+// grouped entry point (build/absences/settings), so the "Teacher
+// absences" shortcut that used to live in this page's own header is gone
+// — the hub covers it one level up, and keeping both would be a
+// duplicate path to the same place.
 export function TimetableLandingPage() {
   const { data: user } = useCurrentUser();
   const classes = useClasses();
 
   return (
     <div>
-      <PageHeader
-        title="Timetable"
-        description={user?.school.name}
-        actions={
-          <Link to="/timetable/absences">
-            <Button type="button" variant="outline">
-              Teacher absences
-            </Button>
-          </Link>
-        }
-      />
+      <PageHeader title="Timetable" description={user?.school.name} />
 
       {classes.isLoading && <PickerSkeleton />}
 

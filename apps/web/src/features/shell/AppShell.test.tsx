@@ -244,8 +244,7 @@ describe("AppShell", () => {
   // v0.8 step 3 (SPEC_V0.8.md §7 item 3) — Timetable gets the SAME
   // dedicated sidebar treatment as Grades above, for the SAME three
   // roles, at the point where they get real everyday content for the
-  // first time. SCHOOL_ADMIN/PROPRIETOR are deliberately excluded — the
-  // Step 2 builder stays a Dashboard card, not a sidebar item.
+  // first time.
   it("TEACHER sees a Timetable link pointing at /timetable/mine", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
@@ -282,7 +281,10 @@ describe("AppShell", () => {
     expect(await screen.findByRole("link", { name: "Timetable" })).toHaveAttribute("href", "/me/timetable");
   });
 
-  it("SCHOOL_ADMIN/PROPRIETOR do NOT get a Timetable sidebar item — the builder stays a Dashboard card only", async () => {
+  // v0.8.1 step 2 (SPEC_V0.8.1.md §2.7) — reverses the prior call above:
+  // admin/proprietor's three separate calendar cards are gone, replaced
+  // by one grouped "Timetable" sidebar item pointing at the hub.
+  it("SCHOOL_ADMIN/PROPRIETOR see a Timetable link pointing at the hub (/timetable)", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
@@ -291,8 +293,7 @@ describe("AppShell", () => {
 
     renderShell();
 
-    await screen.findByRole("link", { name: "Dashboard" });
-    expect(screen.queryByRole("link", { name: "Timetable" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Timetable" })).toHaveAttribute("href", "/timetable");
   });
 
   // SPEC_V0.5.1.md §2.7, v0.5.1 step 6 — Help is in BASE_NAV_ITEMS, visible

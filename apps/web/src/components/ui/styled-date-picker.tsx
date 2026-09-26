@@ -7,16 +7,21 @@ import "flatpickr/dist/flatpickr.min.css";
 import "./styled-date-picker.css";
 
 interface StyledDatePickerProps {
-  /** "YYYY-MM-DD" */
+  /** "YYYY-MM-DD", or "" for no date selected yet (e.g. a blank form field) */
   value: string;
   onChange: (value: string) => void;
   /** "YYYY-MM-DD", or flatpickr's own literal "today" */
   minDate?: string;
+  id?: string;
+  placeholder?: string;
   "aria-label"?: string;
   className?: string;
 }
 
-function parseISODate(value: string): Date {
+function parseISODate(value: string): Date | undefined {
+  if (!value) {
+    return undefined;
+  }
   const [year, month, day] = value.split("-").map(Number);
   return new Date(year, month - 1, day);
 }
@@ -40,13 +45,18 @@ function resolveMinDate(minDate: string | undefined): Date | string | undefined 
 // v0.8.1 step 1 (SPEC_V0.8.1.md §2.2) — ONE shared, styled wrapper around
 // flatpickr (the raw library, not the separate react-flatpickr package —
 // keeping this to exactly one new dependency). Reused as-is by later
-// steps for other date inputs (§2.6). The bound input is readOnly and
+// steps for other date inputs (§2.6, e.g. HolidayFormDialog via
+// react-hook-form's Controller — this component is controlled, not a
+// native input register() can bind to). The bound input is readOnly and
 // shows flatpickr's own friendly-formatted date; it's deliberately NOT
 // controlled via React's `value=` (flatpickr owns that DOM node once
-// mounted) — external changes to `value` (Prev/Next/Today buttons, not
-// the user picking a day in the calendar) are pushed in imperatively via
-// `.setDate()` in an effect instead.
-export function StyledDatePicker({ value, onChange, minDate, className, ...aria }: StyledDatePickerProps) {
+// mounted) — external changes to `value` (Prev/Next/Today buttons, a form
+// reset, not the user picking a day in the calendar) are pushed in
+// imperatively via `.setDate()`/`.clear()` in an effect instead. An empty
+// `value` means no date selected yet (a blank form field, distinct from
+// the agenda's usage, which is never empty) — the widget starts blank
+// instead of defaulting to some arbitrary date.
+export function StyledDatePicker({ value, onChange, minDate, id, placeholder, className, ...aria }: StyledDatePickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const instanceRef = useRef<Instance | null>(null);
   const onChangeRef = useRef(onChange);
@@ -82,9 +92,14 @@ export function StyledDatePicker({ value, onChange, minDate, className, ...aria 
     if (!instance) {
       return;
     }
-    const current = instance.selectedDates[0] ? toISODate(instance.selectedDates[0]) : undefined;
-    if (current !== value) {
-      instance.setDate(parseISODate(value), false);
+    const current = instance.selectedDates[0] ? toISODate(instance.selectedDates[0]) : "";
+    if (current === value) {
+      return;
+    }
+    if (value) {
+      instance.setDate(parseISODate(value)!, false);
+    } else {
+      instance.clear(false);
     }
   }, [value]);
 
@@ -93,7 +108,9 @@ export function StyledDatePicker({ value, onChange, minDate, className, ...aria 
       <CalendarDays className="pointer-events-none absolute left-3 h-4 w-4 text-muted" aria-hidden="true" />
       <input
         ref={inputRef}
+        id={id}
         readOnly
+        placeholder={placeholder}
         className={cn(
           "h-9 cursor-pointer rounded-md border border-muted bg-card py-2 pl-9 pr-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
           className,

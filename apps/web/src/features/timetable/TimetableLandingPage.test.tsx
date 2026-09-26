@@ -54,7 +54,15 @@ describe("TimetableLandingPage", () => {
     expect(screen.getByText("SSS 2")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /JSS 1 A/ })).toHaveAttribute("href", "/timetable/arms/arm2");
     expect(screen.getByRole("link", { name: /SSS 2 A/ })).toHaveAttribute("href", "/timetable/arms/arm1");
-    expect(screen.getByRole("link", { name: "Teacher absences" })).toHaveAttribute("href", "/timetable/absences");
+  });
+
+  // v0.8.1 step 2 — the "Teacher absences" shortcut moved up to
+  // TimetableHubPage; this page no longer duplicates it.
+  it("no longer shows the Teacher absences shortcut (moved to the Timetable hub)", async () => {
+    mockLoad();
+    renderWithProviders(<TimetableLandingPage />);
+    await screen.findByText("JSS 1");
+    expect(screen.queryByRole("link", { name: "Teacher absences" })).not.toBeInTheDocument();
   });
 
   it("shows the empty state when no classes exist yet", async () => {

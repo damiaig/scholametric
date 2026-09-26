@@ -102,13 +102,22 @@ describe("DashboardPage", () => {
     expect(screen.getByText("Sunrise College · 2026/2027 (First term)")).toBeInTheDocument();
     expect(screen.getByText("Students by class level")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Review & Publish/ })).toHaveAttribute("href", "/grades/review");
-    expect(screen.getByRole("link", { name: /Build timetable/ })).toHaveAttribute("href", "/timetable");
-    // Walk-found fix — both grouped alongside "Build timetable" as the
-    // dashboard's one comprehensive front door to the calendar domain.
-    expect(screen.getByRole("link", { name: /Absences & cover/ })).toHaveAttribute("href", "/timetable/absences");
-    expect(screen.getByRole("link", { name: /Calendar settings/ })).toHaveAttribute("href", "/settings/calendar");
     expect(screen.getByText("104 provisioned")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Provision/ })).toHaveAttribute("href", "/settings/portal-accounts");
+  });
+
+  // v0.8.1 step 2 (SPEC_V0.8.1.md §2.7) — these three cards moved to the
+  // sidebar's new "Timetable" item → TimetableHubPage; the dashboard no
+  // longer renders them at all (not just relabeled/moved within the page).
+  it("no longer renders the Build timetable / Absences & cover / Calendar settings cards (moved to the Timetable sidebar hub)", async () => {
+    mockAdminEndpoints();
+
+    renderWithProviders(<DashboardPage />);
+    await screen.findByText("25");
+
+    expect(screen.queryByRole("link", { name: /Build timetable/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Absences & cover/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Calendar settings/ })).not.toBeInTheDocument();
   });
 
   it("shows an error state with retry when stats fail to load", async () => {

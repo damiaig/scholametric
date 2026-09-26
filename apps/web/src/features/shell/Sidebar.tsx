@@ -51,8 +51,7 @@ const PORTAL_GRADES_ITEM = {
 // admin setup action, Dashboard card only) flips: TEACHER/STUDENT/PARENT
 // now have real, everyday-relevant timetable content for the first time,
 // same category as Grades above — so they get the same permanent sidebar
-// treatment. Admin does NOT get a sidebar entry here; the builder stays a
-// Dashboard card (unchanged from Step 2).
+// treatment.
 const TEACHER_TIMETABLE_ITEM = {
   to: "/timetable/mine",
   label: "Timetable",
@@ -60,6 +59,18 @@ const TEACHER_TIMETABLE_ITEM = {
 };
 const PORTAL_TIMETABLE_ITEM = {
   to: "/me/timetable",
+  label: "Timetable",
+  icon: CalendarClock,
+};
+// v0.8.1 step 2 (SPEC_V0.8.1.md §2.7) — admin/proprietor's calendar
+// management now gets its own sidebar entry too, reversing Step 3's own
+// "Dashboard card only" call for this role: the three separate cards
+// (build/absences/settings) are gone, consolidated into one hub page
+// (TimetableHubPage) this item points at. TEACHER/STUDENT/PARENT's own
+// Timetable items above are unaffected — this is a distinct, admin-only
+// entry to a different destination.
+const ADMIN_TIMETABLE_ITEM = {
+  to: "/timetable",
   label: "Timetable",
   icon: CalendarClock,
 };
@@ -107,6 +118,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
         ? [
             ...BASE_NAV_ITEMS.filter((item) => item.to === "/dashboard"),
             GRADES_ITEM,
+            ADMIN_TIMETABLE_ITEM,
             ...BASE_NAV_ITEMS.filter((item) => item.to !== "/dashboard"),
           ]
         : BASE_NAV_ITEMS;

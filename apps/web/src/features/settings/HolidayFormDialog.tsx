@@ -1,11 +1,12 @@
 import { useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { holidayFormSchema, type Holiday, type HolidayFormInput } from "@scholametric/shared";
 import { Dialog } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
+import { StyledDatePicker } from "../../components/ui/styled-date-picker";
 import { FieldError } from "../../components/FieldError";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
@@ -40,6 +41,7 @@ export function HolidayFormDialog({ open, onClose, sessionId, holiday }: Holiday
     register,
     handleSubmit,
     reset,
+    control,
     formState: { errors },
   } = useForm<HolidayFormInput>({
     resolver: zodResolver(holidayFormSchema),
@@ -74,12 +76,24 @@ export function HolidayFormDialog({ open, onClose, sessionId, holiday }: Holiday
         <div className="flex gap-3">
           <div className="flex flex-1 flex-col gap-1.5">
             <Label htmlFor="holiday-start-date">Starts</Label>
-            <Input id="holiday-start-date" type="date" {...register("startDate")} />
+            <Controller
+              name="startDate"
+              control={control}
+              render={({ field }) => (
+                <StyledDatePicker id="holiday-start-date" value={field.value} onChange={field.onChange} placeholder="Select a date…" />
+              )}
+            />
             <FieldError message={errors.startDate?.message} />
           </div>
           <div className="flex flex-1 flex-col gap-1.5">
             <Label htmlFor="holiday-end-date">Ends</Label>
-            <Input id="holiday-end-date" type="date" {...register("endDate")} />
+            <Controller
+              name="endDate"
+              control={control}
+              render={({ field }) => (
+                <StyledDatePicker id="holiday-end-date" value={field.value} onChange={field.onChange} placeholder="Select a date…" />
+              )}
+            />
             <FieldError message={errors.endDate?.message} />
           </div>
         </div>

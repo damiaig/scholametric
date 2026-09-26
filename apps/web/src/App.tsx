@@ -27,6 +27,7 @@ import { CalendarSettingsPage } from "./features/settings/CalendarSettingsPage";
 import { PortalAccountsSettingsPage } from "./features/portal-accounts/PortalAccountsSettingsPage";
 import { ClassArmCredentialSlipsPage } from "./features/portal-accounts/ClassArmCredentialSlipsPage";
 import { AccountChangePasswordPage } from "./features/auth/AccountChangePasswordPage";
+import { TimetableHubPage } from "./features/timetable/TimetableHubPage";
 import { TimetableLandingPage } from "./features/timetable/TimetableLandingPage";
 import { TimetableBuilderPage } from "./features/timetable/TimetableBuilderPage";
 import { TeacherTimetablePage } from "./features/timetable/TeacherTimetablePage";
@@ -103,12 +104,17 @@ export function AppRoutes() {
               (v0.7.2 step 2): a feature area with its own landing/browser
               page gets its own namespace; the class page itself stays
               read-only for feature actions. SCHOOL_ADMIN/PROPRIETOR only
-              for now — no TEACHER path until a later v0.8 step. */}
-          <Route path="/timetable" element={<TimetableLandingPage />} />
+              for now — no TEACHER path until a later v0.8 step.
+              v0.8.1 step 2 (SPEC_V0.8.1.md §2.7) — /timetable is now
+              TimetableHubPage, the one grouped entry point (reached from
+              the sidebar's new "Timetable" item); the class-arm picker
+              that used to live at /timetable moved to /timetable/build
+              (no pre-launch bookmarks to preserve, no redirect needed). */}
+          <Route path="/timetable" element={<TimetableHubPage />} />
+          <Route path="/timetable/build" element={<TimetableLandingPage />} />
           <Route path="/timetable/arms/:id" element={<TimetableBuilderPage />} />
-          {/* v0.8 step 4 (SPEC_V0.8.md §4) — linked from TimetableLandingPage
-              only, same "occasional admin action" dashboard-card-not-sidebar
-              precedent as the builder above. */}
+          {/* v0.8 step 4 (SPEC_V0.8.md §4) — reached from TimetableHubPage
+              (moved from TimetableLandingPage's own header in step 2). */}
           <Route path="/timetable/absences" element={<AbsencesPage />} />
         </Route>
 

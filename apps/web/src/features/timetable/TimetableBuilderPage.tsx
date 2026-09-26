@@ -89,7 +89,9 @@ export function TimetableBuilderPage() {
   if (arm.subjectTeachers.length === 0) {
     return (
       <div>
-        <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate("/timetable")}>
+        {/* v0.8.1 step 2 — the class-arm picker this button returns to
+            lives at /timetable/build now (/timetable is the hub). */}
+        <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate("/timetable/build")}>
           Back to Timetable
         </Button>
         <PageHeader title="Timetable" description={armLabel} />
@@ -110,7 +112,7 @@ export function TimetableBuilderPage() {
 
   return (
     <div>
-      <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate("/timetable")}>
+      <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate("/timetable/build")}>
         Back to Timetable
       </Button>
 

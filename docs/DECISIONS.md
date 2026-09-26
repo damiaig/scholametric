@@ -6470,3 +6470,90 @@ old shared-offset tests replaced with decoupled-nav pairs per page, plus
 one new test proving "Mark absent" still offers a full week. Full web
 suite: 439/439 (69 files) after, up from 418. Backend untouched — zero
 `apps/api/` diff confirmed via `git diff --stat`.
+
+## 2026-09-26 — v0.8.1 step 2: styled flatpickr for holidays, sidebar "Timetable" hub, dashboard declutter
+
+SPEC_V0.8.1.md's step 2 (§2.6, §2.7). Frontend-only, confirmed before
+writing code: `holidayFormSchema` is unchanged, and the three destinations
+being consolidated (build/absences/settings) are all existing, unchanged
+routes — this is a new front door, not new functionality.
+
+**§2.6 scope, ruled at plan time: Holiday-only.** Grepped every plain
+`<input type="date">` in the codebase — five exist (Holiday create/edit,
+session/term dates, student date-of-birth, personnel date-employed).
+Only Holiday is inside the calendar domain; the other three belong to
+Academic Setup, Students, and Personnel — swapping those too would be
+scope creep under a "Calendar Polish" release. Noted for post-tag: swap
+the remaining four app-wide, for consistency, once v0.8/v0.8.1 tag.
+
+**`HolidayFormDialog`'s two date fields now use `StyledDatePicker`, wired
+through react-hook-form's `Controller` — the first use of `Controller` in
+this codebase.** Every other field so far is a native input via
+`register()`; `StyledDatePicker` is a controlled component (its own DOM
+input privately owned by flatpickr), so it can't be `register()`-ed the
+same way. `startDate <= endDate` (the one real validation rule, a zod
+`.refine()` in `holidayFormSchema`) fires identically regardless of the
+input mechanism — proved with a new test (end date before start date,
+expect the existing error, no POST sent). No `minDate` on either
+field — holidays can be any date, unlike the agenda's `minDate="today"`;
+same component, different config per use site.
+
+**Real gap found and fixed while wiring this up, before it shipped:**
+`StyledDatePicker` assumed `value` was always a valid non-empty ISO date
+— true for the agenda (Step 1), never true for a blank "New holiday" form
+(`startDate`/`endDate` both start as `""`). Passing an empty string into
+`parseISODate` would have produced an Invalid Date. Fixed by making
+`parseISODate` return `undefined` for `""`, so the widget starts genuinely
+blank (with a `placeholder` prop, new) instead of crashing or defaulting
+to an arbitrary date, and clears itself via flatpickr's `.clear()` (not
+`.setDate()`) when `value` resets back to `""`. Also dropped the
+redundant `aria-label` I'd initially added to both picker instances —
+they already have a properly associated `<Label htmlFor>`, and `aria-label`
+silently overrides that for the accessible name, which would have broken
+`getByLabelText("Starts")`/`("Ends")` in tests for no reason.
+
+**§2.7 sidebar consolidation — Option B (a genuine new hub page), per
+your ruling.** New `TimetableHubPage.tsx` at `/timetable`: three uniform
+cards (Build timetable / Absences & cover / Calendar settings), same
+visual pattern as the dashboard cards it replaces. The existing class-arm
+picker (`TimetableLandingPage`) moved from `/timetable` to
+`/timetable/build` — pure route rename, zero content change beyond
+dropping its own now-redundant "Teacher absences" header button (the hub
+covers it one level up). New sidebar item, `ADMIN_TIMETABLE_ITEM` →
+`/timetable`, added to the SCHOOL_ADMIN/PROPRIETOR branch in
+`Sidebar.tsx`, reversing Step 3's (v0.8) "admin excluded, dashboard card
+only" call for this one item. TEACHER's `/timetable/mine` and the portal
+`/me/timetable` items are untouched.
+
+**Consequential fix caught by reading, not assumed:** `TimetableBuilderPage`'s
+two "Back to Timetable" buttons both `navigate("/timetable")` — unchanged,
+they'd have silently landed on the new hub instead of back on the class
+picker they came from. Fixed to `navigate("/timetable/build")`. No test
+asserted this button's destination before the rename (a real, pre-existing
+gap) — closed with a new navigation test rather than just chasing the
+string change. No redirect kept at the old `/timetable` for the picker —
+pre-launch, no real bookmarks to preserve.
+
+**Dashboard decluttered exactly as scoped:** removed the "Build timetable",
+"Absences & cover", "Calendar settings" cards; kept "Review & Publish",
+"Exam approvals", "Portal accounts" — 6 cards down to 3. Grid changed
+`lg:grid-cols-4` → `lg:grid-cols-3` in the same edit, a direct consequence
+of dropping to 3 cards (would otherwise leave a dangling empty slot on
+large screens), not scope creep.
+
+**Test impact.** `HolidaysSection.test.tsx`: mocks `StyledDatePicker` down
+to a plain native input forwarding value/onChange (not the fixed-date-stub
+shape Step 1's page tests use — this file needs to type arbitrary dates
+per field), plus the new end-before-start refine test. New
+`TimetableHubPage.test.tsx` (hrefs for all three destinations).
+`TimetableLandingPage.test.tsx`: removed the "Teacher absences" link
+assertion, added one confirming it's gone. `TimetableBuilderPage.test.tsx`:
+new back-button navigation test. `AppShell.test.tsx`: inverted the
+SCHOOL_ADMIN/PROPRIETOR "no Timetable sidebar item" test into "sees one,
+pointing at /timetable" — the old assertion is behavior this step
+intentionally reverses, not a regression. `DashboardPage.test.tsx`: the
+three removed cards' `href` assertions replaced with
+`not.toBeInTheDocument()`; Review & Publish/Portal accounts assertions
+unchanged. `styled-date-picker.test.tsx`: 2 new cases for the empty-value
+fix. Full web suite: 446/446 (70 files) after, up from 439. Backend
+untouched — zero `apps/api/` diff confirmed via `git diff --stat`.
