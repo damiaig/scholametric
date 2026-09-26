@@ -2562,6 +2562,71 @@ week — pure client-side presentation of the same resolved schedule.
 
 ---
 
+## Homework (v0.8.2 step 1, SPEC_V0.8.2.md §6 item 1)
+
+Text-only for now — attachments/uploads are Steps 3-4. A genuinely new domain: no
+grade-engine table, enum, or term-lock/advisory-lock machinery reused. Per-homework
+publish (each homework published on its own, no admin approval), mirroring v0.7.4's
+per-evaluation model. `teacherUserId` records **authorship**, not authority — who may
+edit/publish/unpublish/delete is re-derived from the CURRENT
+`subject_teacher_assignment` every call (the same `assertTeacherAssignment` grades/exams
+already use), so a subject's newly-reassigned teacher inherits full authority over the
+class's pre-existing homework, exactly like evaluations.
+
+All six routes sit under `@Roles(TEACHER, SCHOOL_ADMIN, PROPRIETOR)` at the controller
+level, narrowed per-route below.
+
+**`GET /homework?classArmId=&subjectId=&termId=`** (all three roles).
+`assertTeacherAssignment` scopes TEACHER to their own currently-assigned subject
+(`403` otherwise); SCHOOL_ADMIN/PROPRIETOR are existence-checked only (`404` if no
+teacher is assigned at all). **Response `200`**: `{ classArmId, subjectId, termId,
+homework: HomeworkResponse[] }` — every non-deleted homework in that exact scope,
+regardless of which teacher authored it (mirrors `GET /grades/evaluations`).
+
+**`POST /homework`** (`TEACHER` only — no admin authoring path, same "teachers own it
+entirely" narrowing v0.7.4 gave evaluations). Body: `{ classArmId, subjectId, termId,
+title, description, dueDate, requiresUpload }`. `sessionId` is never a client input —
+derived server-side from `termId`. Validated before write:
+- **`404`** — class arm / subject / term doesn't belong to this school.
+- **`403`** — the caller doesn't currently teach this subject for this class
+  (`assertTeacherAssignment`).
+- **`400`** — `dueDate` isn't a school day for this class: a holiday, a Sunday
+  (structural), or a Saturday for a class without `includesSaturday` — reuses
+  `CalendarService.isSchoolDayForClassOnDate` directly, no school-day logic
+  reimplemented.
+
+**Response `201`**: `HomeworkResponse` — `{ id, classArmId, subjectId, teacherUserId,
+teacherName, sessionId, termId, title, description, dueDate, requiresUpload, status,
+publishedAt, createdAt, updatedAt }`. `status` is `"DRAFT"` on creation.
+
+**`PATCH /homework/:id`** (`TEACHER` only). Body: any of `title`, `description`,
+`dueDate`, `requiresUpload` (at least one required — `400` otherwise);
+`classArmId`/`subjectId`/`termId` are immutable (re-scoping isn't a "fix a typo" edit,
+same reasoning as evaluations). A new `dueDate` is re-validated against the same
+school-day rule above. **`403`** once the homework is `PUBLISHED` — unpublish first,
+frozen for everyone, no exception. **Response `200`**: `HomeworkResponse`.
+
+**`POST /homework/:id/publish`** (`TEACHER` only, categorical). No completeness gate
+(no roster/scores here, unlike grades) — publish just flips visibility on for Step 2's
+student/parent views. **`409`** if already published. **Response `200`**:
+`HomeworkResponse`.
+
+**`POST /homework/:id/unpublish`** (`TEACHER`, `SCHOOL_ADMIN`, `PROPRIETOR`). Admin/
+proprietor bypass `assertTeacherAssignment` entirely (a safety valve regardless of
+current staffing, same shape as `unpublishEvaluation`). **`409`** if not currently
+published. **Response `200`**: `HomeworkResponse`.
+
+**`DELETE /homework/:id`** (`TEACHER`, `SCHOOL_ADMIN`, `PROPRIETOR`) — soft delete
+(`deletedAt`). TEACHER: only their own currently-assigned homework, and only while
+`DRAFT` (**`409`** if `PUBLISHED` — unpublish first). SCHOOL_ADMIN/PROPRIETOR: any
+homework in their school, any status — a safety net (teacher left the school, cleanup).
+Deliberately **not** the evaluations precedent (`deleteEvaluation` is PROPRIETOR-only,
+categorically) — that was a v0.7.x-specific split; nothing in this spec asks for it, and
+Homework's whole model is "teacher owns it," so TEACHER keeps delete on their own DRAFT
+work. **Response `200`**: `{ id }`.
+
+---
+
 ## Misc
 
 ### `GET /health`

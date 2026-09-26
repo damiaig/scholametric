@@ -951,8 +951,12 @@ export class CalendarService {
 
   // Same rules a resolved schedule would apply to this (classArmId, date)
   // pair — reuses the pure isSchoolDayForClass helper above, just fetching
-  // its inputs for one date/class instead of a whole range.
-  private async isSchoolDayForClassOnDate(schoolId: string, classArmId: string, date: string): Promise<boolean> {
+  // its inputs for one date/class instead of a whole range. Public (v0.8.2
+  // step 1, SPEC_V0.8.2.md §6 item 1) — HomeworkService calls this
+  // directly (CalendarModule imported, same established cross-module
+  // pattern me.module.ts already uses) to validate a due date, rather
+  // than reimplementing school-day logic in a new domain.
+  async isSchoolDayForClassOnDate(schoolId: string, classArmId: string, date: string): Promise<boolean> {
     const session = await this.getCurrentSessionOrThrow(schoolId);
     const [holidays, schoolDays] = await Promise.all([
       this.prisma.holiday.findMany({ where: forSchool(schoolId, { sessionId: session.id }) }),

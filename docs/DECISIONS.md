@@ -6639,3 +6639,75 @@ total, up from 560), PATCH-block fixture fixed as described above.
 `timetable-coverage.e2e-spec.ts`: fixture fixed, no new test needed (its
 whole premise already re-proves the future-succeeds path). Full web
 suite: 71 files, 454/454. Full backend e2e suite: 43 files, 561/561.
+
+## 2026-09-27 — v0.8.2 step 1: Homework model + teacher create/publish (text only)
+
+SPEC_V0.8.2.md's step 1 — a genuinely new domain (`docs/SPEC_V0.8.2.md`,
+"Homework"). Backend-only: no `apps/web` file touched — the build order's
+own Step 1 scope is model + endpoints + e2e, with no teacher-authoring
+page built yet (the "next school day" form helper is deferred to
+whichever step adds it).
+
+**New `Homework` model, dedicated `HomeworkStatus` enum** (`DRAFT`/
+`PUBLISHED`, not `ResultStatus` — reusing a grade-domain enum would be
+exactly the shared-type coupling "genuinely new module" rules out).
+`teacherUserId` records authorship only; authority to edit/publish/
+unpublish/delete is re-derived from the CURRENT
+`assertTeacherAssignment` on every call, same as evaluations — proved
+with a dedicated e2e reassigning a subject mid-test and confirming the
+new teacher inherits authority over the OLD teacher's existing homework
+while the original author is locked out. No unique constraint beyond the
+PK (multiple homework entries per class/subject/date are valid — "read
+chapter 3" + "submit worksheet"). Migration `--create-only`, hand-
+reviewed: the known `pg_trgm` false-positive (`DROP INDEX` on the
+hand-added `students_first_name/last_name_trgm_idx`) reappeared exactly
+as expected and was stripped — purely additive otherwise (new enum, new
+table, one index, six FKs, the standard Prisma back-relation lines on
+`School`/`ClassArm`/`Subject`/`AcademicSession`/`Term`/`User`).
+
+**Due-date validation is genuinely reused, not reimplemented.**
+`CalendarService.isSchoolDayForClassOnDate` existed already (used
+internally by `createTeacherAbsence`) but was `private` — made public
+(one keyword), `HomeworkModule` added `imports: [CalendarModule]`
+(already-exported service, already an established cross-module pattern —
+`me.module.ts` already does `imports: [GradesModule, ExamsModule,
+CalendarModule]`). Zero school-day logic duplicated.
+
+**`assertTeacherAssignment` imported directly from
+`grades/grade-shared.util.ts`** — the same cross-module reuse
+`exams.service.ts` already does. Confirmed this is NOT a grade-engine
+violation: it's a pure authorization primitive already treated as shared
+infrastructure, not grade data or the publish/lock workflow (none of
+which — `Evaluation`/`Score`/`TermSubjectResult`, `termLockKey`,
+`resolveSliceLockState` — is read or written anywhere in this module).
+The tenant-scope-resolution helper (classArm/subject/term all exist and
+belong to this school) is a small locally-reimplemented equivalent of
+`resolveTenantScopeSubjectOnly`, not imported — that one IS grades-
+specific plumbing.
+
+**Role scoping, ruled at plan time — a deliberate deviation from
+evaluations' own delete precedent.** Create/update/publish are
+`TEACHER`-only (matches the post-v0.7.4 "teachers own it entirely"
+model). Delete: `deleteEvaluation` is `PROPRIETOR`-only categorically (a
+v0.7.x-specific split); nothing in this spec asks for that same split,
+so Homework instead gets TEACHER-deletes-own-DRAFT (blocked once
+`PUBLISHED`, unpublish first) **plus** `SCHOOL_ADMIN`/`PROPRIETOR`
+override regardless of status, as a safety net. Unpublish: `TEACHER` +
+`SCHOOL_ADMIN`/`PROPRIETOR`, matching `unpublishEvaluation`'s existing
+safety-valve shape exactly.
+
+**Test impact.** New `test/homework.e2e-spec.ts` (21 tests): create +
+teacher-scoping 403, due-date rejects Sunday/disabled-Saturday/holiday,
+list (assignment-scoped + admin), publish/unpublish (+409 double-fire,
++admin override), edit (frozen once published, due-date re-validated,
+`400` with no fields), delete (own-DRAFT, `409` once published, admin
+override), tenant scoping (`404`, via `DELETE` specifically — the
+tenant-scoping test originally used `PATCH` with a cross-tenant ADMIN
+token and got a false-`403` from the role guard before ever reaching the
+tenant check, since `PATCH` is `TEACHER`-only; fixed by testing tenant
+scoping on `DELETE`, which admin roles can actually reach), and the
+reassigned-teacher-inherits-authority proof. Full backend e2e suite: 44
+files, 582/582 (one `grades-publish.e2e-spec.ts` "socket hang up" on the
+full run, unrelated to this change — confirmed flaky, 36/36 clean
+re-run in isolation, same known flake class as this session's earlier
+`exams-publish.e2e-spec.ts` blip).

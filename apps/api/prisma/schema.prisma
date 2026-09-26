@@ -125,6 +125,7 @@ model School {
   timetableSlots            TimetableSlot[]
   teacherAbsences           TeacherAbsence[]
   timetableExceptions       TimetableException[]
+  homework                  Homework[]
 
   @@map("schools")
 }
@@ -183,6 +184,7 @@ model User {
   teacherAbsences                  TeacherAbsence[]
   timetableExceptionsAsTeacher     TimetableException[]       @relation("TimetableExceptionTeacher")
   timetableExceptionsAsReplacement TimetableException[]       @relation("TimetableExceptionReplacementTeacher")
+  homeworkAuthored                 Homework[]                 @relation("HomeworkTeacher")
 
   @@unique([schoolId, email])
   @@unique([schoolId, username])
@@ -235,6 +237,7 @@ model AcademicSession {
   yearExamResults           YearExamResult[]
   holidays                  Holiday[]
   timetableSlots            TimetableSlot[]
+  homework                  Homework[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -273,6 +276,7 @@ model Term {
   termSubjectExamResults TermSubjectExamResult[]
   termExamResults        TermExamResult[]
   holidays               Holiday[]
+  homework               Homework[]
 
   @@unique([sessionId, name])
   @@index([schoolId])
@@ -320,6 +324,7 @@ model ClassArm {
   classSchoolDays           ClassSchoolDays?
   timetableSlots            TimetableSlot[]
   timetableExceptions       TimetableException[]
+  homework                  Homework[]
 
   @@unique([classLevelId, name])
   @@index([schoolId])
@@ -451,6 +456,7 @@ model Subject {
   termSubjectExamResults           TermSubjectExamResult[]
   timetableSlots                   TimetableSlot[]
   timetableExceptionsAsReplacement TimetableException[]
+  homework                         Homework[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -1173,4 +1179,48 @@ model TimetableException {
   @@index([schoolId, date])
   @@index([teacherUserId, date])
   @@map("timetable_exceptions")
+}
+
+enum HomeworkStatus {
+  DRAFT
+  PUBLISHED
+}
+
+// v0.8.2 step 1 (SPEC_V0.8.2.md §6 item 1) — a genuinely new domain, no
+// grade-engine table/enum reused (a dedicated status enum, not
+// ResultStatus). teacherUserId records AUTHORSHIP, not authority — who
+// may create/edit/publish/delete is re-derived from the CURRENT
+// subject_teacher_assignment every time (assertTeacherAssignment, same
+// as evaluations), so a subject's newly-reassigned teacher inherits
+// authority over the class's existing homework, same as evaluations. No
+// unique constraint beyond the PK — multiple homework entries per
+// class/subject/date are valid (e.g. "read chapter 3" + "submit
+// worksheet"), unlike TimetableSlot's structural one-per-day-period rule.
+model Homework {
+  id             String         @id @default(uuid(7)) @db.Uuid
+  schoolId       String         @map("school_id") @db.Uuid
+  classArmId     String         @map("class_arm_id") @db.Uuid
+  subjectId      String         @map("subject_id") @db.Uuid
+  teacherUserId  String         @map("teacher_user_id") @db.Uuid
+  sessionId      String         @map("session_id") @db.Uuid
+  termId         String         @map("term_id") @db.Uuid
+  title          String
+  description    String
+  dueDate        DateTime       @map("due_date") @db.Date
+  requiresUpload Boolean        @default(false) @map("requires_upload")
+  status         HomeworkStatus @default(DRAFT)
+  publishedAt    DateTime?      @map("published_at")
+  deletedAt      DateTime?      @map("deleted_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  school      School          @relation(fields: [schoolId], references: [id])
+  classArm    ClassArm        @relation(fields: [classArmId], references: [id])
+  subject     Subject         @relation(fields: [subjectId], references: [id])
+  teacherUser User            @relation("HomeworkTeacher", fields: [teacherUserId], references: [id])
+  session     AcademicSession @relation(fields: [sessionId], references: [id])
+  term        Term            @relation(fields: [termId], references: [id])
+
+  @@index([schoolId, classArmId, subjectId, termId])
+  @@map("homework")
 }
