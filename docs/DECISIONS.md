@@ -6795,3 +6795,101 @@ completing another class's or a DRAFT homework `404`s; parent sees the
 same shape for a linked child; a non-linked child `404`s; each route
 `403`s the other role. Full backend e2e suite: 45 files, 593/593, clean
 (no flakes this run).
+
+## 2026-09-27 — v0.8.2 step 3: storage foundation (abstraction + Firebase + size caps)
+
+SPEC_V0.8.2.md's step 3 (§6 item 3) — the storage LAYER only. No HTTP
+endpoints, no homework attachment/upload UI, no grade-engine contact —
+those are step 4's job, sitting on top of what this step builds.
+
+**First abstract-class DI token in this codebase.** Every other domain
+service (`CalendarService`, `GradesService`, `HomeworkService`, ...) is
+injected by its own concrete class — confirmed via `git grep` that no
+`abstract class`/`useClass`/`useFactory` provider precedent existed
+anywhere outside `AppModule`'s `APP_GUARD`/`APP_INTERCEPTOR` framework
+wiring. `StorageService` (`src/storage/storage.service.ts`) is the first:
+an abstract class (not a plain `interface`, which has no runtime
+existence and so can't be a Nest DI token) with four methods —
+`issueUploadUrl`, `getObjectMetadata`, `issueDownloadUrl`,
+`deleteObject` — chosen deliberately because true provider-swappability
+(Firebase now, Cloudflare R2 or S3 later) is exactly the case that
+pattern exists for.
+
+**Deliberately tenant-agnostic.** `storageKey` is an opaque string the
+abstraction never inspects — it has zero knowledge of schools or
+homework. Tenant scoping is entirely the CALLER's responsibility (step
+4's job, via key construction like
+`schools/{schoolId}/homework/{homeworkId}/{uuid}-{fileName}`), the same
+discipline `forSchool()`-scoped Prisma queries already rely on rather
+than something this primitive can enforce itself.
+
+**Size cap enforced at the storage layer, not trusted from the client.**
+`maxSizeBytes` on `UploadUrlRequest` is required, never optional/
+defaulted. `FirebaseStorageService.issueUploadUrl` bakes it into the V4
+signed upload URL itself via GCS's `X-Goog-Content-Length-Range`
+extension header — Google Cloud Storage rejects an oversized PUT before
+a byte is written, independent of whatever size the client declared.
+`getObjectMetadata` then reads back the actual uploaded size/type for
+whatever permanent DB record step 4 writes — never the client's
+declared value.
+
+**Provider selection via `useFactory`, credentials optional.**
+`FIREBASE_PROJECT_ID`/`FIREBASE_CLIENT_EMAIL`/`FIREBASE_PRIVATE_KEY`/
+`FIREBASE_STORAGE_BUCKET` are all `.optional()` in `env.validation.ts` —
+required would break every dev/CI/test boot until a real Firebase
+project exists. `StorageModule`'s factory returns `FirebaseStorageService`
+when all four are present, else `UnconfiguredStorageService`, which
+throws a clear, actionable error only when a method is actually called,
+never at construction/boot. `FIREBASE_PRIVATE_KEY`'s literal `\n`
+sequences (from the single-line `.env` value) are unescaped before
+`firebase-admin`'s `cert()` call.
+
+**firebase-admin v14's modular API, not the old namespace.** `admin.
+initializeApp`/`admin.credential.cert`/`admin.storage()` (the pattern
+originally planned) no longer exist on the package's root export in
+v14 — replaced by subpath imports `firebase-admin/app`
+(`initializeApp`, `cert`) and `firebase-admin/storage` (`getStorage`).
+Adjusted during the build once `tsc` caught it; no behavior change from
+what was planned, just the import surface.
+
+**pnpm build-script approval was actually required, not just flagged.**
+`firebase-admin` pulls in `@firebase/util` and `protobufjs`, both of
+which have postinstall scripts pnpm ignores by default (supply-chain
+policy). The plan noted this as an unverified assumption ("tests won't
+need them"), but `pnpm exec prisma migrate deploy` (run by every e2e
+suite's `globalSetup`, and by CI's own migrate step) itself refuses to
+proceed while builds are pending approval — this would have broken
+local test runs AND fresh-lockfile CI installs, not just a hypothetical
+runtime path. Read both scripts before approving: `@firebase/util`'s
+postinstall only reads an unset `FIREBASE_WEBAPP_CONFIG` env var and
+writes a generated stub; `protobufjs`'s is that package's standard,
+long-established codegen step. Both set `true` in `pnpm-workspace.yaml`'s
+`allowBuilds`, alongside the pre-existing `bcrypt`/`esbuild`/`prisma`
+entries.
+
+**Retention: primitive only, no sweep yet.** `deleteObject` exists;
+the actual session-end purge (querying `HomeworkAttachment`/
+`HomeworkSubmission` for a closed session's files) isn't built — those
+tables don't exist until step 4. `SessionsService`'s existing
+current-session-transition (`sessions.service.ts`, ~line 105, already
+flips the prior session's `isCurrent` to `false` in one transaction) is
+the identified future hook point; not touched this step.
+
+**Test impact.** No new migration (zero Prisma queries in this module).
+New `test/storage.e2e-spec.ts` (5 tests, via `createTestApp()`'s
+`.overrideProvider(StorageService).useClass(FakeStorageService)` —
+every e2e test in the suite now gets the in-memory fake, no live
+Firebase call possible in CI): resolves to the fake, issues an upload
+URL carrying the requested key, null metadata for a never-uploaded key,
+seed → read → delete → null, issues a download URL. New unit test
+`src/storage/firebase-storage.service.spec.ts` (6 tests, `pnpm run
+test:unit` / `test/jest-unit.json`, mocks `firebase-admin/app` +
+`firebase-admin/storage` directly — no live Firebase, no network):
+private-key `\n`-unescaping, the `X-Goog-Content-Length-Range` header
+shape, read-action download URLs, null-metadata-when-missing, real
+size/type read-back, `ignoreNotFound` delete. `docs/API.md` unchanged —
+zero HTTP endpoints this step. Full backend e2e suite: 46 files,
+597/598 (one `evaluations-engine.e2e-spec.ts` "socket hang up" on the
+full run, unrelated to this change — confirmed flaky, 35/35 clean
+re-run in isolation, same known flake class as this session's earlier
+`grades-publish`/`exams-publish` blips).

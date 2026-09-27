@@ -8,6 +8,13 @@ export const envSchema = z.object({
   CORS_ORIGIN: z.string().min(1, "CORS_ORIGIN is required"),
   JWT_ACCESS_SECRET: z.string().min(32, "JWT_ACCESS_SECRET must be at least 32 characters"),
   JWT_REFRESH_SECRET: z.string().min(32, "JWT_REFRESH_SECRET must be at least 32 characters"),
+  // v0.8.2 step 3: optional so the app stays bootable (dev/CI/test) with no
+  // Firebase project configured yet — StorageModule falls back to
+  // UnconfiguredStorageService when any of these are missing.
+  FIREBASE_PROJECT_ID: z.string().optional(),
+  FIREBASE_CLIENT_EMAIL: z.string().optional(),
+  FIREBASE_PRIVATE_KEY: z.string().optional(),
+  FIREBASE_STORAGE_BUCKET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
