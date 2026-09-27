@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import { HomeworkStatus, UserRole, type Homework, type Term, type User } from "@prisma/client";
+import { HomeworkStatus, UserRole, type Homework, type Subject, type Term, type User } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
@@ -35,7 +35,37 @@ export interface HomeworkListResponse {
   homework: HomeworkResponse[];
 }
 
+// v0.8.2 step 2 (SPEC_V0.8.2.md §6 item 2) — the STUDENT/PARENT read
+// shape: a flat list, sorted by dueDate — NOT pre-grouped into "Pour
+// lundi 28 sept"-style buckets. Grouping-by-due-date is a rendering
+// concern for whichever step builds the actual page; this just answers
+// "what's due, in order, with my own completion status."
+export interface StudentHomeworkEntry {
+  id: string;
+  subjectId: string;
+  subjectName: string;
+  teacherName: string;
+  title: string;
+  description: string;
+  dueDate: string;
+  requiresUpload: boolean;
+  markedDone: boolean;
+  markedAt: string | null;
+}
+
+export interface StudentHomeworkListResponse {
+  classArmId: string;
+  homework: StudentHomeworkEntry[];
+}
+
+export interface HomeworkCompletionResponse {
+  homeworkId: string;
+  markedDone: boolean;
+  markedAt: string | null;
+}
+
 type HomeworkWithTeacher = Homework & { teacherUser: User };
+type HomeworkWithSubjectAndTeacher = Homework & { subject: Subject; teacherUser: User };
 
 // v0.8.2 step 1 (SPEC_V0.8.2.md §6 item 1) — a genuinely new domain: no
 // Evaluation/Score/TermResult table read or written, no term-lock/
@@ -83,6 +113,20 @@ export class HomeworkService {
     }
   }
 
+  // v0.8.2 step 2 (SPEC_V0.8.2.md §6 item 2, Item 8) — sibling to
+  // isPeriodTimePast (v0.8.1), but pure-date, no time-of-day: a homework
+  // due TODAY is still visible, it only drops off the day AFTER its due
+  // date passes. Kept LOCAL/private, not promoted to packages/shared —
+  // unlike isPeriodTimePast, there's no frontend consumer in this step
+  // needing a byte-identical browser+server evaluation yet. Promote it
+  // when the student-facing page actually needs to match this exact
+  // rule client-side.
+  private isDueDatePast(dueDate: string, now: Date = new Date()): boolean {
+    const [year, month, day] = dueDate.split("-").map(Number);
+    const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    return Date.UTC(year, month - 1, day) < todayUTC;
+  }
+
   private toHomeworkResponse(homework: HomeworkWithTeacher): HomeworkResponse {
     return {
       id: homework.id,
@@ -100,6 +144,21 @@ export class HomeworkService {
       publishedAt: homework.publishedAt,
       createdAt: homework.createdAt,
       updatedAt: homework.updatedAt,
+    };
+  }
+
+  private toStudentHomeworkEntry(homework: HomeworkWithSubjectAndTeacher, completion: { markedDone: boolean; markedAt: Date | null } | undefined): StudentHomeworkEntry {
+    return {
+      id: homework.id,
+      subjectId: homework.subjectId,
+      subjectName: homework.subject.name,
+      teacherName: `${homework.teacherUser.firstName} ${homework.teacherUser.lastName}`,
+      title: homework.title,
+      description: homework.description,
+      dueDate: homework.dueDate.toISOString().slice(0, 10),
+      requiresUpload: homework.requiresUpload,
+      markedDone: completion?.markedDone ?? false,
+      markedAt: completion?.markedAt?.toISOString() ?? null,
     };
   }
 
@@ -267,5 +326,63 @@ export class HomeworkService {
     });
 
     return this.toHomeworkResponse(updated);
+  }
+
+  // v0.8.2 step 2 (SPEC_V0.8.2.md §6 item 2) — classArmId AND termId are
+  // both caller-resolved (never request fields): MeService resolves
+  // classArmId from the caller's own current enrollment, termId from
+  // "whichever Term.isCurrent is true for this school" — the same current-
+  // term resolution findMyTeaching already does inline, nothing new. Both
+  // matter: ClassArm is a PERMANENT entity (no sessionId/termId of its
+  // own — the same "JSS 2 A" row persists across every year), so
+  // classArmId alone would surface every homework ever assigned to that
+  // class across every past term/session, forever. Only PUBLISHED, only
+  // not-yet-past-due (Step 1's teacher-facing listHomework is completely
+  // untouched — the teacher keeps seeing everything, any status, any age).
+  async listPublishedForStudent(classArmId: string, termId: string, studentId: string): Promise<StudentHomeworkListResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const homework = await this.prisma.homework.findMany({
+      where: { schoolId, classArmId, termId, status: HomeworkStatus.PUBLISHED, deletedAt: null },
+      include: { subject: true, teacherUser: true },
+      orderBy: { dueDate: "asc" },
+    });
+    const visible = homework.filter((row) => !this.isDueDatePast(row.dueDate.toISOString().slice(0, 10)));
+
+    const completions = await this.prisma.homeworkCompletion.findMany({
+      where: { schoolId, studentId, homeworkId: { in: visible.map((row) => row.id) } },
+    });
+    const completionByHomeworkId = new Map(completions.map((completion) => [completion.homeworkId, completion]));
+
+    return {
+      classArmId,
+      homework: visible.map((row) => this.toStudentHomeworkEntry(row, completionByHomeworkId.get(row.id))),
+    };
+  }
+
+  // classArmId is always the caller's own server-resolved current class
+  // (never a request field) — a homeworkId from a different class simply
+  // doesn't match this filter and 404s, collapsing "doesn't exist,"
+  // "wrong class," and "not yet published" into the same response so a
+  // caller can never distinguish which case it was (the same "hidden, not
+  // forbidden" posture every other own-X wall in this codebase takes).
+  // NOT gated by past-due — a late "done" tick after a homework has
+  // dropped off the default list is still an honest, valid signal.
+  async setCompletion(homeworkId: string, studentId: string, classArmId: string, markedDone: boolean): Promise<HomeworkCompletionResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const homework = await this.prisma.homework.findFirst({
+      where: forSchool(schoolId, { id: homeworkId, classArmId, status: HomeworkStatus.PUBLISHED, deletedAt: null }),
+    });
+    if (!homework) {
+      throw new NotFoundException("Homework not found.");
+    }
+
+    const markedAt = markedDone ? new Date() : null;
+    const completion = await this.prisma.homeworkCompletion.upsert({
+      where: { homeworkId_studentId: { homeworkId, studentId } },
+      create: { schoolId, homeworkId, studentId, markedDone, markedAt },
+      update: { markedDone, markedAt },
+    });
+
+    return { homeworkId, markedDone: completion.markedDone, markedAt: completion.markedAt?.toISOString() ?? null };
   }
 }

@@ -126,6 +126,7 @@ model School {
   teacherAbsences           TeacherAbsence[]
   timetableExceptions       TimetableException[]
   homework                  Homework[]
+  homeworkCompletions       HomeworkCompletion[]
 
   @@map("schools")
 }
@@ -370,6 +371,7 @@ model Student {
   termSubjectExamResults TermSubjectExamResult[]
   termExamResults        TermExamResult[]
   yearExamResults        YearExamResult[]
+  homeworkCompletions    HomeworkCompletion[]
 
   @@unique([schoolId, admissionNumber])
   @@index([schoolId])
@@ -1214,13 +1216,39 @@ model Homework {
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
 
-  school      School          @relation(fields: [schoolId], references: [id])
-  classArm    ClassArm        @relation(fields: [classArmId], references: [id])
-  subject     Subject         @relation(fields: [subjectId], references: [id])
-  teacherUser User            @relation("HomeworkTeacher", fields: [teacherUserId], references: [id])
-  session     AcademicSession @relation(fields: [sessionId], references: [id])
-  term        Term            @relation(fields: [termId], references: [id])
+  school      School               @relation(fields: [schoolId], references: [id])
+  classArm    ClassArm             @relation(fields: [classArmId], references: [id])
+  subject     Subject              @relation(fields: [subjectId], references: [id])
+  teacherUser User                 @relation("HomeworkTeacher", fields: [teacherUserId], references: [id])
+  session     AcademicSession      @relation(fields: [sessionId], references: [id])
+  term        Term                 @relation(fields: [termId], references: [id])
+  completions HomeworkCompletion[]
 
   @@index([schoolId, classArmId, subjectId, termId])
   @@map("homework")
+}
+
+// v0.8.2 step 2 (SPEC_V0.8.2.md §6 item 2) — a student's own "J'ai
+// terminé" tick. No row at all means "not done" — never a row with
+// markedDone: false created just to represent that; the read side treats
+// a missing row and { markedDone: false } identically. markedAt mirrors
+// Homework.publishedAt's own null-while-not-in-that-state shape: null
+// while markedDone is false, set on the transition to true.
+model HomeworkCompletion {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  schoolId   String    @map("school_id") @db.Uuid
+  homeworkId String    @map("homework_id") @db.Uuid
+  studentId  String    @map("student_id") @db.Uuid
+  markedDone Boolean   @default(false) @map("marked_done")
+  markedAt   DateTime? @map("marked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  school   School   @relation(fields: [schoolId], references: [id])
+  homework Homework @relation(fields: [homeworkId], references: [id])
+  student  Student  @relation(fields: [studentId], references: [id])
+
+  @@unique([homeworkId, studentId])
+  @@index([schoolId, studentId])
+  @@map("homework_completions")
 }

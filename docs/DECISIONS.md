@@ -6711,3 +6711,87 @@ files, 582/582 (one `grades-publish.e2e-spec.ts` "socket hang up" on the
 full run, unrelated to this change — confirmed flaky, 36/36 clean
 re-run in isolation, same known flake class as this session's earlier
 `exams-publish.e2e-spec.ts` blip).
+
+## 2026-09-27 — v0.8.2 step 2: student + parent homework views (Pronote due-date-grouped) + mark-done + past-due-hidden
+
+SPEC_V0.8.2.md's step 2 (§6 item 2) — the first STUDENT/PARENT read
+access to homework, plus the mark-done write. Backend-only, confirmed at
+plan time and unchanged through the build: no `apps/web` file touched —
+the actual due-date-grouped display and "view more" modal are UI concerns
+for whichever later step builds the student-facing page.
+
+**Real catch, confirmed at plan time before any code: `ClassArm` is a
+permanent entity.** It carries no `sessionId`/`termId` of its own — the
+same "JSS 2 A" row persists across every year. Scoping the student's
+list by `classArmId` alone would have surfaced every homework ever
+assigned to that class across every past term, forever. Fixed by ALSO
+resolving "the current term" (`Term.isCurrent`, the exact same inline
+lookup `MeService.findMyTeaching` already did — no dedicated shared
+helper existed for it before this, so a small `getCurrentTermId`
+private method was added) and filtering by it alongside `classArmId`.
+Proved with a dedicated regression test: a `PUBLISHED` homework created
+for a DIFFERENT (non-current) term in the SAME class must NOT appear.
+
+**`HomeworkCompletion` model** — `{ schoolId, homeworkId, studentId,
+markedDone, markedAt }`, unique on `(homeworkId, studentId)`. No row is
+ever created just to represent "not done" — the read side treats a
+missing row and `{ markedDone: false }` identically
+(`completion?.markedDone ?? false`), so "never ticked" and "explicitly
+un-ticked" read the same way. `markedAt` mirrors `Homework.publishedAt`'s
+own null-while-not-in-that-state shape: null while `markedDone` is
+false, set only on the transition to true. Migration `--create-only`,
+hand-reviewed: the `pg_trgm` false-positive reappeared exactly as
+expected (third time this session) and was stripped — otherwise purely
+additive (one new table, one unique index, three FKs, the standard
+Prisma back-relation lines on `Homework`/`Student`/`School`).
+
+**Past-due-hidden (Item 8) — a NEW private method, not shared.**
+`HomeworkService.isDueDatePast` is a pure-date sibling to v0.8.1's
+`isPeriodTimePast` (same `Date.UTC`-based injectable-`now` shape,
+no time-of-day component) — but kept LOCAL, not promoted to
+`packages/shared`. Ruled at plan time: `isPeriodTimePast` needed shared
+placement because it required a byte-identical browser+server evaluation
+in the SAME step; this step has no frontend consumer at all yet, so
+adding shared-package surface for a single caller would be premature.
+Promote it when the student-facing page is actually built and needs to
+match this exact rule client-side. A homework due TODAY is still
+visible — it only drops off the day AFTER its due date. Applied ONLY
+inside the new `listPublishedForStudent` — Step 1's teacher-facing
+`listHomework` is completely untouched, proved by a dedicated test
+(same homework, hidden from the student, still visible to the teacher).
+
+**Walls reused verbatim, no new path.** `resolveOwnStudentId` /
+`resolveStudentCurrentClassArmId` / `assertChildBelongsToCaller` are
+`MeService`'s own pre-existing helpers (already proven for
+timetable/grades/exams) — `assertChildBelongsToCaller` runs FIRST in
+`getChildHomework`, before any class/term resolution, matching every
+other `children/:childId/*` route's own ordering. Mark-done's
+`classArmId` is always the caller's own server-resolved current class;
+a `homeworkId` from a different class, a `DRAFT` homework, and a
+nonexistent id all `404` identically — a caller can never distinguish
+which case it was (`404`, not `403`, the same "hidden not forbidden"
+posture every own-X wall in this codebase already takes).
+
+**Ruled at plan time — mark-done is STUDENT-only, not gated by
+past-due.** No `POST /me/children/:childId/homework/:id/complete` route
+exists — the spec's own wording is "the STUDENT sets" the tick, not a
+parent acting on the child's behalf. Mark-done also has no past-due
+restriction of its own (only own-class + published) — a late "done" tick
+after a homework has dropped off the default list is still an honest,
+valid signal, deliberately looser than the list's own past-due filter.
+
+**Teacher's "who marked done" deferred to Step 4** — folds with "who
+uploaded" into one view, built once, per the spec's own §3 grouping
+those two together (Item 4) rather than building the completions view
+twice.
+
+**Test impact.** New `test/me-homework.e2e-spec.ts` (11 tests): student
+sees only published/current-term/not-past-due homework in their own
+class; a DRAFT never appears; past-due hidden from student but visible
+to teacher (via Step 1's `GET /homework`, proving the two paths are
+independent); the term-scoping regression; a different class's homework
+is invisible; mark-done toggles both directions (`markedAt` set/cleared);
+completing another class's or a DRAFT homework `404`s; parent sees the
+same shape for a linked child; a non-linked child `404`s; each route
+`403`s the other role. Full backend e2e suite: 45 files, 593/593, clean
+(no flakes this run).

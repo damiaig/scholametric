@@ -11,6 +11,8 @@ import type { GetStudentSubjectExamsQueryDto } from "../exams/dto/get-student-su
 import type { GetYearExamsQueryDto } from "../exams/dto/get-year-exams-query.dto";
 import { CalendarService, type ClassTimetableResponse, type TeacherTimetableResponse } from "../calendar/calendar.service";
 import type { GetTimetableRangeDto } from "../calendar/dto/get-timetable-range.dto";
+import { HomeworkService, type HomeworkCompletionResponse, type StudentHomeworkListResponse } from "../homework/homework.service";
+import type { MarkHomeworkDoneDto } from "../homework/dto/mark-homework-done.dto";
 
 export interface MyClassTeacherOfEntry {
   classArmId: string;
@@ -99,6 +101,7 @@ export class MeService {
     private readonly gradesService: GradesService,
     private readonly examsService: ExamsService,
     private readonly calendarService: CalendarService,
+    private readonly homeworkService: HomeworkService,
   ) {}
 
   // The identity-resolution seam every /me/* STUDENT endpoint below goes
@@ -212,6 +215,21 @@ export class MeService {
     return enrollment.classArmId;
   }
 
+  // v0.8.2 step 2 (SPEC_V0.8.2.md §6 item 2) — same inline "whichever Term
+  // is currently marked isCurrent for this school" lookup findMyTeaching
+  // below already does; no dedicated shared helper existed for it before
+  // this. Needed because ClassArm is a PERMANENT entity (no sessionId/
+  // termId of its own) — scoping a student's homework list by classArmId
+  // alone would surface every homework ever assigned to that class across
+  // every past term, forever.
+  private async getCurrentTermId(schoolId: string): Promise<string> {
+    const term = await this.prisma.term.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
+    if (!term) {
+      throw new NotFoundException("No current term is configured for this school yet.");
+    }
+    return term.id;
+  }
+
   private async buildAcademicContext(studentId: string): Promise<MyAcademicContext> {
     const schoolId = this.tenantContext.schoolId;
     const enrollments = await this.prisma.studentEnrollment.findMany({
@@ -290,6 +308,29 @@ export class MeService {
     return this.calendarService.resolveClassSchedule(classArmId, query.from, query.to);
   }
 
+  // v0.8.2 step 2 (SPEC_V0.8.2.md §6 item 2) — same "no classArmId field
+  // on this route at all" shape as getMyTimetable above: classArmId AND
+  // termId are both resolved server-side (current enrollment, current
+  // term), never request fields.
+  async getMyHomework(userId: string): Promise<StudentHomeworkListResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const studentId = await this.resolveOwnStudentId(userId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
+    const termId = await this.getCurrentTermId(schoolId);
+    return this.homeworkService.listPublishedForStudent(classArmId, termId, studentId);
+  }
+
+  // markedDone toggles either direction through this one call — not
+  // gated by past-due (a late "done" tick is still an honest signal,
+  // Dami's ruling at plan time). classArmId is resolved the SAME way as
+  // getMyHomework, never a request field — HomeworkService.setCompletion
+  // 404s if the given homeworkId doesn't belong to that exact class.
+  async markMyHomeworkDone(userId: string, homeworkId: string, dto: MarkHomeworkDoneDto): Promise<HomeworkCompletionResponse> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
+    return this.homeworkService.setCompletion(homeworkId, studentId, classArmId, dto.markedDone);
+  }
+
   // v0.6 step 4 — the child-switcher's data: every MyProfile the caller's
   // own linked children resolve to (§ resolveOwnChildIds above). A
   // guardian linked to zero students (shouldn't happen post-v0.6-step-1,
@@ -343,6 +384,18 @@ export class MeService {
     await this.assertChildBelongsToCaller(userId, childId);
     const classArmId = await this.resolveStudentCurrentClassArmId(childId);
     return this.calendarService.resolveClassSchedule(classArmId, query.from, query.to);
+  }
+
+  // Same reuse as getChildTimetable above: assertChildBelongsToCaller
+  // runs FIRST. PARENT is read-only here by design — there is no
+  // markChildHomeworkDone; the spec's own framing is "the STUDENT sets"
+  // the tick, not a parent acting on the child's behalf.
+  async getChildHomework(userId: string, childId: string): Promise<StudentHomeworkListResponse> {
+    await this.assertChildBelongsToCaller(userId, childId);
+    const schoolId = this.tenantContext.schoolId;
+    const classArmId = await this.resolveStudentCurrentClassArmId(childId);
+    const termId = await this.getCurrentTermId(schoolId);
+    return this.homeworkService.listPublishedForStudent(classArmId, termId, childId);
   }
 
   // Reuses the same class-teacher/subject-teacher join shape as

@@ -2625,6 +2625,39 @@ categorically) — that was a v0.7.x-specific split; nothing in this spec asks f
 Homework's whole model is "teacher owns it," so TEACHER keeps delete on their own DRAFT
 work. **Response `200`**: `{ id }`.
 
+### Student + parent homework views (v0.8.2 step 2, SPEC_V0.8.2.md §6 item 2)
+
+The first STUDENT/PARENT read access to homework, plus the mark-done write. `classArmId`
+is always resolved server-side from the caller's own current enrollment (student) or the
+requested child's (parent) — no `classArmId` field exists on any of these routes. All
+three additionally require the CURRENT term (`Term.isCurrent`) — `ClassArm` is a
+permanent entity with no `sessionId`/`termId` of its own, so scoping by class alone would
+surface every homework ever assigned to that class across every past term, forever.
+
+**`GET /me/homework`** (`STUDENT`). No params. **Response `200`**: `{ classArmId,
+homework: StudentHomeworkEntry[] }` — a flat list sorted by `dueDate` ascending (grouping
+into due-date buckets for display is a frontend concern, not built here). Only
+`PUBLISHED` homework for the caller's own current-term class; a homework whose `dueDate`
+has passed (strictly before today, UTC) is excluded — the caller's OWN `HomeworkCompletion`
+(if any) is merged in as `markedDone`/`markedAt` on each entry, defaulting to
+`false`/`null` when no completion row exists yet (never inferred as "not done" beyond an
+actual tick). Each entry: `{ id, subjectId, subjectName, teacherName, title, description,
+dueDate, requiresUpload, markedDone, markedAt }`.
+
+**`GET /me/children/:childId/homework`** (`PARENT`). `assertChildBelongsToCaller` runs
+FIRST, before any class/term resolution — same ordering and **`404`** (not `403`) as
+every other `children/:childId/*` route. Same response shape as the STUDENT route above,
+for the requested child.
+
+**`POST /me/homework/:id/complete`** (`STUDENT` only — deliberately no parent-side
+equivalent; the spec's own framing is "the STUDENT sets" the tick, not a parent acting on
+the child's behalf). Body: `{ markedDone: boolean }` — toggles either direction through
+this one call. `classArmId` is the caller's own resolved current class; a `homeworkId`
+from a different class, a `DRAFT` homework, or a nonexistent id all **`404`** identically
+(hidden, not forbidden — a caller can never distinguish which case it was). **Not**
+gated by past-due — a late "done" tick after a homework has dropped off the default list
+is still an honest signal. **Response `200`**: `{ homeworkId, markedDone, markedAt }`.
+
 ---
 
 ## Misc

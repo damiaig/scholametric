@@ -1,4 +1,4 @@
-import { Controller, Get, Param, ParseUUIDPipe, Query } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query } from "@nestjs/common";
 import { UserRole } from "@prisma/client";
 import { Roles } from "../common/decorators/roles.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
@@ -7,6 +7,7 @@ import { GetStudentResultsQueryDto } from "../grades/dto/get-student-results-que
 import { GetStudentSubjectExamsQueryDto } from "../exams/dto/get-student-subject-exams-query.dto";
 import { GetYearExamsQueryDto } from "../exams/dto/get-year-exams-query.dto";
 import { GetTimetableRangeDto } from "../calendar/dto/get-timetable-range.dto";
+import { MarkHomeworkDoneDto } from "../homework/dto/mark-homework-done.dto";
 import { MeService } from "./me.service";
 
 // No @Roles() at the class level — every authenticated role may ask
@@ -67,6 +68,26 @@ export class MeController {
   @Get("timetable")
   timetable(@CurrentUser() user: AuthenticatedUser, @Query() query: GetTimetableRangeDto) {
     return this.meService.getMyTimetable(user.userId, query);
+  }
+
+  // v0.8.2 step 2 (SPEC_V0.8.2.md §6 item 2) — no classArmId/termId field
+  // anywhere on this route; both resolved server-side (current
+  // enrollment, current term).
+  @Roles(UserRole.STUDENT)
+  @Get("homework")
+  homework(@CurrentUser() user: AuthenticatedUser) {
+    return this.meService.getMyHomework(user.userId);
+  }
+
+  // An action on existing data, not a resource creation — 200, not the
+  // POST default 201 (same convention as publish/unpublish/login/refresh
+  // elsewhere in this codebase). markedDone toggles either direction
+  // through this one call.
+  @Roles(UserRole.STUDENT)
+  @Post("homework/:id/complete")
+  @HttpCode(HttpStatus.OK)
+  completeHomework(@CurrentUser() user: AuthenticatedUser, @Param("id", ParseUUIDPipe) id: string, @Body() dto: MarkHomeworkDoneDto) {
+    return this.meService.markMyHomeworkDone(user.userId, id, dto);
   }
 
   // v0.8 step 3 — mirrors /me/teaching's own naming convention (the
@@ -138,5 +159,15 @@ export class MeController {
     @Query() query: GetTimetableRangeDto,
   ) {
     return this.meService.getChildTimetable(user.userId, childId, query);
+  }
+
+  // v0.8.2 step 2 — PARENT is read-only here by design; there is no
+  // children/:childId/homework/:id/complete route (the spec's own framing
+  // is "the STUDENT sets" the tick, not a parent acting on the child's
+  // behalf — Dami's ruling at plan time).
+  @Roles(UserRole.PARENT)
+  @Get("children/:childId/homework")
+  childHomework(@CurrentUser() user: AuthenticatedUser, @Param("childId", ParseUUIDPipe) childId: string) {
+    return this.meService.getChildHomework(user.userId, childId);
   }
 }
