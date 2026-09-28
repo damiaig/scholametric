@@ -8,6 +8,8 @@ import { GetStudentSubjectExamsQueryDto } from "../exams/dto/get-student-subject
 import { GetYearExamsQueryDto } from "../exams/dto/get-year-exams-query.dto";
 import { GetTimetableRangeDto } from "../calendar/dto/get-timetable-range.dto";
 import { MarkHomeworkDoneDto } from "../homework/dto/mark-homework-done.dto";
+import { RequestUploadUrlDto } from "../homework/dto/request-upload-url.dto";
+import { CommitFileDto } from "../homework/dto/commit-file.dto";
 import { MeService } from "./me.service";
 
 // No @Roles() at the class level — every authenticated role may ask
@@ -88,6 +90,35 @@ export class MeController {
   @HttpCode(HttpStatus.OK)
   completeHomework(@CurrentUser() user: AuthenticatedUser, @Param("id", ParseUUIDPipe) id: string, @Body() dto: MarkHomeworkDoneDto) {
     return this.meService.markMyHomeworkDone(user.userId, id, dto);
+  }
+
+  // v0.8.2 step 4 (SPEC_V0.8.2.md §6 item 4) — CHECKPOINT 1: no classArmId/
+  // studentId field anywhere on this route, same as every other own-X
+  // homework route above.
+  @Roles(UserRole.STUDENT)
+  @Post("homework/:id/submissions/upload-url")
+  @HttpCode(HttpStatus.OK)
+  issueHomeworkUploadUrl(@CurrentUser() user: AuthenticatedUser, @Param("id", ParseUUIDPipe) id: string, @Body() dto: RequestUploadUrlDto) {
+    return this.meService.issueMyHomeworkUploadUrl(user.userId, id, dto);
+  }
+
+  // CHECKPOINT 2: commits the submission using the storage layer's
+  // verified actual size.
+  @Roles(UserRole.STUDENT)
+  @Post("homework/:id/submissions")
+  commitHomeworkSubmission(@CurrentUser() user: AuthenticatedUser, @Param("id", ParseUUIDPipe) id: string, @Body() dto: CommitFileDto) {
+    return this.meService.commitMyHomeworkSubmission(user.userId, id, dto);
+  }
+
+  // v0.8.2 step 4, flag 4 — download the teacher's own attachment.
+  @Roles(UserRole.STUDENT)
+  @Get("homework/:id/attachments/:attachmentId/download-url")
+  getHomeworkAttachmentDownloadUrl(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("attachmentId", ParseUUIDPipe) attachmentId: string,
+  ) {
+    return this.meService.getMyHomeworkAttachmentDownloadUrl(user.userId, id, attachmentId);
   }
 
   // v0.8 step 3 — mirrors /me/teaching's own naming convention (the

@@ -6893,3 +6893,137 @@ zero HTTP endpoints this step. Full backend e2e suite: 46 files,
 full run, unrelated to this change — confirmed flaky, 35/35 clean
 re-run in isolation, same known flake class as this session's earlier
 `grades-publish`/`exams-publish` blips).
+
+## 2026-09-29 — v0.8.2 step 4: attachments + student uploads on homework
+
+SPEC_V0.8.2.md's step 4 (§6 item 4) — files on top of Step 3's storage
+layer. Two new models, six new endpoints, the retention sweep wired for
+real. No grade-engine contact; own-class/own-child + tenant walls apply
+exactly as everywhere.
+
+**`HomeworkAttachment`/`HomeworkSubmission`** — additive migration
+(`20260928213908_v0_8_2_step4_homework_attachments_submissions`, the
+known `pg_trgm` false-positive `DROP INDEX` reappeared and was stripped,
+as every migration this session has). No `deletedAt` on either — no
+delete-attachment/submission endpoint this step (ruled at plan time);
+files disappear via the session-end sweep instead, not a soft-delete
+flag.
+
+**The tenant-isolation guard — storage-key prefix validation at
+commit.** `storageKey` is server-generated at upload-url-issue time
+(`schools/{schoolId}/homework/{homeworkId}/attachments/{uuid}-
+{fileName}`, and the submission equivalent with a `{studentId}` segment)
+— the client only ever receives it back, never chooses it. At commit,
+the service requires `storageKey.startsWith()` the EXACT prefix it would
+itself generate for the caller's own `(schoolId, homeworkId[,
+studentId])`, checked before `getObjectMetadata` is even called. Without
+this, a client could commit an attachment/submission row pointing at a
+storage key it merely guessed (e.g. another school's real file) — the
+row's own `schoolId`/`homeworkId` columns would still be correctly
+tenant-scoped, but a LATER download call would then hand back a signed
+URL to bytes that don't belong to the caller's tenant at all. The random
+UUID in every generated key is what makes guessing a sibling key
+infeasible; the prefix check is what makes a guess (if one somehow
+succeeded) unable to point outside the caller's own path. Proved by a
+dedicated e2e seeding a real object at a mismatched-prefix key and
+confirming the `400` fires before any metadata lookup could have
+succeeded anyway.
+
+**Two-checkpoint cap, exactly where each fires.** Checkpoint 1
+(issue-time): sums the homework's (or student's) existing file sizes;
+`remaining <= 0` → `409`, no signed URL issued at all. The URL that IS
+issued caps `maxSizeBytes` at that remaining figure, baked into GCS's
+`X-Goog-Content-Length-Range` (Step 3) — storage-layer enforced, not
+declared. Checkpoint 2 (commit-time): re-sums the budget using
+`getObjectMetadata`'s VERIFIED actual size and rejects (`409`) if the
+total would now exceed the cap — this is NOT redundant with checkpoint 1;
+it closes the race where two uploads are issued concurrently, each
+fitting its own remaining-budget snapshot but not the combined total. On
+that rejection the now-useless upload is deleted from storage
+(`deleteObject`) rather than left as a billing-relevant orphan. Teacher
+cap: 20MB per homework (spec's own number, §2). Student cap: 20MB per
+student per homework — NOT stated in the spec (which only names the
+teacher-attachment number); ruled at plan time as the sane symmetric
+default, flagged explicitly as a plan-time invention rather than a spec
+requirement.
+
+**Six rulings made at plan time, all adopted as proposed:** (1)
+attachments are NOT frozen post-publish (adding a file ≠ editing the
+assignment's text, unlike title/description/dueDate) — proved by a
+dedicated e2e attaching a file to an already-published homework; (2)
+student upload is ALWAYS allowed on any published own-class homework,
+never gated by `requiresUpload` — that flag stays purely informational,
+symmetric with mark-done being a free-standing signal; (3) the 20MB
+student cap (above); (4) students see AND download the teacher's own
+attachments — `StudentHomeworkEntry` gained the same `attachments` array
+as the teacher response, plus a dedicated
+`GET /me/homework/:id/attachments/:attachmentId/download-url`
+(own-class + `PUBLISHED` wall, same shape as `setCompletion`); (5) no
+delete-attachment/submission endpoint — not asked for, not needed for
+the acceptance walk; (6) no parent-upload-on-behalf-of-child, and (also
+not built, staying strictly in scope) no parent-side attachment
+download-url route either — a linked child's attachments are visible as
+metadata through the existing `GET /me/children/:childId/homework`
+response, just not downloadable via a parent route this step.
+
+**Teacher sees submissions — Step 2's deferred piece lands here.**
+`GET /homework/:id/submissions` reuses `getRoster` (imported from
+`grades/grade-shared.util.ts`, the same cross-module reuse as
+`assertTeacherAssignment`) so every roster student appears exactly once,
+whether or not they've touched the homework at all — folding `markedDone`
+(from `HomeworkCompletion`, Step 2) together with `submissions` (this
+step) into one response, per the spec's own §3 grouping.
+
+**Retention sweep — wired into `SessionsService.activate()`, not a new
+lifecycle hook.** `previous` (whichever session was current) is resolved
+BEFORE the existing `$transaction([...])` array (unchanged); AFTER it
+commits, if `previous.id !== id`, `HomeworkService.purgeSessionFiles`
+runs for that previous session — every `HomeworkAttachment`/
+`HomeworkSubmission` under ANY homework in that session (soft-deleted
+homework included — `deletedAt` deliberately not filtered, since
+retention is about files outliving their usefulness, not about
+active-record visibility) has its storage object deleted
+(`try`/`catch` per object, `Logger.warn` on failure, never thrown) and
+its row removed regardless of whether the storage delete succeeded. The
+whole call is ALSO wrapped in `activate()` itself: a DB hiccup inside the
+sweep is logged and swallowed, never surfacing as an activation failure
+— the session flip already committed by that point, so there is nothing
+to roll back, only a response that must stay honest about what
+succeeded. `Homework`/`HomeworkCompletion` rows are never touched.
+`SessionsModule` gained `imports: [HomeworkModule]` — confirmed
+one-directional (`git grep` shows no `HomeworkModule`/`CalendarModule`/
+`StorageModule` import of `SessionsModule` anywhere), no cycle.
+
+**firebase-admin's ignored build scripts, revisited.** Step 3 flagged
+"tests probably won't need `pnpm approve-builds`" as unverified; that
+assumption held for this step too (no new install happened) — no update
+needed here, noted only because this step depended on the environment
+those approvals fixed.
+
+**Test impact.** New `test/homework-attachments.e2e-spec.ts` (10 tests):
+issue-url scoping, verified-size commit, no-seeded-object `400`,
+mismatched-prefix `400` (the tenant-isolation proof), issue-time `409`
+at exactly-full cap, commit-time `409` on the concurrent-race scenario
+with orphan cleanup confirmed via `getObjectMetadata` returning `null`
+afterward, non-assigned-teacher `403`, cross-tenant `404`, post-publish
+attach. New `test/homework-submissions.e2e-spec.ts` (9 tests): verified-
+size commit visible in the teacher's roster view, mark-done-and-uploads
+folded correctly (a student with neither still appears), own-class
+`404`, non-assigned-teacher `403`, cross-tenant admin `404`, admin
+safety-valve `200`, issue-time `409` at full cap, teacher download-url,
+and the flag-4 student-attachment-visibility-and-download proof
+(including a different class's student `404`ing on the same
+attachment). New `test/homework-retention.e2e-spec.ts` (2 tests): a real
+session activation (via `POST /sessions/:id/activate`, following
+`academic-setup.e2e-spec.ts`'s own established "create a real session,
+activate it, restore `isCurrent` in `afterAll`" pattern — safe under
+Jest's sequential `--runInBand` file execution) sweeping a still-active
+AND a soft-deleted homework's files while leaving both `Homework` rows
+and their `deletedAt` state untouched; a same-session reactivation
+(`previous.id === id`) proven to skip the sweep entirely. All three
+files use `FakeStorageService` exclusively — no live Firebase call
+anywhere. Full backend e2e suite: 49 files, 616/618 clean (two
+"socket hang up" failures on the full run — `report-card.e2e-spec.ts`
+and this step's own `homework-attachments.e2e-spec.ts` — both confirmed
+flaky, clean on immediate re-run in isolation together, same known flake
+class as every prior instance this session).

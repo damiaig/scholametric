@@ -2562,9 +2562,9 @@ week — pure client-side presentation of the same resolved schedule.
 
 ---
 
-## Homework (v0.8.2 step 1, SPEC_V0.8.2.md §6 item 1)
+## Homework (v0.8.2 steps 1-4, SPEC_V0.8.2.md §6)
 
-Text-only for now — attachments/uploads are Steps 3-4. A genuinely new domain: no
+A genuinely new domain: no
 grade-engine table, enum, or term-lock/advisory-lock machinery reused. Per-homework
 publish (each homework published on its own, no admin approval), mirroring v0.7.4's
 per-evaluation model. `teacherUserId` records **authorship**, not authority — who may
@@ -2597,7 +2597,9 @@ derived server-side from `termId`. Validated before write:
 
 **Response `201`**: `HomeworkResponse` — `{ id, classArmId, subjectId, teacherUserId,
 teacherName, sessionId, termId, title, description, dueDate, requiresUpload, status,
-publishedAt, createdAt, updatedAt }`. `status` is `"DRAFT"` on creation.
+publishedAt, createdAt, updatedAt, attachments }`. `status` is `"DRAFT"` on creation.
+`attachments` (added step 4): `{ id, fileName, contentType, sizeBytes, createdAt }[]` —
+empty on creation, populated as the teacher attaches files (below).
 
 **`PATCH /homework/:id`** (`TEACHER` only). Body: any of `title`, `description`,
 `dueDate`, `requiresUpload` (at least one required — `400` otherwise);
@@ -2624,6 +2626,87 @@ Deliberately **not** the evaluations precedent (`deleteEvaluation` is PROPRIETOR
 categorically) — that was a v0.7.x-specific split; nothing in this spec asks for it, and
 Homework's whole model is "teacher owns it," so TEACHER keeps delete on their own DRAFT
 work. **Response `200`**: `{ id }`.
+
+### Teacher attachments (v0.8.2 step 4, SPEC_V0.8.2.md §6 item 4)
+
+Attachments are **not frozen** once a homework is `PUBLISHED` (ruled at plan time — adding
+a supplementary file isn't "changing the assignment" the way editing its text is). A
+two-checkpoint flow built on Step 3's `StorageService`: the client never talks to Firebase
+directly through a request body — it PUTs bytes straight to a signed URL, then tells the
+API the upload is done.
+
+**`POST /homework/:id/attachments/upload-url`** (`TEACHER`, `assertTeacherAssignment`).
+Body: `{ fileName, contentType }`. **Checkpoint 1**: sums this homework's existing
+attachment sizes; **`409`** if the remaining budget is already `<= 0` (the 20MB-per-
+homework cap, §2) — no URL is issued. Otherwise returns a signed upload URL capped at
+exactly the remaining bytes (Firebase's `X-Goog-Content-Length-Range`, enforced by the
+storage layer itself, not the client's word for it). **Response `200`**: `{ uploadUrl,
+storageKey, expiresAt, maxSizeBytes }`. No DB row yet.
+
+**`POST /homework/:id/attachments`** (`TEACHER`). Body: `{ storageKey, fileName,
+contentType }`. **`400`** if `storageKey` doesn't start with the exact
+`schools/{schoolId}/homework/{homeworkId}/attachments/` prefix the server itself would
+have generated (the tenant-isolation guard — see `docs/DECISIONS.md`) — checked before
+anything else. **`400`** if `StorageService.getObjectMetadata` finds nothing there (no
+upload ever completed). **Checkpoint 2**: re-sums the budget using the metadata's
+VERIFIED actual size (never the client's declared value); **`409`** if it would now
+exceed 20MB — the now-useless upload is deleted from storage rather than left as an
+orphan, and no row is created. **Response `201`**: `{ id, fileName, contentType,
+sizeBytes, createdAt }`.
+
+### Teacher sees submissions (v0.8.2 step 4, SPEC_V0.8.2.md §6 item 4)
+
+**`GET /homework/:id/submissions`** (`TEACHER` via `assertTeacherAssignment`, or
+`SCHOOL_ADMIN`/`PROPRIETOR` without one — the same safety-valve shape as elsewhere).
+Folds Step 2's deferred "who marked done" together with "who uploaded" into one
+roster-based view (reuses `getRoster`, same cross-module import as
+`assertTeacherAssignment`). **Response `200`**: `{ homeworkId, students: [{ studentId,
+studentName, markedDone, markedAt, submissions: [{ id, fileName, contentType, sizeBytes,
+uploadedAt }] }] }` — every roster student appears exactly once, whether or not they've
+touched this homework at all.
+
+**`GET /homework/:id/submissions/:submissionId/download-url`** (`TEACHER`/admin). Resolves
+the submission row scoped by `schoolId + homeworkId + id` (**`404`** collapses
+"nonexistent," "wrong homework," and "cross-tenant" identically), then issues a signed
+read URL. **Response `200`**: `{ downloadUrl, expiresAt }`.
+
+### Student uploads (v0.8.2 step 4, SPEC_V0.8.2.md §6 item 4)
+
+Same two-checkpoint shape as teacher attachments, mirrored onto `HomeworkSubmission`.
+Always allowed on any `PUBLISHED` own-class homework — **not** gated by `requiresUpload`
+(ruled at plan time: it stays purely informational, symmetric with mark-done being a
+free-standing signal). Cap: 20MB total per student per homework (not stated in the spec's
+own §2, which only names the teacher-attachment cap — ruled at plan time as the sane
+symmetric default).
+
+**`POST /me/homework/:id/submissions/upload-url`** (`STUDENT`). Body: `{ fileName,
+contentType }`. `classArmId`/`studentId` are both resolved server-side, never request
+fields — same own-class + `PUBLISHED` `404` shape as `POST /me/homework/:id/complete`.
+**Response `200`**: `{ uploadUrl, storageKey, expiresAt, maxSizeBytes }`.
+
+**`POST /me/homework/:id/submissions`** (`STUDENT`). Body: `{ storageKey, fileName,
+contentType }`. Same prefix-validation / verified-size / cap-recheck shape as the
+teacher's attachment commit, scoped to
+`schools/{schoolId}/homework/{homeworkId}/submissions/{studentId}/`. **Response `201`**:
+`{ id, fileName, contentType, sizeBytes, uploadedAt }`.
+
+**`GET /me/homework/:id/attachments/:attachmentId/download-url`** (`STUDENT`) — students
+see/download the teacher's own attachments (implied by the acceptance walk, ruled at plan
+time). Same own-class + `PUBLISHED` wall. **Response `200`**: `{ downloadUrl, expiresAt }`.
+No parent-side equivalent for any of the three routes above (no upload-on-behalf-of-child,
+matching Step 2's "the STUDENT sets" ruling) — a linked child's attachments are still
+visible as metadata via the existing `GET /me/children/:childId/homework` response below,
+just not downloadable through a parent route this step.
+
+### Retention sweep (v0.8.2 step 4, SPEC_V0.8.2.md §5 Item 10)
+
+No new endpoint — wired into `POST /sessions/:id/activate` (see Sessions, above). Once
+that call's session-flip transaction commits, every `HomeworkAttachment`/
+`HomeworkSubmission` belonging to whichever session was current *before* the call (if
+different from the newly-activated one) has its storage object deleted and its row
+removed — including homework that's since been soft-deleted. `Homework` and
+`HomeworkCompletion` rows are never touched. A storage or DB failure during the sweep is
+logged and swallowed; it never fails or rolls back the activation itself.
 
 ### Student + parent homework views (v0.8.2 step 2, SPEC_V0.8.2.md §6 item 2)
 

@@ -127,6 +127,8 @@ model School {
   timetableExceptions       TimetableException[]
   homework                  Homework[]
   homeworkCompletions       HomeworkCompletion[]
+  homeworkAttachments       HomeworkAttachment[]
+  homeworkSubmissions       HomeworkSubmission[]
 
   @@map("schools")
 }
@@ -372,6 +374,7 @@ model Student {
   termExamResults        TermExamResult[]
   yearExamResults        YearExamResult[]
   homeworkCompletions    HomeworkCompletion[]
+  homeworkSubmissions    HomeworkSubmission[]
 
   @@unique([schoolId, admissionNumber])
   @@index([schoolId])
@@ -1223,6 +1226,8 @@ model Homework {
   session     AcademicSession      @relation(fields: [sessionId], references: [id])
   term        Term                 @relation(fields: [termId], references: [id])
   completions HomeworkCompletion[]
+  attachments HomeworkAttachment[]
+  submissions HomeworkSubmission[]
 
   @@index([schoolId, classArmId, subjectId, termId])
   @@map("homework")
@@ -1251,4 +1256,53 @@ model HomeworkCompletion {
   @@unique([homeworkId, studentId])
   @@index([schoolId, studentId])
   @@map("homework_completions")
+}
+
+// v0.8.2 step 4 (SPEC_V0.8.2.md §6 item 4) — the teacher's own files on a
+// homework. storageKey is server-generated (StorageService, step 3),
+// never client-supplied — see HomeworkService's prefix validation at
+// commit time, the tenant-isolation guard for this table. sizeBytes is
+// ALWAYS the storage layer's verified actual size (StorageService.
+// getObjectMetadata), never the client's declared value. No deletedAt —
+// no delete-attachment endpoint this step (ruled at plan time); files
+// disappear via the session-end retention sweep instead.
+model HomeworkAttachment {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  schoolId    String   @map("school_id") @db.Uuid
+  homeworkId  String   @map("homework_id") @db.Uuid
+  storageKey  String   @map("storage_key")
+  fileName    String   @map("file_name")
+  contentType String   @map("content_type")
+  sizeBytes   Int      @map("size_bytes")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  school   School   @relation(fields: [schoolId], references: [id])
+  homework Homework @relation(fields: [homeworkId], references: [id])
+
+  @@index([schoolId, homeworkId])
+  @@map("homework_attachments")
+}
+
+// v0.8.2 step 4 (SPEC_V0.8.2.md §6 item 4) — a student's uploaded file.
+// No unique constraint: a student may submit several files per homework.
+// Same server-generated-storageKey / verified-actual-sizeBytes discipline
+// as HomeworkAttachment above; the key additionally embeds studentId
+// (own-student-scoped prefix, checked at commit).
+model HomeworkSubmission {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  schoolId    String   @map("school_id") @db.Uuid
+  homeworkId  String   @map("homework_id") @db.Uuid
+  studentId   String   @map("student_id") @db.Uuid
+  storageKey  String   @map("storage_key")
+  fileName    String   @map("file_name")
+  contentType String   @map("content_type")
+  sizeBytes   Int      @map("size_bytes")
+  uploadedAt  DateTime @default(now()) @map("uploaded_at")
+
+  school   School   @relation(fields: [schoolId], references: [id])
+  homework Homework @relation(fields: [homeworkId], references: [id])
+  student  Student  @relation(fields: [studentId], references: [id])
+
+  @@index([schoolId, homeworkId, studentId])
+  @@map("homework_submissions")
 }

@@ -1,10 +1,11 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import type { AcademicSession } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { paginate, Paginated } from "../common/pagination/paginate";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
+import { HomeworkService } from "../homework/homework.service";
 import { CreateSessionDto } from "./dto/create-session.dto";
 import { UpdateSessionDto } from "./dto/update-session.dto";
 import { ActivateSessionDto } from "./dto/activate-session.dto";
@@ -16,9 +17,12 @@ export interface SessionActivationPreview {
 
 @Injectable()
 export class SessionsService {
+  private readonly logger = new Logger(SessionsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContext,
+    private readonly homeworkService: HomeworkService,
   ) {}
 
   async findAll(page: number, pageSize: number): Promise<Paginated<AcademicSession>> {
@@ -88,6 +92,15 @@ export class SessionsService {
     };
   }
 
+  // v0.8.2 step 4 (SPEC_V0.8.2.md §5 Item 10) — the retention sweep's
+  // trigger point. `previous` is read BEFORE the transaction (mirrors
+  // activationPreview's own "find current" lookup above); the sweep runs
+  // AFTER the transaction commits, only if a different session was
+  // actually current before (activating the already-current session is a
+  // no-op for `previous`, since the transaction's own updateMany already
+  // excludes `id`). purgeSessionFiles never throws — a storage/DB hiccup
+  // in the sweep must never fail or roll back an already-committed
+  // session activation.
   async activate(id: string, dto: ActivateSessionDto): Promise<AcademicSession> {
     const schoolId = this.tenantContext.schoolId;
     const target = await this.findOneOrThrow(schoolId, id);
@@ -95,6 +108,8 @@ export class SessionsService {
     if (dto.confirmName !== target.name) {
       throw new BadRequestException(`Type the session name "${target.name}" exactly to confirm activation.`);
     }
+
+    const previous = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
 
     // Deactivate-then-activate, in that order, inside one transaction: the
     // partial unique index on (school_id) WHERE is_current is checked
@@ -107,6 +122,19 @@ export class SessionsService {
       }),
       this.prisma.academicSession.update({ where: { id }, data: { isCurrent: true } }),
     ]);
+
+    if (previous && previous.id !== id) {
+      try {
+        await this.homeworkService.purgeSessionFiles(schoolId, previous.id);
+      } catch (error) {
+        // The session flip already committed — a sweep failure (e.g. a DB
+        // blip on the deleteMany) must never surface as an activation
+        // error; it's logged and left for the NEXT activation's sweep to
+        // pick up (purgeSessionFiles re-queries from scratch every time).
+        this.logger.warn(`Retention sweep failed for session ${previous.id}: ${error}`);
+      }
+    }
+
     return activated;
   }
 

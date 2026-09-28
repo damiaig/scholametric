@@ -11,8 +11,17 @@ import type { GetStudentSubjectExamsQueryDto } from "../exams/dto/get-student-su
 import type { GetYearExamsQueryDto } from "../exams/dto/get-year-exams-query.dto";
 import { CalendarService, type ClassTimetableResponse, type TeacherTimetableResponse } from "../calendar/calendar.service";
 import type { GetTimetableRangeDto } from "../calendar/dto/get-timetable-range.dto";
-import { HomeworkService, type HomeworkCompletionResponse, type StudentHomeworkListResponse } from "../homework/homework.service";
+import {
+  HomeworkService,
+  type HomeworkCompletionResponse,
+  type StudentHomeworkListResponse,
+  type UploadUrlIssueResponse,
+  type HomeworkSubmissionResponse,
+} from "../homework/homework.service";
 import type { MarkHomeworkDoneDto } from "../homework/dto/mark-homework-done.dto";
+import type { RequestUploadUrlDto } from "../homework/dto/request-upload-url.dto";
+import type { CommitFileDto } from "../homework/dto/commit-file.dto";
+import type { DownloadUrlResult } from "../storage/storage.service";
 
 export interface MyClassTeacherOfEntry {
   classArmId: string;
@@ -329,6 +338,32 @@ export class MeService {
     const studentId = await this.resolveOwnStudentId(userId);
     const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
     return this.homeworkService.setCompletion(homeworkId, studentId, classArmId, dto.markedDone);
+  }
+
+  // v0.8.2 step 4 (SPEC_V0.8.2.md §6 item 4) — studentId AND classArmId
+  // are both resolved server-side, same as markMyHomeworkDone above;
+  // neither is ever a request field. Always allowed on any published
+  // own-class homework (ruled at plan time — requiresUpload is
+  // informational only, not an upload gate).
+  async issueMyHomeworkUploadUrl(userId: string, homeworkId: string, dto: RequestUploadUrlDto): Promise<UploadUrlIssueResponse> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
+    return this.homeworkService.issueSubmissionUploadUrl(homeworkId, studentId, classArmId, dto);
+  }
+
+  async commitMyHomeworkSubmission(userId: string, homeworkId: string, dto: CommitFileDto): Promise<HomeworkSubmissionResponse> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
+    return this.homeworkService.commitSubmission(homeworkId, studentId, classArmId, dto);
+  }
+
+  // v0.8.2 step 4, flag 4 — the student-side counterpart to the teacher's
+  // attachments: seeing the teacher's file is not enough without a way to
+  // actually open it.
+  async getMyHomeworkAttachmentDownloadUrl(userId: string, homeworkId: string, attachmentId: string): Promise<DownloadUrlResult> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
+    return this.homeworkService.getAttachmentDownloadUrlForStudent(homeworkId, attachmentId, classArmId);
   }
 
   // v0.6 step 4 — the child-switcher's data: every MyProfile the caller's
