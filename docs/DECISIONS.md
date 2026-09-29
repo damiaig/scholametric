@@ -7027,3 +7027,113 @@ anywhere. Full backend e2e suite: 49 files, 616/618 clean (two
 and this step's own `homework-attachments.e2e-spec.ts` — both confirmed
 flaky, clean on immediate re-run in isolation together, same known flake
 class as every prior instance this session).
+
+## 2026-09-30 — v0.8.2 step 5: teacher homework UI
+
+SPEC_V0.8.2.md's step 5 (§6 item 5) — the first frontend for this domain.
+Steps 1-4 were entirely backend-only (confirmed via `git show --stat` on
+all four commits — zero `apps/web` files, and a repo-wide grep for
+"homework" in `apps/web/src` turned up exactly one hit, an unrelated
+comment in `WeekNavigation.tsx`). Frontend-only, zero backend diff — every
+new hook targets an endpoint Steps 1-4 already built and tested.
+
+**New `packages/shared/src/homework.ts`** — mirrors every backend response
+shape (`Homework`, `HomeworkAttachment`, `HomeworkSubmission`,
+`HomeworkSubmissionsView`, `UploadUrlIssueResponse`,
+`DownloadUrlResponse`), `homeworkFormSchema`/`HomeworkFormInput` (title
+1-200, description 1-5000, matching `CreateHomeworkDto`'s own caps
+exactly — duplicated, not imported; no path exists from this package into
+`apps/api/src`), and the two 20MB cap constants (also duplicated from
+`apps/api/src/homework/homework.constants.ts`, same reasoning).
+
+**The attach-file flow — the piece most likely to break in a real walk,
+called out at plan time and built exactly as specified.**
+`useAttachHomeworkFile` (`use-homework-attachments.ts`) orchestrates three
+steps as ONE mutation: (1) `apiRequest` to the upload-url endpoint, (2) a
+RAW `fetch()` PUT straight to the returned signed URL — bypassing
+`apiRequest` entirely (no Authorization header; the signed URL itself is
+the authorization, and `apiRequest` hardcodes `Content-Type: application/
+json` + `JSON.stringify`, both wrong here) — carrying
+`X-Goog-Content-Length-Range: 0,${issued.maxSizeBytes}` BYTE-IDENTICAL to
+what `FirebaseStorageService` used to build the V4 signature (Step 3);
+omitting it fails GCS's signature validation on a real upload, a failure
+mode no mocked test can catch except by asserting the header is actually
+present on the call — which `HomeworkDetailDialog.test.tsx`'s attach-flow
+test does. (3) `apiRequest` to commit. A step-2 failure throws a PLAIN
+`Error`, deliberately not an `ApiError` — `getErrorMessage()` (shared by
+every other feature in this app) is NOT widened to handle it; instead a
+small local `getAttachErrorMessage` helper in the same hook file branches
+`error instanceof ApiError ? getErrorMessage(error) : "specific upload-
+failed message"`, keeping the fix entirely local to homework code.
+
+**A real gap surfaced during the build, not silently patched over:** the
+plan's own "Attachments: existing list (name, size, download-in-new-tab)"
+assumed a teacher-facing attachment download-url route exists. It doesn't
+— Step 4 built `GET /homework/:id/submissions/:submissionId/download-url`
+(teacher) and `GET /me/homework/:id/attachments/:attachmentId/download-
+url` (student), but never a teacher-facing one for attachments. Since this
+step is scoped "zero backend diff," `HomeworkDetailDialog`'s
+Attachments section shows name + size only, no download link, rather than
+either silently dropping the promised feature without comment or quietly
+adding a new backend route the user didn't approve this step. Flagged
+here for a future step if wanted.
+
+**Sidebar + routes.** `HOMEWORK_ITEM` added to `Sidebar.tsx`'s TEACHER
+branch only (ruled at plan time — no `SCHOOL_ADMIN`/`PROPRIETOR` entry).
+`/homework` and `/homework/arms/:id` are UNGUARDED in `App.tsx`, same
+"reachable by URL, server `@Roles`+`assertTeacherAssignment` is the real
+gate" pattern as `/me/grades`/`/timetable/mine` — no new `RequireXAccess`
+guard component. `HomeworkLandingPage` mirrors `GradesLandingPage`'s
+`TeacherGradesView` (same `useMyTeaching()` data source); no admin
+school-wide browse fork this step. `HomeworkClassPage` mirrors
+`ClassGradesPage`'s route-param (`classArmId`)/search-param (`subjectId`)
+shape, resolving `termId` from `useMyTeaching().currentTermId` (same
+source `EnterScoresTab` already uses) — no new fetch for the class/
+subject label either, since `useMyTeaching().subjects[]` already carries
+`className`/`subjectName`.
+
+**Edit/Delete disabled once `PUBLISHED`** (tooltip explaining why),
+pre-empting the server's own `403`/`409` the same way `EvaluationPicker`
+disables "+ New" on a locked term — the dialog itself still handles a
+race defensively (opens regardless, surfaces the real error if one
+occurs). Cap remaining-budget display is computed client-side from the
+already-loaded `Homework.attachments[]` — advisory/UX only, never
+enforced client-side; the server's two-checkpoint check (Step 4) remains
+the sole authority.
+
+**No new base UI component.** Everything is `Dialog`/`Card`/`Button`/
+`Input`/`Textarea`/`Label`/`Checkbox`/`FieldError`/`Spinner`/
+`StatusBadge`/`ConfirmDialog`/`PageHeader`/`StyledDatePicker`, all
+pre-existing. `HomeworkFormDialog` mirrors `EvaluationFormDialog`'s exact
+create/edit shape; the due date uses `StyledDatePicker` + RHF `Controller`
+exactly as `HolidayFormDialog` established, `minDate="today"` as a UX
+nicety only — no client-side school-day check (the server, `CalendarService.
+isSchoolDayForClassOnDate`, is the sole authority; a rejected holiday/
+weekend surfaces via the mutation's own error, proven by a dedicated
+test). Ruled at plan time: no "next school day" auto-default (would need
+calendar data fetched before the form even opens, for marginal gain).
+
+**Test impact.** New `HomeworkFormDialog.test.tsx` (4 tests): create
+submits the merged scope fields; a blank title 400s client-side (zod)
+without calling the API; the server's due-date `400` surfaces legibly;
+edit mode prefills and `PATCH`es only the form fields. New
+`HomeworkDetailDialog.test.tsx` (6 tests): existing attachments +
+remaining-budget display; the cap-reached Drive-link message with the
+file input hidden; the attach flow's 3 calls firing in order WITH the
+`X-Goog-Content-Length-Range` header asserted on the raw PUT (the
+tenant/signature-safety proof for this step); a failed PUT stopping
+before the commit call and surfacing the specific message, not the
+generic fallback; the over-cap `409` from the upload-url step surfacing
+legibly; the submissions roster rendering mark-done-folded-with-uploads,
+download click resolving a URL and calling `window.open`. New
+`HomeworkClassPage.test.tsx` (5 tests): list + title render; publish
+calls the right endpoint; Edit/Delete disabled once `PUBLISHED` with the
+explanatory tooltip; missing `subjectId`/`termId` show their own prompts
+instead of querying. New `HomeworkLandingPage.test.tsx` (3 tests):
+list-with-link, empty state, error-with-retry. `route-smoke.test.tsx`
+extended with both new paths + a `GET /me/teaching` fixture. Full web
+suite: 75 files, 474/474 (one transient local "heap out of memory /
+Worker exited unexpectedly" run — the same long-standing flake this
+repo's own CI config already documents and mitigates via
+`--workspace-concurrency=1` — clean on immediate re-run). Workspace-wide
+`pnpm typecheck`/`pnpm lint` both clean across all three packages.

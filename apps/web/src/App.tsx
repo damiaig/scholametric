@@ -33,6 +33,8 @@ import { TimetableBuilderPage } from "./features/timetable/TimetableBuilderPage"
 import { TeacherTimetablePage } from "./features/timetable/TeacherTimetablePage";
 import { MyTimetablePage } from "./features/timetable/MyTimetablePage";
 import { AbsencesPage } from "./features/timetable/AbsencesPage";
+import { HomeworkLandingPage } from "./features/homework/HomeworkLandingPage";
+import { HomeworkClassPage } from "./features/homework/HomeworkClassPage";
 
 // Extracted from <App> (which just wraps this in <BrowserRouter>) so the
 // route-smoke test can mount the exact same route tree inside a
@@ -58,6 +60,13 @@ export function AppRoutes() {
             /timetable/arms/:id below, which stay inside RequireSchoolAdmin. */}
         <Route path="/me/timetable" element={<MyTimetablePage />} />
         <Route path="/timetable/mine" element={<TeacherTimetablePage />} />
+        {/* v0.8.2 step 5 (SPEC_V0.8.2.md §6 item 5) — same "reachable by
+            any authenticated role at the URL bar, server 403 is the real
+            gate" pattern as /me/grades and /timetable/mine above; no
+            client route guard. useMyTeaching() renders an empty state for
+            a non-teaching caller rather than crashing. */}
+        <Route path="/homework" element={<HomeworkLandingPage />} />
+        <Route path="/homework/arms/:id" element={<HomeworkClassPage />} />
         <Route path="/teachers" element={<TeachersListPage />} />
         <Route path="/teachers/:id" element={<TeacherDetailPage />} />
         <Route path="/classes" element={<ClassesPage />} />

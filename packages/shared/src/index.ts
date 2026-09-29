@@ -17,3 +17,4 @@ export * from "./grades";
 export * from "./exams";
 export * from "./portal-accounts";
 export * from "./calendar";
+export * from "./homework";

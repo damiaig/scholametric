@@ -10,6 +10,7 @@ import {
   GraduationCap,
   CircleHelp,
   CalendarClock,
+  ClipboardList,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { isSchoolAdmin } from "../../lib/roles";
@@ -57,6 +58,13 @@ const TEACHER_TIMETABLE_ITEM = {
   label: "Timetable",
   icon: CalendarClock,
 };
+// v0.8.2 step 5 (SPEC_V0.8.2.md §6 item 5) — TEACHER-only this step (ruled
+// at plan time, mirroring how grades authoring is teacher-facing); no
+// SCHOOL_ADMIN/PROPRIETOR entry yet. Unguarded route underneath (see
+// App.tsx) — a proprietor who also holds a teaching assignment can still
+// reach /homework by URL, same as /timetable/mine already works for
+// anyone regardless of sidebar visibility.
+const HOMEWORK_ITEM = { to: "/homework", label: "Homework", icon: ClipboardList };
 const PORTAL_TIMETABLE_ITEM = {
   to: "/me/timetable",
   label: "Timetable",
@@ -112,6 +120,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           ),
           GRADES_ITEM,
           TEACHER_TIMETABLE_ITEM,
+          HOMEWORK_ITEM,
           ...BASE_NAV_ITEMS.filter((item) => item.to !== "/dashboard"),
         ]
       : isSchoolAdmin(user?.role)

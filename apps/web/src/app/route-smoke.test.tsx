@@ -125,6 +125,19 @@ const DASHBOARD_STATS = {
   currentTerm: null,
 };
 
+// v0.8.2 step 5 — this fixture's fixed SCHOOL_ADMIN user has no teaching
+// assignments, so both new homework routes render their empty state
+// without ever calling GET /homework (HomeworkClassPage requires a real
+// subjectId, absent from the bare "/homework/arms/route-smoke-id" path
+// below, same as ClassGradesPage's own missing-subjectId prompt).
+const MY_TEACHING = {
+  classTeacherOf: [],
+  subjects: [],
+  currentSessionId: null,
+  currentTermId: null,
+  currentTermName: null,
+};
+
 function mockApi() {
   mockedApiRequest.mockImplementation(
     async (path: string, opts?: { method?: string }) => {
@@ -175,6 +188,10 @@ function mockApi() {
       // /timetable/mine (TeacherTimetablePage) always calls this directly
       // regardless of the fixture's actual role.
       if (path === "/api/v1/me/teaching-timetable") return { teacherUserId: "u1", from: "2026-01-01", to: "2026-01-01", days: [] };
+      // v0.8.2 step 5 — /homework and /homework/arms/:id (HomeworkLandingPage,
+      // HomeworkClassPage) both call this for the same "reachable by any
+      // role" reason as the routes above.
+      if (path === "/api/v1/me/teaching") return MY_TEACHING;
 
       throw new Error(
         `route-smoke.test.tsx: unexpected apiRequest call: ${method} ${path}`,
@@ -205,6 +222,8 @@ const ROUTES = [
   "/timetable/arms/route-smoke-id",
   "/timetable/absences",
   "/timetable/mine",
+  "/homework",
+  "/homework/arms/route-smoke-id",
   "/personnel",
   "/settings/school",
   "/settings/academic",
