@@ -97,4 +97,16 @@ export class HomeworkController {
   ) {
     return this.homeworkService.getSubmissionDownloadUrl(id, submissionId, user);
   }
+
+  // v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — the teacher-side counterpart
+  // to the student-facing attachment download-url route.
+  @Roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  @Get(":id/attachments/:attachmentId/download-url")
+  getAttachmentDownloadUrl(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("attachmentId", ParseUUIDPipe) attachmentId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.homeworkService.getAttachmentDownloadUrlForTeacher(id, attachmentId, user);
+  }
 }

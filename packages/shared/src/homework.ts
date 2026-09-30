@@ -93,6 +93,39 @@ export interface DownloadUrlResponse {
   expiresAt: string;
 }
 
+// v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — the STUDENT/PARENT read shape
+// (GET /me/homework, GET /me/children/:childId/homework). A flat list
+// sorted by dueDate ascending — grouping into "due [day]" buckets is a
+// rendering concern (HomeworkDueDateList), not part of this contract.
+export interface StudentHomeworkEntry {
+  id: string;
+  subjectId: string;
+  subjectName: string;
+  teacherName: string;
+  title: string;
+  description: string;
+  dueDate: string;
+  requiresUpload: boolean;
+  markedDone: boolean;
+  markedAt: string | null;
+  attachments: HomeworkAttachment[];
+  // The caller's OWN submissions only (studentId-scoped server-side) —
+  // added this step so "what did I already upload" survives a reload,
+  // not just the current browser session's mutation responses.
+  submissions: HomeworkSubmission[];
+}
+
+export interface StudentHomeworkListResponse {
+  classArmId: string;
+  homework: StudentHomeworkEntry[];
+}
+
+export interface HomeworkCompletionResponse {
+  homeworkId: string;
+  markedDone: boolean;
+  markedAt: string | null;
+}
+
 // Mirrored from apps/api/src/homework/homework.constants.ts — duplicated
 // on purpose (no import path from this package into apps/api/src), same
 // pattern already used for description-length caps between DTOs and Zod

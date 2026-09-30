@@ -7137,3 +7137,114 @@ Worker exited unexpectedly" run — the same long-standing flake this
 repo's own CI config already documents and mitigates via
 `--workspace-concurrency=1` — clean on immediate re-run). Workspace-wide
 `pnpm typecheck`/`pnpm lint` both clean across all three packages.
+
+## 2026-09-30 — v0.8.2 step 6: student + parent homework UI + two small backend additions
+
+SPEC_V0.8.2.md's step 6 (§6 item 6) — the last of the frozen scope before
+Step 7's acceptance walk and tag. Mostly frontend; two small, additive
+backend changes, both flagged and ruled at plan time, both mirroring
+existing patterns exactly.
+
+**Backend addition 1 — `GET /homework/:id/attachments/:attachmentId/
+download-url` (TEACHER/admin).** The gap Steps 4-5 left: a teacher could
+attach a file and see it listed, but never resolve a download URL for
+their OWN attachment to verify it. `HomeworkService.
+getAttachmentDownloadUrlForTeacher` mirrors `getSubmissionDownloadUrl`
+verbatim (same admin-override shape), just querying `homeworkAttachment`
+instead of `homeworkSubmission`.
+
+**Backend addition 2 — `StudentHomeworkEntry` gains the caller's own
+`submissions`.** Flagged at plan time as a SECOND gap beyond the one the
+user named: without it, "show the student's own uploaded files" (the
+step's own scope bullet) could only ever be a same-browser-session list
+built from mutation responses — a student uploads, reopens the app
+tomorrow, and it looks like nothing was submitted. Ruled: extend
+`listPublishedForStudent`'s existing `attachments` join with a sibling
+`homeworkSubmission.findMany({ where: { schoolId, studentId, homeworkId:
+{ in: visibleIds } } })`, merged into `toStudentHomeworkEntry` the same
+way completions already are — additive, no route change, just a wider
+response shape on two already-existing endpoints (`GET /me/homework` and
+`GET /me/children/:childId/homework`, which shares the same method).
+
+**A third gap found WHILE DOCUMENTING this step, not before building —
+worth naming honestly.** The plan called for the parent's read view to
+show a linked child's attachments with downloads, same as the student's.
+But `GET /me/homework/:id/attachments/:attachmentId/download-url` is
+`@Roles(STUDENT)` only — there is no parent-scoped equivalent. Wiring the
+parent's download button to that route would `403` for every parent,
+every time. Caught before shipping (not caught by the test suite, which
+only asserted static rendering, not the click) by re-reading the actual
+controller decorator while writing this doc entry. Fixed by NOT adding a
+third backend route this step (the user's own scope was two named
+additions) — `HomeworkDueDateList`'s `onDownloadAttachment` prop is now
+optional; the parent view omits it entirely, rendering attachment names
+as plain text instead of a button that would silently fail. Flagged here
+for a future step if a parent needs to actually open a file. This is the
+same discipline as Step 5's teacher-attachment-download gap: trim scope
+and say so, don't ship a broken control or silently expand backend scope
+mid-build.
+
+**Student view — `MyHomeworkPage.tsx`, one component forked by role,
+exactly like `MyGradesPage.tsx`'s `MyGrades`/`ChildGrades` split** (not
+two separate route components). Due-date grouping happens client-side
+over the already-sorted flat array (`HomeworkDueDateList`, a new shared
+presentational component — same "shared view, mode via a prop"
+convention `StudentReportCardView`'s `examsViewer` already established,
+here an `editable: boolean`). Headings render in English
+("Due Monday, 2 November") — the spec's own "Pour lundi 28 sept" is
+Pronote's actual French UI quoted as a grouping reference, not a
+localization mandate for this English-language platform; `Fait`/`Non
+fait` stays as shipped in Step 5's teacher-facing submissions view, kept
+for consistency rather than re-litigated. Long descriptions (>200 chars)
+get a "View more" button opening the full text in a `Dialog` — no prior
+precedent for this pattern in the codebase, built fresh, reusing `Dialog`
+as-is.
+
+**Student upload REUSES Step 5's `useAttachHomeworkFile` flow verbatim,
+not a reimplementation.** New `useSubmitMyHomeworkFile`
+(`use-my-homework-submissions.ts`) is the identical 3-step orchestration
+(issue-url → raw `fetch` PUT with `X-Goog-Content-Length-Range` echoed
+byte-identical from the server's response → commit), pointed at
+`/me/homework/:id/submissions/*` instead of the teacher attachments
+endpoints. Error branching reuses `getAttachErrorMessage` directly from
+`use-homework-attachments.ts` (already role-agnostic — it only
+distinguishes `ApiError` from a plain storage-layer `Error`), not a
+duplicated copy.
+
+**Parent view genuinely read-only, enforced by absence, not by
+disabling.** `ChildHomework`'s `HomeworkDueDateList` call passes no
+`onMarkDone`/`onUploadFile` at all — the mark-done checkbox and the file
+input literally don't exist in that render path's DOM, proved by a
+dedicated test asserting `queryByRole("checkbox")` and a file-input
+`querySelector` both come back empty/null. Same child-switcher shape as
+`MyGradesPage`'s `ChildGrades`: `childId` in `?childId=`, defaults to the
+first linked child, stays shareable.
+
+**Sidebar + routes.** `PORTAL_HOMEWORK_ITEM` added to the existing
+`isPortalAccount` branch (visible to both STUDENT and PARENT, same array
+`PORTAL_GRADES_ITEM`/`PORTAL_TIMETABLE_ITEM` already live in — reuses
+`HOMEWORK_ITEM`'s icon, same as `PORTAL_GRADES_ITEM` reuses `GRADES_ITEM`'s).
+`/me/homework` is unguarded in `App.tsx`, one route, same
+"reachable-by-any-role, server-gated" shape as `/me/grades` right above
+it — `MyHomeworkPage` forks STUDENT/PARENT content internally, same as
+`MyGradesPage`.
+
+**Test impact.** Backend: 3 new e2e tests in `homework-attachments.
+e2e-spec.ts` (teacher resolves their own attachment's download URL;
+non-assigned teacher `403`s; cross-tenant admin `404`s) and 1 new e2e
+test in `me-homework.e2e-spec.ts` (a student's own submissions appear in
+their own list; a NEW classmate fixture in the same class proves a
+different student's submissions on the same homework never leak in).
+Full backend e2e suite: 49 files, 622/622 clean, no flakes this run.
+Frontend: new `MyHomeworkPage.test.tsx` (6 tests) — due-date-grouped
+rendering with the view-more modal; mark-done flips via the real
+endpoint; the upload flow's 3 calls + the exact cap header (fetch-mocked,
+no live Firebase); a failed PUT surfacing the specific message; the
+parent's read-only proof (no checkbox, no file input, attachments as
+plain text); the no-linked-children empty state. `route-smoke.test.tsx`
+extended with `/me/homework` (no new mock needed — the fixture's fixed
+`SCHOOL_ADMIN` role already falls to the parent branch, already covered
+by the existing `GET /me/children` → `{ children: [] }` mock, same as
+`/me/grades` already relies on). Full web suite: 76 files, 481/481
+clean. Workspace-wide `pnpm typecheck`/`pnpm lint` clean across all three
+packages.

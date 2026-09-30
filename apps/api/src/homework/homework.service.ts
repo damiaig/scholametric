@@ -92,6 +92,7 @@ export interface StudentHomeworkEntry {
   markedDone: boolean;
   markedAt: string | null;
   attachments: HomeworkAttachmentResponse[];
+  submissions: HomeworkSubmissionResponse[];
 }
 
 export interface StudentHomeworkListResponse {
@@ -246,7 +247,11 @@ export class HomeworkService {
     };
   }
 
-  private toStudentHomeworkEntry(homework: HomeworkWithSubjectAndTeacher, completion: { markedDone: boolean; markedAt: Date | null } | undefined): StudentHomeworkEntry {
+  private toStudentHomeworkEntry(
+    homework: HomeworkWithSubjectAndTeacher,
+    completion: { markedDone: boolean; markedAt: Date | null } | undefined,
+    submissions: HomeworkSubmission[],
+  ): StudentHomeworkEntry {
     return {
       id: homework.id,
       subjectId: homework.subjectId,
@@ -259,6 +264,7 @@ export class HomeworkService {
       markedDone: completion?.markedDone ?? false,
       markedAt: completion?.markedAt?.toISOString() ?? null,
       attachments: homework.attachments.map((attachment) => this.toAttachmentResponse(attachment)),
+      submissions: submissions.map((submission) => this.toSubmissionResponse(submission)),
     };
   }
 
@@ -448,14 +454,30 @@ export class HomeworkService {
     });
     const visible = homework.filter((row) => !this.isDueDatePast(row.dueDate.toISOString().slice(0, 10)));
 
-    const completions = await this.prisma.homeworkCompletion.findMany({
-      where: { schoolId, studentId, homeworkId: { in: visible.map((row) => row.id) } },
-    });
+    const visibleIds = visible.map((row) => row.id);
+    const [completions, submissions] = await Promise.all([
+      this.prisma.homeworkCompletion.findMany({ where: { schoolId, studentId, homeworkId: { in: visibleIds } } }),
+      // v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — the caller's OWN
+      // submissions only, same studentId scoping as completions above.
+      // Without this, "what did I already upload" would only ever be
+      // knowable for the current browser session (the commit response),
+      // lost on reload — a real data-visibility regression, not a display
+      // nicety.
+      this.prisma.homeworkSubmission.findMany({ where: { schoolId, studentId, homeworkId: { in: visibleIds } }, orderBy: { uploadedAt: "asc" } }),
+    ]);
     const completionByHomeworkId = new Map(completions.map((completion) => [completion.homeworkId, completion]));
+    const submissionsByHomeworkId = new Map<string, HomeworkSubmission[]>();
+    for (const submission of submissions) {
+      const list = submissionsByHomeworkId.get(submission.homeworkId) ?? [];
+      list.push(submission);
+      submissionsByHomeworkId.set(submission.homeworkId, list);
+    }
 
     return {
       classArmId,
-      homework: visible.map((row) => this.toStudentHomeworkEntry(row, completionByHomeworkId.get(row.id))),
+      homework: visible.map((row) =>
+        this.toStudentHomeworkEntry(row, completionByHomeworkId.get(row.id), submissionsByHomeworkId.get(row.id) ?? []),
+      ),
     };
   }
 
@@ -690,6 +712,31 @@ export class HomeworkService {
     }
 
     return this.storageService.issueDownloadUrl(submission.storageKey);
+  }
+
+  // v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — the gap Steps 4-5 left: a
+  // teacher could attach a file and see it listed, but never resolve a
+  // download URL for their OWN attachment to verify it. Mirrors
+  // getSubmissionDownloadUrl exactly (same admin-override shape), just
+  // querying homeworkAttachment instead of homeworkSubmission.
+  async getAttachmentDownloadUrlForTeacher(homeworkId: string, attachmentId: string, user: AuthenticatedUser): Promise<DownloadUrlResult> {
+    const schoolId = this.tenantContext.schoolId;
+    const homework = await this.prisma.homework.findFirst({ where: forSchool(schoolId, { id: homeworkId, deletedAt: null }) });
+    if (!homework) {
+      throw new NotFoundException("Homework not found.");
+    }
+
+    const isAdminOverride = user.role === UserRole.SCHOOL_ADMIN || user.role === UserRole.PROPRIETOR;
+    if (!isAdminOverride) {
+      await assertTeacherAssignment(this.prisma, schoolId, user, homework.subjectId, homework.classArmId, homework.sessionId);
+    }
+
+    const attachment = await this.prisma.homeworkAttachment.findFirst({ where: forSchool(schoolId, { id: attachmentId, homeworkId }) });
+    if (!attachment) {
+      throw new NotFoundException("Attachment not found.");
+    }
+
+    return this.storageService.issueDownloadUrl(attachment.storageKey);
   }
 
   // v0.8.2 step 4, flag 4 — students see/download the teacher's own

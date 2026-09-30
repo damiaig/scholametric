@@ -20,6 +20,7 @@ describe("Homework attachments (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
   let mathTeacherToken: string;
   let englishTeacherToken: string;
   let hillcrestTeacherToken: string;
+  let hillcrestAdminToken: string;
 
   let sunriseId: string;
   let sunriseTermId: string;
@@ -70,6 +71,7 @@ describe("Homework attachments (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
     mathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
     englishTeacherToken = await loginAs(app, "teacher2@sunrise.test", "sunrise");
     hillcrestTeacherToken = await loginAs(app, "teacher@hillcrest.test", "hillcrest");
+    hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
 
     const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
     sunriseId = sunrise.id;
@@ -222,5 +224,55 @@ describe("Homework attachments (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
       contentType: "application/pdf",
     });
     expect(committed.status).toBe(201);
+  });
+
+  // v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — the gap Steps 4-5 left: a
+  // teacher could attach a file and see it listed, but never resolve a
+  // download URL for it.
+  describe("GET /homework/:id/attachments/:attachmentId/download-url", () => {
+    async function attachAndCommit(homeworkId: string): Promise<string> {
+      const issued = await issueUploadUrl(mathTeacherToken, homeworkId);
+      storage.seedObject(issued.body.storageKey, { sizeBytes: 1024, contentType: "application/pdf" });
+      const committed = await commit(mathTeacherToken, homeworkId, {
+        storageKey: issued.body.storageKey,
+        fileName: "worksheet.pdf",
+        contentType: "application/pdf",
+      });
+      if (committed.status !== 201) {
+        throw new Error(`attachment commit failed: ${committed.status} ${JSON.stringify(committed.body)}`);
+      }
+      return committed.body.id as string;
+    }
+
+    it("the teacher resolves a download URL for their own attachment", async () => {
+      const homeworkId = await createHomework();
+      const attachmentId = await attachAndCommit(homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/api/v1/homework/${homeworkId}/attachments/${attachmentId}/download-url`)
+        .set(auth(mathTeacherToken));
+      expect(response.status).toBe(200);
+      expect(response.body.downloadUrl).toBeTruthy();
+    });
+
+    it("403s a teacher who doesn't teach this subject", async () => {
+      const homeworkId = await createHomework();
+      const attachmentId = await attachAndCommit(homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/api/v1/homework/${homeworkId}/attachments/${attachmentId}/download-url`)
+        .set(auth(englishTeacherToken));
+      expect(response.status).toBe(403);
+    });
+
+    it("404s a cross-tenant admin — tenant scoping, not 403", async () => {
+      const homeworkId = await createHomework();
+      const attachmentId = await attachAndCommit(homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/api/v1/homework/${homeworkId}/attachments/${attachmentId}/download-url`)
+        .set(auth(hillcrestAdminToken));
+      expect(response.status).toBe(404);
+    });
   });
 });

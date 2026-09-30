@@ -35,6 +35,7 @@ import { MyTimetablePage } from "./features/timetable/MyTimetablePage";
 import { AbsencesPage } from "./features/timetable/AbsencesPage";
 import { HomeworkLandingPage } from "./features/homework/HomeworkLandingPage";
 import { HomeworkClassPage } from "./features/homework/HomeworkClassPage";
+import { MyHomeworkPage } from "./features/homework/MyHomeworkPage";
 
 // Extracted from <App> (which just wraps this in <BrowserRouter>) so the
 // route-smoke test can mount the exact same route tree inside a
@@ -53,6 +54,11 @@ export function AppRoutes() {
         <Route path="/students/:id" element={<StudentDetailPage />} />
         <Route path="/students/:id/report-card" element={<ReportCardPage />} />
         <Route path="/me/grades" element={<MyGradesPage />} />
+        {/* v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — same unguarded,
+            "reachable by any role, server-gated" shape as /me/grades
+            directly above. MyHomeworkPage forks STUDENT/PARENT content
+            internally, same as MyGradesPage. */}
+        <Route path="/me/homework" element={<MyHomeworkPage />} />
         {/* v0.8 step 3 (SPEC_V0.8.md §7 item 3) — same "reachable by any
             authenticated role at the URL bar, server 403 is the real gate"
             pattern /me/grades already established: no client route guard

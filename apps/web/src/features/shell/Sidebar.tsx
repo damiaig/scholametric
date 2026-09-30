@@ -70,6 +70,11 @@ const PORTAL_TIMETABLE_ITEM = {
   label: "Timetable",
   icon: CalendarClock,
 };
+// v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — visible to both STUDENT and
+// PARENT (same branch PORTAL_GRADES_ITEM/PORTAL_TIMETABLE_ITEM already
+// live in); reuses HOMEWORK_ITEM's own icon, same as PORTAL_GRADES_ITEM
+// reuses GRADES_ITEM's.
+const PORTAL_HOMEWORK_ITEM = { to: "/me/homework", label: "Homework", icon: ClipboardList };
 // v0.8.1 step 2 (SPEC_V0.8.1.md §2.7) — admin/proprietor's calendar
 // management now gets its own sidebar entry too, reversing Step 3's own
 // "Dashboard card only" call for this role: the three separate cards
@@ -111,6 +116,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
         ...BASE_NAV_ITEMS.filter((item) => item.to === "/dashboard"),
         PORTAL_GRADES_ITEM,
         PORTAL_TIMETABLE_ITEM,
+        PORTAL_HOMEWORK_ITEM,
         ...BASE_NAV_ITEMS.filter((item) => item.to === "/help"),
       ]
     : user?.role === "TEACHER"

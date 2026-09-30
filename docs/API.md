@@ -2670,6 +2670,12 @@ the submission row scoped by `schoolId + homeworkId + id` (**`404`** collapses
 "nonexistent," "wrong homework," and "cross-tenant" identically), then issues a signed
 read URL. **Response `200`**: `{ downloadUrl, expiresAt }`.
 
+**`GET /homework/:id/attachments/:attachmentId/download-url`** (`TEACHER`/admin, added
+v0.8.2 step 6) — the gap Steps 4-5 left: a teacher could attach a file and see it listed,
+but never resolve a download URL to verify it. Mirrors the submission download-url route
+exactly, scoped to `HomeworkAttachment` instead. **Response `200`**: `{ downloadUrl,
+expiresAt }`.
+
 ### Student uploads (v0.8.2 step 4, SPEC_V0.8.2.md §6 item 4)
 
 Same two-checkpoint shape as teacher attachments, mirrored onto `HomeworkSubmission`.
@@ -2719,18 +2725,25 @@ surface every homework ever assigned to that class across every past term, forev
 
 **`GET /me/homework`** (`STUDENT`). No params. **Response `200`**: `{ classArmId,
 homework: StudentHomeworkEntry[] }` — a flat list sorted by `dueDate` ascending (grouping
-into due-date buckets for display is a frontend concern, not built here). Only
-`PUBLISHED` homework for the caller's own current-term class; a homework whose `dueDate`
-has passed (strictly before today, UTC) is excluded — the caller's OWN `HomeworkCompletion`
-(if any) is merged in as `markedDone`/`markedAt` on each entry, defaulting to
-`false`/`null` when no completion row exists yet (never inferred as "not done" beyond an
-actual tick). Each entry: `{ id, subjectId, subjectName, teacherName, title, description,
-dueDate, requiresUpload, markedDone, markedAt }`.
+into due-date buckets for display is a frontend concern, not built here — see
+`HomeworkDueDateList`, v0.8.2 step 6). Only `PUBLISHED` homework for the caller's own
+current-term class; a homework whose `dueDate` has passed (strictly before today, UTC) is
+excluded — the caller's OWN `HomeworkCompletion` (if any) is merged in as `markedDone`/
+`markedAt` on each entry, defaulting to `false`/`null` when no completion row exists yet
+(never inferred as "not done" beyond an actual tick). Each entry: `{ id, subjectId,
+subjectName, teacherName, title, description, dueDate, requiresUpload, markedDone,
+markedAt, attachments, submissions }`. `submissions` (added step 6): the caller's OWN
+`HomeworkSubmission[]` only (studentId-scoped server-side, same join shape as
+`attachments`/completions) — without it, "what did I already upload" would only ever be
+knowable for the current browser session, lost on reload.
 
 **`GET /me/children/:childId/homework`** (`PARENT`). `assertChildBelongsToCaller` runs
 FIRST, before any class/term resolution — same ordering and **`404`** (not `403`) as
 every other `children/:childId/*` route. Same response shape as the STUDENT route above,
-for the requested child.
+for the requested child. **No parent-scoped attachment-download route exists** — the
+frontend renders a linked child's `attachments`/`submissions` as plain text (names only,
+not clickable) rather than wiring the STUDENT-only download-url route to a parent caller
+(would `403`). Flagged for a future step if a parent needs to actually open a file.
 
 **`POST /me/homework/:id/complete`** (`STUDENT` only — deliberately no parent-side
 equivalent; the spec's own framing is "the STUDENT sets" the tick, not a parent acting on

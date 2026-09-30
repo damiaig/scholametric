@@ -218,6 +218,7 @@ const ROUTES = [
   "/grades/exam-approvals",
   "/me/grades",
   "/me/timetable",
+  "/me/homework",
   "/timetable",
   "/timetable/arms/route-smoke-id",
   "/timetable/absences",

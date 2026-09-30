@@ -5,6 +5,8 @@ import { Gender, UserRole } from "@prisma/client";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs, SEED_PASSWORD } from "./utils/login";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { StorageService } from "../src/storage/storage.service";
+import { FakeStorageService } from "./utils/fake-storage.service";
 
 // v0.8.2 step 2 (SPEC_V0.8.2.md §6 item 2) — the first STUDENT/PARENT
 // read access to homework + the mark-done write. Reuses the SAME JSS 1 A
@@ -15,10 +17,12 @@ import { PrismaService } from "../src/prisma/prisma.service";
 describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v0.8.2 step 2", () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let storage: FakeStorageService;
 
   let mathTeacherToken: string;
   let studentToken: string;
   let otherClassStudentToken: string;
+  let classmateStudentToken: string;
   let parentToken: string;
   let notLinkedParentToken: string;
 
@@ -79,6 +83,7 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
+    storage = app.get(StorageService) as FakeStorageService;
 
     mathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
 
@@ -144,6 +149,30 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
     createdUserIds.push(otherClassStudentUser.id);
     otherClassStudentToken = await loginAs(app, "E2EMEHWOTHERCLASS", "sunrise");
 
+    // v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — a SECOND student in the
+    // SAME class (jss1A) — proves a student's own-submissions visibility
+    // is scoped by studentId, not just homeworkId (a classmate on the
+    // same published homework must not leak into `student`'s own list).
+    const classmateStudent = await prisma.student.create({
+      data: {
+        schoolId: sunriseId,
+        admissionNumber: "E2E-MEHW/Classmate",
+        firstName: "Emeka",
+        lastName: "Okoro",
+        gender: Gender.MALE,
+        dateOfBirth: new Date("2012-03-03"),
+        guardianName: "E2E Guardian",
+        guardianPhone: "+2348050000005",
+      },
+    });
+    createdStudentIds.push(classmateStudent.id);
+    await prisma.studentEnrollment.create({ data: { schoolId: sunriseId, studentId: classmateStudent.id, classArmId: jss1AArmId, sessionId: sunriseSessionId } });
+    const classmateStudentUser = await prisma.user.create({
+      data: { schoolId: sunriseId, role: UserRole.STUDENT, username: "E2EMEHWCLASSMATE", studentId: classmateStudent.id, firstName: "Emeka", lastName: "Okoro", passwordHash, mustChangePassword: false },
+    });
+    createdUserIds.push(classmateStudentUser.id);
+    classmateStudentToken = await loginAs(app, "E2EMEHWCLASSMATE", "sunrise");
+
     // A guardian linked to `student` — the parent's own-child wall.
     const guardian = await prisma.guardian.create({ data: { schoolId: sunriseId, firstName: "Ngozi", lastName: "Eze", phone: "+2348050000003" } });
     createdGuardianIds.push(guardian.id);
@@ -166,6 +195,7 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
 
   afterAll(async () => {
     if (createdHomeworkIds.length > 0) {
+      await prisma.homeworkSubmission.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homeworkCompletion.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homework.deleteMany({ where: { id: { in: createdHomeworkIds } } });
     }
@@ -234,6 +264,42 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
 
       const response = await request(app.getHttpServer()).get("/api/v1/me/homework").set(auth(otherClassStudentToken));
       expect(response.body.homework.some((h: { id: string }) => h.id === publishedId)).toBe(false);
+    });
+
+    // v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — the flagged decision: a
+    // student's own list must show what THEY already uploaded (not lost on
+    // reload), scoped by studentId so a classmate's own submissions on the
+    // SAME homework never leak in.
+    it("shows the caller's own submissions on a homework, never a classmate's", async () => {
+      const homeworkId = await createPublishedAndTrack(mathTeacherToken);
+
+      const issued = await request(app.getHttpServer())
+        .post(`/api/v1/me/homework/${homeworkId}/submissions/upload-url`)
+        .set(auth(studentToken))
+        .send({ fileName: "my-answers.pdf", contentType: "application/pdf" });
+      expect(issued.status).toBe(200);
+      storage.seedObject(issued.body.storageKey, { sizeBytes: 1024, contentType: "application/pdf" });
+      const committed = await request(app.getHttpServer())
+        .post(`/api/v1/me/homework/${homeworkId}/submissions`)
+        .set(auth(studentToken))
+        .send({ storageKey: issued.body.storageKey, fileName: "my-answers.pdf", contentType: "application/pdf" });
+      expect(committed.status).toBe(201);
+
+      const classmateIssued = await request(app.getHttpServer())
+        .post(`/api/v1/me/homework/${homeworkId}/submissions/upload-url`)
+        .set(auth(classmateStudentToken))
+        .send({ fileName: "classmate-answers.pdf", contentType: "application/pdf" });
+      storage.seedObject(classmateIssued.body.storageKey, { sizeBytes: 1024, contentType: "application/pdf" });
+      const classmateCommitted = await request(app.getHttpServer())
+        .post(`/api/v1/me/homework/${homeworkId}/submissions`)
+        .set(auth(classmateStudentToken))
+        .send({ storageKey: classmateIssued.body.storageKey, fileName: "classmate-answers.pdf", contentType: "application/pdf" });
+      expect(classmateCommitted.status).toBe(201);
+
+      const response = await request(app.getHttpServer()).get("/api/v1/me/homework").set(auth(studentToken));
+      const entry = response.body.homework.find((h: { id: string }) => h.id === homeworkId);
+      expect(entry.submissions).toHaveLength(1);
+      expect(entry.submissions[0].fileName).toBe("my-answers.pdf");
     });
   });
 
