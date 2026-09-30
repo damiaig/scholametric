@@ -25,6 +25,7 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
   let classmateStudentToken: string;
   let parentToken: string;
   let notLinkedParentToken: string;
+  let otherClassParentToken: string;
 
   let sunriseId: string;
   let sunriseSessionId: string;
@@ -191,17 +192,32 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
     });
     createdUserIds.push(notLinkedParentUser.id);
     notLinkedParentToken = await loginAs(app, "E2EMEHWNOTLINKED", "sunrise");
+
+    // v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — a guardian linked to
+    // otherClassStudentId (jss2A) — proves a parent whose linked child is
+    // in a DIFFERENT class than the homework's own class 404s (the
+    // resolved classArmId simply doesn't match, same wall as the STUDENT
+    // path already has).
+    const otherClassGuardian = await prisma.guardian.create({ data: { schoolId: sunriseId, firstName: "Yemi", lastName: "Bello", phone: "+2348050000006" } });
+    createdGuardianIds.push(otherClassGuardian.id);
+    await prisma.studentGuardian.create({ data: { schoolId: sunriseId, studentId: otherClassStudentId, guardianId: otherClassGuardian.id, relationship: "FATHER", isPrimary: true } });
+    const otherClassParentUser = await prisma.user.create({
+      data: { schoolId: sunriseId, role: UserRole.PARENT, username: "E2EMEHWOTHERCLASSPARENT", guardianId: otherClassGuardian.id, firstName: "Yemi", lastName: "Bello", passwordHash, mustChangePassword: false },
+    });
+    createdUserIds.push(otherClassParentUser.id);
+    otherClassParentToken = await loginAs(app, "E2EMEHWOTHERCLASSPARENT", "sunrise");
   });
 
   afterAll(async () => {
     if (createdHomeworkIds.length > 0) {
+      await prisma.homeworkAttachment.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homeworkSubmission.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homeworkCompletion.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homework.deleteMany({ where: { id: { in: createdHomeworkIds } } });
     }
     await prisma.refreshToken.deleteMany({ where: { userId: { in: createdUserIds } } });
     await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
-    await prisma.studentGuardian.deleteMany({ where: { studentId } });
+    await prisma.studentGuardian.deleteMany({ where: { studentId: { in: createdStudentIds } } });
     await prisma.guardian.deleteMany({ where: { id: { in: createdGuardianIds } } });
     await prisma.studentEnrollment.deleteMany({ where: { studentId: { in: createdStudentIds } } });
     await prisma.student.deleteMany({ where: { id: { in: createdStudentIds } } });
@@ -364,6 +380,60 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
       expect(asStudent.status).toBe(403);
       const asParent = await request(app.getHttpServer()).get("/api/v1/me/homework").set(auth(parentToken));
       expect(asParent.status).toBe(403);
+    });
+  });
+
+  // v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — closes Step 6's flagged
+  // gap: a parent could see a teacher's attachment name but never open it.
+  describe("GET /me/children/:childId/homework/:id/attachments/:attachmentId/download-url (PARENT)", () => {
+    async function attachFileToHomework(homeworkId: string): Promise<string> {
+      const issued = await request(app.getHttpServer())
+        .post(`/api/v1/homework/${homeworkId}/attachments/upload-url`)
+        .set(auth(mathTeacherToken))
+        .send({ fileName: "worksheet.pdf", contentType: "application/pdf" });
+      if (issued.status !== 200) {
+        throw new Error(`upload-url issue failed: ${issued.status} ${JSON.stringify(issued.body)}`);
+      }
+      storage.seedObject(issued.body.storageKey, { sizeBytes: 1024, contentType: "application/pdf" });
+      const committed = await request(app.getHttpServer())
+        .post(`/api/v1/homework/${homeworkId}/attachments`)
+        .set(auth(mathTeacherToken))
+        .send({ storageKey: issued.body.storageKey, fileName: "worksheet.pdf", contentType: "application/pdf" });
+      if (committed.status !== 201) {
+        throw new Error(`attachment commit failed: ${committed.status} ${JSON.stringify(committed.body)}`);
+      }
+      return committed.body.id as string;
+    }
+
+    it("a parent resolves a download URL for their linked child's homework attachment", async () => {
+      const homeworkId = await createPublishedAndTrack(mathTeacherToken);
+      const attachmentId = await attachFileToHomework(homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/api/v1/me/children/${studentId}/homework/${homeworkId}/attachments/${attachmentId}/download-url`)
+        .set(auth(parentToken));
+      expect(response.status).toBe(200);
+      expect(response.body.downloadUrl).toBeTruthy();
+    });
+
+    it("404s a parent with no link to this student — the own-child wall, checked before anything else", async () => {
+      const homeworkId = await createPublishedAndTrack(mathTeacherToken);
+      const attachmentId = await attachFileToHomework(homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/api/v1/me/children/${studentId}/homework/${homeworkId}/attachments/${attachmentId}/download-url`)
+        .set(auth(notLinkedParentToken));
+      expect(response.status).toBe(404);
+    });
+
+    it("404s a parent whose linked child is in a DIFFERENT class than the homework", async () => {
+      const homeworkId = await createPublishedAndTrack(mathTeacherToken);
+      const attachmentId = await attachFileToHomework(homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .get(`/api/v1/me/children/${otherClassStudentId}/homework/${homeworkId}/attachments/${attachmentId}/download-url`)
+        .set(auth(otherClassParentToken));
+      expect(response.status).toBe(404);
     });
   });
 });

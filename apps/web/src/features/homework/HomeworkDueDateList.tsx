@@ -41,12 +41,13 @@ interface HomeworkDueDateListProps {
   editable: boolean;
   onMarkDone?: (homeworkId: string, markedDone: boolean) => void;
   /**
-   * Omitted for the PARENT view — GET /me/homework/:id/attachments/:
-   * attachmentId/download-url is STUDENT-only server-side (no parent-
-   * scoped equivalent exists yet, a gap found while documenting this
-   * step rather than shipping a button that would 403). Attachments
-   * still render as plain text (name visible) when this is undefined,
-   * just not clickable.
+   * v0.8.2 step 6 found this optional (the PARENT view had no matching
+   * backend route, so this was left undefined there — attachments
+   * rendered as plain text). Step 7 closed that gap
+   * (GET /me/children/:childId/homework/:id/attachments/:attachmentId/
+   * download-url); both STUDENT and PARENT views now pass a handler.
+   * Stays optional as the general contract — plain text is still the
+   * correct fallback for any future caller with nothing to wire it to.
    */
   onDownloadAttachment?: (homeworkId: string, attachmentId: string) => void;
   onUploadFile?: (homeworkId: string, file: File) => void;

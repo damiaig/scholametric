@@ -2699,10 +2699,11 @@ teacher's attachment commit, scoped to
 **`GET /me/homework/:id/attachments/:attachmentId/download-url`** (`STUDENT`) — students
 see/download the teacher's own attachments (implied by the acceptance walk, ruled at plan
 time). Same own-class + `PUBLISHED` wall. **Response `200`**: `{ downloadUrl, expiresAt }`.
-No parent-side equivalent for any of the three routes above (no upload-on-behalf-of-child,
-matching Step 2's "the STUDENT sets" ruling) — a linked child's attachments are still
-visible as metadata via the existing `GET /me/children/:childId/homework` response below,
-just not downloadable through a parent route this step.
+No parent-side equivalent for the upload/submission routes above (no
+upload-on-behalf-of-child, matching Step 2's "the STUDENT sets" ruling) — but a parent
+CAN download a linked child's homework attachments, via its own dedicated route (see
+`GET /me/children/:childId/homework/:id/attachments/:attachmentId/download-url`, added
+v0.8.2 step 7, below).
 
 ### Retention sweep (v0.8.2 step 4, SPEC_V0.8.2.md §5 Item 10)
 
@@ -2740,10 +2741,19 @@ knowable for the current browser session, lost on reload.
 **`GET /me/children/:childId/homework`** (`PARENT`). `assertChildBelongsToCaller` runs
 FIRST, before any class/term resolution — same ordering and **`404`** (not `403`) as
 every other `children/:childId/*` route. Same response shape as the STUDENT route above,
-for the requested child. **No parent-scoped attachment-download route exists** — the
-frontend renders a linked child's `attachments`/`submissions` as plain text (names only,
-not clickable) rather than wiring the STUDENT-only download-url route to a parent caller
-(would `403`). Flagged for a future step if a parent needs to actually open a file.
+for the requested child.
+
+**`GET /me/children/:childId/homework/:id/attachments/:attachmentId/download-url`**
+(`PARENT`, added v0.8.2 step 7) — closes the gap step 6 flagged: the STUDENT-only
+download-url route above would `403` a parent caller, so this is a dedicated
+parent-scoped equivalent. `assertChildBelongsToCaller` runs FIRST (a non-linked child
+`404`s before any class/homework resolution), then reuses
+`HomeworkService.getAttachmentDownloadUrlForStudent` UNCHANGED with the child's own
+resolved `classArmId` — the same own-class + `PUBLISHED` wall the STUDENT path already
+gets is re-derived inside that one shared method, so a linked child in a different class
+than the homework also `404`s. **Response `200`**: `{ downloadUrl, expiresAt }`. With this,
+the download matrix is complete: student-attachment, teacher-attachment,
+teacher-submission, parent-attachment.
 
 **`POST /me/homework/:id/complete`** (`STUDENT` only — deliberately no parent-side
 equivalent; the spec's own framing is "the STUDENT sets" the tick, not a parent acting on

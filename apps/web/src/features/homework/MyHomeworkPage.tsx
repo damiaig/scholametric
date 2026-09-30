@@ -9,7 +9,7 @@ import { getErrorMessage } from "../../lib/api-client";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useMyChildren } from "../dashboard/use-my-children";
 import { HomeworkDueDateList } from "./HomeworkDueDateList";
-import { useChildHomework, useMarkHomeworkDone, useMyAttachmentDownloadUrl, useMyHomework } from "./use-my-homework";
+import { useChildAttachmentDownloadUrl, useChildHomework, useMarkHomeworkDone, useMyAttachmentDownloadUrl, useMyHomework } from "./use-my-homework";
 import { useSubmitMyHomeworkFile } from "./use-my-homework-submissions";
 import { getAttachErrorMessage } from "./use-homework-attachments";
 
@@ -85,6 +85,8 @@ function MyHomework() {
 // backend's own no-parent-write design (Step 2's ruling, reconfirmed this
 // step). Same child-switcher shape as MyGradesPage's ChildGrades: childId
 // lives in ?childId=, defaults to the first linked child, stays shareable.
+// v0.8.2 step 7 — onDownloadAttachment IS wired now (Step 6 left it
+// undefined — no parent-scoped download route existed yet).
 function ChildHomework() {
   const children = useMyChildren();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -102,11 +104,19 @@ function ChildHomework() {
   }, [children.data, childId]);
 
   const homeworkQuery = useChildHomework(childId || null);
+  const downloadUrl = useChildAttachmentDownloadUrl();
 
   function handleChildChange(nextChildId: string) {
     const next = new URLSearchParams(searchParams);
     next.set("childId", nextChildId);
     setSearchParams(next, { replace: true });
+  }
+
+  function handleDownloadAttachment(homeworkId: string, attachmentId: string) {
+    downloadUrl.mutate(
+      { childId, homeworkId, attachmentId },
+      { onSuccess: (data) => window.open(data.downloadUrl, "_blank", "noopener,noreferrer") },
+    );
   }
 
   return (
@@ -161,7 +171,9 @@ function ChildHomework() {
         </Card>
       )}
 
-      {childId && homeworkQuery.data && <HomeworkDueDateList homework={homeworkQuery.data.homework} editable={false} />}
+      {childId && homeworkQuery.data && (
+        <HomeworkDueDateList homework={homeworkQuery.data.homework} editable={false} onDownloadAttachment={handleDownloadAttachment} />
+      )}
     </div>
   );
 }

@@ -165,11 +165,11 @@ describe("MyHomeworkPage", () => {
     expect(await screen.findByText("The file upload failed. Check your connection and try again.")).toBeInTheDocument();
   });
 
-  it("PARENT: shows a linked child's homework read-only — no mark-done checkbox, no file input, and attachments are plain text (no parent-scoped download endpoint exists)", async () => {
+  it("PARENT: shows a linked child's homework read-only — no mark-done checkbox, no file input", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     const list: StudentHomeworkListResponse = {
       classArmId: "arm1",
-      homework: [entry({ requiresUpload: true, attachments: [{ id: "att1", fileName: "worksheet.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" }] })],
+      homework: [entry({ requiresUpload: true })],
     };
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
@@ -184,8 +184,35 @@ describe("MyHomeworkPage", () => {
     expect(screen.getByRole("combobox", { name: "Child" })).toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(document.querySelector('input[type="file"]')).toBeNull();
-    expect(screen.getByText("worksheet.pdf")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /worksheet.pdf/ })).not.toBeInTheDocument();
+  });
+
+  // v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — inverts Step 6's own proof:
+  // the parent's attachment is now a clickable download link (Step 6 had
+  // no parent-scoped endpoint to wire, so it rendered as plain text).
+  it("PARENT: downloads a linked child's homework attachment via the parent-scoped endpoint", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const list: StudentHomeworkListResponse = {
+      classArmId: "arm1",
+      homework: [entry({ attachments: [{ id: "att1", fileName: "worksheet.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" }] })],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
+      if (path === "/api/v1/me/children/child-1/homework/hw1/attachments/att1/download-url") {
+        return { downloadUrl: "https://storage.example/download/att1", expiresAt: "t" };
+      }
+      if (path.includes("/me/children/child-1/homework")) return list;
+      if (path.includes("/me/children")) return { children: [{ studentId: "child-1", firstName: "Kemi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" }] };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+    const windowOpen = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    const user = userEvent.setup();
+    renderWithProviders(<MyHomeworkPage />);
+
+    const downloadButton = await screen.findByRole("button", { name: /worksheet.pdf/ });
+    await user.click(downloadButton);
+
+    await waitFor(() => expect(windowOpen).toHaveBeenCalledWith("https://storage.example/download/att1", "_blank", "noopener,noreferrer"));
   });
 
   it("PARENT: no children linked shows the empty state without querying homework", async () => {

@@ -7248,3 +7248,63 @@ by the existing `GET /me/children` → `{ children: [] }` mock, same as
 `/me/grades` already relies on). Full web suite: 76 files, 481/481
 clean. Workspace-wide `pnpm typecheck`/`pnpm lint` clean across all three
 packages.
+
+## 2026-09-30 — v0.8.2 step 7: closes the parent-attachment-download gap
+
+SPEC_V0.8.2.md's step 7 (§6 item 7) — the small, focused fix for the gap
+Step 6 flagged (a parent could see a teacher's attachment's name but not
+open it). The last remaining hole in the download matrix.
+
+**Zero homework-domain change — reuses
+`getAttachmentDownloadUrlForStudent` completely unchanged.** That method
+already took a pre-resolved `classArmId` generically, with no
+student-specific logic baked in — `MeService.
+getChildHomeworkAttachmentDownloadUrl` just resolves the CHILD's own
+current `classArmId` (via the existing `resolveStudentCurrentClassArmId`)
+and calls the identical method the STUDENT path already calls. The
+own-class + `PUBLISHED` wall is re-derived inside that one shared method
+either way — confirmed by the e2e: a parent whose linked child is in a
+different class than the target homework `404`s there, the exact same
+path a wrong-class STUDENT already hits.
+
+**`assertChildBelongsToCaller` runs FIRST**, before the class is even
+resolved — same ordering every other `getChild*` method in `me.service.ts`
+already uses (a non-linked child `404`s before any homework/class query
+ever runs, never leaking whether the homework or the child even exists).
+
+**Backend touch is `me`-layer only** — one new `MeService` method, one
+new `@Roles(PARENT)` route in `MeController`
+(`GET /me/children/:childId/homework/:id/attachments/:attachmentId/
+download-url`). Zero changes to `homework.service.ts`,
+`homework.controller.ts`, or any shared type — `DownloadUrlResult`/
+`DownloadUrlResponse` already existed and needed no widening.
+
+**Frontend**: new `useChildAttachmentDownloadUrl` hook
+(`use-my-homework.ts`), mirroring `useMyAttachmentDownloadUrl` exactly
+but carrying `childId` in its mutation variables. `MyHomeworkPage.tsx`'s
+`ChildHomework` branch now passes `onDownloadAttachment` to
+`HomeworkDueDateList` (omitted since Step 6, when no matching backend
+route existed) — `HomeworkDueDateList` itself needed no change at all;
+its optional-prop conditional already rendered a clickable button
+whenever a handler was provided, the exact mechanism that made the Step
+6 plain-text fallback possible now makes the real link possible too.
+
+**Test impact.** Backend: 3 new e2e tests in `me-homework.e2e-spec.ts`
+(a parent resolves a download URL for their linked child's attachment;
+a non-linked parent `404`s; a parent whose linked child is in a
+different class `404`s — this last one needed a new fixture, a guardian
+linked to the file's existing `otherClassStudentId`, since none existed
+before). Full backend e2e suite: 49 files, 625/625 clean. Frontend:
+`MyHomeworkPage.test.tsx`'s own PARENT test split in two — the original
+read-only proof (no checkbox, no file input) kept as-is, and a NEW test
+inverting Step 6's "attachment renders as plain text" into "renders as a
+button, clicking it resolves the parent-scoped URL and opens it." Full
+web suite: 76 files, 482/482 clean (one transient local "heap out of
+memory" run, the same documented flake, clean on immediate re-run).
+Workspace-wide `pnpm typecheck`/`pnpm lint` clean across all three
+packages.
+
+**Download matrix is now complete**: student-attachment (step 4),
+teacher-attachment (step 6), teacher-submission (step 4),
+parent-attachment (this step) — no remaining "can see the name but
+can't open it" gap anywhere in the homework domain.

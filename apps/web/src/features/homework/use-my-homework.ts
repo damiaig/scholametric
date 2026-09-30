@@ -48,3 +48,13 @@ export function useMyAttachmentDownloadUrl() {
       apiRequest<DownloadUrlResponse>(`/api/v1/me/homework/${homeworkId}/attachments/${attachmentId}/download-url`),
   });
 }
+
+// v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — the parent-side counterpart
+// to useMyAttachmentDownloadUrl above, closing Step 6's flagged gap (the
+// STUDENT-only route above would 403 for a parent caller).
+export function useChildAttachmentDownloadUrl() {
+  return useMutation({
+    mutationFn: ({ childId, homeworkId, attachmentId }: { childId: string; homeworkId: string; attachmentId: string }) =>
+      apiRequest<DownloadUrlResponse>(`/api/v1/me/children/${childId}/homework/${homeworkId}/attachments/${attachmentId}/download-url`),
+  });
+}

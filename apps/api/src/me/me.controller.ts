@@ -201,4 +201,17 @@ export class MeController {
   childHomework(@CurrentUser() user: AuthenticatedUser, @Param("childId", ParseUUIDPipe) childId: string) {
     return this.meService.getChildHomework(user.userId, childId);
   }
+
+  // v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — the parent-side counterpart
+  // to getHomeworkAttachmentDownloadUrl above, closing Step 6's flagged gap.
+  @Roles(UserRole.PARENT)
+  @Get("children/:childId/homework/:id/attachments/:attachmentId/download-url")
+  getChildHomeworkAttachmentDownloadUrl(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("childId", ParseUUIDPipe) childId: string,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("attachmentId", ParseUUIDPipe) attachmentId: string,
+  ) {
+    return this.meService.getChildHomeworkAttachmentDownloadUrl(user.userId, childId, id, attachmentId);
+  }
 }

@@ -433,6 +433,21 @@ export class MeService {
     return this.homeworkService.listPublishedForStudent(classArmId, termId, childId);
   }
 
+  // v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — closes the last download
+  // gap flagged in Step 6: a parent could see a teacher's attachment name
+  // on their child's homework but never open it. assertChildBelongsToCaller
+  // runs FIRST, same ordering as every other getChild* method above; from
+  // there this reuses getAttachmentDownloadUrlForStudent UNCHANGED (it
+  // already takes a pre-resolved classArmId generically, no student-
+  // specific logic baked in) — the own-class + PUBLISHED wall is
+  // re-derived inside that same method, exactly as it already is for the
+  // STUDENT path just above.
+  async getChildHomeworkAttachmentDownloadUrl(userId: string, childId: string, homeworkId: string, attachmentId: string): Promise<DownloadUrlResult> {
+    await this.assertChildBelongsToCaller(userId, childId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(childId);
+    return this.homeworkService.getAttachmentDownloadUrlForStudent(homeworkId, attachmentId, classArmId);
+  }
+
   // Reuses the same class-teacher/subject-teacher join shape as
   // TeachersService.findOne (SPEC_V0.3.md §2, resolution 4) plus a current-
   // session enrollment count per class arm — a separate endpoint (not a
