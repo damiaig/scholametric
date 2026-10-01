@@ -65,8 +65,10 @@ interface HomeworkDueDateListProps {
 // array the backend already returns sorted by dueDate ascending — the
 // spec's own "Pour lundi 28 sept" is Pronote's actual French UI quoted as
 // a grouping reference, not a localization mandate for this English-
-// language platform; headings render in English. Fait/Non fait stays as
-// shipped in Step 5's teacher-facing submissions view, for consistency.
+// language platform — headings render in English, and so do the
+// Done/Not done badge and the mark-done label (v0.8.2 "two small bug
+// fixes before tagging" pass caught the French left over from Step 5/6,
+// since corrected here and in HomeworkDetailDialog's teacher roster).
 export function HomeworkDueDateList({
   homework,
   editable,
@@ -112,7 +114,7 @@ export function HomeworkDueDateList({
                         <p className="font-medium text-text">{item.title}</p>
                         <p className="text-xs text-muted">{item.teacherName}</p>
                       </div>
-                      <StatusBadge label={item.markedDone ? "Fait" : "Non fait"} tone={item.markedDone ? "success" : "neutral"} />
+                      <StatusBadge label={item.markedDone ? "Done" : "Not done"} tone={item.markedDone ? "success" : "neutral"} />
                     </div>
 
                     <p className="line-clamp-3 text-sm text-text">{item.description}</p>
@@ -157,7 +159,7 @@ export function HomeworkDueDateList({
                           checked={item.markedDone}
                           onChange={(event) => onMarkDone?.(item.id, event.target.checked)}
                         />
-                        <Label htmlFor={`mark-done-${item.id}`}>J&apos;ai terminé</Label>
+                        <Label htmlFor={`mark-done-${item.id}`}>Mark as done</Label>
                       </div>
                     )}
 

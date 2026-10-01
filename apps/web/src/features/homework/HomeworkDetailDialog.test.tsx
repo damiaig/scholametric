@@ -177,9 +177,9 @@ describe("HomeworkDetailDialog", () => {
     renderWithProviders(<HomeworkDetailDialog open homework={HOMEWORK} onClose={vi.fn()} />);
 
     expect(await screen.findByText("Chidinma Eze")).toBeInTheDocument();
-    expect(screen.getByText("Fait")).toBeInTheDocument();
+    expect(screen.getByText("Done")).toBeInTheDocument();
     expect(screen.getByText("Tunde Bello")).toBeInTheDocument();
-    expect(screen.getByText("Non fait")).toBeInTheDocument();
+    expect(screen.getByText("Not done")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /answers.pdf/ }));
     await waitFor(() => expect(windowOpen).toHaveBeenCalledWith("https://storage.example/download/sub1", "_blank", "noopener,noreferrer"));

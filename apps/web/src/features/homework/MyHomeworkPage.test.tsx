@@ -69,7 +69,7 @@ describe("MyHomeworkPage", () => {
 
     expect(await screen.findByText("Mathematics")).toBeInTheDocument();
     expect(screen.getByText("Chapter 3 exercises")).toBeInTheDocument();
-    expect(screen.getByText("Non fait")).toBeInTheDocument();
+    expect(screen.getByText("Not done")).toBeInTheDocument();
     expect(screen.getByText(/Due Monday/)).toBeInTheDocument();
 
     const viewMore = screen.getByRole("button", { name: "View more" });
@@ -77,7 +77,7 @@ describe("MyHomeworkPage", () => {
     expect(screen.getByRole("heading", { name: "Chapter 3 exercises" })).toBeInTheDocument();
   });
 
-  it("STUDENT: mark-done flips Fait/Non fait via POST /me/homework/:id/complete", async () => {
+  it("STUDENT: mark-done flips Done/Not done via POST /me/homework/:id/complete", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     const list: StudentHomeworkListResponse = { classArmId: "arm1", homework: [entry()] };
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
@@ -93,7 +93,7 @@ describe("MyHomeworkPage", () => {
     const user = userEvent.setup();
     renderWithProviders(<MyHomeworkPage />);
 
-    const checkbox = await screen.findByRole("checkbox", { name: "J'ai terminé" });
+    const checkbox = await screen.findByRole("checkbox", { name: "Mark as done" });
     await user.click(checkbox);
 
     await waitFor(() => expect(mockedApiRequest).toHaveBeenCalledWith("/api/v1/me/homework/hw1/complete", { method: "POST", body: { markedDone: true } }));

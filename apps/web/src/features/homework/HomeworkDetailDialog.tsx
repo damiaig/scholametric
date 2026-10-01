@@ -137,7 +137,7 @@ export function HomeworkDetailDialog({ open, onClose, homework }: HomeworkDetail
                     <tr key={student.studentId} className="border-b border-muted/10 last:border-0">
                       <td className="px-3 py-2 text-text">{student.studentName}</td>
                       <td className="px-3 py-2">
-                        <StatusBadge label={student.markedDone ? "Fait" : "Non fait"} tone={student.markedDone ? "success" : "neutral"} />
+                        <StatusBadge label={student.markedDone ? "Done" : "Not done"} tone={student.markedDone ? "success" : "neutral"} />
                       </td>
                       <td className="px-3 py-2">
                         {student.submissions.length === 0 ? (

@@ -29,7 +29,15 @@ export function HomeworkClassPage() {
 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Homework | null>(null);
-  const [detail, setDetail] = useState<Homework | null>(null);
+  // v0.8.2 bugfix pass — stores only the id, never the object: the
+  // attachments dialog stays open WHILE a mutation (attach) runs, so the
+  // homework object passed into it must be derived fresh from the live
+  // list every render (below), not frozen into state at click-time. A
+  // snapshotted object here would keep rendering stale attachments/
+  // remaining-budget after a successful upload until the dialog is
+  // closed and reopened — editing/deleting don't need this because both
+  // dialogs close immediately on their own mutation's success.
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Homework | null>(null);
 
   const teaching = useMyTeaching();
@@ -73,6 +81,7 @@ export function HomeworkClassPage() {
   }
 
   const homework = homeworkQuery.data?.homework ?? [];
+  const detail = homework.find((item) => item.id === detailId) ?? null;
   const pageTitle = entry ? `${entry.className} — ${entry.subjectName}` : "Homework";
 
   function openCreate() {
@@ -167,7 +176,7 @@ export function HomeworkClassPage() {
                       >
                         {isPublished ? "Unpublish" : "Publish"}
                       </Button>
-                      <Button type="button" variant="outline" size="sm" onClick={() => setDetail(item)}>
+                      <Button type="button" variant="outline" size="sm" onClick={() => setDetailId(item.id)}>
                         <Paperclip className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
                         Attachments &amp; submissions
                       </Button>
@@ -201,7 +210,7 @@ export function HomeworkClassPage() {
         homework={editing}
       />
 
-      <HomeworkDetailDialog open={detail !== null} onClose={() => setDetail(null)} homework={detail} />
+      <HomeworkDetailDialog open={detailId !== null} onClose={() => setDetailId(null)} homework={detail} />
 
       <ConfirmDialog
         open={deleting !== null}
