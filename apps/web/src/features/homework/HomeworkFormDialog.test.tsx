@@ -59,6 +59,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   authStore.clear();
 });
 
@@ -161,5 +162,120 @@ describe("HomeworkFormDialog", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  // v0.8.3 step 2 (SPEC_V0.8.3.md §2.1, Item 1) — the ordering the create-
+  // then-attach-on-submit decision settled on: the homework is created
+  // FIRST, then the held file is attached to its real id — never the
+  // reverse (a file can't be attached before an id exists).
+  it("create mode: holds a selected file until after create succeeds, then attaches it and closes", async () => {
+    const calls: string[] = [];
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
+      calls.push(`${opts?.method ?? "GET"} ${path}`);
+      if (path === "/api/v1/homework" && opts?.method === "POST") {
+        return { ...EXISTING, id: "new1" };
+      }
+      if (path === "/api/v1/homework/new1/attachments/upload-url" && opts?.method === "POST") {
+        return { uploadUrl: "https://storage.example/upload/xyz", storageKey: "schools/s1/homework/new1/attachments/xyz-worksheet.pdf", expiresAt: "t", maxSizeBytes: 20 * 1024 * 1024 };
+      }
+      if (path === "/api/v1/homework/new1/attachments" && opts?.method === "POST") {
+        return { id: "att1", fileName: "worksheet.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" };
+      }
+      throw new Error(`unexpected call: ${path} ${opts?.method ?? "GET"}`);
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderWithProviders(<HomeworkFormDialog open onClose={onClose} classArmId="arm1" subjectId="sub1" termId="term1" />);
+
+    await user.type(screen.getByLabelText("Title"), "Chapter 4 exercises");
+    await user.type(screen.getByLabelText("Description"), "Read pages 10-20.");
+    await user.type(screen.getByLabelText("Due date"), "2026-11-09");
+
+    const file = new File(["hello"], "worksheet.pdf", { type: "application/pdf" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+    expect(screen.getByText("worksheet.pdf")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(calls).toEqual([
+      "POST /api/v1/homework",
+      "POST /api/v1/homework/new1/attachments/upload-url",
+      "POST /api/v1/homework/new1/attachments",
+    ]);
+  });
+
+  // The partial-failure case: create succeeded (not rolled back), the
+  // attach failed — the dialog stays open as an edit session for the
+  // homework that now exists, showing the failure with a retry affordance.
+  it("create mode: a failing attach keeps the dialog open and doesn't roll back the created homework", async () => {
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
+      if (path === "/api/v1/homework" && opts?.method === "POST") {
+        return { ...EXISTING, id: "new1" };
+      }
+      if (path === "/api/v1/homework/new1/attachments/upload-url" && opts?.method === "POST") {
+        return { uploadUrl: "https://storage.example/upload/xyz", storageKey: "schools/s1/homework/new1/attachments/xyz-worksheet.pdf", expiresAt: "t", maxSizeBytes: 20 * 1024 * 1024 };
+      }
+      throw new Error(`should not be called past the failed PUT: ${path} ${opts?.method ?? "GET"}`);
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderWithProviders(<HomeworkFormDialog open onClose={onClose} classArmId="arm1" subjectId="sub1" termId="term1" />);
+
+    await user.type(screen.getByLabelText("Title"), "Chapter 4 exercises");
+    await user.type(screen.getByLabelText("Description"), "Read pages 10-20.");
+    await user.type(screen.getByLabelText("Due date"), "2026-11-09");
+
+    const file = new File(["hello"], "worksheet.pdf", { type: "application/pdf" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByText("The file upload failed. Check your connection and try again.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry worksheet.pdf" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create" })).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // Edit mode has no ordering problem (the id already exists) — selecting
+  // a file attaches it immediately, the same behavior the old separate
+  // attach dialog had, just relocated into this form.
+  it("edit mode: shows existing attachments and attaches a newly selected file immediately, without a create call", async () => {
+    const withAttachment: Homework = {
+      ...EXISTING,
+      attachments: [{ id: "att0", fileName: "existing.pdf", contentType: "application/pdf", sizeBytes: 2048, createdAt: "t" }],
+    };
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
+      if (path === "/api/v1/homework/hw1/attachments/upload-url" && opts?.method === "POST") {
+        return { uploadUrl: "https://storage.example/upload/xyz", storageKey: "schools/s1/homework/hw1/attachments/xyz-new.pdf", expiresAt: "t", maxSizeBytes: 20 * 1024 * 1024 };
+      }
+      if (path === "/api/v1/homework/hw1/attachments" && opts?.method === "POST") {
+        return { id: "att1", fileName: "new.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" };
+      }
+      if (path === "/api/v1/homework" || path.startsWith("/api/v1/homework?")) {
+        throw new Error(`a create call should not happen in edit mode: ${path} ${opts?.method ?? "GET"}`);
+      }
+      throw new Error(`unexpected call: ${path} ${opts?.method ?? "GET"}`);
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+
+    const user = userEvent.setup();
+    renderWithProviders(
+      <HomeworkFormDialog open onClose={vi.fn()} classArmId="arm1" subjectId="sub1" termId="term1" homework={withAttachment} />,
+    );
+
+    expect(screen.getByText("existing.pdf")).toBeInTheDocument();
+
+    const file = new File(["hello"], "new.pdf", { type: "application/pdf" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+
+    expect(await screen.findByText("new.pdf")).toBeInTheDocument();
   });
 });

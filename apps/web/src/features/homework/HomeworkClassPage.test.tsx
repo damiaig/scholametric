@@ -125,60 +125,30 @@ describe("HomeworkClassPage", () => {
     expect(await screen.findByText("No subject selected")).toBeInTheDocument();
   });
 
-  // v0.8.2 bugfix pass — the actual bug: HomeworkClassPage used to store the
-  // clicked item as a frozen object (`detail`), so the already-open dialog
-  // kept rendering the PRE-upload attachments array even after the list's
-  // own query invalidation refetched fresh data underneath it. The fix
-  // derives the dialog's homework prop fresh from the live list every
-  // render (`homework.find(item => item.id === detailId)`), so this proves
-  // the new attachment appears WITHOUT closing the dialog.
-  it("a newly attached file appears in the open dialog without closing it", async () => {
-    let attached = false;
-    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
+  // v0.8.3 step 2 (SPEC_V0.8.3.md §2.2, Item 2) — relabeled from
+  // "Attachments & submissions": teacher attachments now live in
+  // HomeworkFormDialog (Item 1), so this button opens a submissions-only
+  // view. The v0.8.2 bugfix regression test that used to live here
+  // (proving a newly attached file appeared in the open dialog without
+  // closing it) tested a flow that no longer exists — HomeworkDetailDialog
+  // has no file input anymore, and `detail` still derives fresh from the
+  // live list every render exactly as that fix left it, so there's nothing
+  // left to regress at this layer.
+  it("opens the Submissions dialog, not an attachments one", async () => {
+    const list: HomeworkListResponse = { classArmId: "arm1", subjectId: "sub1", termId: "term1", homework: [homework()] };
+    mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/me/teaching") return TEACHING;
-      if (path === "/api/v1/homework" && (!opts?.method || opts.method === "GET")) {
-        return {
-          classArmId: "arm1",
-          subjectId: "sub1",
-          termId: "term1",
-          homework: [
-            homework({
-              attachments: attached
-                ? [{ id: "att1", fileName: "worksheet.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" }]
-                : [],
-            }),
-          ],
-        };
-      }
+      if (path === "/api/v1/homework") return list;
       if (path === "/api/v1/homework/hw1/submissions") return { homeworkId: "hw1", students: [] };
-      if (path === "/api/v1/homework/hw1/attachments/upload-url" && opts?.method === "POST") {
-        return {
-          uploadUrl: "https://storage.example/upload/xyz",
-          storageKey: "schools/s1/homework/hw1/attachments/xyz-worksheet.pdf",
-          expiresAt: "t",
-          maxSizeBytes: 20 * 1024 * 1024,
-        };
-      }
-      if (path === "/api/v1/homework/hw1/attachments" && opts?.method === "POST") {
-        attached = true;
-        return { id: "att1", fileName: "worksheet.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" };
-      }
-      throw new Error(`unexpected call: ${opts?.method ?? "GET"} ${path}`);
+      throw new Error(`unexpected call: ${path}`);
     });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
-
     const user = userEvent.setup();
     renderPage("/homework/arms/arm1?subjectId=sub1");
 
     await screen.findByText("Chapter 3 exercises");
-    await user.click(screen.getByRole("button", { name: "Attachments & submissions" }));
-    expect(screen.queryByText("worksheet.pdf")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Submissions" }));
 
-    const file = new File(["hello"], "worksheet.pdf", { type: "application/pdf" });
-    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
-    await user.upload(fileInput, file);
-
-    expect(await screen.findByText("worksheet.pdf")).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Chapter 3 exercises — submissions" })).toBeInTheDocument();
   });
 
   it("shows a prompt when no current term is configured", async () => {

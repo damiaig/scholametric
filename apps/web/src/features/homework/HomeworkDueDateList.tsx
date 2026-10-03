@@ -163,7 +163,10 @@ export function HomeworkDueDateList({
                       </div>
                     )}
 
-                    {editable && (
+                    {/* v0.8.3 step 2 (SPEC_V0.8.3.md §2.3, Item 3) — mark-done above stays
+                        independent of requiresUpload; the upload control (and the
+                        already-submitted-files list) only makes sense when one's expected. */}
+                    {editable && item.requiresUpload && (
                       <div className="flex flex-col gap-1.5">
                         {item.submissions.length > 0 && (
                           <ul className="flex flex-col gap-1">

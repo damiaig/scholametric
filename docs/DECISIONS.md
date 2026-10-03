@@ -7360,3 +7360,59 @@ Full backend e2e suite: 49 files, 630/630 clean. Unit suite: 2 files,
 `HomeworkFormDialog.tsx`'s existing `mutation.isError` rendering already
 surfaces the new `400` message through the same path proven for the
 due-date `400` in step 5.
+
+## 2026-10-03 — v0.8.3 step 2: homework authoring refinements (Items 1-3)
+
+Attachments move into `HomeworkFormDialog` (create AND edit); the old
+separate "Attachments & submissions" dialog (`HomeworkDetailDialog`)
+becomes Submissions-only, relabeled, icon swapped `Paperclip`→`FileCheck`
+(it no longer shows attachments, so the clip icon was actively
+misleading). Student view (`HomeworkDueDateList`): the upload control
+now renders only when `requiresUpload` is true; mark-done stays
+independent of it, unchanged either way.
+
+**Create-then-attach-on-submit, exact mechanics**: a file can't be
+attached before a homework id exists, so CREATE mode holds selected
+files client-side (`heldFiles: File[]`, no Zod involvement — files
+aren't part of `homeworkFormSchema`) and attaches them **sequentially**
+(not `Promise.all`) only after the create `POST` succeeds — the attach
+endpoint's cap checkpoint sums existing attachment sizes per call;
+concurrent calls would race that sum. A failed attach does **not** roll
+back the already-created homework — the dialog stays open, holding
+`createdHomeworkId`, text fields lock (no mutation path left for them in
+this transient state), the Create/Cancel pair is replaced by a single
+Close button, and the failed file gets a Retry (re-fires the same
+in-memory `File`) and a Dismiss. EDIT mode has no such ordering problem
+— selecting a file attaches it immediately, same as the old dialog did.
+
+**Avoided re-introducing the v0.8.2 stale-snapshot bug**: showing
+newly-attached files in the form could have been done by deriving
+`homework` live-by-id in `HomeworkClassPage` (mirroring the `detail`
+fix from the v0.8.2 bugfix pass) — deliberately did NOT do this, because
+`HomeworkFormDialog`'s `reset()` effect depends on `homework`, and a
+live-by-id `homework` would re-fire that effect (and wipe unsaved
+title/description edits) every time an attach success invalidates the
+list query. Instead: a local `sessionAttachments` array appended to
+directly from each attach mutation's own return value (already in hand,
+no refetch needed) — `homework` stays the frozen snapshot it always was,
+and the `reset()` effect is keyed on `open` alone (not `homework`'s
+identity), with a comment explaining why the dependency is deliberately
+incomplete.
+
+**Test impact.** `HomeworkFormDialog.test.tsx`: 4 existing tests
+untouched, +3 new (held-files-attach-after-create; partial-failure
+keeps-dialog-open-no-rollback; edit-mode-attaches-immediately).
+`HomeworkDetailDialog.test.tsx`: the 4 attachment-specific tests (cap
+display, 3-step attach flow, failed PUT, over-cap 409) *moved* here
+conceptually — removed from that file since the behavior no longer
+lives there; a new title-only test added. `HomeworkClassPage.test.tsx`:
+button-name assertions updated to "Submissions"; the v0.8.2 bugfix
+regression test ("a newly attached file appears in the open dialog
+without closing it") removed — it exercised a flow that no longer
+exists (`HomeworkDetailDialog` has no file input anymore), and nothing
+replaces it because `editing` itself is unchanged, so there's no
+staleness risk left to prove at that layer. `MyHomeworkPage.test.tsx`:
++1 new test (upload control shown only on the `requiresUpload: true`
+item; mark-done shown on both). Full web suite: 76 files, 483/483
+clean. `pnpm typecheck`/`pnpm lint` clean across all three workspaces.
+Zero backend/`packages/shared` diff.

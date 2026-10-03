@@ -77,6 +77,32 @@ describe("MyHomeworkPage", () => {
     expect(screen.getByRole("heading", { name: "Chapter 3 exercises" })).toBeInTheDocument();
   });
 
+  // v0.8.3 step 2 (SPEC_V0.8.3.md §2.3, Item 3) — mark-done is independent
+  // of requiresUpload (both items show it); the upload control (and its
+  // submitted-files list) only renders on the item that actually needs one.
+  it("STUDENT: shows the upload control only on the homework that requires it", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const list: StudentHomeworkListResponse = {
+      classArmId: "arm1",
+      homework: [
+        entry({ id: "hw-upload", title: "Needs an upload", requiresUpload: true }),
+        entry({ id: "hw-no-upload", title: "No upload needed", requiresUpload: false }),
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/homework")) return list;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<MyHomeworkPage />);
+
+    await screen.findByText("Needs an upload");
+    await screen.findByText("No upload needed");
+    expect(document.querySelectorAll('input[type="file"]')).toHaveLength(1);
+    expect(screen.getAllByRole("checkbox", { name: "Mark as done" })).toHaveLength(2);
+  });
+
   it("STUDENT: mark-done flips Done/Not done via POST /me/homework/:id/complete", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     const list: StudentHomeworkListResponse = { classArmId: "arm1", homework: [entry()] };

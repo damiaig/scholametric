@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { Paperclip, Plus, Pencil, Trash2, FolderOpen } from "lucide-react";
+import { FileCheck, Plus, Pencil, Trash2, FolderOpen } from "lucide-react";
 import type { Homework } from "@scholametric/shared";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
@@ -177,8 +177,8 @@ export function HomeworkClassPage() {
                         {isPublished ? "Unpublish" : "Publish"}
                       </Button>
                       <Button type="button" variant="outline" size="sm" onClick={() => setDetailId(item.id)}>
-                        <Paperclip className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-                        Attachments &amp; submissions
+                        <FileCheck className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+                        Submissions
                       </Button>
                       <Button
                         type="button"
