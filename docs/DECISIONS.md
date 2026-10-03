@@ -7308,3 +7308,55 @@ packages.
 teacher-attachment (step 6), teacher-submission (step 4),
 parent-attachment (this step) — no remaining "can see the name but
 can't open it" gap anywhere in the homework domain.
+
+## 2026-10-03 — v0.8.3 step 1: calendar-aware homework days (create-day rule)
+
+`createHomework` now also requires the caller to teach the target class
+on TODAY's weekday (any period) — `CalendarService.teacherTeachesClassOnDate`,
+a new public day-level sibling of `assertReplacementTeacherAvailable`'s
+existing `TimetableSlot` lookup (same table, same `weekdayOf`/
+`getCurrentSessionOrThrow`, no `periodId`/`subjectId` filter). Today being
+a holiday also rejects, via the due-date rule's own
+`isSchoolDayForClassOnDate` — reused, not reimplemented. CREATE-day only:
+`updateHomework` never calls it. Zero-`TimetableSlot`-configured classes
+are rejected outright (no fail-open fallback) — a class being authored
+homework has near-certainly had its timetable built; the fix for a real
+school hitting this is "build the timetable," not "weaken the rule."
+
+**First caught by a bug, not a review**: the initial implementation added
+`assertCreateDayAllowed` as a private method but never actually called it
+from `createHomework` — every e2e fixture (fake clock + seeded
+`TimetableSlot`) passed "successfully" because the rule silently never
+ran. Only the one negative test (assigned teacher, no slot, expects
+`400`) caught it, by getting `201` instead. Lesson: a new validation
+rule's test suite needs at least one test that fails loudly if the rule
+is never wired in — a positive-path-only suite can pass start to finish
+against a no-op.
+
+**e2e testability — fake timers, and a real trap**: every homework
+e2e file's `createHomework()` calls now depend on a `TimetableSlot`
+existing for "today," so each of the five files
+(`homework.e2e-spec.ts` and its four siblings) pins `Date` (only) via
+`jest.useFakeTimers()` to a fixed Monday, and seeds the one slot that
+makes it true — both extracted into `test/utils/pin-homework-create-day.ts`.
+The trap: pinning the clock **after** a file's `loginAs()` calls mints
+JWTs under the real clock, then jumps "now" away from them — the
+already-issued tokens look expired on the very next request (every
+test in the file 401s). The clock must be pinned **before** any login,
+so every token's `iat`/`exp` is computed against the same frozen instant
+used later to verify it. The one test that needs to simulate "a
+different day" mid-test (`homework.e2e-spec.ts`'s "edit isn't subject to
+the create-day rule") re-logs-in immediately after shifting the clock,
+for the same reason.
+
+**Test impact.** Backend: `calendar.service.ts` (+1 public method),
+`homework.service.ts` (+1 private method, +1 call in `createHomework`),
+new shared test helper `test/utils/pin-homework-create-day.ts`. 5 e2e
+files touched (4 to add the clock-pin + slot fixture so their existing
+`createHomework()` calls keep passing, `homework.e2e-spec.ts` additionally
+gets the rule's own positive/negative/holiday/edit-is-unaffected tests).
+Full backend e2e suite: 49 files, 630/630 clean. Unit suite: 2 files,
+16/16 clean. `pnpm typecheck`/`pnpm lint` clean. Zero frontend change —
+`HomeworkFormDialog.tsx`'s existing `mutation.isError` rendering already
+surfaces the new `400` message through the same path proven for the
+due-date `400` in step 5.

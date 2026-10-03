@@ -212,6 +212,24 @@ export class HomeworkService {
     }
   }
 
+  // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — CREATE-day only: does this
+  // teacher teach this class on TODAY's weekday, in any period. Reuses
+  // CalendarService.isSchoolDayForClassOnDate (the same method the
+  // due-date rule above already calls) for today's holiday/school-day
+  // state, and the new CalendarService.teacherTeachesClassOnDate for the
+  // timetable fact — no schedule logic reimplemented here. A holiday
+  // today short-circuits before the slot query runs (today being a
+  // non-school-day is a sufficient reason on its own). Not re-run on
+  // update — see updateHomework, which never calls this.
+  private async assertCreateDayAllowed(schoolId: string, classArmId: string, teacherUserId: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    const isSchoolDay = await this.calendarService.isSchoolDayForClassOnDate(schoolId, classArmId, today);
+    const teachesToday = isSchoolDay && (await this.calendarService.teacherTeachesClassOnDate(schoolId, teacherUserId, classArmId, today));
+    if (!teachesToday) {
+      throw new BadRequestException("You can only set homework for this class on a day you teach it.");
+    }
+  }
+
   // v0.8.2 step 2 (SPEC_V0.8.2.md §6 item 2, Item 8) — sibling to
   // isPeriodTimePast (v0.8.1), but pure-date, no time-of-day: a homework
   // due TODAY is still visible, it only drops off the day AFTER its due
@@ -296,6 +314,7 @@ export class HomeworkService {
     const schoolId = this.tenantContext.schoolId;
     const { term } = await this.resolveTenantScope(schoolId, dto);
     await assertTeacherAssignment(this.prisma, schoolId, user, dto.subjectId, dto.classArmId, term.sessionId);
+    await this.assertCreateDayAllowed(schoolId, dto.classArmId, user.userId);
     await this.assertDueDateIsSchoolDay(schoolId, dto.classArmId, dto.dueDate);
 
     const homework = await this.prisma.homework.create({

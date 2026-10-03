@@ -4,6 +4,7 @@ import bcrypt from "bcrypt";
 import { Gender, UserRole } from "@prisma/client";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs, SEED_PASSWORD } from "./utils/login";
+import { pinClockToDate, seedCreateDaySlot } from "./utils/pin-homework-create-day";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { StorageService } from "../src/storage/storage.service";
 import { FakeStorageService } from "./utils/fake-storage.service";
@@ -51,6 +52,8 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
   const createdUserIds: string[] = [];
   const createdGuardianIds: string[] = [];
   const createdHomeworkIds: string[] = [];
+  let teardownClock: () => void;
+  let teardownCreateDaySlot: () => Promise<void>;
 
   function createHomework(token: string, overrides: Partial<Record<string, unknown>> = {}) {
     return request(app.getHttpServer())
@@ -85,6 +88,12 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
     app = await createTestApp();
     prisma = app.get(PrismaService);
     storage = app.get(StorageService) as FakeStorageService;
+
+    // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — pinned BEFORE any login: every
+    // token this file mints (teacher, student, parent) is issued and later
+    // verified against the same frozen instant, so none of them expire
+    // mid-suite.
+    teardownClock = pinClockToDate(VALID_DUE_DATE);
 
     mathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
 
@@ -206,9 +215,23 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
     });
     createdUserIds.push(otherClassParentUser.id);
     otherClassParentToken = await loginAs(app, "E2EMEHWOTHERCLASSPARENT", "sunrise");
+
+    // The create-day rule's one positive fixture: proves mathTeacherId
+    // teaches jss1AArmId on VALID_DUE_DATE's weekday.
+    const mathTeacherId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
+    teardownCreateDaySlot = await seedCreateDaySlot(prisma, {
+      schoolId: sunriseId,
+      classArmId: jss1AArmId,
+      sessionId: sunriseSessionId,
+      subjectId: mathSubjectId,
+      teacherUserId: mathTeacherId,
+      date: VALID_DUE_DATE,
+    });
   });
 
   afterAll(async () => {
+    await teardownCreateDaySlot();
+    teardownClock();
     if (createdHomeworkIds.length > 0) {
       await prisma.homeworkAttachment.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homeworkSubmission.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });

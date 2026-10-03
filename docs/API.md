@@ -2590,6 +2590,14 @@ derived server-side from `termId`. Validated before write:
 - **`404`** — class arm / subject / term doesn't belong to this school.
 - **`403`** — the caller doesn't currently teach this subject for this class
   (`assertTeacherAssignment`).
+- **`400`** — create-day rule (v0.8.3 step 1, SPEC_V0.8.3.md §2.4): the caller
+  doesn't teach this class on TODAY's weekday (the server's current date), in
+  any period — "You can only set homework for this class on a day you teach
+  it." Reuses `CalendarService.teacherTeachesClassOnDate` (a day-level sibling
+  of `assertReplacementTeacherAvailable`'s existing `TimetableSlot` lookup) and
+  `isSchoolDayForClassOnDate` (today being a holiday also rejects — no class
+  happens today either way). Checked once, at creation only — `PATCH
+  /homework/:id` never re-fires it.
 - **`400`** — `dueDate` isn't a school day for this class: a holiday, a Sunday
   (structural), or a Saturday for a class without `includesSaturday` — reuses
   `CalendarService.isSchoolDayForClassOnDate` directly, no school-day logic

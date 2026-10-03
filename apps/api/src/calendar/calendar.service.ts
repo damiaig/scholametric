@@ -966,6 +966,22 @@ export class CalendarService {
     return this.isSchoolDayForClass(weekday, schoolDays?.includesSaturday ?? false, holidays, date).isSchoolDay;
   }
 
+  // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — day-level sibling of
+  // assertReplacementTeacherAvailable's TimetableSlot lookup above: same
+  // table, same weekdayOf/getCurrentSessionOrThrow, just no periodId filter
+  // (HomeworkService needs "does this teacher teach this class ANY period
+  // today", not a specific-period conflict check). Not a schedule
+  // reimplementation — the slot data itself is the single source of truth.
+  async teacherTeachesClassOnDate(schoolId: string, teacherUserId: string, classArmId: string, date: string): Promise<boolean> {
+    const weekday = this.weekdayOf(date);
+    if (weekday === "SUNDAY") return false;
+    const session = await this.getCurrentSessionOrThrow(schoolId);
+    const slot = await this.prisma.timetableSlot.findFirst({
+      where: forSchool(schoolId, { teacherUserId, classArmId, dayOfWeek: weekday, sessionId: session.id }),
+    });
+    return Boolean(slot);
+  }
+
   // Checks the replacement teacher against BOTH a normal TimetableSlot
   // (their everyday teaching duty at this weekday+period) AND every other
   // TimetableException where they're already covering as a replacement at

@@ -2,6 +2,7 @@ import { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs } from "./utils/login";
+import { pinClockToDate, seedCreateDaySlot } from "./utils/pin-homework-create-day";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 // v0.8.2 step 1 (SPEC_V0.8.2.md §6 item 1) — Homework model + teacher
@@ -25,6 +26,7 @@ describe("Homework (e2e) — SPEC_V0.8.2.md §6 item 1, v0.8.2 step 1", () => {
   let sunriseSessionId: string;
   let sunriseTermId: string;
   let jss1AArmId: string;
+  let jss2AArmId: string;
   let mathTeacherId: string;
   let coverTeacherId: string;
   let mathSubjectId: string;
@@ -41,8 +43,18 @@ describe("Homework (e2e) — SPEC_V0.8.2.md §6 item 1, v0.8.2 step 1", () => {
   const SATURDAY_DUE_DATE = "2026-10-03";
   const HOLIDAY_DUE_DATE = "2026-10-12"; // Monday — marked a holiday in beforeAll
 
+  // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — createHomework now also validates
+  // "does the teacher teach this class TODAY", so every createHomework()
+  // call in this whole file (not just the new describe block below) needs
+  // "today" pinned to a day mathTeacherId actually teaches jss1AArmId.
+  // Deliberately reused as the SAME date as VALID_DUE_DATE — proves today
+  // and the due date are independent axes without needing them to differ.
+  const TODAY = VALID_DUE_DATE;
+
   const createdHomeworkIds: string[] = [];
   const createdHolidayIds: string[] = [];
+  let teardownClock: () => void;
+  let teardownCreateDaySlot: () => Promise<void>;
 
   function createHomework(token: string, overrides: Partial<Record<string, unknown>> = {}) {
     return request(app.getHttpServer())
@@ -73,6 +85,12 @@ describe("Homework (e2e) — SPEC_V0.8.2.md §6 item 1, v0.8.2 step 1", () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
 
+    // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — pinned BEFORE any login: every
+    // token this file mints is issued (and later verified) against the
+    // same frozen instant, so none of them expire mid-suite. See
+    // pinClockToDate's own doc comment for why the order matters.
+    teardownClock = pinClockToDate(TODAY);
+
     sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
     mathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
     englishTeacherToken = await loginAs(app, "teacher2@sunrise.test", "sunrise");
@@ -87,6 +105,12 @@ describe("Homework (e2e) — SPEC_V0.8.2.md §6 item 1, v0.8.2 step 1", () => {
     sunriseTermId = term.id;
     const jss1 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 1" } });
     jss1AArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: sunriseId, classLevelId: jss1.id, name: "A" } })).id;
+    const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
+    // mathTeacherId is seeded to teach Mathematics here too (seed.ts's
+    // jss1And2ArmKeys loop) — IS assigned, so assertTeacherAssignment
+    // passes, but no TimetableSlot is seeded for it anywhere: exactly the
+    // "assigned but no slot today" case the create-day rule needs to 400.
+    jss2AArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: sunriseId, classLevelId: jss2.id, name: "A" } })).id;
 
     mathTeacherId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
     coverTeacherId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher3@sunrise.test" } })).id;
@@ -100,9 +124,22 @@ describe("Homework (e2e) — SPEC_V0.8.2.md §6 item 1, v0.8.2 step 1", () => {
       throw new Error(`holiday creation failed: ${holiday.status} ${JSON.stringify(holiday.body)}`);
     }
     createdHolidayIds.push(holiday.body.id);
+
+    // The create-day rule's one positive fixture: proves mathTeacherId
+    // teaches jss1AArmId on TODAY's weekday.
+    teardownCreateDaySlot = await seedCreateDaySlot(prisma, {
+      schoolId: sunriseId,
+      classArmId: jss1AArmId,
+      sessionId: sunriseSessionId,
+      subjectId: mathSubjectId,
+      teacherUserId: mathTeacherId,
+      date: TODAY,
+    });
   });
 
   afterAll(async () => {
+    await teardownCreateDaySlot();
+    teardownClock();
     if (createdHomeworkIds.length > 0) {
       await prisma.homework.deleteMany({ where: { id: { in: createdHomeworkIds } } });
     }
@@ -330,6 +367,79 @@ describe("Homework (e2e) — SPEC_V0.8.2.md §6 item 1, v0.8.2 step 1", () => {
       // teacherUserId still records the ORIGINAL author — authorship
       // history, not the authority gate.
       expect(newTeacherAttempt.body.teacherUserId).toBe(mathTeacherId);
+    });
+  });
+
+  // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — every OTHER createHomework() call
+  // in this file already proves the positive path (today = TODAY, which the
+  // outer beforeAll's TimetableSlot fixture covers); this block proves the
+  // rule's actual edges.
+  describe("create-day rule (SPEC_V0.8.3.md §2.4, v0.8.3 step 1)", () => {
+    it("creates homework when the teacher teaches this class on today's weekday", async () => {
+      const response = await createHomework(mathTeacherToken);
+      expect(response.status).toBe(201);
+      createdHomeworkIds.push(response.body.id);
+    });
+
+    it("the due date is unaffected — any future school day is still accepted regardless of today", async () => {
+      const response = await createHomework(mathTeacherToken, { dueDate: "2026-11-02" }); // a later Monday
+      expect(response.status).toBe(201);
+      createdHomeworkIds.push(response.body.id);
+    });
+
+    it("400s when the teacher is assigned the subject but has no TimetableSlot for this class today", async () => {
+      const response = await createHomework(mathTeacherToken, { classArmId: jss2AArmId });
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe("You can only set homework for this class on a day you teach it.");
+    });
+
+    describe("today is a holiday for the class", () => {
+      let todayHolidayId: string;
+
+      beforeAll(async () => {
+        const holiday = await request(app.getHttpServer())
+          .post("/api/v1/calendar/holidays")
+          .set(auth(sunriseAdminToken))
+          .send({ sessionId: sunriseSessionId, name: "E2E-HW-TodayHoliday", startDate: TODAY, endDate: TODAY });
+        if (holiday.status !== 201) {
+          throw new Error(`holiday creation failed: ${holiday.status} ${JSON.stringify(holiday.body)}`);
+        }
+        todayHolidayId = holiday.body.id;
+      });
+
+      afterAll(async () => {
+        await prisma.holiday.deleteMany({ where: { id: todayHolidayId } });
+      });
+
+      it("400s — a holiday today means no class happens today, even with a valid slot", async () => {
+        const response = await createHomework(mathTeacherToken);
+        expect(response.status).toBe(400);
+      });
+    });
+  });
+
+  // v0.8.3 step 1 — confirms updateHomework never calls the new check: the
+  // homework was validly created once, so a moving "today" on later edits
+  // is irrelevant. Temporarily moves the pinned clock to a weekday with no
+  // seeded slot at all to prove it. Re-logs-in right after the shift — the
+  // existing mathTeacherToken was minted under TODAY's frozen instant, so
+  // jumping the clock away from it would make that already-issued token
+  // look expired to the very next request.
+  describe("edit isn't subject to the create-day rule", () => {
+    it("edits succeed even on a day the teacher doesn't teach this class", async () => {
+      const homeworkId = await createAndTrack(mathTeacherToken);
+      jest.setSystemTime(new Date("2026-10-06T10:00:00Z")); // Tuesday — no TimetableSlot seeded for it
+      try {
+        const freshToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
+        const response = await request(app.getHttpServer())
+          .patch(`/api/v1/homework/${homeworkId}`)
+          .set(auth(freshToken))
+          .send({ title: "edited on a day with no create-day slot" });
+        expect(response.status).toBe(200);
+        expect(response.body.title).toBe("edited on a day with no create-day slot");
+      } finally {
+        jest.setSystemTime(new Date(`${TODAY}T10:00:00Z`));
+      }
     });
   });
 });

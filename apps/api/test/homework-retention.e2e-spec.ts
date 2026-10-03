@@ -3,6 +3,7 @@ import { INestApplication } from "@nestjs/common";
 import request from "supertest";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs } from "./utils/login";
+import { pinClockToDate, seedCreateDaySlot } from "./utils/pin-homework-create-day";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { StorageService } from "../src/storage/storage.service";
 import { FakeStorageService } from "./utils/fake-storage.service";
@@ -27,12 +28,15 @@ describe("Homework retention sweep (e2e) — SPEC_V0.8.2.md §5 Item 10, v0.8.2 
   let sunriseTermId: string;
   let jss1AArmId: string;
   let mathSubjectId: string;
+  let mathTeacherId: string;
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
   const VALID_DUE_DATE = "2026-11-16"; // Monday, within the seeded current session
 
   const createdHomeworkIds: string[] = [];
   let otherSessionId: string | null = null;
+  let teardownClock: () => void;
+  let teardownCreateDaySlot: () => Promise<void>;
 
   async function createHomeworkWithAttachment(title: string): Promise<string> {
     const created = await request(app.getHttpServer())
@@ -74,6 +78,11 @@ describe("Homework retention sweep (e2e) — SPEC_V0.8.2.md §5 Item 10, v0.8.2 
     prisma = app.get(PrismaService);
     storage = app.get(StorageService) as FakeStorageService;
 
+    // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — pinned BEFORE any login: every
+    // token this file mints is issued (and later verified) against the
+    // same frozen instant, so none of them expire mid-suite.
+    teardownClock = pinClockToDate(VALID_DUE_DATE);
+
     mathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
     sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
 
@@ -86,9 +95,25 @@ describe("Homework retention sweep (e2e) — SPEC_V0.8.2.md §5 Item 10, v0.8.2 
     const jss1 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 1" } });
     jss1AArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: sunriseId, classLevelId: jss1.id, name: "A" } })).id;
     mathSubjectId = (await prisma.subject.findFirstOrThrow({ where: { schoolId: sunriseId, name: "Mathematics" } })).id;
+    mathTeacherId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
+
+    // The create-day rule's one positive fixture — createHomeworkWithAttachment's
+    // POST /homework call now also needs this. Both createHomeworkWithAttachment
+    // calls in this file happen while sunriseSessionId is current (the second
+    // test explicitly restores it first), so the fixture stays valid throughout.
+    teardownCreateDaySlot = await seedCreateDaySlot(prisma, {
+      schoolId: sunriseId,
+      classArmId: jss1AArmId,
+      sessionId: sunriseSessionId,
+      subjectId: mathSubjectId,
+      teacherUserId: mathTeacherId,
+      date: VALID_DUE_DATE,
+    });
   });
 
   afterAll(async () => {
+    await teardownCreateDaySlot();
+    teardownClock();
     if (createdHomeworkIds.length > 0) {
       await prisma.homeworkAttachment.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homeworkSubmission.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
