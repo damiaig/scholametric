@@ -61,11 +61,47 @@ describe("HomeworkDetailDialog", () => {
     expect(screen.queryByText(/attachments/i)).not.toBeInTheDocument();
   });
 
-  it("renders the submissions roster, folding mark-done with uploaded files; clicking a file opens its download URL", async () => {
+  // v0.8.3 step 3 — the roster now renders TWICE (CLAUDE.md §6: tables
+  // collapse to cards below sm; both the sm:hidden card list and the
+  // hidden sm:block table render regardless of viewport in jsdom, same
+  // dual-render ClassArmDetailPage.test.tsx already asserts via
+  // getAllByText rather than an exact-count getByText.
+  it("renders the submissions roster, folding mark-done with uploaded files", async () => {
     const submissions: HomeworkSubmissionsView = {
       homeworkId: "hw1",
       students: [
         { studentId: "s1", studentName: "Chidinma Eze", markedDone: true, markedAt: "t", submissions: [{ id: "sub1", fileName: "answers.pdf", contentType: "application/pdf", sizeBytes: 1024, uploadedAt: "t" }] },
+        { studentId: "s2", studentName: "Tunde Bello", markedDone: false, markedAt: null, submissions: [] },
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/homework/hw1/submissions") return submissions;
+      throw new Error(`unexpected call: ${path}`);
+    });
+
+    renderWithProviders(<HomeworkDetailDialog open homework={HOMEWORK} onClose={vi.fn()} />);
+
+    expect((await screen.findAllByText("Chidinma Eze")).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Done").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Tunde Bello").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Not done").length).toBeGreaterThanOrEqual(1);
+    // Tunde has no submissions — plain text, not a clickable trigger.
+    expect(screen.queryByRole("button", { name: "Tunde Bello" })).not.toBeInTheDocument();
+  });
+
+  // Item 5 (SPEC_V0.8.3.md §2.5) — the per-submission detail view: a
+  // view-swap within this same dialog, not a nested Dialog.
+  it("clicking a student's name opens their detail view with a working download, status, and marked-at timestamp; Back returns to the roster", async () => {
+    const submissions: HomeworkSubmissionsView = {
+      homeworkId: "hw1",
+      students: [
+        {
+          studentId: "s1",
+          studentName: "Chidinma Eze",
+          markedDone: true,
+          markedAt: "2026-11-02T09:30:00.000Z",
+          submissions: [{ id: "sub1", fileName: "answers.pdf", contentType: "application/pdf", sizeBytes: 1024, uploadedAt: "2026-11-01T10:00:00.000Z" }],
+        },
         { studentId: "s2", studentName: "Tunde Bello", markedDone: false, markedAt: null, submissions: [] },
       ],
     };
@@ -79,12 +115,17 @@ describe("HomeworkDetailDialog", () => {
     const user = userEvent.setup();
     renderWithProviders(<HomeworkDetailDialog open homework={HOMEWORK} onClose={vi.fn()} />);
 
-    expect(await screen.findByText("Chidinma Eze")).toBeInTheDocument();
-    expect(screen.getByText("Done")).toBeInTheDocument();
-    expect(screen.getByText("Tunde Bello")).toBeInTheDocument();
-    expect(screen.getByText("Not done")).toBeInTheDocument();
+    const [nameTrigger] = await screen.findAllByRole("button", { name: "Chidinma Eze" });
+    await user.click(nameTrigger);
 
-    await user.click(screen.getByRole("button", { name: /answers.pdf/ }));
+    expect(screen.getByText("answers.pdf")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Chidinma Eze" })).toBeInTheDocument();
+    expect(screen.queryByText("Tunde Bello")).not.toBeInTheDocument(); // roster hidden while viewing
+
+    await user.click(screen.getByRole("button", { name: "Download" }));
     await waitFor(() => expect(windowOpen).toHaveBeenCalledWith("https://storage.example/download/sub1", "_blank", "noopener,noreferrer"));
+
+    await user.click(screen.getByRole("button", { name: "← Back to all submissions" }));
+    expect((await screen.findAllByText("Tunde Bello")).length).toBeGreaterThanOrEqual(1);
   });
 });

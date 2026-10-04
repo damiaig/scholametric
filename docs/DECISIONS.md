@@ -7416,3 +7416,59 @@ staleness risk left to prove at that layer. `MyHomeworkPage.test.tsx`:
 item; mark-done shown on both). Full web suite: 76 files, 483/483
 clean. `pnpm typecheck`/`pnpm lint` clean across all three workspaces.
 Zero backend/`packages/shared` diff.
+
+## 2026-10-04 — v0.8.3 step 3: per-submission modal + homework styling (Items 5, 6)
+
+**Verified, not assumed, that nesting a second `Dialog` for the
+per-submission view would break**: its backdrop `onClick={onClose}` has
+no `stopPropagation()`, so (a) two mounted `Dialog`s each register their
+own `document` keydown listener — Escape would fire both `onClose`s at
+once — and (b) a click on the inner backdrop fires its own `onClose`
+then keeps bubbling through the *React* component tree (synthetic events
+bubble the fiber tree, not the DOM tree, even across a portal) up to the
+outer `Dialog`'s backdrop handler too. Built a view-swap instead:
+`HomeworkDetailDialog` holds `viewingStudentId`; the dialog body renders
+either the roster or one student's detail, never two `Dialog`s. No new
+fetch — the detail view reads the same `submissionsQuery.data` and
+reuses the same `handleDownload`/`useSubmissionDownloadUrl`.
+
+Roster change: the student's **name** is the click trigger (only when
+`submissions.length > 0`); the Files column drops its per-file download
+buttons (download now lives in the detail view only — one click target
+per row, not two).
+
+**Styling (Item 6) — three named, concrete gaps, not a vague pass**:
+(1) `HomeworkClassPage.tsx`'s due date rendered the raw ISO string —
+now `formatDate()`, matching `AgendaDayCard.tsx`'s identical usage on an
+identical field. (2) `HomeworkDetailDialog.tsx`'s submissions roster had
+no mobile treatment at all (a bare `<table>`) — added the
+`sm:hidden`-card-list / `hidden sm:block`-table split
+`ClassArmDetailPage.tsx` already established for the same CLAUDE.md §6
+requirement, combined naturally with Item 5's rework of this same
+markup. (3) `HomeworkDueDateList.tsx`'s attachment/submission file rows
+were bare `<li>`s — given the `rounded-md border border-muted/10 px-3
+py-2` row treatment `AgendaDayCard.tsx`'s period rows already use.
+Explicitly NOT touched: native `<input type="file">` controls (Item 8,
+a later step, owns styling every file input app-wide) and anything that
+already matched the dominant pattern elsewhere (e.g. plain-text empty
+states, matching `MyGradesPage`'s "No terms yet", were left alone rather
+than given an icon to match a DIFFERENT, less common pattern).
+
+**New utilities**: `formatDateTime` added to the existing
+`lib/format-date.ts` (date+time, for `markedAt`/`uploadedAt` — zero
+precedent for time-of-day formatting existed anywhere in this app
+before this). `formatBytes` extracted from `HomeworkFormDialog.tsx`
+(where step 2 first added it) into `lib/format-bytes.ts`, since the new
+per-submission detail view needs it too — one copy, not two.
+
+**Test impact.** `HomeworkDetailDialog.test.tsx`: the roster test now
+uses `getAllByText`/`getAllByRole` for the mobile+desktop dual-render
+(same convention `ClassArmDetailPage.test.tsx` already uses, not an
+exact-count assertion); +2 new tests (opening a student's detail view
+end-to-end — file, download, status, marked-at timestamp — and Back
+returning to the roster; a no-submissions student has no clickable
+name). No other file's behavior tests changed — the styling-only edits
+(`HomeworkClassPage.tsx`, `HomeworkDueDateList.tsx`) didn't touch any
+text/role/call assertion. Full web suite: 76 files, 484/484 clean.
+`pnpm typecheck`/`pnpm lint` clean across all three workspaces. Zero
+backend/`packages/shared` diff.

@@ -19,6 +19,7 @@ import { StyledDatePicker } from "../../components/ui/styled-date-picker";
 import { FieldError } from "../../components/FieldError";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
+import { formatBytes } from "../../lib/format-bytes";
 import { useCreateHomework, useUpdateHomework } from "./use-homework";
 import { useAttachHomeworkFile, getAttachErrorMessage } from "./use-homework-attachments";
 
@@ -40,13 +41,6 @@ interface AttachRow {
 }
 
 const BLANK: HomeworkFormInput = { title: "", description: "", dueDate: "", requiresUpload: false };
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1) return `${mb.toFixed(1)} MB`;
-  return `${(bytes / 1024).toFixed(0)} KB`;
-}
 
 // v0.8.3 step 2 (SPEC_V0.8.3.md §2.1, Item 1) — attachments move INTO this
 // form; the separate "Attachments & submissions" dialog (HomeworkDetailDialog)

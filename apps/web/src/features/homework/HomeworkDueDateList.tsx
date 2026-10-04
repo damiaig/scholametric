@@ -129,10 +129,10 @@ export function HomeworkDueDateList({
                     )}
 
                     {item.attachments.length > 0 && (
-                      <ul className="flex flex-col gap-1">
+                      <ul className="flex flex-col gap-1.5">
                         {item.attachments.map((attachment) =>
                           onDownloadAttachment ? (
-                            <li key={attachment.id}>
+                            <li key={attachment.id} className="rounded-md border border-muted/10 px-3 py-2">
                               <button
                                 type="button"
                                 onClick={() => onDownloadAttachment(item.id, attachment.id)}
@@ -143,7 +143,7 @@ export function HomeworkDueDateList({
                               </button>
                             </li>
                           ) : (
-                            <li key={attachment.id} className="flex items-center gap-1.5 text-sm text-text">
+                            <li key={attachment.id} className="flex items-center gap-1.5 rounded-md border border-muted/10 px-3 py-2 text-sm text-text">
                               <Paperclip className="h-3.5 w-3.5 text-muted" aria-hidden="true" />
                               {attachment.fileName}
                             </li>
@@ -171,7 +171,10 @@ export function HomeworkDueDateList({
                         {item.submissions.length > 0 && (
                           <ul className="flex flex-col gap-1">
                             {item.submissions.map((submission) => (
-                              <li key={submission.id} className="flex items-center gap-1.5 text-xs text-muted">
+                              <li
+                                key={submission.id}
+                                className="flex items-center gap-1.5 rounded-md border border-muted/10 px-3 py-1.5 text-xs text-muted"
+                              >
                                 <Download className="h-3 w-3" aria-hidden="true" />
                                 {submission.fileName}
                               </li>
