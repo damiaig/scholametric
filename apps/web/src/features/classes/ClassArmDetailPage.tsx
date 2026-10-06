@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { Plus, Trash2, Users } from "lucide-react";
 import type { ClassArmStudentRow } from "@scholametric/shared";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { DataTable, type DataTableColumn } from "../../components/DataTable";
 import { StatusBadge } from "../../components/StatusBadge";
@@ -104,15 +105,14 @@ export function ClassArmDetailPage() {
 
   return (
     <div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="mb-4"
-        onClick={() => navigate("/classes")}
-      >
-        Back to classes
-      </Button>
+      {/* v0.8.3 step 4 (SPEC_V0.8.3.md §2.7) — reachable from BOTH /classes
+          AND, for a TEACHER, /dashboard's "Classes I teach" cards
+          (MyClassesView). Kept pointed at /classes regardless of origin —
+          a sensible, valid destination either way; role-switching this
+          link isn't worth the conditional for marginal gain. Same
+          principle as /settings/calendar's own ambiguous-parent case.
+          See docs/DECISIONS.md. */}
+      <BackLink to="/classes" label="Back to classes" className="mb-4" />
 
       {/* v0.7.2 step 2 (SPEC_V0.7.2.md §3, item 3) — the class page is now
           a read-only view/hub: roster + student profiles + staffing

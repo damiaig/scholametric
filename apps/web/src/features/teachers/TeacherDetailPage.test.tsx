@@ -120,6 +120,14 @@ describe("TeacherDetailPage", () => {
     expect(screen.getByText("Not currently a class teacher for any arm.")).toBeInTheDocument();
   });
 
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — the shared BackLink.
+  it("links back to /teachers", async () => {
+    renderPage();
+
+    await screen.findByText("Bola Ogundare");
+    expect(screen.getByRole("link", { name: "Back to teachers" })).toHaveAttribute("href", "/teachers");
+  });
+
   it("assign-subject dialog surfaces the named 409 conflict inline, per arm", async () => {
     const user = userEvent.setup();
     renderPage();

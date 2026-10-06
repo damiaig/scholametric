@@ -80,6 +80,20 @@ describe("HomeworkClassPage", () => {
     expect(screen.getByText("Draft")).toBeInTheDocument();
   });
 
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — the shared BackLink.
+  it("links back to /homework", async () => {
+    const list: HomeworkListResponse = { classArmId: "arm1", subjectId: "sub1", termId: "term1", homework: [] };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/me/teaching") return TEACHING;
+      if (path === "/api/v1/homework") return list;
+      throw new Error(`unexpected call: ${path}`);
+    });
+    renderPage("/homework/arms/arm1?subjectId=sub1");
+
+    await screen.findByText("JSS 1 A — Mathematics");
+    expect(screen.getByRole("link", { name: "Back to Homework" })).toHaveAttribute("href", "/homework");
+  });
+
   it("publishes a DRAFT homework", async () => {
     const list: HomeworkListResponse = { classArmId: "arm1", subjectId: "sub1", termId: "term1", homework: [homework()] };
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {

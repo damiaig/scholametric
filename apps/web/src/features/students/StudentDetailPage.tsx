@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { Pencil, ArrowRightLeft, UserX } from "lucide-react";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { StatusBadge } from "../../components/StatusBadge";
 import { Avatar } from "../../components/Avatar";
@@ -32,7 +33,6 @@ function InfoRow({ label, value }: { label: string; value: ReactNode }) {
 
 export function StudentDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   // History tab is PROPRIETOR/SCHOOL_ADMIN only, absent for TEACHER — matches
   // GET /audit-logs's own RBAC (no TEACHER access at all), not just a UI
   // restriction. See docs/DECISIONS.md.
@@ -74,9 +74,7 @@ export function StudentDetailPage() {
 
   return (
     <div>
-      <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate("/students")}>
-        Back to students
-      </Button>
+      <BackLink to="/students" label="Back to students" className="mb-4" />
 
       <PageHeader
         title={`${student.firstName} ${student.lastName}`}

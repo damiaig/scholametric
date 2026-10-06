@@ -108,6 +108,17 @@ describe("ClassArmDetailPage", () => {
     expect(studentsTable.getByText("SUN/2026/0001")).toBeInTheDocument();
   });
 
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — the shared BackLink.
+  // Kept pointed at /classes even though a TEACHER can also reach this
+  // page via /dashboard's MyClassesView — a deliberate, documented
+  // ambiguous-parent call (docs/DECISIONS.md), not tested per-role here.
+  it("links back to /classes", async () => {
+    renderPage();
+
+    await screen.findByText("JSS 1 A");
+    expect(screen.getByRole("link", { name: "Back to classes" })).toHaveAttribute("href", "/classes");
+  });
+
   // v0.7.2 step 2 (SPEC_V0.7.2.md §3, item 3) — the class page is now a
   // read-only view/hub: zero grade entry or editing anywhere on it. The
   // "Grades" button, "Review & publish" button, and per-subject "Enter

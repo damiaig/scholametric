@@ -101,6 +101,17 @@ describe("ExamApprovalsPage", () => {
     expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
   });
 
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — reached only from a
+  // Dashboard quick-action card, no sidebar/other entry point — the
+  // shared BackLink.
+  it("links back to /dashboard", async () => {
+    mockCommon("SCHOOL_ADMIN", REVIEW_PENDING);
+    renderWithProviders(<ExamApprovalsPage />, { route: "/grades/exam-approvals?classArmId=arm1" });
+
+    await screen.findByText("Mathematics");
+    expect(screen.getByRole("link", { name: "Back to Dashboard" })).toHaveAttribute("href", "/dashboard");
+  });
+
   it("hides Approve/Reject when nothing is pending (still draft)", async () => {
     mockCommon("SCHOOL_ADMIN", REVIEW_DRAFT);
     renderWithProviders(<ExamApprovalsPage />, { route: "/grades/exam-approvals?classArmId=arm1" });

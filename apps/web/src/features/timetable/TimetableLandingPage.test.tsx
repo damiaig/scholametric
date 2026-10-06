@@ -56,6 +56,16 @@ describe("TimetableLandingPage", () => {
     expect(screen.getByRole("link", { name: /SSS 2 A/ })).toHaveAttribute("href", "/timetable/arms/arm1");
   });
 
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — the shared BackLink,
+  // back to the hub this page is one of three destinations from.
+  it("links back to /timetable", async () => {
+    mockLoad();
+    renderWithProviders(<TimetableLandingPage />);
+
+    await screen.findByText("JSS 1");
+    expect(screen.getByRole("link", { name: "Back to Timetable" })).toHaveAttribute("href", "/timetable");
+  });
+
   // v0.8.1 step 2 — the "Teacher absences" shortcut moved up to
   // TimetableHubPage; this page no longer duplicates it.
   it("no longer shows the Teacher absences shortcut (moved to the Timetable hub)", async () => {

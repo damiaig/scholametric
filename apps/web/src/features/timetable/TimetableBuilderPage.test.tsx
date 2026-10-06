@@ -127,9 +127,11 @@ describe("TimetableBuilderPage", () => {
   });
 
   // v0.8.1 step 2 — /timetable is now the hub (TimetableHubPage), and the
-  // class-arm picker this button returns to moved to /timetable/build.
-  // No test asserted this button's destination before the rename — a real
+  // class-arm picker this link returns to moved to /timetable/build.
+  // No test asserted this link's destination before the rename — a real
   // gap, closed here rather than just chasing the string change.
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7) — migrated from a Button+navigate
+  // to the shared BackLink (a real <Link>), so this is now a "link" role.
   it("'Back to Timetable' navigates to /timetable/build, not the hub at /timetable", async () => {
     mockLoad();
     const user = userEvent.setup();
@@ -142,7 +144,29 @@ describe("TimetableBuilderPage", () => {
       { route: "/timetable/arms/arm1" },
     );
 
-    await user.click(await screen.findByRole("button", { name: "Back to Timetable" }));
+    await user.click(await screen.findByRole("link", { name: "Back to Timetable" }));
+    expect(await screen.findByText("Class picker page")).toBeInTheDocument();
+    expect(screen.queryByText("Hub page")).not.toBeInTheDocument();
+  });
+
+  // v0.8.3 step 4 — the zero-subject-teachers branch has its OWN copy of
+  // this same back link (TimetableBuilderPage.tsx's early return); the
+  // test above only ever exercised the main-grid branch. A real coverage
+  // gap found at plan time, closed here.
+  it("the not-assigned empty state also has a working 'Back to Timetable' link", async () => {
+    mockLoad({ subjectTeachers: [] });
+    const user = userEvent.setup();
+    renderWithProviders(
+      <Routes>
+        <Route path="/timetable/arms/:id" element={<TimetableBuilderPage />} />
+        <Route path="/timetable/build" element={<p>Class picker page</p>} />
+        <Route path="/timetable" element={<p>Hub page</p>} />
+      </Routes>,
+      { route: "/timetable/arms/arm1" },
+    );
+
+    await screen.findByText(/No subject teachers are assigned/);
+    await user.click(screen.getByRole("link", { name: "Back to Timetable" }));
     expect(await screen.findByText("Class picker page")).toBeInTheDocument();
     expect(screen.queryByText("Hub page")).not.toBeInTheDocument();
   });

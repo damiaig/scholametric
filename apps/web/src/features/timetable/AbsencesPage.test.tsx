@@ -64,6 +64,19 @@ describe("AbsencesPage", () => {
     expect(screen.getByRole("button", { name: "Replace" })).toBeInTheDocument();
   });
 
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — the shared BackLink,
+  // back to the hub this page is one of three destinations from.
+  it("links back to /timetable", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/calendar/teacher-absences") return [];
+      throw new Error(`unexpected call: ${path}`);
+    });
+    renderWithProviders(<AbsencesPage />);
+
+    await screen.findByText(/No teacher absences recorded this week/);
+    expect(screen.getByRole("link", { name: "Back to Timetable" })).toHaveAttribute("href", "/timetable");
+  });
+
   it("shows an empty state when there are no absences", async () => {
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/calendar/teacher-absences") return [];

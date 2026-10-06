@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Label } from "../../components/ui/label";
@@ -84,6 +85,8 @@ export function ReviewPublishPage() {
 
   return (
     <div>
+      <BackLink to="/dashboard" label="Back to Dashboard" className="mb-4" />
+
       <PageHeader
         title="Review & publish"
         description="Review each subject's readiness and publish results per class and term."

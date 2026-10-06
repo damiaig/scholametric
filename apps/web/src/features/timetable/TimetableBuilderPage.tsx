@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import { WEEKDAYS, WEEKDAY_LABELS, type TimetableSlot, type WeekdayValue } from "@scholametric/shared";
+import { BackLink } from "../../components/BackLink";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent } from "../../components/ui/card";
 import { Spinner } from "../../components/ui/spinner";
@@ -30,7 +31,6 @@ interface SelectedCell {
 // rather than reintroducing a cross-feature link there.
 export function TimetableBuilderPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const classArmId = id ?? "";
 
   const armDetail = useClassArmDetail(classArmId, 1, 1);
@@ -89,11 +89,9 @@ export function TimetableBuilderPage() {
   if (arm.subjectTeachers.length === 0) {
     return (
       <div>
-        {/* v0.8.1 step 2 — the class-arm picker this button returns to
+        {/* v0.8.1 step 2 — the class-arm picker this link returns to
             lives at /timetable/build now (/timetable is the hub). */}
-        <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate("/timetable/build")}>
-          Back to Timetable
-        </Button>
+        <BackLink to="/timetable/build" label="Back to Timetable" className="mb-4" />
         <PageHeader title="Timetable" description={armLabel} />
         <Card>
           <CardContent className="p-10 text-center">
@@ -112,9 +110,7 @@ export function TimetableBuilderPage() {
 
   return (
     <div>
-      <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate("/timetable/build")}>
-        Back to Timetable
-      </Button>
+      <BackLink to="/timetable/build" label="Back to Timetable" className="mb-4" />
 
       <PageHeader title="Timetable" description={armLabel} />
 

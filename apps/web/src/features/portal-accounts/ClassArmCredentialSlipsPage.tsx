@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { TriangleAlert } from "lucide-react";
 import type { SkippedReissue } from "@scholametric/shared";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -24,7 +25,6 @@ const SKIP_REASON_LABEL: Record<SkippedReissue["reason"], string> = {
 // must never fire just because an admin opened this page.
 export function ClassArmCredentialSlipsPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const { data: currentUser } = useCurrentUser();
   const armQuery = useClassArmDetail(id, 1, 1);
   const reissueForClassArm = useReissueForClassArm();
@@ -48,15 +48,7 @@ export function ClassArmCredentialSlipsPage() {
 
   return (
     <div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="mb-4 print:hidden"
-        onClick={() => navigate(`/classes/arms/${id}`)}
-      >
-        Back to class
-      </Button>
+      <BackLink to={`/classes/arms/${id}`} label="Back to class" className="mb-4 print:hidden" />
 
       <PageHeader
         title="Credential slips"

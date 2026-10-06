@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { CalendarClock } from "lucide-react";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -24,6 +25,8 @@ export function TimetableLandingPage() {
 
   return (
     <div>
+      <BackLink to="/timetable" label="Back to Timetable" className="mb-4" />
+
       <PageHeader title="Timetable" description={user?.school.name} />
 
       {classes.isLoading && <PickerSkeleton />}

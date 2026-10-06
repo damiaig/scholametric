@@ -414,4 +414,21 @@ describe("ReportCardPage — print controls", () => {
     expect(container.querySelectorAll('[class*="print:hidden"]').length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /Print/ })).toBeInTheDocument();
   });
+
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — bug fix: was
+  // navigate(-1) (no sensible history for a bookmarked/printed/refreshed
+  // page); now an explicit BackLink to this student's own page. No margin
+  // className (it sits in a flex row with its own spacing) — only
+  // print:hidden, asserted directly rather than via the loose
+  // substring-count check above.
+  it("'Back' is an explicit link to this student's page, hidden when printing", async () => {
+    mockCommon("SCHOOL_ADMIN", CARD);
+    renderPage();
+
+    await screen.findByText("Mathematics");
+    const link = screen.getByRole("link", { name: "Back" });
+    expect(link).toHaveAttribute("href", "/students/st1");
+    expect(link).toHaveClass("print:hidden");
+    expect(link.className).not.toMatch(/\bmb-4\b/);
+  });
 });

@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import { JOB_TITLE_LABELS } from "@scholametric/shared";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { StatusBadge } from "../../components/StatusBadge";
 import { Avatar } from "../../components/Avatar";
@@ -29,7 +30,6 @@ function InfoRow({ label, value }: { label: string; value: ReactNode }) {
 
 export function TeacherDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const { data: currentUser } = useCurrentUser();
   const canManage = isSchoolAdmin(currentUser?.role);
 
@@ -65,9 +65,7 @@ export function TeacherDetailPage() {
 
   return (
     <div>
-      <Button type="button" variant="outline" size="sm" className="mb-4" onClick={() => navigate("/teachers")}>
-        Back to teachers
-      </Button>
+      <BackLink to="/teachers" label="Back to teachers" className="mb-4" />
 
       <PageHeader title={`${teacher.firstName} ${teacher.lastName}`} />
 

@@ -88,6 +88,19 @@ describe("ClassArmCredentialSlipsPage", () => {
     expect(mockedApiRequest).not.toHaveBeenCalledWith("/api/v1/portal-accounts/class-arms/arm1/reissue", expect.anything());
   });
 
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — the shared BackLink,
+  // print:hidden (same as before migration) so it never appears on a
+  // printed slip.
+  it("links back to the class page, hidden when printing", async () => {
+    mockCommon();
+    renderPage();
+
+    await screen.findByText("Generate slips");
+    const link = screen.getByRole("link", { name: "Back to class" });
+    expect(link).toHaveAttribute("href", "/classes/arms/arm1");
+    expect(link).toHaveClass("print:hidden");
+  });
+
   it("renders printable slips and the skipped list with reasons — never hiding the skipped list", async () => {
     mockCommon();
     const user = userEvent.setup();

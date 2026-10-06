@@ -248,6 +248,21 @@ function renderPage(route: string) {
   );
 }
 
+// v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — bug fix: the old
+// destination (/classes/arms/:id) was never actually where a caller
+// reached this page from — the audit confirmed GradesLandingPage (/grades)
+// is this page's sole entry point, and ClassArmDetailPage hasn't linked
+// into grades since v0.7.2 step 2 removed its own "Grades" button.
+describe("ClassGradesPage — back link", () => {
+  it("links back to /grades, not the class page", async () => {
+    mockCommon("SCHOOL_ADMIN");
+    renderPage("/grades/arms/arm1?tab=enter&subjectId=sub1&track=evaluations");
+
+    await screen.findByText("JSS 1 A · Mathematics");
+    expect(screen.getByRole("link", { name: "Back to Grades" })).toHaveAttribute("href", "/grades");
+  });
+});
+
 describe("ClassGradesPage — Enter scores tab", () => {
   it("SCHOOL_ADMIN: shows the locked class+subject context, the evaluation list (not a dropdown), and loads the grid on selection", async () => {
     mockCommon("SCHOOL_ADMIN");

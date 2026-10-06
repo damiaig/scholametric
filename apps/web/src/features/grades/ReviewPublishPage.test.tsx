@@ -100,6 +100,17 @@ describe("ReviewPublishPage — read-only oversight (v0.7.4 step 1)", () => {
     expect(screen.queryByRole("button", { name: "Unpublish" })).not.toBeInTheDocument();
   });
 
+  // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — reached only from a
+  // Dashboard quick-action card, no sidebar/other entry point — the
+  // shared BackLink.
+  it("links back to /dashboard", async () => {
+    mockCommon("SCHOOL_ADMIN", REVIEW_PARTIAL);
+    renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });
+
+    await screen.findByText("Mathematics");
+    expect(screen.getByRole("link", { name: "Back to Dashboard" })).toHaveAttribute("href", "/dashboard");
+  });
+
   it("PROPRIETOR sees no Publish/Unpublish buttons anywhere on this page either", async () => {
     mockCommon("PROPRIETOR", REVIEW_PARTIAL);
     renderWithProviders(<ReviewPublishPage />, { route: "/grades/review?classArmId=arm1" });

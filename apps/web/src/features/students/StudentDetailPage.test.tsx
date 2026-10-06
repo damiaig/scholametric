@@ -138,6 +138,18 @@ afterEach(() => {
   authStore.clear();
 });
 
+// v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — the shared BackLink,
+// pointing at this page's sole parent, /students.
+describe("StudentDetailPage — back link", () => {
+  it("links back to /students", async () => {
+    mockApi();
+    renderDetailPage();
+
+    expect(await screen.findByText("Oluwaseun Adeyemi")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to students" })).toHaveAttribute("href", "/students");
+  });
+});
+
 describe("StudentDetailPage — RBAC", () => {
   it("TEACHER: Edit/Transfer/Withdraw buttons are absent, and the History tab does not render", async () => {
     mockApi({ role: "TEACHER" });

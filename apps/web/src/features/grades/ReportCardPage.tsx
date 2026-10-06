@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { Printer } from "lucide-react";
+import { BackLink } from "../../components/BackLink";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
@@ -40,7 +41,6 @@ const EXAMS_OPTION_VALUE = "__exams__";
 // ?termId=&sessionId=) and directly linkable/bookmarkable.
 export function ReportCardPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { data: currentUser } = useCurrentUser();
   const isTeacher = currentUser?.role === "TEACHER";
@@ -131,14 +131,12 @@ export function ReportCardPage() {
   return (
     <div>
       <div className="mb-4 flex flex-col gap-4 print:hidden sm:flex-row sm:items-end sm:justify-between">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => navigate(-1)}
-        >
-          Back
-        </Button>
+        {/* v0.8.3 step 4 — explicit link, not navigate(-1): a user who
+            printed/bookmarked/refreshed this page has no sensible history
+            to go back to. No margin className (unlike every other
+            BackLink site) — this already sits inside a flex row with its
+            own mb-4/gap-4, which already provides correct spacing. */}
+        <BackLink to={`/students/${id}`} label="Back" className="print:hidden" />
 
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
           {isConfirmedAdmin && (

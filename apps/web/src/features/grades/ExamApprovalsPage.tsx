@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Label } from "../../components/ui/label";
@@ -77,6 +78,8 @@ export function ExamApprovalsPage() {
 
   return (
     <div>
+      <BackLink to="/dashboard" label="Back to Dashboard" className="mb-4" />
+
       <PageHeader
         title="Exam approvals"
         description="Review each subject's exam-submission status and approve or reject what's pending."

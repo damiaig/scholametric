@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { CalendarOff } from "lucide-react";
 import { isPeriodTimePast } from "@scholametric/shared";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -33,6 +34,8 @@ export function AbsencesPage() {
 
   return (
     <div>
+      <BackLink to="/timetable" label="Back to Timetable" className="mb-4" />
+
       <PageHeader title="Teacher Absences" description="This week" />
 
       {absences.isLoading && (

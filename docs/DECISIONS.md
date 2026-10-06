@@ -7472,3 +7472,43 @@ name). No other file's behavior tests changed — the styling-only edits
 text/role/call assertion. Full web suite: 76 files, 484/484 clean.
 `pnpm typecheck`/`pnpm lint` clean across all three workspaces. Zero
 backend/`packages/shared` diff.
+
+## 2026-10-06 — v0.8.3 step 4: site-wide back buttons use explicit links, not navigate(-1)
+
+Every drill-in page's back control is now the shared `BackLink`, a real
+`<Link to>` pointing at an explicit parent route — not `navigate(-1)`.
+Reason: a user who deep-linked, bookmarked, or refreshed a drill-in page
+has no sensible browser history to go back to, and `navigate(-1)`'s
+destination then depends on whatever happened to be in that history
+stack, not the page's actual logical parent. An explicit link is
+predictable regardless of how the page was reached. `ReportCardPage`
+was the one page actually using `navigate(-1)` — migrated to
+`BackLink to={`/students/${id}`}`. Confirmed via audit (SPEC_V0.8.3.md
+§2.7 Q-c) that local component state (tabs, pagination, search/filter)
+was already lost on every drill-in round trip before this change —
+`useState` resets on remount regardless of navigation mechanism — so
+this is a pure correctness fix with zero new state-loss regression.
+
+## 2026-10-06 — v0.8.3 step 4: ClassGradesPage's back link was pointing at the wrong page
+
+`ClassGradesPage` (`/grades/arms/:id`) had a "Back to {armLabel}" button
+pointing at `/classes/arms/:id` — but that was never actually where a
+caller reached it from. Audit confirmed its sole entry point is
+`GradesLandingPage` (`/grades`); `ClassArmDetailPage` has linked nowhere
+into grades since v0.7.2 step 2 removed its own "Grades" button. Fixed
+to `BackLink to="/grades"`, relabeled "Back to Grades" (matching the
+"Back to <list name>" convention every other top-level-list back link
+already uses).
+
+## 2026-10-06 — v0.8.3 step 4: ClassArmDetailPage's back link has an ambiguous parent (documented, not changed)
+
+`ClassArmDetailPage` (`/classes/arms/:id`) is reachable from two places:
+`/classes` (ClassesPage, everyone) and, for a TEACHER specifically,
+`/dashboard`'s "Classes I teach" cards (`MyClassesView`). Ruling: keep
+the back link pointed at `/classes` for both origins. It's a valid,
+sensible destination either way — back to the class list from a class
+detail is intuitive regardless of which route got you there — and
+role-switching the link's destination isn't worth the added conditional
+for the marginal gain. Same principle as `/settings/calendar`, which is
+similarly reachable from both the Settings tabs and the Timetable hub's
+three destinations without needing to pick one "true" parent.

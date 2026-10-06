@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { FileCheck, Plus, Pencil, Trash2, FolderOpen } from "lucide-react";
 import type { Homework } from "@scholametric/shared";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -102,6 +103,8 @@ export function HomeworkClassPage() {
 
   return (
     <div>
+      <BackLink to="/homework" label="Back to Homework" className="mb-4" />
+
       <PageHeader
         title="Homework"
         description={pageTitle}

@@ -1,9 +1,9 @@
 import {
-  useNavigate,
   useParams,
   useSearchParams,
   Link,
 } from "react-router-dom";
+import { BackLink } from "../../components/BackLink";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -36,7 +36,6 @@ import { ResultsTab } from "./ResultsTab";
 // (ClassArmDetailPage) no longer carries any per-subject grading links.
 export function ClassGradesPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const classArmId = id ?? "";
@@ -104,15 +103,13 @@ export function ClassGradesPage() {
 
   return (
     <div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="mb-4"
-        onClick={() => navigate(`/classes/arms/${classArmId}`)}
-      >
-        Back to {armLabel}
-      </Button>
+      {/* v0.8.3 step 4 (SPEC_V0.8.3.md §2.7) — corrected: this page's only
+          actual entry point is GradesLandingPage (/grades) — confirmed via
+          audit, ClassArmDetailPage has linked nowhere into grades since
+          v0.7.2 step 2 removed its "Grades" button. The old destination
+          here (/classes/arms/:id) was never where a caller came from. See
+          docs/DECISIONS.md. */}
+      <BackLink to="/grades" label="Back to Grades" className="mb-4" />
 
       <PageHeader title="Grades" description={armLabel} />
 
