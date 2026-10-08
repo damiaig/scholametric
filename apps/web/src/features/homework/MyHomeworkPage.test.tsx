@@ -167,6 +167,41 @@ describe("MyHomeworkPage", () => {
     );
   });
 
+  // v0.8.3 step 5 (SPEC_V0.8.3.md §2.8, Item 8) — the raw <input
+  // type="file"> is now StyledFileInput: proves the app-controlled button
+  // label renders (not the native "Choisir un fichier") and the chosen
+  // filename shows via the component's own display, independent of the
+  // upload flow itself (already proven above, unchanged).
+  it("STUDENT: the upload control is the styled file input, with its own chosen-file display", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const list: StudentHomeworkListResponse = { classArmId: "arm1", homework: [entry({ requiresUpload: true })] };
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path === "/api/v1/me/homework" && (!opts?.method || opts.method === "GET")) return list;
+      if (path === "/api/v1/me/homework/hw1/submissions/upload-url" && opts?.method === "POST") {
+        return { uploadUrl: "https://storage.example/upload/xyz", storageKey: "schools/s1/homework/hw1/submissions/st1/xyz-answers.pdf", expiresAt: "t", maxSizeBytes: 20 * 1024 * 1024 };
+      }
+      if (path === "/api/v1/me/homework/hw1/submissions" && opts?.method === "POST") {
+        return { id: "sub1", fileName: "answers.pdf", contentType: "application/pdf", sizeBytes: 1024, uploadedAt: "t" };
+      }
+      throw new Error(`unexpected apiRequest call: ${opts?.method ?? "GET"} ${path}`);
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+
+    const user = userEvent.setup();
+    renderWithProviders(<MyHomeworkPage />);
+    await screen.findByText("Chapter 3 exercises");
+
+    expect(screen.getByRole("button", { name: "Upload your work" })).toBeInTheDocument();
+    expect(screen.getByText("No file chosen")).toBeInTheDocument();
+
+    const file = new File(["hello"], "answers.pdf", { type: "application/pdf" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+
+    expect(await screen.findByText("answers.pdf")).toBeInTheDocument();
+  });
+
   it("STUDENT: a failed direct PUT surfaces the specific upload-failed message, not the generic fallback", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     const list: StudentHomeworkListResponse = { classArmId: "arm1", homework: [entry({ requiresUpload: true })] };

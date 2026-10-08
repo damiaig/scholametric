@@ -7512,3 +7512,46 @@ role-switching the link's destination isn't worth the added conditional
 for the marginal gain. Same principle as `/settings/calendar`, which is
 similarly reachable from both the Settings tabs and the Timetable hub's
 three destinations without needing to pick one "true" parent.
+
+## 2026-10-07 — v0.8.3 step 5 (final build step): site-wide styled file input
+
+Audited every `<input type="file">` in `apps/web/src` (literal string,
+single-quote variant, `.files[0]`/`.files?.[0]` handler usage, `accept=`
+attributes, any existing hidden-input/import-feature pattern) — exactly
+two sites exist: `HomeworkFormDialog.tsx` (teacher attach-in-form) and
+`HomeworkDueDateList.tsx` (student submission upload). The spec's
+"portal/import flows" hypothetical doesn't exist in this codebase yet.
+Both are single-file, no `accept` filter — neither prop added
+speculatively.
+
+New shared `StyledFileInput` (`components/ui/styled-file-input.tsx`,
+alongside `styled-date-picker.tsx`'s own precedent): wraps a REAL
+`<input type="file">` hidden via `sr-only` (not `display:none`/removed)
+and triggered by a styled `Button`, so existing tests'
+`document.querySelector('input[type="file"]')` + `userEvent.upload()`
+keep working against the real node unchanged — a pure presentation
+swap, not a behavior change. `value=""` resets synchronously on every
+pick (centralized from both sites' own prior handlers) so the same file
+can be re-selected. The chosen-file display is deliberately dumb — it
+shows only "what was picked here" (the app-controlled English
+replacement for the native French "Aucun fichier choisi"), with zero
+awareness of upload success/failure; progress spinners and error/retry
+UI stay external, caller-rendered siblings exactly as before. The
+homework cap display was already a sibling to the raw input, not
+coupled to it, so it needed no changes at all. Removed
+`HomeworkFormDialog.tsx`'s `fileInputRef`, dead since the reset already
+happened via `event.target.value` in the handler, not the ref — a
+direct consequence of the swap, not unrelated cleanup.
+
+New `styled-file-input.test.tsx` (label render, `onFileSelected` fires
+with the exact `File`, chosen-name display, same-file re-pick, disabled
+state) plus one additive test per migrated site proving the new control
+renders correctly — zero existing assertions needed to change, confirmed
+by a full suite run. Two pre-existing tests duplicated "what was just
+picked" text once the chosen-file display was added
+(`HomeworkFormDialog.test.tsx`'s held-file and immediate-attach tests);
+fixed with `getAllByText(...).length >= N`, same convention used
+elsewhere in this codebase for intentional dual-renders. Full web suite:
+78 files, 506/506 clean. `pnpm typecheck`/`pnpm lint` clean across all
+three workspaces. Zero backend/`packages/shared` diff. This was the last
+step in SPEC_V0.8.3.md §5 before the final walk + tag.

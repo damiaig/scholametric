@@ -8,6 +8,7 @@ import { StatusBadge } from "../../components/StatusBadge";
 import { Dialog } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
+import { StyledFileInput } from "../../components/ui/styled-file-input";
 
 const DESCRIPTION_TRUNCATE_LENGTH = 200;
 
@@ -182,15 +183,10 @@ export function HomeworkDueDateList({
                           </ul>
                         )}
                         <div className="flex items-center gap-2">
-                          <input
-                            type="file"
+                          <StyledFileInput
+                            buttonLabel="Upload your work"
+                            onFileSelected={(file) => onUploadFile?.(item.id, file)}
                             disabled={isThisItemUploading}
-                            onChange={(event) => {
-                              const file = event.target.files?.[0];
-                              if (file) onUploadFile?.(item.id, file);
-                              event.target.value = "";
-                            }}
-                            className="text-xs text-text"
                           />
                           {isThisItemUploading && <Spinner className="h-3.5 w-3.5" />}
                         </div>

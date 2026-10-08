@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Paperclip, X, RefreshCw } from "lucide-react";
@@ -16,6 +16,7 @@ import { Label } from "../../components/ui/label";
 import { Textarea } from "../../components/ui/textarea";
 import { Checkbox } from "../../components/ui/checkbox";
 import { StyledDatePicker } from "../../components/ui/styled-date-picker";
+import { StyledFileInput } from "../../components/ui/styled-file-input";
 import { FieldError } from "../../components/FieldError";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
@@ -72,7 +73,6 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
   const attachFile = useAttachHomeworkFile();
   const mutation = isEdit ? updateHomework : createHomework;
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [heldFiles, setHeldFiles] = useState<File[]>([]);
   const [sessionAttachments, setSessionAttachments] = useState<HomeworkAttachment[]>([]);
   const [attachRows, setAttachRows] = useState<AttachRow[]>([]);
@@ -150,10 +150,7 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
     setHeldFiles((files) => files.filter((_, i) => i !== index));
   }
 
-  function handleFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
+  function handleFileSelect(file: File) {
     if (targetHomeworkId) {
       void attachOneFile(file, targetHomeworkId);
     } else {
@@ -302,13 +299,7 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
               This homework has reached its 20MB attachment limit. Share a Google Drive link in the description, or compress/zip your files.
             </p>
           ) : (
-            <input
-              ref={fileInputRef}
-              type="file"
-              onChange={handleFileSelect}
-              disabled={isPartialFailureSession}
-              className="text-sm text-text"
-            />
+            <StyledFileInput buttonLabel="Attach a file" onFileSelected={handleFileSelect} disabled={isPartialFailureSession} />
           )}
           {!capReached && <p className="text-xs text-muted">{formatBytes(Math.max(remainingBytes, 0))} remaining of 20MB for this homework.</p>}
         </div>

@@ -196,7 +196,9 @@ describe("HomeworkFormDialog", () => {
     const file = new File(["hello"], "worksheet.pdf", { type: "application/pdf" });
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
     await user.upload(fileInput, file);
-    expect(screen.getByText("worksheet.pdf")).toBeInTheDocument();
+    // Appears twice: the held-file list row, and StyledFileInput's own
+    // chosen-file display ("what was picked here").
+    expect(screen.getAllByText("worksheet.pdf").length).toBeGreaterThanOrEqual(2);
 
     await user.click(screen.getByRole("button", { name: "Create" }));
 
@@ -276,6 +278,39 @@ describe("HomeworkFormDialog", () => {
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
     await user.upload(fileInput, file);
 
-    expect(await screen.findByText("new.pdf")).toBeInTheDocument();
+    // Appears twice once committed: the session-attachments list row, and
+    // StyledFileInput's own chosen-file display.
+    await waitFor(() => expect(screen.getAllByText("new.pdf").length).toBeGreaterThanOrEqual(2));
+  });
+
+  // v0.8.3 step 5 (SPEC_V0.8.3.md §2.8, Item 8) — the raw <input
+  // type="file"> is now StyledFileInput; this proves the migration didn't
+  // regress anything beyond the markup: the app-controlled button label
+  // renders (not the native "Choisir un fichier"), and selecting a file
+  // shows its name via the component's own chosen-file display.
+  it("the attach control is the styled file input, with its own chosen-file display", async () => {
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
+      if (path === "/api/v1/homework/hw1/attachments/upload-url" && opts?.method === "POST") {
+        return { uploadUrl: "https://storage.example/upload/xyz", storageKey: "schools/s1/homework/hw1/attachments/xyz-new.pdf", expiresAt: "t", maxSizeBytes: 20 * 1024 * 1024 };
+      }
+      if (path === "/api/v1/homework/hw1/attachments" && opts?.method === "POST") {
+        return { id: "att1", fileName: "new.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" };
+      }
+      throw new Error(`unexpected call: ${path} ${opts?.method ?? "GET"}`);
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+
+    const user = userEvent.setup();
+    renderWithProviders(<HomeworkFormDialog open onClose={vi.fn()} classArmId="arm1" subjectId="sub1" termId="term1" homework={EXISTING} />);
+
+    expect(screen.getByRole("button", { name: "Attach a file" })).toBeInTheDocument();
+    expect(screen.getByText("No file chosen")).toBeInTheDocument();
+
+    const file = new File(["hello"], "new.pdf", { type: "application/pdf" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+
+    await waitFor(() => expect(screen.queryByText("No file chosen")).not.toBeInTheDocument());
+    expect(screen.getAllByText("new.pdf").length).toBeGreaterThanOrEqual(1);
   });
 });
