@@ -4,7 +4,7 @@ import bcrypt from "bcrypt";
 import { Gender, UserRole } from "@prisma/client";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs, SEED_PASSWORD } from "./utils/login";
-import { pinClockToDate, seedCreateDaySlot } from "./utils/pin-homework-create-day";
+import { futureMonday } from "./utils/future-date";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { StorageService } from "../src/storage/storage.service";
 import { FakeStorageService } from "./utils/fake-storage.service";
@@ -31,17 +31,14 @@ describe("Homework submissions (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
   let jss1AArmId: string;
   let jss2AArmId: string;
   let mathSubjectId: string;
-  let mathTeacherId: string;
   let studentId: string;
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
-  const VALID_DUE_DATE = "2026-10-19"; // Monday, within the seeded current session
+  const VALID_DUE_DATE = futureMonday(8); // genuinely future; seed.ts gives teacher@sunrise.test Mon/Tue/Thu/Fri for jss1AArmId Mathematics
 
   const createdHomeworkIds: string[] = [];
   const createdStudentIds: string[] = [];
   const createdUserIds: string[] = [];
-  let teardownClock: () => void;
-  let teardownCreateDaySlot: () => Promise<void>;
 
   async function createPublishedHomework(): Promise<string> {
     const created = await request(app.getHttpServer())
@@ -83,12 +80,6 @@ describe("Homework submissions (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
     prisma = app.get(PrismaService);
     storage = app.get(StorageService) as FakeStorageService;
 
-    // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — pinned BEFORE any login: every
-    // token this file mints (including the student tokens below) is issued
-    // and later verified against the same frozen instant, so none of them
-    // expire mid-suite.
-    teardownClock = pinClockToDate(VALID_DUE_DATE);
-
     mathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
     englishTeacherToken = await loginAs(app, "teacher2@sunrise.test", "sunrise");
     sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
@@ -105,7 +96,6 @@ describe("Homework submissions (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
     const jss2 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 2" } });
     jss2AArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: sunriseId, classLevelId: jss2.id, name: "A" } })).id;
     mathSubjectId = (await prisma.subject.findFirstOrThrow({ where: { schoolId: sunriseId, name: "Mathematics" } })).id;
-    mathTeacherId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
 
     const passwordHash = await bcrypt.hash(SEED_PASSWORD, 4);
 
@@ -158,22 +148,12 @@ describe("Homework submissions (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
     });
     createdUserIds.push(otherClassStudentUser.id);
     otherClassStudentToken = await loginAs(app, "E2EHWSUBOTHERCLASS", "sunrise");
-
-    // The create-day rule's one positive fixture: proves mathTeacherId
-    // teaches jss1AArmId on VALID_DUE_DATE's weekday.
-    teardownCreateDaySlot = await seedCreateDaySlot(prisma, {
-      schoolId: sunriseId,
-      classArmId: jss1AArmId,
-      sessionId: sunriseSessionId,
-      subjectId: mathSubjectId,
-      teacherUserId: mathTeacherId,
-      date: VALID_DUE_DATE,
-    });
+    // No local TimetableSlot fixture needed — seed.ts itself seeds
+    // teacher@sunrise.test teaching jss1AArmId Mathematics on Mon/Tue/Thu/Fri
+    // (v0.8.3 Item 4 rework), and VALID_DUE_DATE is always a Monday.
   });
 
   afterAll(async () => {
-    await teardownCreateDaySlot();
-    teardownClock();
     if (createdHomeworkIds.length > 0) {
       await prisma.homeworkAttachment.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homeworkSubmission.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });

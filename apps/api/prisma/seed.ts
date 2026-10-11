@@ -1,4 +1,4 @@
-import { PrismaClient, SchoolType, UserRole, TermName, Gender, JobTitle, GuardianRelationship } from "@prisma/client";
+import { PrismaClient, SchoolType, UserRole, TermName, Gender, JobTitle, GuardianRelationship, Weekday } from "@prisma/client";
 import bcrypt from "bcrypt";
 import {
   computeEvaluationAverage,
@@ -274,6 +274,33 @@ async function seedSubjectTeacherAssignments(
       },
       update: {},
       create: { schoolId, sessionId, ...assignment },
+    });
+  }
+}
+
+// v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md §4) — a modest,
+// multi-day repeating timetable, NOT a generated grid: just enough that
+// the due-date picker's "disable non-teaching weekdays" feature is
+// actually walkable (the dev DB previously had exactly one manually-
+// created slot, and the seed script itself seeded none at all). Upserted
+// on TimetableSlot's own unique constraint, idempotent across reseeds.
+async function seedTimetableSlots(
+  schoolId: string,
+  sessionId: string,
+  slots: { classArmId: string; dayOfWeek: Weekday; periodId: string; subjectId: string; teacherUserId: string }[],
+) {
+  for (const slot of slots) {
+    await prisma.timetableSlot.upsert({
+      where: {
+        classArmId_dayOfWeek_periodId_sessionId: {
+          classArmId: slot.classArmId,
+          dayOfWeek: slot.dayOfWeek,
+          periodId: slot.periodId,
+          sessionId,
+        },
+      },
+      update: {},
+      create: { schoolId, sessionId, ...slot },
     });
   }
 }
@@ -939,6 +966,46 @@ async function main() {
       { subjectId: sunriseSubjectIds["English Language"], classArmId: sunriseAcademics.arms[armKey], teacherUserId: sunriseTeacherUserIds[1] },
     ]),
   );
+
+  // v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md §4) — a modest,
+  // multi-day repeating timetable for JSS 1-A so the due-date picker's
+  // "disable non-teaching weekdays" feature is walkable: Bola teaches
+  // Mathematics Mon/Tue/Thu/Fri; the English teacher teaches English
+  // Language Mon/Wed — deliberately different, overlapping-but-distinct
+  // days, so a walk visibly shows the picker enabling different weekdays
+  // per teacher+subject. Wednesday/Saturday/Sunday are left genuinely
+  // non-teaching for Bola specifically (used by the rule's own e2e
+  // negative test). Not a generated grid — these two periods/six slots
+  // are the whole of it.
+  // Times deliberately late afternoon (16:00+), not a realistic first-period
+  // slot: these Period rows are permanent (seed.ts runs against the e2e
+  // test DB too, per global-setup.ts), and every morning/midday slot up to
+  // 15:45 is already used by some e2e file's own scratch Period fixture
+  // (calendar/timetable-slots/timetable-views/timetable-coverage/
+  // teacher-absences specs) — colliding with any of those trips the
+  // period-overlap guard. 16:00+ is confirmed clear across all of them.
+  const period1 = await prisma.period.upsert({
+    where: { schoolId_name: { schoolId: sunrise.id, name: "Period 1" } },
+    update: {},
+    create: { schoolId: sunrise.id, name: "Period 1", startsAt: "16:00", endsAt: "16:45", sortOrder: 1 },
+  });
+  const period2 = await prisma.period.upsert({
+    where: { schoolId_name: { schoolId: sunrise.id, name: "Period 2" } },
+    update: {},
+    create: { schoolId: sunrise.id, name: "Period 2", startsAt: "16:45", endsAt: "17:30", sortOrder: 2 },
+  });
+  const jss1AArmId = sunriseAcademics.arms["JSS 1-A"];
+  await seedTimetableSlots(sunrise.id, sunriseAcademics.sessionId, [
+    ...[Weekday.MONDAY, Weekday.TUESDAY, Weekday.THURSDAY, Weekday.FRIDAY].map((dayOfWeek) => ({
+      classArmId: jss1AArmId,
+      dayOfWeek,
+      periodId: period1.id,
+      subjectId: sunriseSubjectIds["Mathematics"],
+      teacherUserId: sunriseTeacherUserIds[0],
+    })),
+    { classArmId: jss1AArmId, dayOfWeek: Weekday.MONDAY, periodId: period2.id, subjectId: sunriseSubjectIds["English Language"], teacherUserId: sunriseTeacherUserIds[1] },
+    { classArmId: jss1AArmId, dayOfWeek: Weekday.WEDNESDAY, periodId: period1.id, subjectId: sunriseSubjectIds["English Language"], teacherUserId: sunriseTeacherUserIds[1] },
+  ]);
 
   await seedSecondGuardian(sunrise.id, "SUN/2026/0001");
   await seedGradingScale(sunrise.id);

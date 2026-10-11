@@ -7555,3 +7555,74 @@ elsewhere in this codebase for intentional dual-renders. Full web suite:
 78 files, 506/506 clean. `pnpm typecheck`/`pnpm lint` clean across all
 three workspaces. Zero backend/`packages/shared` diff. This was the last
 step in SPEC_V0.8.3.md §5 before the final walk + tag.
+
+## 2026-10-11 — v0.8.3 Item 4 rework: due-date-is-a-teaching-day, picker disables non-teaching weekdays
+
+The step 1 create-day rule ("teaches this class TODAY") is retired —
+walking it live showed it rejecting every real create, because the dev
+DB had zero seeded `TimetableSlot` rows (one manual slot from an earlier
+walk made it look like a logic bug; it was a data gap). Replaced with a
+due-date rule: `dueDate` must be not-past, a school day
+(`isSchoolDayForClassOnDate`), and a weekday the teacher actually teaches
+this class (`teacherTeachesClassOnDate`, reused from step 1 unchanged) —
+`assertDueDateIsSchoolDay` renamed+extended to `assertDueDateIsATeachingDay`,
+called from both `createHomework` and `updateHomework` (a real behavior
+change: edits are no longer exempt). New
+`CalendarService.teacherTeachingWeekdaysForClass` (set-returning sibling
+of `teacherTeachesClassOnDate`) backs a new `GET
+/homework/teaching-weekdays?classArmId=&subjectId=` endpoint, which
+`StyledDatePicker`'s new generic `disableDate?: (date: Date) => boolean`
+prop uses to disable non-teaching weekdays in the picker UI — the 400 is
+now a backstop, not the primary UX. A class with zero `TimetableSlot`
+rows gets an explicit inline message ("ask your admin to build one")
+rather than a silently-all-disabled picker.
+
+**Seed**: added 2 permanent `Period` rows and 6 `TimetableSlot` rows for
+Sunrise JSS 1-A (Bola/Mathematics Mon/Tue/Thu/Fri, English teacher
+Mon/Wed — Wednesday deliberately left non-teaching for Bola, used by the
+rule's own negative test) so the feature is walkable without manual
+setup. Deleted the one stale manually-created slot from the step 1 walk.
+Period times landed at 16:00-16:45/16:45-17:30 specifically because
+these rows are permanent and seed.ts also seeds the e2e test DB — every
+morning/midday slot through 15:45 was already claimed by some other e2e
+file's own scratch `Period` fixture (calendar/timetable-slots/
+timetable-views/timetable-coverage/teacher-absences specs), and
+colliding trips the period-overlap guard.
+
+**Fallout from making the seed real**: `timetable-views.e2e-spec.ts`
+(pre-existing, untouched by this rework otherwise) had two assertions —
+"this teacher's Tuesday/Monday is entirely empty" — that were only ever
+true because jss1A had zero seeded slots. With real slots, mathTeacher
+legitimately teaches jss1A on Tuesday and englishTeacher on Monday now.
+Narrowed both assertions to their actual documented intent (one
+teacher's slot must not leak into another's own view), checking the
+specific other-teacher period instead of "every period in the day" —
+not a scope expansion, a consequence of this rework making old
+seed-hasn't-been-touched assumptions false. Also found and fixed: the
+test DB (`scholametric_test`) accumulates state across `pnpm test` runs
+by design (global-setup only creates it if missing) — an interrupted
+earlier run during this build had left scratch rows behind, which a
+`DROP DATABASE`+recreate cleared.
+
+**Clock-pin retirement**: step 1's `test/utils/pin-homework-create-day.ts`
+(fake-clock + manufactured slot, needed because "today" had to match a
+fixture) is deleted outright, not just renamed — once the seed carries
+real `TimetableSlot` rows, every homework e2e file's existing
+`VALID_DUE_DATE`-style fixtures are satisfied by seed data alone, the
+same "trust the seed" convention this codebase already uses for
+teacher-subject assignments. `futureMonday` generalized to
+`futureWeekday(targetDayOfWeek, weeksAhead)` for the new non-Monday due
+dates the rework's tests need (Sunday/Saturday/Wednesday negative cases).
+
+**Test impact.** Backend: `calendar.service.ts` (+1 method),
+`homework.service.ts` (rename+extend, +1 endpoint method), new DTO, new
+shared `TeachingWeekdaysResponse` type. 5 homework e2e files de-clock-
+pinned; `homework.e2e-spec.ts` rewritten for the new rule +
+`GET /homework/teaching-weekdays` coverage; `timetable-views.e2e-spec.ts`
+patched per above. Frontend: `StyledDatePicker` +`disableDate` prop
+(+1 test proving it), new `useTeachingWeekdays` hook,
+`HomeworkFormDialog` wiring (+1 call added to an existing test's expected
+sequence). Full backend e2e: 49 files, 634/634 clean (one isolated
+flaky `grades-review.e2e-spec.ts` "socket hang up" confirmed unrelated —
+passes clean alone). Full web suite: 78 files, 507/507 clean.
+`pnpm typecheck`/`pnpm lint` clean across all three workspaces.

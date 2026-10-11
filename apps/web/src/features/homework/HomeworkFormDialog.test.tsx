@@ -172,6 +172,9 @@ describe("HomeworkFormDialog", () => {
     const calls: string[] = [];
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
       calls.push(`${opts?.method ?? "GET"} ${path}`);
+      if (path === "/api/v1/homework/teaching-weekdays") {
+        return { weekdays: ["MONDAY", "TUESDAY", "THURSDAY", "FRIDAY"] };
+      }
       if (path === "/api/v1/homework" && opts?.method === "POST") {
         return { ...EXISTING, id: "new1" };
       }
@@ -204,6 +207,7 @@ describe("HomeworkFormDialog", () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(calls).toEqual([
+      "GET /api/v1/homework/teaching-weekdays",
       "POST /api/v1/homework",
       "POST /api/v1/homework/new1/attachments/upload-url",
       "POST /api/v1/homework/new1/attachments",

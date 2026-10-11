@@ -52,6 +52,22 @@ describe("StyledDatePicker", () => {
     expect(day20).not.toHaveClass("flatpickr-disabled");
   });
 
+  // v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md) — the due-date
+  // picker's own disabling, proven generically here (the caller just
+  // supplies a predicate; HomeworkFormDialog.test.tsx mocks this component
+  // entirely, same as every other consumer).
+  it("disableDate disables matching dates and leaves others enabled", async () => {
+    const user = userEvent.setup();
+    const disableDate = (date: Date) => date.getDay() === 2; // Tuesday
+    render(<StyledDatePicker value="2026-09-14" onChange={vi.fn()} disableDate={disableDate} aria-label="Choose a date" />);
+
+    await user.click(screen.getByLabelText("Choose a date"));
+    const monday = await screen.findByText("14", { selector: ".flatpickr-day:not(.prevMonthDay):not(.nextMonthDay)" });
+    const tuesday = await screen.findByText("15", { selector: ".flatpickr-day:not(.prevMonthDay):not(.nextMonthDay)" });
+    expect(monday).not.toHaveClass("flatpickr-disabled");
+    expect(tuesday).toHaveClass("flatpickr-disabled");
+  });
+
   it("an external value change (e.g. a Next-day button, not the calendar) moves the picker without a fresh instance", async () => {
     const { rerender } = render(<StyledDatePicker value="2026-09-14" onChange={vi.fn()} aria-label="Choose a date" />);
     rerender(<StyledDatePicker value="2026-09-20" onChange={vi.fn()} aria-label="Choose a date" />);

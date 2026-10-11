@@ -966,12 +966,14 @@ export class CalendarService {
     return this.isSchoolDayForClass(weekday, schoolDays?.includesSaturday ?? false, holidays, date).isSchoolDay;
   }
 
-  // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — day-level sibling of
+  // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4), reused by the v0.8.3 Item 4 rework
+  // for the DUE DATE instead of "today" — day-level sibling of
   // assertReplacementTeacherAvailable's TimetableSlot lookup above: same
   // table, same weekdayOf/getCurrentSessionOrThrow, just no periodId filter
   // (HomeworkService needs "does this teacher teach this class ANY period
-  // today", not a specific-period conflict check). Not a schedule
-  // reimplementation — the slot data itself is the single source of truth.
+  // on this date's weekday", not a specific-period conflict check). Not a
+  // schedule reimplementation — the slot data itself is the single source
+  // of truth.
   async teacherTeachesClassOnDate(schoolId: string, teacherUserId: string, classArmId: string, date: string): Promise<boolean> {
     const weekday = this.weekdayOf(date);
     if (weekday === "SUNDAY") return false;
@@ -980,6 +982,22 @@ export class CalendarService {
       where: forSchool(schoolId, { teacherUserId, classArmId, dayOfWeek: weekday, sessionId: session.id }),
     });
     return Boolean(slot);
+  }
+
+  // v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md §2.3) — the due-date
+  // picker's data source: every distinct weekday this teacher has a
+  // TimetableSlot for this class, this session (any period, any subject —
+  // same "ANY period" semantics as teacherTeachesClassOnDate above, just
+  // returning the whole set instead of a single boolean). Self-contained
+  // session resolution, matching that sibling's own style.
+  async teacherTeachingWeekdaysForClass(schoolId: string, teacherUserId: string, classArmId: string): Promise<Weekday[]> {
+    const session = await this.getCurrentSessionOrThrow(schoolId);
+    const slots = await this.prisma.timetableSlot.findMany({
+      where: forSchool(schoolId, { teacherUserId, classArmId, sessionId: session.id }),
+      distinct: ["dayOfWeek"],
+      select: { dayOfWeek: true },
+    });
+    return slots.map((slot) => slot.dayOfWeek);
   }
 
   // Checks the replacement teacher against BOTH a normal TimetableSlot

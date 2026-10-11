@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CreateHomeworkInput, Homework, HomeworkListResponse, UpdateHomeworkInput } from "@scholametric/shared";
+import type { CreateHomeworkInput, Homework, HomeworkListResponse, TeachingWeekdaysResponse, UpdateHomeworkInput } from "@scholametric/shared";
 import { apiRequest } from "../../lib/api-client";
 
 export interface HomeworkListParams {
@@ -21,6 +21,27 @@ export function useHomeworkList(params: HomeworkListParams | null) {
     queryFn: () =>
       apiRequest<HomeworkListResponse>("/api/v1/homework", {
         query: params ? { classArmId: params.classArmId, subjectId: params.subjectId, termId: params.termId } : undefined,
+      }),
+    enabled: params !== null,
+  });
+}
+
+// v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md §3.1) — the due-date
+// picker's data source. Same enabled-when-scoped shape as useHomeworkList;
+// classArmId/subjectId are always-present props on HomeworkFormDialog
+// (never null), so the caller gates this on `open` instead, to avoid
+// fetching before the teacher ever opens the form.
+export interface TeachingWeekdaysParams {
+  classArmId: string;
+  subjectId: string;
+}
+
+export function useTeachingWeekdays(params: TeachingWeekdaysParams | null) {
+  return useQuery({
+    queryKey: params ? ["homework", "teaching-weekdays", params.classArmId, params.subjectId] : ["homework", "teaching-weekdays", "disabled"],
+    queryFn: () =>
+      apiRequest<TeachingWeekdaysResponse>("/api/v1/homework/teaching-weekdays", {
+        query: params ? { classArmId: params.classArmId, subjectId: params.subjectId } : undefined,
       }),
     enabled: params !== null,
   });

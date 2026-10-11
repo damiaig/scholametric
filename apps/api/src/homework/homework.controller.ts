@@ -8,6 +8,7 @@ import { HomeworkService } from "./homework.service";
 import { CreateHomeworkDto } from "./dto/create-homework.dto";
 import { UpdateHomeworkDto } from "./dto/update-homework.dto";
 import { GetHomeworkQueryDto } from "./dto/get-homework-query.dto";
+import { GetTeachingWeekdaysQueryDto } from "./dto/get-teaching-weekdays-query.dto";
 import { RequestUploadUrlDto } from "./dto/request-upload-url.dto";
 import { CommitFileDto } from "./dto/commit-file.dto";
 
@@ -24,6 +25,15 @@ export class HomeworkController {
   @Get()
   listHomework(@Query() query: GetHomeworkQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.homeworkService.listHomework(query, user);
+  }
+
+  // v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md §2.3) — the due-date
+  // picker's data source. A static literal segment ("teaching-weekdays"),
+  // no collision risk with any :id/... route below.
+  @Roles(UserRole.TEACHER)
+  @Get("teaching-weekdays")
+  getTeachingWeekdays(@Query() query: GetTeachingWeekdaysQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.homeworkService.getTeachingWeekdays(query.classArmId, query.subjectId, user);
   }
 
   @Audit("homework", "create")

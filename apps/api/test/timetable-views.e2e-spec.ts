@@ -368,10 +368,14 @@ describe("Timetable views (e2e) — SPEC_V0.8.md §7 item 3, v0.8 step 3", () =>
       expect(mondayPeriodA.classArmId).toBe(jss2AArmId);
       expect(mondayPeriodA.subjectName).toBe("Mathematics");
 
-      // TUESDAY's real slot belongs to englishTeacher, not mathTeacher —
-      // must NOT appear here.
+      // TUESDAY's real slot (periodA, English) belongs to englishTeacher,
+      // not mathTeacher — must NOT appear in mathTeacher's own view. (Not
+      // asserting the whole day is empty: the v0.8.3 Item 4 rework seed also
+      // gives mathTeacher a real Tuesday Mathematics slot on this same arm,
+      // which legitimately DOES appear here.)
       const tuesday = dayFor(response.body, "2026-09-15");
-      expect(tuesday.periods.every((p: { subjectId: string | null }) => p.subjectId === null)).toBe(true);
+      const tuesdayPeriodA = tuesday.periods.find((p) => p.periodId === periodAId)!;
+      expect(tuesdayPeriodA.subjectId).toBeNull();
 
       const wednesday = dayFor(response.body, HOLIDAY_DATE);
       expect(wednesday.isSchoolDay).toBe(false);
@@ -406,8 +410,14 @@ describe("Timetable views (e2e) — SPEC_V0.8.md §7 item 3, v0.8 step 3", () =>
       expect(tuesdayPeriodA.classArmId).toBe(jss1AArmId);
       expect(tuesdayPeriodA.subjectName).toBe("English Language");
 
+      // MONDAY's real slot (periodA, Mathematics, jss2A) belongs to
+      // mathTeacher, not englishTeacher — must NOT appear in englishTeacher's
+      // own view. (Not asserting the whole day is empty: the seed also gives
+      // englishTeacher a real Monday English slot on jss1A, which
+      // legitimately DOES appear here.)
       const monday = dayFor(response.body, "2026-09-14");
-      expect(monday.periods.every((p: { subjectId: string | null }) => p.subjectId === null)).toBe(true);
+      const mondayPeriodA = monday.periods.find((p) => p.periodId === periodAId)!;
+      expect(mondayPeriodA.subjectId).toBeNull();
     });
 
     it("tenant isolation: a Hillcrest teacher's view never includes any Sunrise slot", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Paperclip, X, RefreshCw } from "lucide-react";
@@ -8,6 +8,7 @@ import {
   type Homework,
   type HomeworkAttachment,
   type HomeworkFormInput,
+  type WeekdayValue,
 } from "@scholametric/shared";
 import { Dialog } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
@@ -21,8 +22,15 @@ import { FieldError } from "../../components/FieldError";
 import { Spinner } from "../../components/ui/spinner";
 import { getErrorMessage } from "../../lib/api-client";
 import { formatBytes } from "../../lib/format-bytes";
-import { useCreateHomework, useUpdateHomework } from "./use-homework";
+import { useCreateHomework, useTeachingWeekdays, useUpdateHomework } from "./use-homework";
 import { useAttachHomeworkFile, getAttachErrorMessage } from "./use-homework-attachments";
+
+// v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md §3.1) — maps a JS
+// Date's .getDay() (0=Sunday) to the backend's Weekday enum, which has no
+// Sunday member at all (null here means "always disabled" — Sunday is
+// never a teaching day, structurally, same as the backend's own
+// teacherTeachesClassOnDate short-circuit).
+const WEEKDAY_BY_JS_INDEX: (WeekdayValue | null)[] = [null, "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
 
 interface HomeworkFormDialogProps {
   open: boolean;
@@ -72,6 +80,21 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
   const updateHomework = useUpdateHomework();
   const attachFile = useAttachHomeworkFile();
   const mutation = isEdit ? updateHomework : createHomework;
+
+  // v0.8.3 Item 4 rework — gated on `open`, not always-fetching: this
+  // component stays mounted with `open` toggling Dialog visibility (see
+  // HomeworkClassPage), so gating on classArmId/subjectId alone (always
+  // present) would fetch before the teacher ever opens the form.
+  const teachingWeekdays = useTeachingWeekdays(open ? { classArmId, subjectId } : null);
+  const disableDate = useMemo(() => {
+    if (teachingWeekdays.isLoading) return undefined; // no restriction while loading — avoids a "nothing pickable" flash
+    const allowed = teachingWeekdays.data?.weekdays ?? [];
+    return (date: Date) => {
+      const weekday = WEEKDAY_BY_JS_INDEX[date.getDay()];
+      return !weekday || !allowed.includes(weekday);
+    };
+  }, [teachingWeekdays.isLoading, teachingWeekdays.data]);
+  const hasNoTeachingDays = !teachingWeekdays.isLoading && (teachingWeekdays.data?.weekdays.length ?? 0) === 0;
 
   const [heldFiles, setHeldFiles] = useState<File[]>([]);
   const [sessionAttachments, setSessionAttachments] = useState<HomeworkAttachment[]>([]);
@@ -221,10 +244,22 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
             name="dueDate"
             control={control}
             render={({ field }) => (
-              <StyledDatePicker id="homework-due-date" value={field.value} onChange={field.onChange} minDate="today" placeholder="Select a date…" />
+              <StyledDatePicker
+                id="homework-due-date"
+                value={field.value}
+                onChange={field.onChange}
+                minDate="today"
+                disableDate={disableDate}
+                placeholder="Select a date…"
+              />
             )}
           />
           <FieldError message={errors.dueDate?.message} />
+          {hasNoTeachingDays && (
+            <p className="text-xs text-muted">
+              No timetable is set up for this class yet — ask your admin to build one before setting homework.
+            </p>
+          )}
         </div>
 
         <div className="flex items-center gap-2">

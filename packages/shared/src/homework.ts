@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { WeekdayValue } from "./calendar";
 
 // v0.8.2 step 5 (SPEC_V0.8.2.md §6 item 5) — the frontend's first contact
 // with the homework domain (Steps 1-4 were backend-only). Mirrors the
@@ -135,3 +136,11 @@ export interface HomeworkCompletionResponse {
 // a 409 surfaces if it's wrong by the time of submit.
 export const HOMEWORK_ATTACHMENT_CAP_BYTES = 20 * 1024 * 1024;
 export const HOMEWORK_SUBMISSION_CAP_BYTES = 20 * 1024 * 1024;
+
+// v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md §2.3) — the due-date
+// picker's data source: which weekdays the caller teaches this class,
+// this session. Empty means no TimetableSlot exists at all for this
+// teacher+class — every date disables (strict, no fallback).
+export interface TeachingWeekdaysResponse {
+  weekdays: WeekdayValue[];
+}

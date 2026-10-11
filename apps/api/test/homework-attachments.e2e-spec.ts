@@ -3,7 +3,7 @@ import request from "supertest";
 import { randomUUID } from "node:crypto";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs } from "./utils/login";
-import { pinClockToDate, seedCreateDaySlot } from "./utils/pin-homework-create-day";
+import { futureMonday } from "./utils/future-date";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { StorageService } from "../src/storage/storage.service";
 import { FakeStorageService } from "./utils/fake-storage.service";
@@ -24,18 +24,14 @@ describe("Homework attachments (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
   let hillcrestAdminToken: string;
 
   let sunriseId: string;
-  let sunriseSessionId: string;
   let sunriseTermId: string;
   let jss1AArmId: string;
   let mathSubjectId: string;
-  let mathTeacherId: string;
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
-  const VALID_DUE_DATE = "2026-10-05"; // Monday, within the seeded current session
+  const VALID_DUE_DATE = futureMonday(4); // genuinely future; seed.ts gives teacher@sunrise.test Mon/Tue/Thu/Fri for jss1AArmId Mathematics
 
   const createdHomeworkIds: string[] = [];
-  let teardownClock: () => void;
-  let teardownCreateDaySlot: () => Promise<void>;
 
   async function createHomework(): Promise<string> {
     const response = await request(app.getHttpServer())
@@ -73,11 +69,6 @@ describe("Homework attachments (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
     prisma = app.get(PrismaService);
     storage = app.get(StorageService) as FakeStorageService;
 
-    // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — pinned BEFORE any login: every
-    // token this file mints is issued (and later verified) against the
-    // same frozen instant, so none of them expire mid-suite.
-    teardownClock = pinClockToDate(VALID_DUE_DATE);
-
     mathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
     englishTeacherToken = await loginAs(app, "teacher2@sunrise.test", "sunrise");
     hillcrestTeacherToken = await loginAs(app, "teacher@hillcrest.test", "hillcrest");
@@ -85,30 +76,19 @@ describe("Homework attachments (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
 
     const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
     sunriseId = sunrise.id;
-    const session = await prisma.academicSession.findFirstOrThrow({ where: { schoolId: sunriseId, isCurrent: true } });
-    sunriseSessionId = session.id;
     const term = await prisma.term.findFirstOrThrow({ where: { schoolId: sunriseId, isCurrent: true } });
     sunriseTermId = term.id;
     const jss1 = await prisma.classLevel.findFirstOrThrow({ where: { schoolId: sunriseId, name: "JSS 1" } });
     jss1AArmId = (await prisma.classArm.findFirstOrThrow({ where: { schoolId: sunriseId, classLevelId: jss1.id, name: "A" } })).id;
     mathSubjectId = (await prisma.subject.findFirstOrThrow({ where: { schoolId: sunriseId, name: "Mathematics" } })).id;
-    mathTeacherId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
-
-    // The create-day rule's one positive fixture: proves mathTeacherId
-    // teaches jss1AArmId on VALID_DUE_DATE's weekday.
-    teardownCreateDaySlot = await seedCreateDaySlot(prisma, {
-      schoolId: sunriseId,
-      classArmId: jss1AArmId,
-      sessionId: sunriseSessionId,
-      subjectId: mathSubjectId,
-      teacherUserId: mathTeacherId,
-      date: VALID_DUE_DATE,
-    });
+    // No local TimetableSlot fixture needed — seed.ts itself now seeds
+    // teacher@sunrise.test teaching jss1AArmId Mathematics on Mon/Tue/Thu/Fri
+    // (v0.8.3 Item 4 rework), and VALID_DUE_DATE is always a Monday — same
+    // convention this file already uses for that teacher's subject
+    // assignment itself (trusted from seed.ts, never re-fixtured here).
   });
 
   afterAll(async () => {
-    await teardownCreateDaySlot();
-    teardownClock();
     if (createdHomeworkIds.length > 0) {
       await prisma.homeworkAttachment.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homework.deleteMany({ where: { id: { in: createdHomeworkIds } } });

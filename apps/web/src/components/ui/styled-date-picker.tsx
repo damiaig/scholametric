@@ -12,6 +12,15 @@ interface StyledDatePickerProps {
   onChange: (value: string) => void;
   /** "YYYY-MM-DD", or flatpickr's own literal "today" */
   minDate?: string;
+  /**
+   * Return true to disable a given calendar date, on top of minDate.
+   * Generic on purpose — this component stays domain-agnostic; a caller
+   * with a specific disable rule (e.g. "not a day you teach this class")
+   * computes its own function. Memoize it (useMemo/useCallback) if it's
+   * not a stable reference — it's re-applied via flatpickr's `set()`
+   * whenever the reference changes, not just on mount.
+   */
+  disableDate?: (date: Date) => boolean;
   id?: string;
   placeholder?: string;
   "aria-label"?: string;
@@ -56,7 +65,7 @@ function resolveMinDate(minDate: string | undefined): Date | string | undefined 
 // `value` means no date selected yet (a blank form field, distinct from
 // the agenda's usage, which is never empty) — the widget starts blank
 // instead of defaulting to some arbitrary date.
-export function StyledDatePicker({ value, onChange, minDate, id, placeholder, className, ...aria }: StyledDatePickerProps) {
+export function StyledDatePicker({ value, onChange, minDate, disableDate, id, placeholder, className, ...aria }: StyledDatePickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const instanceRef = useRef<Instance | null>(null);
   const onChangeRef = useRef(onChange);
@@ -70,6 +79,7 @@ export function StyledDatePicker({ value, onChange, minDate, id, placeholder, cl
       dateFormat: "M j, Y",
       defaultDate: parseISODate(value),
       minDate: resolveMinDate(minDate),
+      disable: disableDate ? [disableDate] : [],
       onChange: (selectedDates) => {
         if (selectedDates[0]) {
           onChangeRef.current(toISODate(selectedDates[0]));
@@ -78,14 +88,19 @@ export function StyledDatePicker({ value, onChange, minDate, id, placeholder, cl
     });
     instanceRef.current = instance;
     return () => instance.destroy();
-    // Instantiated once on mount; `value`/`minDate` updates are pushed in
-    // imperatively below instead of re-creating the widget on every change.
+    // Instantiated once on mount; `value`/`minDate`/`disableDate` updates
+    // are pushed in imperatively below instead of re-creating the widget
+    // on every change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     instanceRef.current?.set("minDate", resolveMinDate(minDate));
   }, [minDate]);
+
+  useEffect(() => {
+    instanceRef.current?.set("disable", disableDate ? [disableDate] : []);
+  }, [disableDate]);
 
   useEffect(() => {
     const instance = instanceRef.current;

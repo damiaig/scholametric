@@ -2590,18 +2590,19 @@ derived server-side from `termId`. Validated before write:
 - **`404`** — class arm / subject / term doesn't belong to this school.
 - **`403`** — the caller doesn't currently teach this subject for this class
   (`assertTeacherAssignment`).
-- **`400`** — create-day rule (v0.8.3 step 1, SPEC_V0.8.3.md §2.4): the caller
-  doesn't teach this class on TODAY's weekday (the server's current date), in
-  any period — "You can only set homework for this class on a day you teach
-  it." Reuses `CalendarService.teacherTeachesClassOnDate` (a day-level sibling
-  of `assertReplacementTeacherAvailable`'s existing `TimetableSlot` lookup) and
-  `isSchoolDayForClassOnDate` (today being a holiday also rejects — no class
-  happens today either way). Checked once, at creation only — `PATCH
-  /homework/:id` never re-fires it.
-- **`400`** — `dueDate` isn't a school day for this class: a holiday, a Sunday
-  (structural), or a Saturday for a class without `includesSaturday` — reuses
-  `CalendarService.isSchoolDayForClassOnDate` directly, no school-day logic
-  reimplemented.
+- **`400`** — due date must be a school day the teacher teaches this class
+  (v0.8.3 Item 4 rework, SPEC_V0.8.3_item4_rework.md §2.3; retires step 1's
+  "today" create-day rule — see docs/DECISIONS.md): `dueDate` must be (1) not
+  in the past, (2) a school day for this class — a holiday, a Sunday
+  (structural), or a Saturday for a class without `includesSaturday` all
+  reject, reusing `CalendarService.isSchoolDayForClassOnDate` directly — and
+  (3) a weekday this teacher actually teaches this class, any period
+  (`CalendarService.teacherTeachesClassOnDate`, a day-level sibling of
+  `assertReplacementTeacherAvailable`'s existing `TimetableSlot` lookup).
+  Combined message: "The due date must be a school day you teach this
+  class." The frontend's due-date picker disables non-teaching weekdays up
+  front (see `GET /homework/teaching-weekdays` below) — this check is the
+  server-side backstop, not the primary UX.
 
 **Response `201`**: `HomeworkResponse` — `{ id, classArmId, subjectId, teacherUserId,
 teacherName, sessionId, termId, title, description, dueDate, requiresUpload, status,
@@ -2609,12 +2610,22 @@ publishedAt, createdAt, updatedAt, attachments }`. `status` is `"DRAFT"` on crea
 `attachments` (added step 4): `{ id, fileName, contentType, sizeBytes, createdAt }[]` —
 empty on creation, populated as the teacher attaches files (below).
 
+**`GET /homework/teaching-weekdays?classArmId=&subjectId=`** (`TEACHER` only, added
+v0.8.3 Item 4 rework). `assertTeacherAssignment`-gated — `403` if the caller doesn't
+currently teach this subject for this class. **Response `200`**: `{ weekdays:
+Weekday[] }` — every distinct weekday (current session, any period) this teacher has
+a `TimetableSlot` for this class; `CalendarService.teacherTeachingWeekdaysForClass`,
+a set-returning sibling of `teacherTeachesClassOnDate` above. An empty array means
+the class has no timetable built yet — the frontend surfaces that explicitly rather
+than silently disabling every date. Drives the due-date picker's disabled-weekday set.
+
 **`PATCH /homework/:id`** (`TEACHER` only). Body: any of `title`, `description`,
 `dueDate`, `requiresUpload` (at least one required — `400` otherwise);
 `classArmId`/`subjectId`/`termId` are immutable (re-scoping isn't a "fix a typo" edit,
 same reasoning as evaluations). A new `dueDate` is re-validated against the same
-school-day rule above. **`403`** once the homework is `PUBLISHED` — unpublish first,
-frozen for everyone, no exception. **Response `200`**: `HomeworkResponse`.
+due-date rule above — a behavior change from step 1: edits are no longer exempt.
+**`403`** once the homework is `PUBLISHED` — unpublish first, frozen for everyone, no
+exception. **Response `200`**: `HomeworkResponse`.
 
 **`POST /homework/:id/publish`** (`TEACHER` only, categorical). No completeness gate
 (no roster/scores here, unlike grades) — publish just flips visibility on for Step 2's

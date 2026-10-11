@@ -4,7 +4,7 @@ import bcrypt from "bcrypt";
 import { Gender, UserRole } from "@prisma/client";
 import { createTestApp } from "./utils/create-test-app";
 import { loginAs, SEED_PASSWORD } from "./utils/login";
-import { pinClockToDate, seedCreateDaySlot } from "./utils/pin-homework-create-day";
+import { futureMonday } from "./utils/future-date";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { StorageService } from "../src/storage/storage.service";
 import { FakeStorageService } from "./utils/fake-storage.service";
@@ -41,19 +41,20 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 
-  // Genuine calendar dates, chosen clear of Step 1's own holiday fixture
-  // (2026-10-12) and unrelated to any past/future concern of its own —
-  // isSchoolDayForClassOnDate has no "now" comparison, only weekday/
-  // holiday validity.
-  const VALID_DUE_DATE = "2026-11-02"; // Monday
+  // VALID_DUE_DATE is genuinely future; seed.ts now gives
+  // teacher@sunrise.test Mon/Tue/Thu/Fri for jss1AArmId Mathematics
+  // (v0.8.3 Item 4 rework), so a Monday needs no local fixture. PAST_DUE_DATE
+  // is unrelated to the due-date-is-a-teaching-day rule (it's the student
+  // past-due visibility filter's own fixture) — left as a literal,
+  // genuinely in the past relative to the real clock, same as before this
+  // rework.
+  const VALID_DUE_DATE = futureMonday(10);
   const PAST_DUE_DATE = "2026-09-14"; // Monday, genuinely in the past relative to the real clock
 
   const createdStudentIds: string[] = [];
   const createdUserIds: string[] = [];
   const createdGuardianIds: string[] = [];
   const createdHomeworkIds: string[] = [];
-  let teardownClock: () => void;
-  let teardownCreateDaySlot: () => Promise<void>;
 
   function createHomework(token: string, overrides: Partial<Record<string, unknown>> = {}) {
     return request(app.getHttpServer())
@@ -88,12 +89,6 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
     app = await createTestApp();
     prisma = app.get(PrismaService);
     storage = app.get(StorageService) as FakeStorageService;
-
-    // v0.8.3 step 1 (SPEC_V0.8.3.md §2.4) — pinned BEFORE any login: every
-    // token this file mints (teacher, student, parent) is issued and later
-    // verified against the same frozen instant, so none of them expire
-    // mid-suite.
-    teardownClock = pinClockToDate(VALID_DUE_DATE);
 
     mathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
 
@@ -215,23 +210,13 @@ describe("Student + parent homework views (e2e) — SPEC_V0.8.2.md §6 item 2, v
     });
     createdUserIds.push(otherClassParentUser.id);
     otherClassParentToken = await loginAs(app, "E2EMEHWOTHERCLASSPARENT", "sunrise");
-
-    // The create-day rule's one positive fixture: proves mathTeacherId
-    // teaches jss1AArmId on VALID_DUE_DATE's weekday.
-    const mathTeacherId = (await prisma.user.findFirstOrThrow({ where: { schoolId: sunriseId, email: "teacher@sunrise.test" } })).id;
-    teardownCreateDaySlot = await seedCreateDaySlot(prisma, {
-      schoolId: sunriseId,
-      classArmId: jss1AArmId,
-      sessionId: sunriseSessionId,
-      subjectId: mathSubjectId,
-      teacherUserId: mathTeacherId,
-      date: VALID_DUE_DATE,
-    });
+    // No local TimetableSlot fixture needed — seed.ts itself seeds
+    // teacher@sunrise.test teaching jss1AArmId Mathematics on
+    // Mon/Tue/Thu/Fri (v0.8.3 Item 4 rework), and VALID_DUE_DATE is always
+    // a Monday.
   });
 
   afterAll(async () => {
-    await teardownCreateDaySlot();
-    teardownClock();
     if (createdHomeworkIds.length > 0) {
       await prisma.homeworkAttachment.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
       await prisma.homeworkSubmission.deleteMany({ where: { homeworkId: { in: createdHomeworkIds } } });
