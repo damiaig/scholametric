@@ -49,3 +49,15 @@ export function useSubmitMyHomeworkFile() {
     },
   });
 }
+
+// v0.8.3 UX Round 2 Step A (SPEC_V0.8.3_ux_round2.md §Step A).
+export function useDeleteMySubmission() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ homeworkId, submissionId }: { homeworkId: string; submissionId: string }) =>
+      apiRequest<{ id: string }>(`/api/v1/me/homework/${homeworkId}/submissions/${submissionId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["me", "homework"] });
+    },
+  });
+}

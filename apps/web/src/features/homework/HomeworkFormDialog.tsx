@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Paperclip, X, RefreshCw } from "lucide-react";
+import { Paperclip, X, RefreshCw, Trash2 } from "lucide-react";
 import {
   homeworkFormSchema,
   HOMEWORK_ATTACHMENT_CAP_BYTES,
@@ -20,10 +20,11 @@ import { StyledDatePicker } from "../../components/ui/styled-date-picker";
 import { StyledFileInput } from "../../components/ui/styled-file-input";
 import { FieldError } from "../../components/FieldError";
 import { Spinner } from "../../components/ui/spinner";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { getErrorMessage } from "../../lib/api-client";
 import { formatBytes } from "../../lib/format-bytes";
 import { useCreateHomework, useTeachingWeekdays, useUpdateHomework } from "./use-homework";
-import { useAttachHomeworkFile, getAttachErrorMessage } from "./use-homework-attachments";
+import { useAttachHomeworkFile, useDeleteAttachment, getAttachErrorMessage } from "./use-homework-attachments";
 
 // v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md §3.1) — maps a JS
 // Date's .getDay() (0=Sunday) to the backend's Weekday enum, which has no
@@ -100,6 +101,15 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
   const [sessionAttachments, setSessionAttachments] = useState<HomeworkAttachment[]>([]);
   const [attachRows, setAttachRows] = useState<AttachRow[]>([]);
   const [createdHomeworkId, setCreatedHomeworkId] = useState<string | null>(null);
+  // v0.8.3 UX Round 2 Step A — shadows the frozen `homework` prop snapshot
+  // for REMOVALS, the exact mirror of sessionAttachments shadowing it for
+  // additions (same doc comment above explains why `homework` itself can't
+  // just be re-keyed/refetched here). Invalidation still runs on delete
+  // success — that's what makes it genuinely gone from homework.attachments
+  // the NEXT time this dialog opens.
+  const [deletedAttachmentIds, setDeletedAttachmentIds] = useState<Set<string>>(new Set());
+  const [deletingAttachment, setDeletingAttachment] = useState<HomeworkAttachment | null>(null);
+  const deleteAttachment = useDeleteAttachment();
 
   // Set once a create-then-attach submit hits a partial failure (some
   // files attached, at least one didn't) — the dialog stays open, acting
@@ -134,11 +144,12 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
       setSessionAttachments([]);
       setAttachRows([]);
       setCreatedHomeworkId(null);
+      setDeletedAttachmentIds(new Set());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const committedAttachments = [...(homework?.attachments ?? []), ...sessionAttachments];
+  const committedAttachments = [...(homework?.attachments ?? []), ...sessionAttachments].filter((attachment) => !deletedAttachmentIds.has(attachment.id));
   const usedBytes =
     committedAttachments.reduce((sum, attachment) => sum + attachment.sizeBytes, 0) + heldFiles.reduce((sum, file) => sum + file.size, 0);
   const remainingBytes = HOMEWORK_ATTACHMENT_CAP_BYTES - usedBytes;
@@ -171,6 +182,19 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
 
   function removeHeldFile(index: number) {
     setHeldFiles((files) => files.filter((_, i) => i !== index));
+  }
+
+  function confirmDeleteAttachment() {
+    if (!deletingAttachment || !targetHomeworkId) return;
+    deleteAttachment.mutate(
+      { homeworkId: targetHomeworkId, attachmentId: deletingAttachment.id },
+      {
+        onSuccess: () => {
+          setDeletedAttachmentIds((ids) => new Set(ids).add(deletingAttachment.id));
+          setDeletingAttachment(null);
+        },
+      },
+    );
   }
 
   function handleFileSelect(file: File) {
@@ -279,6 +303,14 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
                   <Paperclip className="h-3.5 w-3.5 text-muted" aria-hidden="true" />
                   <span className="truncate">{attachment.fileName}</span>
                   <span className="text-xs text-muted">{formatBytes(attachment.sizeBytes)}</span>
+                  <button
+                    type="button"
+                    aria-label={`Delete ${attachment.fileName}`}
+                    onClick={() => setDeletingAttachment(attachment)}
+                    className="text-muted hover:text-danger"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
                 </li>
               ))}
               {heldFiles.map((file, index) => (
@@ -363,6 +395,26 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
           )}
         </div>
       </form>
+
+      <ConfirmDialog
+        open={deletingAttachment !== null}
+        onClose={() => {
+          setDeletingAttachment(null);
+          deleteAttachment.reset();
+        }}
+        onConfirm={confirmDeleteAttachment}
+        title="Delete attachment"
+        description={deletingAttachment ? <>This removes <span className="font-semibold text-text">{deletingAttachment.fileName}</span> from this homework.</> : undefined}
+        confirmLabel="Delete"
+        confirmTone="danger"
+        isConfirming={deleteAttachment.isPending}
+      >
+        {deleteAttachment.isError && (
+          <p role="alert" className="text-sm text-danger">
+            {getErrorMessage(deleteAttachment.error)}
+          </p>
+        )}
+      </ConfirmDialog>
     </Dialog>
   );
 }

@@ -167,6 +167,45 @@ describe("MyHomeworkPage", () => {
     );
   });
 
+  // v0.8.3 UX Round 2 Step A (SPEC_V0.8.3_ux_round2.md §Step A). The row's
+  // removal comes from the post-delete query invalidation + refetch (the
+  // plan's "for now just invalidate the query"), so the GET mock must
+  // genuinely reflect the server-side change on refetch — a mutable
+  // `current` list, same convention BreaksSection.test.tsx's own edit-flow
+  // test already established, not a static fixture.
+  it("STUDENT: deletes their own submission via the confirm dialog, removing the row", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    let current: StudentHomeworkListResponse = {
+      classArmId: "arm1",
+      homework: [
+        entry({
+          requiresUpload: true,
+          submissions: [{ id: "sub1", fileName: "answers.pdf", contentType: "application/pdf", sizeBytes: 1024, uploadedAt: "t" }],
+        }),
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path === "/api/v1/me/homework" && (!opts?.method || opts.method === "GET")) return current;
+      if (path === "/api/v1/me/homework/hw1/submissions/sub1" && opts?.method === "DELETE") {
+        current = { ...current, homework: [{ ...current.homework[0], submissions: [] }] };
+        return { id: "sub1" };
+      }
+      throw new Error(`unexpected apiRequest call: ${opts?.method ?? "GET"} ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(<MyHomeworkPage />);
+
+    expect(await screen.findByText("answers.pdf")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete answers.pdf" }));
+    expect(screen.getByText("Delete submission")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(screen.queryByText("answers.pdf")).not.toBeInTheDocument());
+  });
+
   // v0.8.3 step 5 (SPEC_V0.8.3.md §2.8, Item 8) — the raw <input
   // type="file"> is now StyledFileInput: proves the app-controlled button
   // label renders (not the native "Choisir un fichier") and the chosen

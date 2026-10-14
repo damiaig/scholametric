@@ -119,4 +119,18 @@ export class HomeworkController {
   ) {
     return this.homeworkService.getAttachmentDownloadUrlForTeacher(id, attachmentId, user);
   }
+
+  // v0.8.3 UX Round 2 Step A — same authorization shape as deleteHomework:
+  // TEACHER gated by assertTeacherAssignment inside the service,
+  // SCHOOL_ADMIN/PROPRIETOR allowed outright (the safety-valve family).
+  @Audit("homework", "detach")
+  @Roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.PROPRIETOR)
+  @Delete(":id/attachments/:attachmentId")
+  deleteAttachment(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("attachmentId", ParseUUIDPipe) attachmentId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.homeworkService.deleteAttachment(id, attachmentId, user);
+  }
 }

@@ -2695,6 +2695,18 @@ but never resolve a download URL to verify it. Mirrors the submission download-u
 exactly, scoped to `HomeworkAttachment` instead. **Response `200`**: `{ downloadUrl,
 expiresAt }`.
 
+**`DELETE /homework/:id/attachments/:attachmentId`** (`TEACHER`, `SCHOOL_ADMIN`,
+`PROPRIETOR` — added v0.8.3 UX Round 2 Step A, SPEC_V0.8.3_ux_round2.md §Step A). Same
+authorization shape as `DELETE /homework/:id`: `TEACHER` gated by `assertTeacherAssignment`
+(**`403`** if not currently assigned); `SCHOOL_ADMIN`/`PROPRIETOR` allowed outright (the
+same safety-valve family — teacher left the school, admin pulling an inappropriate file).
+Allowed on any status — attachments were never frozen post-publish. Deletes the storage
+object (`StorageService.deleteObject`) THEN the row; a storage-delete failure is logged but
+does NOT block the row delete (same posture as the retention sweep, docs/DECISIONS.md) — an
+orphaned blob beats a row the user can't clear. The 20MB attachment cap frees naturally
+(re-summed from remaining rows on the next issue-upload-url call). **Response `200`**:
+`{ id }`.
+
 ### Student uploads (v0.8.2 step 4, SPEC_V0.8.2.md §6 item 4)
 
 Same two-checkpoint shape as teacher attachments, mirrored onto `HomeworkSubmission`.
@@ -2714,6 +2726,20 @@ contentType }`. Same prefix-validation / verified-size / cap-recheck shape as th
 teacher's attachment commit, scoped to
 `schools/{schoolId}/homework/{homeworkId}/submissions/{studentId}/`. **Response `201`**:
 `{ id, fileName, contentType, sizeBytes, uploadedAt }`.
+
+**`DELETE /me/homework/:id/submissions/:submissionId`** (`STUDENT` — added v0.8.3 UX Round 2
+Step A). Own-submission only, no admin valve (unlike the teacher-side attachment delete
+above — this is the student's own file, never staff cleanup). `classArmId`/`studentId` are
+both resolved server-side; mirrors `POST /me/homework/:id/complete`'s own wall
+(`classArmId` + `PUBLISHED` + `deletedAt: null` on the homework) — **not** gated by
+due-date, same reasoning as that sibling's own comment (a late action on a homework that's
+dropped off the student's default list is still honest and valid; neither the upload-url
+nor commit routes above check due-date either). The submission row must ALSO belong to the
+caller (`id` + `homeworkId` + `studentId`) — any mismatch (wrong student, wrong homework,
+wrong class, wrong tenant) collapses into the same **`404`**, never `403` (this codebase's
+"hidden, not forbidden" convention for every own-X wall). Same storage-then-row delete
+order and failure posture as the teacher route above. The 20MB submission cap frees
+naturally. **Response `200`**: `{ id }`.
 
 **`GET /me/homework/:id/attachments/:attachmentId/download-url`** (`STUDENT`) — students
 see/download the teacher's own attachments (implied by the acceptance walk, ruled at plan

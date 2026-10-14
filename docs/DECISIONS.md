@@ -7626,3 +7626,61 @@ sequence). Full backend e2e: 49 files, 634/634 clean (one isolated
 flaky `grades-review.e2e-spec.ts` "socket hang up" confirmed unrelated —
 passes clean alone). Full web suite: 78 files, 507/507 clean.
 `pnpm typecheck`/`pnpm lint` clean across all three workspaces.
+
+## 2026-10-14 — v0.8.3 UX Round 2 Step A: delete uploaded files
+
+Delete was deliberately skipped in v0.8.2 — this closes the gap with 2 endpoints, reusing
+`StorageService.deleteObject` and `ConfirmDialog` as-is. Both mirror an existing wall
+exactly rather than inventing a new one:
+
+- `DELETE /homework/:id/attachments/:attachmentId` (TEACHER/SCHOOL_ADMIN/PROPRIETOR) —
+  same authorization shape as `deleteHomework`: TEACHER gated by `assertTeacherAssignment`
+  (403), admin/proprietor allowed outright (the safety-valve family — teacher left the
+  school, admin pulling an inappropriate file). Allowed on any status.
+- `DELETE /me/homework/:id/submissions/:submissionId` (STUDENT, own-submission only, no
+  admin valve) — mirrors `setCompletion`'s own wall (classArmId + PUBLISHED +
+  deletedAt: null), plus an ownership check (id + homeworkId + studentId) that collapses
+  any mismatch into 404, never 403. Deliberately NOT gated by due-date — neither the
+  upload-url nor commit routes were either; a late delete on a homework that's dropped off
+  the student's list is still a valid action, not a special case worth inventing.
+
+Both: storage-delete attempted first, try/caught, logged on failure — the row is deleted
+regardless (same posture as the retention sweep, `purgeSessionFiles`). Both caps
+(attachment/submission, 20MB each) free naturally since `sumAttachmentSizes`/
+`sumSubmissionSizes` already re-aggregate from live rows on every call — proven by an e2e
+per side (fill cap → 409 → delete → same upload now fits), not by new logic.
+
+**One necessary new test fixture.** `homework-submissions.e2e-spec.ts`'s existing
+`otherClassStudentToken` is a DIFFERENT class — it already 404s at the homework lookup
+itself, before ever reaching the submission's own ownership check, so it never actually
+exercised "a classmate can't delete another student's submission." Added a second,
+same-class (jss1A) student fixture (`secondStudentToken`) specifically for that invariant.
+
+**Frontend.** `HomeworkFormDialog`'s `committedAttachments` merges a frozen `homework` prop
+snapshot (deliberately not live-refetched — see the component's own doc comment on why) with
+a local `sessionAttachments` array for same-session additions. Deletion needed the mirror
+image: a local `deletedAttachmentIds` Set filtering `committedAttachments`, so a delete is
+reflected in the OPEN dialog immediately without re-introducing the stale-snapshot hazard
+query invalidation alone would cause. Invalidation still runs — it's what makes the
+attachment genuinely gone from `homework.attachments` the next time the dialog opens.
+`HomeworkDueDateList` (student view) needed no such shadow array — it has no frozen-snapshot
+problem (its list comes from a live query the whole time), so a plain `["me","homework"]`
+invalidation after delete is enough; the confirm-dialog's own local state lives in the
+component itself, same self-contained pattern it already used for its description-expand
+dialog.
+
+**Test impact.** Backend: `homework.service.ts` (+2 methods), `homework.controller.ts`/
+`me.controller.ts`/`me.service.ts` (+1 route/method each). `@Audit("homework","detach")` on
+the teacher route (every other homework mutation in that controller carries one); no
+`@Audit` on the student route (zero `/me/*` routes carry one anywhere in this codebase).
+New e2e coverage in `homework-attachments.e2e-spec.ts` and `homework-submissions.e2e-spec.ts`
+(owner deletes, admin safety-valve, non-assigned/classmate/cross-tenant 403/404, cap-frees).
+Frontend: `use-homework-attachments.ts`/`use-my-homework-submissions.ts` (+1 hook each),
+`HomeworkFormDialog.tsx`/`HomeworkDueDateList.tsx`+`MyHomeworkPage.tsx` wired with a delete
+control + `ConfirmDialog`, +1 test each. Full backend e2e: 49 files, 643/643 clean (a
+transient run showed 2 unrelated suites — `exams-authoring.e2e-spec.ts` and this step's own
+`homework-submissions.e2e-spec.ts` — timing out under the full 49-file sequential run;
+both confirmed passing cleanly in isolation, and a clean full re-run came back 643/643,
+consistent with this suite's known occasional flakiness under load rather than a
+regression). Full web suite: 78 files, 509/509 clean. `pnpm typecheck`/`pnpm lint` clean
+across all three workspaces. Zero grade-engine contact.

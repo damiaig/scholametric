@@ -287,6 +287,33 @@ describe("HomeworkFormDialog", () => {
     await waitFor(() => expect(screen.getAllByText("new.pdf").length).toBeGreaterThanOrEqual(2));
   });
 
+  // v0.8.3 UX Round 2 Step A (SPEC_V0.8.3_ux_round2.md §Step A).
+  it("edit mode: deletes an existing attachment via the confirm dialog, removing it from the list", async () => {
+    const withAttachment: Homework = {
+      ...EXISTING,
+      attachments: [{ id: "att0", fileName: "existing.pdf", contentType: "application/pdf", sizeBytes: 2048, createdAt: "t" }],
+    };
+    mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
+      if (path === "/api/v1/homework/hw1/attachments/att0" && opts?.method === "DELETE") {
+        return { id: "att0" };
+      }
+      throw new Error(`unexpected call: ${path} ${opts?.method ?? "GET"}`);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(
+      <HomeworkFormDialog open onClose={vi.fn()} classArmId="arm1" subjectId="sub1" termId="term1" homework={withAttachment} />,
+    );
+
+    expect(screen.getByText("existing.pdf")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete existing.pdf" }));
+    expect(screen.getByText("Delete attachment")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(screen.queryByText("existing.pdf")).not.toBeInTheDocument());
+  });
+
   // v0.8.3 step 5 (SPEC_V0.8.3.md §2.8, Item 8) — the raw <input
   // type="file"> is now StyledFileInput; this proves the migration didn't
   // regress anything beyond the markup: the app-controlled button label

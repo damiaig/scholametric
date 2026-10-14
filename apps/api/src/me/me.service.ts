@@ -357,6 +357,14 @@ export class MeService {
     return this.homeworkService.commitSubmission(homeworkId, studentId, classArmId, dto);
   }
 
+  // v0.8.3 UX Round 2 Step A — studentId AND classArmId are both
+  // resolved server-side, same as every other own-X homework route above.
+  async deleteMyHomeworkSubmission(userId: string, homeworkId: string, submissionId: string): Promise<{ id: string }> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
+    return this.homeworkService.deleteSubmission(homeworkId, submissionId, studentId, classArmId);
+  }
+
   // v0.8.2 step 4, flag 4 — the student-side counterpart to the teacher's
   // attachments: seeing the teacher's file is not enough without a way to
   // actually open it.

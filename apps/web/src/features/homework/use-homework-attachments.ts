@@ -65,6 +65,18 @@ export function useAttachHomeworkFile() {
   });
 }
 
+// v0.8.3 UX Round 2 Step A (SPEC_V0.8.3_ux_round2.md §Step A).
+export function useDeleteAttachment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ homeworkId, attachmentId }: { homeworkId: string; attachmentId: string }) =>
+      apiRequest<{ id: string }>(`/api/v1/homework/${homeworkId}/attachments/${attachmentId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["homework", "list"] });
+    },
+  });
+}
+
 /** CLAUDE.md §6: readable sentences — the attach flow's own error branch (see the hook's doc comment above for why this can't just be getErrorMessage). */
 export function getAttachErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {

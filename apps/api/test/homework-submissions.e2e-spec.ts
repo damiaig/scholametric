@@ -24,6 +24,7 @@ describe("Homework submissions (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
   let hillcrestAdminToken: string;
   let studentToken: string;
   let otherClassStudentToken: string;
+  let secondStudentToken: string;
 
   let sunriseId: string;
   let sunriseSessionId: string;
@@ -148,6 +149,41 @@ describe("Homework submissions (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
     });
     createdUserIds.push(otherClassStudentUser.id);
     otherClassStudentToken = await loginAs(app, "E2EHWSUBOTHERCLASS", "sunrise");
+
+    // v0.8.3 UX Round 2 Step A — a SECOND student in the SAME class
+    // (jss1A), distinct from otherClassStudentToken above: that fixture is
+    // a different CLASS, so it already 404s at the homework lookup itself
+    // (classArmId mismatch) before ever reaching the submission-ownership
+    // check. Proving "a classmate can't delete another student's
+    // submission" needs a same-class, different-student caller.
+    const secondStudent = await prisma.student.create({
+      data: {
+        schoolId: sunriseId,
+        admissionNumber: "E2E-HWSUB/Second",
+        firstName: "Chidinma",
+        lastName: "Eze",
+        gender: Gender.FEMALE,
+        dateOfBirth: new Date("2012-05-05"),
+        guardianName: "E2E Guardian",
+        guardianPhone: "+2348050000013",
+      },
+    });
+    createdStudentIds.push(secondStudent.id);
+    await prisma.studentEnrollment.create({ data: { schoolId: sunriseId, studentId: secondStudent.id, classArmId: jss1AArmId, sessionId: sunriseSessionId } });
+    const secondStudentUser = await prisma.user.create({
+      data: {
+        schoolId: sunriseId,
+        role: UserRole.STUDENT,
+        username: "E2EHWSUBSECOND",
+        studentId: secondStudent.id,
+        firstName: "Chidinma",
+        lastName: "Eze",
+        passwordHash,
+        mustChangePassword: false,
+      },
+    });
+    createdUserIds.push(secondStudentUser.id);
+    secondStudentToken = await loginAs(app, "E2EHWSUBSECOND", "sunrise");
     // No local TimetableSlot fixture needed — seed.ts itself seeds
     // teacher@sunrise.test teaching jss1AArmId Mathematics on Mon/Tue/Thu/Fri
     // (v0.8.3 Item 4 rework), and VALID_DUE_DATE is always a Monday.
@@ -282,6 +318,71 @@ describe("Homework submissions (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
         .get(`/api/v1/me/homework/${homeworkId}/attachments/${attachment.body.id}/download-url`)
         .set(auth(otherClassStudentToken));
       expect(otherClassDownload.status).toBe(404);
+    });
+  });
+
+  // v0.8.3 UX Round 2 Step A (SPEC_V0.8.3_ux_round2.md §Step A).
+  describe("DELETE /me/homework/:id/submissions/:submissionId", () => {
+    async function uploadAndCommit(token: string, homeworkId: string, sizeBytes = 1024): Promise<{ id: string; storageKey: string }> {
+      const issued = await issueUploadUrl(token, homeworkId);
+      storage.seedObject(issued.body.storageKey, { sizeBytes, contentType: "application/pdf" });
+      const committed = await commit(token, homeworkId, { storageKey: issued.body.storageKey, fileName: "answers.pdf", contentType: "application/pdf" });
+      if (committed.status !== 201) {
+        throw new Error(`submission commit failed: ${committed.status} ${JSON.stringify(committed.body)}`);
+      }
+      return { id: committed.body.id as string, storageKey: issued.body.storageKey as string };
+    }
+
+    it("the student deletes their own submission — row and storage object both gone", async () => {
+      const homeworkId = await createPublishedHomework();
+      const submission = await uploadAndCommit(studentToken, homeworkId);
+      expect(await storage.getObjectMetadata(submission.storageKey)).not.toBeNull();
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/v1/me/homework/${homeworkId}/submissions/${submission.id}`)
+        .set(auth(studentToken));
+      expect(response.status).toBe(200);
+
+      expect(await prisma.homeworkSubmission.findFirst({ where: { id: submission.id } })).toBeNull();
+      expect(await storage.getObjectMetadata(submission.storageKey)).toBeNull();
+    });
+
+    it("404s a classmate (same class, different student) deleting another student's submission", async () => {
+      const homeworkId = await createPublishedHomework();
+      const submission = await uploadAndCommit(studentToken, homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/v1/me/homework/${homeworkId}/submissions/${submission.id}`)
+        .set(auth(secondStudentToken));
+      expect(response.status).toBe(404);
+
+      expect(await prisma.homeworkSubmission.findFirst({ where: { id: submission.id } })).not.toBeNull();
+    });
+
+    it("404s a different-class student — tenant/class scoping, not 403", async () => {
+      const homeworkId = await createPublishedHomework();
+      const submission = await uploadAndCommit(studentToken, homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/v1/me/homework/${homeworkId}/submissions/${submission.id}`)
+        .set(auth(otherClassStudentToken));
+      expect(response.status).toBe(404);
+    });
+
+    it("frees the 20MB cap — a subsequent upload that would've exceeded now fits", async () => {
+      const homeworkId = await createPublishedHomework();
+      const submission = await uploadAndCommit(studentToken, homeworkId, 20 * 1024 * 1024);
+
+      const blocked = await issueUploadUrl(studentToken, homeworkId);
+      expect(blocked.status).toBe(409);
+
+      const deleteResponse = await request(app.getHttpServer())
+        .delete(`/api/v1/me/homework/${homeworkId}/submissions/${submission.id}`)
+        .set(auth(studentToken));
+      expect(deleteResponse.status).toBe(200);
+
+      const afterDelete = await issueUploadUrl(studentToken, homeworkId);
+      expect(afterDelete.status).toBe(200);
     });
   });
 });

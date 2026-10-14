@@ -10,7 +10,7 @@ import { useCurrentUser } from "../shell/use-current-user";
 import { useMyChildren } from "../dashboard/use-my-children";
 import { HomeworkDueDateList } from "./HomeworkDueDateList";
 import { useChildAttachmentDownloadUrl, useChildHomework, useMarkHomeworkDone, useMyAttachmentDownloadUrl, useMyHomework } from "./use-my-homework";
-import { useSubmitMyHomeworkFile } from "./use-my-homework-submissions";
+import { useDeleteMySubmission, useSubmitMyHomeworkFile } from "./use-my-homework-submissions";
 import { getAttachErrorMessage } from "./use-homework-attachments";
 
 const SELECT_CLASS =
@@ -24,6 +24,7 @@ function MyHomework() {
   const markDone = useMarkHomeworkDone();
   const downloadUrl = useMyAttachmentDownloadUrl();
   const submitFile = useSubmitMyHomeworkFile();
+  const deleteSubmission = useDeleteMySubmission();
   const [activeUploadId, setActiveUploadId] = useState<string | null>(null);
 
   function handleMarkDone(homeworkId: string, markedDone: boolean) {
@@ -40,6 +41,10 @@ function MyHomework() {
   function handleUploadFile(homeworkId: string, file: File) {
     setActiveUploadId(homeworkId);
     submitFile.mutate({ homeworkId, file });
+  }
+
+  function handleDeleteSubmission(homeworkId: string, submissionId: string) {
+    return deleteSubmission.mutateAsync({ homeworkId, submissionId });
   }
 
   return (
@@ -73,6 +78,7 @@ function MyHomework() {
           activeUploadHomeworkId={activeUploadId}
           isUploading={submitFile.isPending}
           uploadError={submitFile.isError ? getAttachErrorMessage(submitFile.error) : null}
+          onDeleteSubmission={handleDeleteSubmission}
         />
       )}
     </div>

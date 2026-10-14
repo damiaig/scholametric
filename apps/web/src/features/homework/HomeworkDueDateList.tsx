@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, Paperclip } from "lucide-react";
+import { Download, Paperclip, Trash2 } from "lucide-react";
 import type { StudentHomeworkEntry } from "@scholametric/shared";
 import { Card, CardContent } from "../../components/ui/card";
 import { Checkbox } from "../../components/ui/checkbox";
@@ -9,6 +9,8 @@ import { Dialog } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { StyledFileInput } from "../../components/ui/styled-file-input";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { getErrorMessage } from "../../lib/api-client";
 
 const DESCRIPTION_TRUNCATE_LENGTH = 200;
 
@@ -56,6 +58,14 @@ interface HomeworkDueDateListProps {
   activeUploadHomeworkId?: string | null;
   isUploading?: boolean;
   uploadError?: string | null;
+  /**
+   * v0.8.3 UX Round 2 Step A — a STUDENT deleting their OWN submission.
+   * Returns a Promise so this component can await it and close its own
+   * ConfirmDialog on success, same as every other optional callback here:
+   * undefined for the read-only PARENT view, which never renders the
+   * delete control at all.
+   */
+  onDeleteSubmission?: (homeworkId: string, submissionId: string) => Promise<unknown>;
 }
 
 // v0.8.2 step 6 (SPEC_V0.8.2.md §6 item 6) — the Pronote-style due-date-
@@ -79,9 +89,28 @@ export function HomeworkDueDateList({
   activeUploadHomeworkId,
   isUploading,
   uploadError,
+  onDeleteSubmission,
 }: HomeworkDueDateListProps) {
   const [expandedDescriptionId, setExpandedDescriptionId] = useState<string | null>(null);
   const expandedItem = homework.find((item) => item.id === expandedDescriptionId) ?? null;
+
+  const [deleteTarget, setDeleteTarget] = useState<{ homeworkId: string; submissionId: string; fileName: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function confirmDeleteSubmission() {
+    if (!deleteTarget || !onDeleteSubmission) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDeleteSubmission(deleteTarget.homeworkId, deleteTarget.submissionId);
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(getErrorMessage(error));
+    } finally {
+      setIsDeleting(false);
+    }
+  }
 
   if (homework.length === 0) {
     return (
@@ -177,7 +206,17 @@ export function HomeworkDueDateList({
                                 className="flex items-center gap-1.5 rounded-md border border-muted/10 px-3 py-1.5 text-xs text-muted"
                               >
                                 <Download className="h-3 w-3" aria-hidden="true" />
-                                {submission.fileName}
+                                <span className="flex-1">{submission.fileName}</span>
+                                {onDeleteSubmission && (
+                                  <button
+                                    type="button"
+                                    aria-label={`Delete ${submission.fileName}`}
+                                    onClick={() => setDeleteTarget({ homeworkId: item.id, submissionId: submission.id, fileName: submission.fileName })}
+                                    className="text-muted hover:text-danger"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                  </button>
+                                )}
                               </li>
                             ))}
                           </ul>
@@ -212,6 +251,26 @@ export function HomeworkDueDateList({
           </div>
         </div>
       </Dialog>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onClose={() => {
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }}
+        onConfirm={() => void confirmDeleteSubmission()}
+        title="Delete submission"
+        description={deleteTarget ? <>This removes <span className="font-semibold text-text">{deleteTarget.fileName}</span> from your submission.</> : undefined}
+        confirmLabel="Delete"
+        confirmTone="danger"
+        isConfirming={isDeleting}
+      >
+        {deleteError && (
+          <p role="alert" className="text-sm text-danger">
+            {deleteError}
+          </p>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

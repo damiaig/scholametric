@@ -20,6 +20,7 @@ describe("Homework attachments (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
 
   let mathTeacherToken: string;
   let englishTeacherToken: string;
+  let sunriseAdminToken: string;
   let hillcrestTeacherToken: string;
   let hillcrestAdminToken: string;
 
@@ -71,6 +72,7 @@ describe("Homework attachments (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
 
     mathTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
     englishTeacherToken = await loginAs(app, "teacher2@sunrise.test", "sunrise");
+    sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
     hillcrestTeacherToken = await loginAs(app, "teacher@hillcrest.test", "hillcrest");
     hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
 
@@ -279,6 +281,92 @@ describe("Homework attachments (e2e) — SPEC_V0.8.2.md §6 item 4, v0.8.2 step 
         .get(`/api/v1/homework/${homeworkId}/attachments/${attachmentId}/download-url`)
         .set(auth(hillcrestAdminToken));
       expect(response.status).toBe(404);
+    });
+  });
+
+  // v0.8.3 UX Round 2 Step A (SPEC_V0.8.3_ux_round2.md §Step A).
+  describe("DELETE /homework/:id/attachments/:attachmentId", () => {
+    async function attachAndCommit(homeworkId: string): Promise<string> {
+      const issued = await issueUploadUrl(mathTeacherToken, homeworkId);
+      storage.seedObject(issued.body.storageKey, { sizeBytes: 1024, contentType: "application/pdf" });
+      const committed = await commit(mathTeacherToken, homeworkId, {
+        storageKey: issued.body.storageKey,
+        fileName: "worksheet.pdf",
+        contentType: "application/pdf",
+      });
+      if (committed.status !== 201) {
+        throw new Error(`attachment commit failed: ${committed.status} ${JSON.stringify(committed.body)}`);
+      }
+      return committed.body.id as string;
+    }
+
+    it("the teacher deletes their own attachment — row and storage object both gone", async () => {
+      const homeworkId = await createHomework();
+      const attachmentId = await attachAndCommit(homeworkId);
+      const [attachment] = await prisma.homeworkAttachment.findMany({ where: { id: attachmentId } });
+      expect(await storage.getObjectMetadata(attachment.storageKey)).not.toBeNull();
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/v1/homework/${homeworkId}/attachments/${attachmentId}`)
+        .set(auth(mathTeacherToken));
+      expect(response.status).toBe(200);
+
+      expect(await prisma.homeworkAttachment.findFirst({ where: { id: attachmentId } })).toBeNull();
+      expect(await storage.getObjectMetadata(attachment.storageKey)).toBeNull();
+    });
+
+    it("SCHOOL_ADMIN can delete an attachment without a teaching assignment (safety valve, mirrors deleteHomework)", async () => {
+      const homeworkId = await createHomework();
+      const attachmentId = await attachAndCommit(homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/v1/homework/${homeworkId}/attachments/${attachmentId}`)
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(200);
+      expect(await prisma.homeworkAttachment.findFirst({ where: { id: attachmentId } })).toBeNull();
+    });
+
+    it("403s a teacher who doesn't teach this subject", async () => {
+      const homeworkId = await createHomework();
+      const attachmentId = await attachAndCommit(homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/v1/homework/${homeworkId}/attachments/${attachmentId}`)
+        .set(auth(englishTeacherToken));
+      expect(response.status).toBe(403);
+    });
+
+    it("404s a cross-tenant teacher — tenant scoping, not 403", async () => {
+      const homeworkId = await createHomework();
+      const attachmentId = await attachAndCommit(homeworkId);
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/v1/homework/${homeworkId}/attachments/${attachmentId}`)
+        .set(auth(hillcrestTeacherToken));
+      expect(response.status).toBe(404);
+    });
+
+    it("frees the 20MB cap — a subsequent upload that would've exceeded now fits", async () => {
+      const homeworkId = await createHomework();
+      const first = await issueUploadUrl(mathTeacherToken, homeworkId);
+      storage.seedObject(first.body.storageKey, { sizeBytes: 20 * 1024 * 1024, contentType: "application/pdf" });
+      const firstCommit = await commit(mathTeacherToken, homeworkId, {
+        storageKey: first.body.storageKey,
+        fileName: "full-cap.pdf",
+        contentType: "application/pdf",
+      });
+      expect(firstCommit.status).toBe(201);
+
+      const blocked = await issueUploadUrl(mathTeacherToken, homeworkId);
+      expect(blocked.status).toBe(409);
+
+      const deleteResponse = await request(app.getHttpServer())
+        .delete(`/api/v1/homework/${homeworkId}/attachments/${firstCommit.body.id}`)
+        .set(auth(mathTeacherToken));
+      expect(deleteResponse.status).toBe(200);
+
+      const afterDelete = await issueUploadUrl(mathTeacherToken, homeworkId);
+      expect(afterDelete.status).toBe(200);
     });
   });
 });

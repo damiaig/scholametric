@@ -609,6 +609,41 @@ export class HomeworkService {
     return this.toAttachmentResponse(attachment);
   }
 
+  // v0.8.3 UX Round 2 Step A (SPEC_V0.8.3_ux_round2.md §Step A) — mirrors
+  // deleteHomework's own wall shape (homework lookup, then
+  // assertTeacherAssignment — throws 403 for a wrong-subject TEACHER;
+  // SCHOOL_ADMIN/PROPRIETOR skip straight through, same safety-valve
+  // reasoning as deleteHomework/unpublishHomework: teacher left the
+  // school, admin pulling an inappropriate file). Allowed on any status —
+  // attachments were never frozen post-publish. Storage-delete failure
+  // posture matches purgeSessionFiles exactly: try/catch, log, delete the
+  // row regardless — an orphaned blob beats a row the user can't clear.
+  async deleteAttachment(homeworkId: string, attachmentId: string, user: AuthenticatedUser): Promise<{ id: string }> {
+    const schoolId = this.tenantContext.schoolId;
+    const homework = await this.prisma.homework.findFirst({ where: forSchool(schoolId, { id: homeworkId, deletedAt: null }) });
+    if (!homework) {
+      throw new NotFoundException("Homework not found.");
+    }
+
+    const isAdminOverride = user.role === UserRole.SCHOOL_ADMIN || user.role === UserRole.PROPRIETOR;
+    if (!isAdminOverride) {
+      await assertTeacherAssignment(this.prisma, schoolId, user, homework.subjectId, homework.classArmId, homework.sessionId);
+    }
+
+    const attachment = await this.prisma.homeworkAttachment.findFirst({ where: forSchool(schoolId, { id: attachmentId, homeworkId }) });
+    if (!attachment) {
+      throw new NotFoundException("Attachment not found.");
+    }
+
+    try {
+      await this.storageService.deleteObject(attachment.storageKey);
+    } catch (error) {
+      this.logger.warn(`Failed to delete storage object for homework attachment ${attachment.id}: ${error}`);
+    }
+    await this.prisma.homeworkAttachment.delete({ where: { id: attachment.id } });
+    return { id: attachment.id };
+  }
+
   // v0.8.2 step 4 — mirrors issueAttachmentUploadUrl's own two-checkpoint
   // shape onto student submissions. Own-class + PUBLISHED scoping is
   // IDENTICAL to setCompletion's own 404 shape (classArmId/studentId are
@@ -673,6 +708,42 @@ export class HomeworkService {
       },
     });
     return this.toSubmissionResponse(submission);
+  }
+
+  // v0.8.3 UX Round 2 Step A (SPEC_V0.8.3_ux_round2.md §Step A) — mirrors
+  // setCompletion's own wall exactly (classArmId + PUBLISHED + deletedAt:
+  // null on the homework; studentId/classArmId always caller-resolved,
+  // never request fields) — NOT gated by due-date, same reasoning as that
+  // sibling's own comment: a late delete on a homework that's dropped off
+  // the student's default list is still an honest, valid action, and
+  // neither issueSubmissionUploadUrl nor commitSubmission check due-date
+  // either. The own-submission wall (id + homeworkId + studentId) layers
+  // on top — a wrong studentId, wrong homeworkId, wrong class, or wrong
+  // tenant all collapse into the same 404, never 403 (this codebase's
+  // "hidden, not forbidden" convention for every own-X wall). Storage-
+  // delete failure posture matches purgeSessionFiles: try/catch, log,
+  // delete the row regardless.
+  async deleteSubmission(homeworkId: string, submissionId: string, studentId: string, classArmId: string): Promise<{ id: string }> {
+    const schoolId = this.tenantContext.schoolId;
+    const homework = await this.prisma.homework.findFirst({
+      where: forSchool(schoolId, { id: homeworkId, classArmId, status: HomeworkStatus.PUBLISHED, deletedAt: null }),
+    });
+    if (!homework) {
+      throw new NotFoundException("Homework not found.");
+    }
+
+    const submission = await this.prisma.homeworkSubmission.findFirst({ where: forSchool(schoolId, { id: submissionId, homeworkId, studentId }) });
+    if (!submission) {
+      throw new NotFoundException("Submission not found.");
+    }
+
+    try {
+      await this.storageService.deleteObject(submission.storageKey);
+    } catch (error) {
+      this.logger.warn(`Failed to delete storage object for homework submission ${submission.id}: ${error}`);
+    }
+    await this.prisma.homeworkSubmission.delete({ where: { id: submission.id } });
+    return { id: submission.id };
   }
 
   // v0.8.2 step 4 — folds Step 2's deferred "who marked done" together

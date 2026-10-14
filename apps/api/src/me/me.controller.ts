@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query } from "@nestjs/common";
 import { UserRole } from "@prisma/client";
 import { Roles } from "../common/decorators/roles.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
@@ -108,6 +108,19 @@ export class MeController {
   @Post("homework/:id/submissions")
   commitHomeworkSubmission(@CurrentUser() user: AuthenticatedUser, @Param("id", ParseUUIDPipe) id: string, @Body() dto: CommitFileDto) {
     return this.meService.commitMyHomeworkSubmission(user.userId, id, dto);
+  }
+
+  // v0.8.3 UX Round 2 Step A (SPEC_V0.8.3_ux_round2.md §Step A) — own-
+  // submission only, no admin valve (unlike the teacher-side attachment
+  // delete): this is the student's own file, never staff cleanup.
+  @Roles(UserRole.STUDENT)
+  @Delete("homework/:id/submissions/:submissionId")
+  deleteHomeworkSubmission(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("submissionId", ParseUUIDPipe) submissionId: string,
+  ) {
+    return this.meService.deleteMyHomeworkSubmission(user.userId, id, submissionId);
   }
 
   // v0.8.2 step 4, flag 4 — download the teacher's own attachment.
