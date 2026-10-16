@@ -10,7 +10,7 @@ import { Spinner } from "../../components/ui/spinner";
 import { StatusBadge } from "../../components/StatusBadge";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { getErrorMessage } from "../../lib/api-client";
-import { formatDate } from "../../lib/format-date";
+import { formatDueDateRelative } from "../../lib/format-date";
 import { useMyTeaching } from "../dashboard/use-my-teaching";
 import { useDeleteHomework, useHomeworkList, usePublishHomework, useUnpublishHomework } from "./use-homework";
 import { HomeworkFormDialog } from "./HomeworkFormDialog";
@@ -156,7 +156,7 @@ export function HomeworkClassPage() {
                         <StatusBadge label={isPublished ? "Published" : "Draft"} tone={isPublished ? "success" : "neutral"} />
                         {item.requiresUpload && <StatusBadge label="Requires upload" tone="info" />}
                       </div>
-                      <p className="mt-1 text-sm text-muted">Due {formatDate(item.dueDate)}</p>
+                      <p className="mt-1 text-sm text-muted">Due {formatDueDateRelative(item.dueDate)}</p>
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
                       <Button

@@ -7684,3 +7684,56 @@ both confirmed passing cleanly in isolation, and a clean full re-run came back 6
 consistent with this suite's known occasional flakiness under load rather than a
 regression). Full web suite: 78 files, 509/509 clean. `pnpm typecheck`/`pnpm lint` clean
 across all three workspaces. Zero grade-engine contact.
+
+## 2026-10-15 — v0.8.3 UX Round 2 Step B: student cap display, relative due dates, live dashboard card
+
+Frontend-only, zero backend diff — all three items consume data/constants the API already
+sends or exports.
+
+**Item 2** (student upload cap): mirrors `HomeworkFormDialog`'s teacher-side
+usedBytes/remainingBytes/capReached shape exactly, computed per-item in
+`HomeworkDueDateList` from `item.submissions` (already carried `sizeBytes`;
+`HOMEWORK_SUBMISSION_CAP_BYTES` was already exported from `@scholametric/shared`, just
+unused on the frontend). Advisory only — `issueSubmissionUploadUrl`/`commitSubmission`
+stay the real gate, untouched.
+
+**Item 6** (relative due dates): new `formatDueDateRelative(dueDate, today = new Date())`
+in `apps/web/src/lib/format-date.ts` — a pure presentation helper (unlike
+`isPeriodTimePast`, which lives in `packages/shared` because the API enforces that rule
+too; nothing here needs backend enforcement). Parses `dueDate` as a LOCAL midnight date
+(not `new Date(dueDate)`, which parses UTC and can land on the wrong day in a
+negative-offset timezone) — same hazard `HomeworkDueDateList`'s own (now-deleted)
+`formatDueDateHeading` already guarded against, generalized into the shared helper.
+Injectable `today` with a real default, tested as a pure function — matches this
+codebase's existing convention (`isPeriodTimePast`'s `now`, `getAgendaRange`'s `today`),
+not a component prop.
+
+**Unified two different "else" formats, deliberately.** `HomeworkDueDateList` already
+rendered non-relative dates as "Monday 12 October"; `HomeworkClassPage` rendered them as
+"Oct 12, 2026" via the generic `formatDate`. Switching `HomeworkClassPage` to the new
+helper changes its non-relative format too, not just adding Today/Tomorrow — confirmed at
+plan time rather than assumed (checked first: `HomeworkClassPage.test.tsx` had no
+assertion pinning the old format, so this was a safe, test-invisible change). Two lists
+with different date formats, only one of them ever saying "Today," would have read as
+inconsistent.
+
+**Item 1** (dashboard card): `StudentDashboard.tsx`'s dead "Homework — Coming soon" card
+(no `Link`, `opacity-60`, `Hammer` icon) becomes a live `Link` to `/me/homework`, byte-for-
+byte the same structure as its Grades/Timetable siblings. Icon changed `Hammer` →
+`ClipboardList` — matches the sidebar nav's own icon for `/me/homework` exactly, same as
+Grades' `BookOpen`/Timetable's `CalendarClock` already match their sidebar icons. Plain
+link, no count (a count needs its own fetch — deferred). `ParentDashboard.tsx` has an
+identical dead card, left untouched: `/me/homework` is STUDENT-only server-side, and a
+parent-facing live card needs a per-child target, out of scope here. **Follow-up noted for
+post-tag:** wire the parent dashboard's own "Coming soon" homework card to the parent's
+per-child homework view.
+
+**Test impact.** New `src/lib/format-date.test.ts` (6 cases, pure-function). 2 new tests in
+`MyHomeworkPage.test.tsx` (remaining-budget display; full-cap message). 2 new tests in
+`HomeworkClassPage.test.tsx` (non-relative format; Today/Tomorrow computed from the real
+current date rather than faked, matching this codebase's general preference — same
+reasoning as `futureMonday()` on the backend). `StudentDashboard.test.tsx`'s existing
+"Coming soon" test rewritten to assert the live link; `mockApi()`'s own throw-on-unmocked
+catch-all is the "no new fetch" proof, not a new assertion. Full web suite: 79 files,
+519/519 clean. `pnpm typecheck`/`pnpm lint` clean. Zero backend diff, zero
+`packages/shared` diff (both existing exports, nothing added).

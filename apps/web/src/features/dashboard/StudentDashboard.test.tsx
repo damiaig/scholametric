@@ -269,7 +269,12 @@ describe("StudentDashboard", () => {
     expect(screen.getByRole("link", { name: "Full agenda →" })).toHaveAttribute("href", "/me/timetable");
   });
 
-  it("Grades and Homework link cards render, Homework labeled 'Coming soon' with no fetch", async () => {
+  // v0.8.3 UX Round 2 Step B (Item 1) — the Homework card is now a live
+  // link, not a dead "Coming soon" placeholder. mockApi()'s own
+  // throw-on-unmocked-path catch-all is the "no new fetch" guard: if this
+  // card ever grew a count (a deliberately deferred follow-up, not this
+  // step), it would need its own GET and this test would start throwing.
+  it("Grades and Homework link cards render, Homework linking to /me/homework with no new fetch", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockApi();
 
@@ -277,8 +282,7 @@ describe("StudentDashboard", () => {
 
     await screen.findByText("Your grades");
     expect(screen.getByRole("link", { name: /Grades/ })).toHaveAttribute("href", "/me/grades");
-    expect(screen.getByText("Homework")).toBeInTheDocument();
-    expect(screen.getByText("Coming soon")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Homework/ })).toHaveAttribute("href", "/me/homework");
   });
 
   // v0.7's anonymity rule (SPEC_V0.7.md §4), belt-and-suspenders, on the

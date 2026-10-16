@@ -80,6 +80,40 @@ describe("HomeworkClassPage", () => {
     expect(screen.getByText("Draft")).toBeInTheDocument();
   });
 
+  // v0.8.3 UX Round 2 Step B (Item 6) — formerly "Due Nov 2, 2026" (the
+  // generic lib/format-date.ts formatDate); now unified with the
+  // student list's own weekday-day-month format via formatDueDateRelative,
+  // so a non-relative due date reads the same way on both surfaces.
+  it("shows a non-relative due date in weekday-day-month form", async () => {
+    const list: HomeworkListResponse = { classArmId: "arm1", subjectId: "sub1", termId: "term1", homework: [homework({ dueDate: "2026-11-02" })] };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/me/teaching") return TEACHING;
+      if (path === "/api/v1/homework") return list;
+      throw new Error(`unexpected call: ${path}`);
+    });
+    renderPage("/homework/arms/arm1?subjectId=sub1");
+
+    expect(await screen.findByText("Due Monday 2 November")).toBeInTheDocument();
+  });
+
+  // Computed from the real current date, not a fixed fixture + fake
+  // timers — same "prefer a genuinely-true relative date over faking the
+  // clock" convention this codebase already uses (futureMonday() on the
+  // backend, getAgendaRange(new Date(), 1) call sites on the frontend).
+  it("shows 'Today'/'Tomorrow' for a due date within 1 day of now", async () => {
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const list: HomeworkListResponse = { classArmId: "arm1", subjectId: "sub1", termId: "term1", homework: [homework({ dueDate: todayStr })] };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/me/teaching") return TEACHING;
+      if (path === "/api/v1/homework") return list;
+      throw new Error(`unexpected call: ${path}`);
+    });
+    renderPage("/homework/arms/arm1?subjectId=sub1");
+
+    expect(await screen.findByText("Due Today")).toBeInTheDocument();
+  });
+
   // v0.8.3 step 4 (SPEC_V0.8.3.md §2.7, Item 7) — the shared BackLink.
   it("links back to /homework", async () => {
     const list: HomeworkListResponse = { classArmId: "arm1", subjectId: "sub1", termId: "term1", homework: [] };

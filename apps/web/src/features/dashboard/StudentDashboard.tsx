@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { Award, Trophy, Users, BookOpen, Hammer, CalendarClock } from "lucide-react";
+import { Award, Trophy, Users, BookOpen, ClipboardList, CalendarClock } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { StatCard } from "../../components/ui/stat-card";
@@ -134,17 +134,16 @@ export function StudentDashboard() {
                 </Card>
               </Link>
 
-              <Card className="opacity-60">
-                <CardContent className="flex items-center gap-4 p-6">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted/10 text-muted">
-                    <Hammer className="h-5 w-5" aria-hidden="true" />
-                  </div>
-                  <div>
+              <Link to="/me/homework" className="block">
+                <Card className="transition-colors hover:border-primary/40">
+                  <CardContent className="flex items-center gap-4 p-6">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                      <ClipboardList className="h-5 w-5" aria-hidden="true" />
+                    </div>
                     <p className="font-semibold text-text">Homework</p>
-                    <p className="text-xs text-muted">Coming soon</p>
-                  </div>
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
+              </Link>
             </div>
           </div>
         </>

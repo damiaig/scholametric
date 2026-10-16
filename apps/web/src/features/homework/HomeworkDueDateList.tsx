@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Download, Paperclip, Trash2 } from "lucide-react";
-import type { StudentHomeworkEntry } from "@scholametric/shared";
+import { HOMEWORK_SUBMISSION_CAP_BYTES, type StudentHomeworkEntry } from "@scholametric/shared";
 import { Card, CardContent } from "../../components/ui/card";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Label } from "../../components/ui/label";
@@ -11,19 +11,10 @@ import { Spinner } from "../../components/ui/spinner";
 import { StyledFileInput } from "../../components/ui/styled-file-input";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { getErrorMessage } from "../../lib/api-client";
+import { formatBytes } from "../../lib/format-bytes";
+import { formatDueDateRelative } from "../../lib/format-date";
 
 const DESCRIPTION_TRUNCATE_LENGTH = 200;
-
-// A plain YYYY-MM-DD string parsed as a LOCAL date at midnight — NOT
-// `new Date(dueDate)`, which parses as UTC midnight and can format one day
-// off in a negative-offset timezone. Mirrors styled-date-picker.tsx's own
-// parseISODate (not exported from there, so re-declared locally rather
-// than touching that unrelated file for one helper).
-function formatDueDateHeading(dueDate: string): string {
-  const [year, month, day] = dueDate.split("-").map(Number);
-  const date = new Date(year, month - 1, day);
-  return new Intl.DateTimeFormat("en-GB", { weekday: "long", day: "numeric", month: "long" }).format(date);
-}
 
 function groupByDueDate(homework: StudentHomeworkEntry[]): Array<{ dueDate: string; items: StudentHomeworkEntry[] }> {
   const groups: Array<{ dueDate: string; items: StudentHomeworkEntry[] }> = [];
@@ -128,13 +119,22 @@ export function HomeworkDueDateList({
     <div className="flex flex-col gap-6">
       {groups.map((group) => (
         <section key={group.dueDate}>
-          <h2 className="mb-2 text-sm font-semibold text-muted">Due {formatDueDateHeading(group.dueDate)}</h2>
+          <h2 className="mb-2 text-sm font-semibold text-muted">Due {formatDueDateRelative(group.dueDate)}</h2>
           <div className="flex flex-col gap-3">
             {group.items.map((item) => {
               const isTruncated = item.description.length > DESCRIPTION_TRUNCATE_LENGTH;
               const isThisItemActive = activeUploadHomeworkId === item.id;
               const isThisItemUploading = isThisItemActive && Boolean(isUploading);
               const thisItemError = isThisItemActive && !isUploading ? uploadError : null;
+              // v0.8.3 UX Round 2 Step B (Item 2) — mirrors the teacher's
+              // own usedBytes/remainingBytes/capReached shape in
+              // HomeworkFormDialog exactly, just computed from this
+              // student's own submissions instead of the homework's
+              // attachments. Advisory only — the server (issueSubmission
+              // UploadUrl/commitSubmission) stays authoritative.
+              const usedBytes = item.submissions.reduce((sum, submission) => sum + submission.sizeBytes, 0);
+              const remainingBytes = HOMEWORK_SUBMISSION_CAP_BYTES - usedBytes;
+              const capReached = remainingBytes <= 0;
               return (
                 <Card key={item.id}>
                   <CardContent className="flex flex-col gap-2 p-4">
@@ -221,14 +221,21 @@ export function HomeworkDueDateList({
                             ))}
                           </ul>
                         )}
-                        <div className="flex items-center gap-2">
-                          <StyledFileInput
-                            buttonLabel="Upload your work"
-                            onFileSelected={(file) => onUploadFile?.(item.id, file)}
-                            disabled={isThisItemUploading}
-                          />
-                          {isThisItemUploading && <Spinner className="h-3.5 w-3.5" />}
-                        </div>
+                        {capReached ? (
+                          <p className="rounded-md border border-dashed border-muted/30 p-3 text-xs text-muted">
+                            You've reached the 20MB upload limit for this homework.
+                          </p>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <StyledFileInput
+                              buttonLabel="Upload your work"
+                              onFileSelected={(file) => onUploadFile?.(item.id, file)}
+                              disabled={isThisItemUploading}
+                            />
+                            {isThisItemUploading && <Spinner className="h-3.5 w-3.5" />}
+                          </div>
+                        )}
+                        {!capReached && <p className="text-xs text-muted">{formatBytes(Math.max(remainingBytes, 0))} remaining of 20MB for this homework.</p>}
                         {thisItemError && <p className="text-xs text-danger">{thisItemError}</p>}
                       </div>
                     )}

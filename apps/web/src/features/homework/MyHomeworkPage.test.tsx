@@ -103,6 +103,55 @@ describe("MyHomeworkPage", () => {
     expect(screen.getAllByRole("checkbox", { name: "Mark as done" })).toHaveLength(2);
   });
 
+  // v0.8.3 UX Round 2 Step B (Item 2) — mirrors HomeworkFormDialog's own
+  // teacher-side cap display, computed from the student's own
+  // submissions' sizeBytes against the 20MB cap.
+  it("STUDENT: shows the remaining upload budget computed from their own submissions' sizeBytes", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const list: StudentHomeworkListResponse = {
+      classArmId: "arm1",
+      homework: [
+        entry({
+          requiresUpload: true,
+          submissions: [{ id: "sub1", fileName: "answers.pdf", contentType: "application/pdf", sizeBytes: 15 * 1024 * 1024, uploadedAt: "t" }],
+        }),
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/homework")) return list;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<MyHomeworkPage />);
+
+    expect(await screen.findByText("5.0 MB remaining of 20MB for this homework.")).toBeInTheDocument();
+    expect(document.querySelector('input[type="file"]')).not.toBeNull();
+  });
+
+  it("STUDENT: once the 20MB cap is fully used, shows the limit message instead of the upload control", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const list: StudentHomeworkListResponse = {
+      classArmId: "arm1",
+      homework: [
+        entry({
+          requiresUpload: true,
+          submissions: [{ id: "sub1", fileName: "full-cap.pdf", contentType: "application/pdf", sizeBytes: 20 * 1024 * 1024, uploadedAt: "t" }],
+        }),
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/homework")) return list;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<MyHomeworkPage />);
+
+    expect(await screen.findByText("You've reached the 20MB upload limit for this homework.")).toBeInTheDocument();
+    expect(document.querySelector('input[type="file"]')).toBeNull();
+  });
+
   it("STUDENT: mark-done flips Done/Not done via POST /me/homework/:id/complete", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     const list: StudentHomeworkListResponse = { classArmId: "arm1", homework: [entry()] };
