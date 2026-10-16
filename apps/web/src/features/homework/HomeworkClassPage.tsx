@@ -149,7 +149,10 @@ export function HomeworkClassPage() {
             return (
               <Card key={item.id}>
                 <CardContent className="flex flex-col gap-2 p-4">
-                  <div className="flex items-start justify-between gap-3">
+                  {/* v0.8.3 UX Round 2 Step C (Item 5) — matches ExamApprovalsPage's
+                      own item-row shape: stacked on mobile, side-by-side from sm:
+                      up, closing the 360px CLAUDE.md §6 gap this row previously had. */}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-text">{item.title}</span>

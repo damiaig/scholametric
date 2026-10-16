@@ -72,7 +72,12 @@ export function HomeworkDetailDialog({ open, onClose, homework }: HomeworkDetail
                     same pattern ClassArmDetailPage's subject-teacher table already uses. */}
                 <div className="flex flex-col gap-2 sm:hidden">
                   {submissionsQuery.data.students.map((student) => (
-                    <StudentCard key={student.studentId} student={student} onView={() => setViewingStudentId(student.studentId)} />
+                    <StudentCard
+                      key={student.studentId}
+                      student={student}
+                      onView={() => setViewingStudentId(student.studentId)}
+                      onDownload={handleDownload}
+                    />
                   ))}
                 </div>
 
@@ -98,11 +103,16 @@ export function HomeworkDetailDialog({ open, onClose, homework }: HomeworkDetail
                             {student.submissions.length === 0 ? (
                               <span className="text-muted">—</span>
                             ) : (
-                              <div className="flex flex-col gap-1 text-text">
+                              <div className="flex flex-col gap-1">
                                 {student.submissions.map((submission) => (
-                                  <span key={submission.id} className="truncate">
+                                  <button
+                                    key={submission.id}
+                                    type="button"
+                                    onClick={() => handleDownload(submission.id)}
+                                    className="truncate text-left text-primary hover:underline"
+                                  >
                                     {submission.fileName}
-                                  </span>
+                                  </button>
                                 ))}
                               </div>
                             )}
@@ -138,7 +148,15 @@ function StudentNameTrigger({ student, onView }: { student: StudentSubmissions; 
   );
 }
 
-function StudentCard({ student, onView }: { student: StudentSubmissions; onView: () => void }) {
+function StudentCard({
+  student,
+  onView,
+  onDownload,
+}: {
+  student: StudentSubmissions;
+  onView: () => void;
+  onDownload: (submissionId: string) => void;
+}) {
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-muted/20 bg-card p-3">
       <div className="flex items-center justify-between gap-3">
@@ -150,9 +168,14 @@ function StudentCard({ student, onView }: { student: StudentSubmissions; onView:
       ) : (
         <div className="flex flex-col gap-0.5">
           {student.submissions.map((submission) => (
-            <span key={submission.id} className="truncate text-xs text-muted">
+            <button
+              key={submission.id}
+              type="button"
+              onClick={() => onDownload(submission.id)}
+              className="truncate text-left text-xs text-primary hover:underline"
+            >
               {submission.fileName}
-            </span>
+            </button>
           ))}
         </div>
       )}

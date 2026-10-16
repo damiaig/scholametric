@@ -7737,3 +7737,43 @@ reasoning as `futureMonday()` on the backend). `StudentDashboard.test.tsx`'s exi
 catch-all is the "no new fetch" proof, not a new assertion. Full web suite: 79 files,
 519/519 clean. `pnpm typecheck`/`pnpm lint` clean. Zero backend diff, zero
 `packages/shared` diff (both existing exports, nothing added).
+
+## 2026-10-16 — v0.8.3 UX Round 2 Step C (last build step): teacher page styling + filename-clickable
+
+**Item 5 — audited before touching anything, found mostly nothing wrong.** Checked
+`HomeworkClassPage` against `ExamApprovalsPage`/`GradesLandingPage`/`ClassArmDetailPage`
+across every area flagged at plan time (empty-state, card density, due-date line, title
+typography, loading-state padding, badge tones, button grouping/hover) — all already
+matched the dominant pattern elsewhere; checking multiple pages for the loading-spinner
+padding specifically caught what would have been a false positive (roughly half the
+app's pages use `p-10` there, half don't — not actually a dominant convention either way).
+**One real, named gap**: the item row's action-button group had no responsive stacking —
+`flex items-start justify-between gap-3` unconditionally, forcing the title block and
+four action buttons onto one line even at 360px. `ExamApprovalsPage`'s own item rows (the
+same "title+badges / action-button group" shape) already solve this with `flex flex-col
+gap-3 sm:flex-row sm:items-center sm:justify-between`. Copied verbatim. Presentation-only:
+one className change, no JSX restructuring, zero existing test touched.
+
+**Deferred, not built**: the user's underlying "too dead" feeling is real, but the actual
+finding is that this page already matches the app's own list-page language — a genuine
+visual lift would mean a deliberate design pass across that shared language, not one-off
+invented styling on this single page. Logged as a possible post-tag design item.
+
+**Item 4** — the roster's filename (desktop table + `StudentCard`, both plain `<span>`s)
+becomes its own download trigger, reusing `handleDownload`/`useSubmissionDownloadUrl`
+exactly as they already existed — zero new hook, zero new mutation. Desktop table needed
+no prop-threading (`handleDownload` was already in scope, inline in the main component);
+`StudentCard` (a separate function component) got one new `onDownload` prop. Styled
+`text-primary hover:underline`, no icon — matching `GradesLandingPage`'s own table-cell
+link style in an equally dense context, not `HomeworkDueDateList`'s icon+text attachment
+style, so the desktop and mobile renderings of the same data stay visually identical to
+each other. **Scoped to the roster only** — the detail view's filename is plain text too,
+but already sits next to its own dedicated Download button for that exact row; making it
+*also* clickable would be redundant, not a gap. Confirmed first, not assumed: the
+name-click mechanism (`StudentNameTrigger`) was already correct end-to-end — no bug to fix.
+
+**Test impact.** `HomeworkClassPage.test.tsx`: unchanged, all 9 pass (presentation-only).
+`HomeworkDetailDialog.test.tsx`: +1 test — clicking a roster filename fires the
+download-url GET + `window.open`, and confirms the per-student detail view (the name's own
+trigger) never opens as a side effect. Full web suite: 79 files, 520/520 clean.
+`pnpm typecheck`/`pnpm lint` clean. Zero backend/`packages/shared` diff.

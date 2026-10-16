@@ -128,4 +128,41 @@ describe("HomeworkDetailDialog", () => {
     await user.click(screen.getByRole("button", { name: "← Back to all submissions" }));
     expect((await screen.findAllByText("Tunde Bello")).length).toBeGreaterThanOrEqual(1);
   });
+
+  // v0.8.3 UX Round 2 Step C (Item 4) — the roster filename is now its own
+  // download trigger, independent of the name's open-the-detail-view
+  // trigger (two distinct click targets in the same row).
+  it("clicking a submission's filename in the roster downloads it directly, without opening the detail view", async () => {
+    const submissions: HomeworkSubmissionsView = {
+      homeworkId: "hw1",
+      students: [
+        {
+          studentId: "s1",
+          studentName: "Chidinma Eze",
+          markedDone: true,
+          markedAt: "2026-11-02T09:30:00.000Z",
+          submissions: [{ id: "sub1", fileName: "answers.pdf", contentType: "application/pdf", sizeBytes: 1024, uploadedAt: "2026-11-01T10:00:00.000Z" }],
+        },
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/homework/hw1/submissions") return submissions;
+      if (path === "/api/v1/homework/hw1/submissions/sub1/download-url") return { downloadUrl: "https://storage.example/download/sub1", expiresAt: "t" };
+      throw new Error(`unexpected call: ${path}`);
+    });
+    const windowOpen = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    const user = userEvent.setup();
+    renderWithProviders(<HomeworkDetailDialog open homework={HOMEWORK} onClose={vi.fn()} />);
+
+    const [filenameTrigger] = await screen.findAllByRole("button", { name: "answers.pdf" });
+    await user.click(filenameTrigger);
+
+    await waitFor(() => expect(windowOpen).toHaveBeenCalledWith("https://storage.example/download/sub1", "_blank", "noopener,noreferrer"));
+
+    // Still the roster, not the per-student detail view — the filename
+    // click didn't also trigger the name's open-the-detail-view behavior.
+    expect(screen.queryByRole("heading", { name: "Chidinma Eze" })).not.toBeInTheDocument();
+    expect((await screen.findAllByText("Chidinma Eze")).length).toBeGreaterThanOrEqual(1);
+  });
 });
