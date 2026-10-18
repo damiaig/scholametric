@@ -139,6 +139,12 @@ const TIMETABLE_RESPONSE = {
   ],
 };
 
+// v0.8.3 UX Round 2 Step D — the dashboard's "Your homework" preview card
+// reuses GET /me/homework (the exact MyHomeworkPage.tsx hook); every
+// existing fixture block below needs this branch too, or the new query
+// rejects against each one's own throw-on-unmocked catch-all.
+const EMPTY_HOMEWORK = { classArmId: "arm1", homework: [] };
+
 function mockApi() {
   mockedApiRequest.mockImplementation(async (path: string) => {
     if (path.includes("/auth/me")) return USER;
@@ -147,6 +153,7 @@ function mockApi() {
     if (path.includes("/me/report-card")) return REPORT_CARD;
     if (path.includes("/me/year-exams")) return YEAR_EXAMS;
     if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
+    if (path.includes("/me/homework")) return EMPTY_HOMEWORK;
     throw new Error(`unexpected apiRequest call: ${path}`);
   });
 }
@@ -183,6 +190,7 @@ describe("StudentDashboard", () => {
       }
       if (path.includes("/me/year-exams")) return { ...YEAR_EXAMS, terms: [] };
       if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
+      if (path.includes("/me/homework")) return EMPTY_HOMEWORK;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
@@ -209,6 +217,7 @@ describe("StudentDashboard", () => {
       }
       if (path.includes("/me/year-exams")) return YEAR_EXAMS;
       if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
+      if (path.includes("/me/homework")) return EMPTY_HOMEWORK;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
@@ -233,6 +242,7 @@ describe("StudentDashboard", () => {
       }
       if (path.includes("/me/year-exams")) return YEAR_EXAMS;
       if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
+      if (path.includes("/me/homework")) return EMPTY_HOMEWORK;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 
@@ -269,12 +279,11 @@ describe("StudentDashboard", () => {
     expect(screen.getByRole("link", { name: "Full agenda →" })).toHaveAttribute("href", "/me/timetable");
   });
 
-  // v0.8.3 UX Round 2 Step B (Item 1) — the Homework card is now a live
-  // link, not a dead "Coming soon" placeholder. mockApi()'s own
-  // throw-on-unmocked-path catch-all is the "no new fetch" guard: if this
-  // card ever grew a count (a deliberately deferred follow-up, not this
-  // step), it would need its own GET and this test would start throwing.
-  it("Grades and Homework link cards render, Homework linking to /me/homework with no new fetch", async () => {
+  // v0.8.3 UX Round 2 Step D — the small right-column Homework link card
+  // Step B added is now GONE: HomeworkPreviewCard (a content panel, not a
+  // link tile) replaced it, so there's one homework entry point, not two.
+  // Grades/Timetable keep their own link cards unchanged.
+  it("Grades and Timetable link cards render; the old small Homework link card is gone", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockApi();
 
@@ -282,7 +291,114 @@ describe("StudentDashboard", () => {
 
     await screen.findByText("Your grades");
     expect(screen.getByRole("link", { name: /Grades/ })).toHaveAttribute("href", "/me/grades");
-    expect(screen.getByRole("link", { name: /Homework/ })).toHaveAttribute("href", "/me/homework");
+    expect(screen.getByRole("link", { name: /Timetable/ })).toHaveAttribute("href", "/me/timetable");
+    expect(screen.queryByRole("link", { name: "Homework" })).not.toBeInTheDocument();
+  });
+
+  // v0.8.3 UX Round 2 Step D — "Your homework" renders straight from the
+  // existing GET /me/homework response (same data MyHomeworkPage.tsx
+  // shows), no client-side filtering/sorting of its own. A dynamically
+  // computed real "today" date string, not fake timers — same convention
+  // HomeworkClassPage.test.tsx already uses for formatDueDateRelative.
+  it("'Your homework' shows title, subject + relative due date, and the Done/Not done badge, linking to /me/homework", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const homework = {
+      classArmId: "arm1",
+      homework: [
+        {
+          id: "hw1",
+          subjectId: "sub1",
+          subjectName: "Mathematics",
+          teacherName: "Ms. Adaeze",
+          title: "Chapter 3 exercises",
+          description: "Solve all questions.",
+          dueDate: todayStr,
+          requiresUpload: false,
+          markedDone: true,
+          markedAt: "2026-01-01T00:00:00.000Z",
+          attachments: [],
+          submissions: [],
+        },
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return USER;
+      if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" };
+      if (path.includes("/me/terms")) return TERMS;
+      if (path.includes("/me/report-card")) return REPORT_CARD;
+      if (path.includes("/me/year-exams")) return YEAR_EXAMS;
+      if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
+      if (path.includes("/me/homework")) return homework;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<StudentDashboard />);
+
+    expect(await screen.findByText("Your homework")).toBeInTheDocument();
+    expect(screen.getByText("Chapter 3 exercises")).toBeInTheDocument();
+    expect(screen.getByText("Mathematics · Due Today")).toBeInTheDocument();
+    expect(screen.getByText("Done")).toBeInTheDocument();
+
+    const viewAllLinks = screen.getAllByRole("link", { name: "View all →" });
+    expect(viewAllLinks.some((link) => link.getAttribute("href") === "/me/homework")).toBe(true);
+  });
+
+  // The backend already caps/sorts (listPublishedForStudent) — this
+  // proves the CARD's own MAX_ROWS=3 slice, independent of that.
+  it("'Your homework' shows at most 3 items even when more are returned", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const makeItem = (id: string, title: string, dueDate: string) => ({
+      id,
+      subjectId: "sub1",
+      subjectName: "Mathematics",
+      teacherName: "Ms. Adaeze",
+      title,
+      description: "d",
+      dueDate,
+      requiresUpload: false,
+      markedDone: false,
+      markedAt: null,
+      attachments: [],
+      submissions: [],
+    });
+    const homework = {
+      classArmId: "arm1",
+      homework: [
+        makeItem("hw1", "First", "2026-11-01"),
+        makeItem("hw2", "Second", "2026-11-02"),
+        makeItem("hw3", "Third", "2026-11-03"),
+        makeItem("hw4", "Fourth", "2026-11-04"),
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return USER;
+      if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" };
+      if (path.includes("/me/terms")) return TERMS;
+      if (path.includes("/me/report-card")) return REPORT_CARD;
+      if (path.includes("/me/year-exams")) return YEAR_EXAMS;
+      if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
+      if (path.includes("/me/homework")) return homework;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<StudentDashboard />);
+
+    expect(await screen.findByText("First")).toBeInTheDocument();
+    expect(screen.getByText("Second")).toBeInTheDocument();
+    expect(screen.getByText("Third")).toBeInTheDocument();
+    expect(screen.queryByText("Fourth")).not.toBeInTheDocument();
+  });
+
+  it("'Your homework' shows an empty state when nothing is due", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockApi();
+
+    renderWithProviders(<StudentDashboard />);
+
+    expect(await screen.findByText("Your homework")).toBeInTheDocument();
+    expect(screen.getByText("No homework due right now.")).toBeInTheDocument();
   });
 
   // v0.7's anonymity rule (SPEC_V0.7.md §4), belt-and-suspenders, on the
@@ -327,6 +443,7 @@ describe("StudentDashboard", () => {
       if (path.includes("/me/report-card")) return hostileReportCard;
       if (path.includes("/me/year-exams")) return hostileYearExams;
       if (path.includes("/me/timetable")) return TIMETABLE_RESPONSE;
+      if (path.includes("/me/homework")) return EMPTY_HOMEWORK;
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
 

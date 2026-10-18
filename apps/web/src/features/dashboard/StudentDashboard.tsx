@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { Award, Trophy, Users, BookOpen, ClipboardList, CalendarClock } from "lucide-react";
+import { Award, Trophy, Users, BookOpen, CalendarClock } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { StatCard } from "../../components/ui/stat-card";
@@ -16,7 +16,9 @@ import { useMyYearExams } from "../grades/use-my-year-exams";
 import { resolveCurrentTerm } from "./resolve-current-term";
 import { buildGradesBySubject } from "./recent-grades";
 import { GradesBySubjectCard } from "./GradesBySubjectCard";
+import { HomeworkPreviewCard } from "./HomeworkPreviewCard";
 import { TodayAgendaCard } from "./TodayAgendaCard";
+import { useMyHomework } from "../homework/use-my-homework";
 
 function positionLabel(position: number | null): string {
   return position === null ? "Not yet ranked" : `#${position}`;
@@ -37,6 +39,7 @@ export function StudentDashboard() {
   const current = resolveCurrentTerm(terms.data);
   const todayRange = useMemo(() => getAgendaRange(new Date(), 1), []);
   const todayTimetable = useMyTimetable(todayRange);
+  const homeworkQuery = useMyHomework();
 
   const reportCard = useMyReportCard(current ? { termId: current.termId, sessionId: current.sessionId } : null);
   const yearExams = useMyYearExams(current ? { sessionId: current.sessionId } : null);
@@ -106,8 +109,9 @@ export function StudentDashboard() {
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-            <div className="lg:col-span-2">
+            <div className="flex flex-col gap-4 lg:col-span-2">
               <GradesBySubjectCard rows={rows} gradesHref="/me/grades" />
+              <HomeworkPreviewCard homework={homeworkQuery.data?.homework ?? []} homeworkHref="/me/homework" />
             </div>
 
             <div className="flex flex-col gap-4">
@@ -130,17 +134,6 @@ export function StudentDashboard() {
                       <CalendarClock className="h-5 w-5" aria-hidden="true" />
                     </div>
                     <p className="font-semibold text-text">Timetable</p>
-                  </CardContent>
-                </Card>
-              </Link>
-
-              <Link to="/me/homework" className="block">
-                <Card className="transition-colors hover:border-primary/40">
-                  <CardContent className="flex items-center gap-4 p-6">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                      <ClipboardList className="h-5 w-5" aria-hidden="true" />
-                    </div>
-                    <p className="font-semibold text-text">Homework</p>
                   </CardContent>
                 </Card>
               </Link>

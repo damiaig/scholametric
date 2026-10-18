@@ -7777,3 +7777,42 @@ name-click mechanism (`StudentNameTrigger`) was already correct end-to-end — n
 download-url GET + `window.open`, and confirms the per-student detail view (the name's own
 trigger) never opens as a side effect. Full web suite: 79 files, 520/520 clean.
 `pnpm typecheck`/`pnpm lint` clean. Zero backend/`packages/shared` diff.
+
+## 2026-10-18 — v0.8.3 UX Round 2 Step D: "Your homework" dashboard preview panel
+
+Not in `docs/SPEC_V0.8.3_ux_round2.md` (that file stops after Step C's "Walk + tag") — this
+is the fetch-backed richer dashboard card Step B deliberately deferred ("plain link now,
+preview later"), scoped directly by the user rather than a pre-written spec section.
+
+New `HomeworkPreviewCard.tsx` mirrors `GradesBySubjectCard.tsx` structurally — same
+`Card`/header/"View all →"/tagline/bordered-row/empty-state shape, `MAX_ROWS` sliced
+inside the component, rows are plain `<li>`s. Reuses `GET /me/homework` (the exact
+`useMyHomework` hook `MyHomeworkPage.tsx` already calls — no new endpoint), and needs
+**zero** client-side filtering or sorting: verified against `listPublishedForStudent`
+that the response is already `PUBLISHED`-only, already excludes past-due items, and is
+already ordered by `dueDate` ascending — the card's only job is `slice(0, 3)`. Empty-state
+string ("No homework due right now.") reused verbatim from `HomeworkDueDateList.tsx`'s
+own full-page empty state, not a second phrasing for the same condition. Placed directly
+under `GradesBySubjectCard` in the main `lg:col-span-2` column (wrapped in `flex flex-col
+gap-4`, matching the right column's own stacking gap) — removing the small right-column
+Homework link card Step B added, so there's one homework entry point again, not two.
+
+**Test fixture mechanics**: this file has 5 separate `apiRequest` mock blocks (one shared
+`mockApi()` + 4 inline near-duplicates) that all predate this step and share the same
+throw-on-unmocked-path catch-all; the new `/me/homework` query needed a branch added to
+all 5 (a new `EMPTY_HOMEWORK` fixture) — in practice react-query swallows an unmatched
+background query's rejection into its own error state rather than failing the test
+outright (confirmed: only 1 of the 5 blocks' tests actually broke before this fix, the
+one asserting on the now-removed link card), but every block got the branch anyway for a
+realistic fixture, not a lucky silent failure. Not consolidated into a shared helper —
+that would be an unrelated refactor of pre-existing duplication, out of scope here.
+
+**Test impact.** New `HomeworkPreviewCard` tests (3): renders title/subject/relative-due-
+date/badge and resolves "View all →" to `/me/homework` by href (not DOM position, since
+two cards now share that exact link text); a 4th fixture item proves the `MAX_ROWS = 3`
+cap; the empty state. The old "Grades and Homework link cards render..." test rewritten:
+keeps the Grades-link-card assertion, adds a previously-uncovered Timetable-link-card
+assertion, and asserts `queryByRole("link", { name: "Homework" })` (exact name, not the
+old `/Homework/` regex) is now null — proving the small card is gone, not just renamed.
+Full web suite: 79 files, 523/523 clean. `pnpm typecheck`/`pnpm lint` clean. Zero backend/
+`packages/shared` diff.
