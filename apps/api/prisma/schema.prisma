@@ -128,6 +128,7 @@ model School {
   homework                  Homework[]
   homeworkCompletions       HomeworkCompletion[]
   homeworkAttachments       HomeworkAttachment[]
+  lessons                   Lesson[]
   homeworkSubmissions       HomeworkSubmission[]
 
   @@map("schools")
@@ -188,6 +189,7 @@ model User {
   timetableExceptionsAsTeacher     TimetableException[]       @relation("TimetableExceptionTeacher")
   timetableExceptionsAsReplacement TimetableException[]       @relation("TimetableExceptionReplacementTeacher")
   homeworkAuthored                 Homework[]                 @relation("HomeworkTeacher")
+  lessonsAuthored                  Lesson[]                   @relation("LessonTeacher")
 
   @@unique([schoolId, email])
   @@unique([schoolId, username])
@@ -241,6 +243,7 @@ model AcademicSession {
   holidays                  Holiday[]
   timetableSlots            TimetableSlot[]
   homework                  Homework[]
+  lessons                   Lesson[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -328,6 +331,7 @@ model ClassArm {
   timetableSlots            TimetableSlot[]
   timetableExceptions       TimetableException[]
   homework                  Homework[]
+  lessons                   Lesson[]
 
   @@unique([classLevelId, name])
   @@index([schoolId])
@@ -462,6 +466,7 @@ model Subject {
   timetableSlots                   TimetableSlot[]
   timetableExceptionsAsReplacement TimetableException[]
   homework                         Homework[]
+  lessons                          Lesson[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -1305,4 +1310,40 @@ model HomeworkSubmission {
 
   @@index([schoolId, homeworkId, studentId])
   @@map("homework_submissions")
+}
+
+// v0.8.4 step 1 (SPEC_V0.8.4.md §2) — a genuinely new domain: a Lesson is
+// read-only teaching content (cahier de textes), not an assignment. No
+// termId (session+date scoped, not term-scoped — unlike Homework). A
+// dedicated LessonStatus enum, not HomeworkStatus — separate module,
+// separate lifecycle, even though the values are identical today.
+enum LessonStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model Lesson {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  schoolId      String       @map("school_id") @db.Uuid
+  classArmId    String       @map("class_arm_id") @db.Uuid
+  subjectId     String       @map("subject_id") @db.Uuid
+  teacherUserId String       @map("teacher_user_id") @db.Uuid
+  sessionId     String       @map("session_id") @db.Uuid
+  title         String
+  body          String
+  lessonDate    DateTime     @map("lesson_date") @db.Date
+  status        LessonStatus @default(DRAFT)
+  publishedAt   DateTime?    @map("published_at")
+  deletedAt     DateTime?    @map("deleted_at")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  school      School          @relation(fields: [schoolId], references: [id])
+  classArm    ClassArm        @relation(fields: [classArmId], references: [id])
+  subject     Subject         @relation(fields: [subjectId], references: [id])
+  teacherUser User            @relation("LessonTeacher", fields: [teacherUserId], references: [id])
+  session     AcademicSession @relation(fields: [sessionId], references: [id])
+
+  @@index([schoolId, classArmId, subjectId])
+  @@map("lessons")
 }

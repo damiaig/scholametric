@@ -2811,6 +2811,69 @@ is still an honest signal. **Response `200`**: `{ homeworkId, markedDone, marked
 
 ---
 
+## Lessons (v0.8.4 step 1, SPEC_V0.8.4.md §2/§3)
+
+A genuinely new domain, parallel to Homework — a Lesson is **read-only teaching content**
+(a *cahier de textes*), not an assignment: no due-date-deadline, no mark-done, no
+submissions, no per-student state. `teacherUserId` records **authorship**, not authority —
+same re-derived-from-the-CURRENT-`subject_teacher_assignment` model as Homework/
+evaluations, so a reassigned teacher inherits full authority over the class's pre-existing
+lessons. **No `termId`** on this model at all — a lesson is session+date scoped, not
+term-scoped (unlike Homework). Step 1 is text-only; attachments are step 3.
+
+All six routes sit under `@Roles(TEACHER, SCHOOL_ADMIN, PROPRIETOR)` at the controller
+level, narrowed per-route below.
+
+**`GET /lessons?classArmId=&subjectId=`** (all three roles). `assertTeacherAssignment`
+scopes TEACHER to their own currently-assigned subject for the school's current session
+(`403` otherwise); SCHOOL_ADMIN/PROPRIETOR are existence-checked only (`404` if no teacher
+is assigned at all). **Response `200`**: `{ classArmId, subjectId, lessons:
+LessonResponse[] }` — every non-deleted lesson in that exact scope, ordered newest
+`lessonDate` first.
+
+**`POST /lessons`** (`TEACHER` only). Body: `{ classArmId, subjectId, title, body,
+lessonDate }`. `sessionId` is never a client input — derived server-side from the school's
+current `AcademicSession`. Validated before write:
+- **`404`** — class arm / subject doesn't belong to this school.
+- **`403`** — the caller doesn't currently teach this subject for this class
+  (`assertTeacherAssignment`).
+- **`400`** — the lesson-date rule (SPEC_V0.8.4.md §3; the deliberate inversion of
+  Homework's future-or-today due-date rule): `lessonDate` must be (1) **not** in the
+  future — on or before today, since a lesson is logged for a day already taught — (2) a
+  school day for this class (a holiday, a Sunday, or a Saturday for a class without
+  `includesSaturday` all reject — reuses `CalendarService.isSchoolDayForClassOnDate`
+  directly, unmodified), and (3) a weekday this teacher actually teaches this class, any
+  period (reuses `CalendarService.teacherTeachesClassOnDate`, the exact same method
+  Homework's due-date rule uses). Combined message: "The lesson date must be a school day
+  you teach this class, on or before today."
+
+**Response `201`**: `LessonResponse` — `{ id, classArmId, subjectId, teacherUserId,
+teacherName, sessionId, title, body, lessonDate, status, publishedAt, createdAt,
+updatedAt }`. `status` is `"DRAFT"` on creation.
+
+**`PATCH /lessons/:id`** (`TEACHER` only). Body: any of `title`, `body`, `lessonDate` (at
+least one required — `400` otherwise); `classArmId`/`subjectId` are immutable. A new
+`lessonDate` is re-validated against the same rule above — a title/body-only edit never
+re-triggers it (create-day-independent: the rule is about `lessonDate`, not "today," so
+there is nothing else to re-check). **`403`** once the lesson is `PUBLISHED` — unpublish
+first, frozen for everyone, no exception. **Response `200`**: `LessonResponse`.
+
+**`POST /lessons/:id/publish`** (`TEACHER` only, categorical — no admin override, same
+narrowing Homework's own `publishHomework` has). **`409`** if already published.
+**Response `200`**: `LessonResponse`.
+
+**`POST /lessons/:id/unpublish`** (`TEACHER`, `SCHOOL_ADMIN`, `PROPRIETOR`). Admin/
+proprietor override regardless of assignment (safety valve). **`409`** if not published.
+**Response `200`**: `LessonResponse`.
+
+**`DELETE /lessons/:id`** (`TEACHER`, `SCHOOL_ADMIN`, `PROPRIETOR`) — soft delete
+(`deletedAt`), mirrors `deleteHomework`'s exact authorization shape. TEACHER: only their
+own currently-assigned lesson, and only while `DRAFT` (**`409`** if `PUBLISHED` —
+unpublish first). SCHOOL_ADMIN/PROPRIETOR: any lesson in their school, any status — a
+safety net (teacher left the school, cleanup). **Response `200`**: `{ id }`.
+
+---
+
 ## Misc
 
 ### `GET /health`

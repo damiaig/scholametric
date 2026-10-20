@@ -7816,3 +7816,78 @@ assertion, and asserts `queryByRole("link", { name: "Homework" })` (exact name, 
 old `/Homework/` regex) is now null — proving the small card is gone, not just renamed.
 Full web suite: 79 files, 523/523 clean. `pnpm typecheck`/`pnpm lint` clean. Zero backend/
 `packages/shared` diff.
+
+## 2026-10-20 — v0.8.4 step 1: Lesson model + teacher authoring + the lesson-date rule
+
+SPEC_V0.8.4.md's step 1 — a genuinely new domain, parallel to Homework (`docs/
+SPEC_V0.8.4.md`, "Lessons"). Backend-only, text-only: no attachment, no student/parent
+read endpoint, no frontend file touched — those are steps 2-5.
+
+**New `Lesson` model, dedicated `LessonStatus` enum** (`DRAFT`/`PUBLISHED`, not
+`HomeworkStatus` — separate module, separate lifecycle, even though the values are
+identical today). **No `termId`** — a Lesson is session+date scoped, not term-scoped
+(Homework's own per-term list doesn't apply here); 5 FKs, not Homework's 6. Migration
+`--create-only`, hand-reviewed: the known `pg_trgm` false-positive (`DROP INDEX` on the
+hand-added `students_first_name/last_name_trgm_idx`, untracked by Prisma) reappeared
+exactly as expected and was stripped — purely additive otherwise (new enum, new table,
+one index, 5 FKs, the standard back-relation lines on `School`/`ClassArm`/`Subject`/
+`AcademicSession`/`User`). `prisma migrate dev` prompted for a FOLLOW-UP migration name
+after applying this one (the same untracked-trgm-index drift, perpetually re-detected
+since nothing in `schema.prisma` declares those indexes) — confirmed via `migrate status`
+("Database schema is up to date!") that the real migration had already applied
+successfully before cancelling that prompt; no second migration created.
+
+**The lesson-date rule — the one genuine inversion of Homework's due-date rule, reusing
+two `CalendarService` methods completely unmodified.** `lessonDate` must be on or BEFORE
+today (not after — the opposite of Homework's future-or-today), a school day for the
+class, and a weekday the teacher teaches it. `isSchoolDayForClassOnDate`/
+`teacherTeachesClassOnDate` are reused byte-for-byte, zero new `CalendarService` logic.
+The one new line is `isDateInTheFuture`, a private UTC-date-math helper mirroring
+Homework's own `isDueDatePast` almost verbatim (same injectable-`now`-with-a-real-default
+shape, same reason it stays private rather than promoted to `packages/shared`: no
+frontend consumer needing a byte-identical evaluation exists yet in this backend-only
+step). Create-day-independent by construction: there is no separate "today" check at all
+beyond `lessonDate`'s own comparison, so `updateLesson` only re-validates when
+`dto.lessonDate !== undefined` — a title/body-only edit never re-triggers it, mirroring
+`updateHomework`'s exact `dueDate`-changed gate.
+
+**Authorization shapes mirror Homework exactly, confirmed deliberately, not assumed:**
+`publishLesson` is TEACHER-only, categorical (no admin override — that asymmetry exists
+on Homework's own `publishHomework` too, admin override lives on unpublish/delete only).
+`unpublishLesson`/`deleteLesson` get the TEACHER-or-`SCHOOL_ADMIN`/`PROPRIETOR`
+safety-valve shape, byte-for-byte `unpublishHomework`/`deleteHomework`'s own logic.
+`@Audit("lesson", ...)` on create/update/delete only — matching Homework's own asymmetry
+that neither `publishHomework` nor `unpublishHomework` carry one either.
+
+**`listLessons` included in this step** (confirmed at plan time, not in the original
+build-order bullets) — Homework's own step 1 included its list endpoint for the same
+reason: without one there's no way for a teacher (or this step's own e2e suite) to see
+what exists for a class+subject at all. Scoped by `classArmId`+`subjectId`+current session
+(no `termId` to scope by), ordered newest-`lessonDate`-first per the spec's own "cahier de
+textes" framing.
+
+**New test helper `pastWeekday`**, a direct sibling of `futureWeekday` in the same file
+(same signature shape, subtracting instead of adding) — every fixture date in
+`lesson.e2e-spec.ts` is genuinely past relative to whenever the suite runs, no fake
+timers. The rule's own on-or-before-TODAY boundary needed one dedicated scratch
+`TimetableSlot`, seeded for whatever today's REAL weekday happens to be when the suite
+runs (the fixed seeded Mon/Tue/Thu/Fri schedule can't be trusted for an exactly-today
+assertion) — guarded with `describe.skip` on the one day this can't ever be constructed
+for (Sunday has no `Weekday` enum member at all, so no `TimetableSlot` can exist for it;
+same once-a-week edge this codebase already accepts elsewhere for holiday-adjacent cases).
+
+**Test impact.** New `test/lesson.e2e-spec.ts` (29 tests): create + teacher-scoping `403`,
+the lesson-date rule's all four failure modes (future, Sunday, disabled-Saturday,
+non-teaching-weekday) plus the holiday-wins-on-a-teaching-day case and the exactly-today
+boundary; list (assignment-scoped + admin, cross-tenant `403`); publish/unpublish (`409`
+double-fire, admin override); edit (frozen once published, `lessonDate` re-validated
+on change only, title-only edit proven NOT to re-validate, `400` with no fields); delete
+(teacher-own `DRAFT`, `409` once published, a different teacher `403`, admin override);
+tenant scoping (`404`, via `DELETE`, same reasoning Homework's own step 1 entry
+recorded — a `TEACHER`-only route would false-`403` a cross-tenant admin before ever
+reaching the tenant check); the reassigned-teacher-inherits-authority proof. Full backend
+e2e suite: 50 files, 672/672 clean (one transient `students.e2e-spec.ts` run under full-
+suite load — confirmed unrelated, 17/17 clean in isolation, a clean full re-run came back
+672/672, same known occasional-flakiness pattern as prior steps). `pnpm typecheck`/
+`pnpm lint` clean. Zero frontend diff, zero `packages/shared` diff (nothing exported yet —
+no consumer exists until steps 4-5).

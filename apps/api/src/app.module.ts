@@ -28,6 +28,7 @@ import { ExamsModule } from "./exams/exams.module";
 import { PortalAccountsModule } from "./portal-accounts/portal-accounts.module";
 import { CalendarModule } from "./calendar/calendar.module";
 import { HomeworkModule } from "./homework/homework.module";
+import { LessonModule } from "./lessons/lesson.module";
 import { StorageModule } from "./storage/storage.module";
 import { TenantModule } from "./common/tenant/tenant.module";
 import { AppThrottlerGuard } from "./common/guards/app-throttler.guard";
@@ -71,6 +72,7 @@ import { AuditInterceptor } from "./common/interceptors/audit.interceptor";
     PortalAccountsModule,
     CalendarModule,
     HomeworkModule,
+    LessonModule,
     StorageModule,
   ],
   providers: [

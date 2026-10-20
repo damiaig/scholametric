@@ -20,3 +20,17 @@ export function futureWeekday(targetDayOfWeek: number, weeksAhead = 4): string {
 export function futureMonday(weeksAhead = 4): string {
   return futureWeekday(1, weeksAhead);
 }
+
+// v0.8.4 step 1 (SPEC_V0.8.4.md §3) — the lesson-date rule's own negative/
+// positive tests need a genuine PAST date (lessons are logged on or
+// before today, never the future — the inversion of homework's due-date
+// rule), so this is futureWeekday's direct sibling: same signature shape,
+// subtracting instead of adding. weeksAgo gives the same kind of margin
+// futureWeekday's own weeksAhead does, so the computed date stays safely
+// inside the seeded current session even as real time passes.
+export function pastWeekday(targetDayOfWeek: number, weeksAgo = 4): string {
+  const date = new Date();
+  const daysSinceTarget = (date.getDay() - targetDayOfWeek + 7) % 7;
+  date.setDate(date.getDate() - daysSinceTarget - weeksAgo * 7);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
