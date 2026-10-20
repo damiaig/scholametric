@@ -22,6 +22,8 @@ import type { MarkHomeworkDoneDto } from "../homework/dto/mark-homework-done.dto
 import type { RequestUploadUrlDto } from "../homework/dto/request-upload-url.dto";
 import type { CommitFileDto } from "../homework/dto/commit-file.dto";
 import type { DownloadUrlResult } from "../storage/storage.service";
+import { LessonService } from "../lessons/lesson.service";
+import type { StudentLessonListResponse } from "@scholametric/shared";
 
 export interface MyClassTeacherOfEntry {
   classArmId: string;
@@ -111,6 +113,7 @@ export class MeService {
     private readonly examsService: ExamsService,
     private readonly calendarService: CalendarService,
     private readonly homeworkService: HomeworkService,
+    private readonly lessonService: LessonService,
   ) {}
 
   // The identity-resolution seam every /me/* STUDENT endpoint below goes
@@ -365,6 +368,17 @@ export class MeService {
     return this.homeworkService.deleteSubmission(homeworkId, submissionId, studentId, classArmId);
   }
 
+  // v0.8.4 step 2 (SPEC_V0.8.4.md §4.2) — same "no classArmId field on
+  // this route at all" shape as getMyHomework above, but no termId either
+  // (Lesson has none — session-scoped, not term-scoped). Unlike
+  // getMyHomework, there's no per-student join needed downstream, so
+  // classArmId alone is enough to hand off to LessonService.
+  async getMyLessons(userId: string): Promise<StudentLessonListResponse> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
+    return this.lessonService.listPublishedLessonsForClass(classArmId);
+  }
+
   // v0.8.2 step 4, flag 4 — the student-side counterpart to the teacher's
   // attachments: seeing the teacher's file is not enough without a way to
   // actually open it.
@@ -439,6 +453,17 @@ export class MeService {
     const classArmId = await this.resolveStudentCurrentClassArmId(childId);
     const termId = await this.getCurrentTermId(schoolId);
     return this.homeworkService.listPublishedForStudent(classArmId, termId, childId);
+  }
+
+  // Same reuse as getChildHomework above: assertChildBelongsToCaller
+  // FIRST, then the identical downstream call getMyLessons makes — Lesson
+  // has no per-student state, so the student and parent paths converge on
+  // the exact same LessonService method, differing only in how
+  // classArmId gets resolved.
+  async getChildLessons(userId: string, childId: string): Promise<StudentLessonListResponse> {
+    await this.assertChildBelongsToCaller(userId, childId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(childId);
+    return this.lessonService.listPublishedLessonsForClass(classArmId);
   }
 
   // v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — closes the last download

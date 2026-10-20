@@ -7891,3 +7891,70 @@ suite load — confirmed unrelated, 17/17 clean in isolation, a clean full re-ru
 672/672, same known occasional-flakiness pattern as prior steps). `pnpm typecheck`/
 `pnpm lint` clean. Zero frontend diff, zero `packages/shared` diff (nothing exported yet —
 no consumer exists until steps 4-5).
+
+## 2026-10-20 — v0.8.4 step 2: student + parent lesson reads + the teaching-weekdays endpoint
+
+**The one real design simplification Lesson's own shape makes possible, not cargo-culted
+from homework.** Homework's `listPublishedForStudent(classArmId, termId, studentId)` needs
+`studentId` to join `HomeworkCompletion`/`HomeworkSubmission` per caller. A Lesson has ZERO
+per-student state, so the new `LessonService.listPublishedLessonsForClass(classArmId)`
+takes no `studentId` at all — the response is identical for every student in the class.
+Consequence: `MeService`'s `getMyLessons` and `getChildLessons` converge on the **exact
+same downstream call**, differing only in how `classArmId` gets resolved (own enrollment
+vs. a linked child's) and which wall runs first (none extra vs.
+`assertChildBelongsToCaller`).
+
+**Walls reused verbatim, zero new logic**: `resolveStudentCurrentClassArmId` and
+`assertChildBelongsToCaller` (both pre-existing `MeService` helpers) already 404
+correctly for "not enrolled" and "not my child" — no new guard was needed for either.
+Confirmed at plan time and holds: the student route has no `classArmId` parameter
+anywhere, so a lesson from a different class is silently absent from the list (`200`),
+never a `404` — the literal 404 case in this domain is the parent's non-linked-child wall
+only.
+
+**`GET /lessons/teaching-weekdays` reuses `CalendarService.teacherTeachingWeekdaysForClass`
+verbatim** — confirmed by reading `calendar.service.ts` directly, the exact method
+`GET /homework/teaching-weekdays` wraps, zero new calendar logic. Reuses `GetLessonsQueryDto`
+(already just `classArmId`+`subjectId` from step 1) for this route too rather than a
+redundant near-duplicate DTO — homework needed two different query DTOs only because its
+list is term-scoped and teaching-weekdays isn't; Lesson's list DTO never had a `termId` to
+begin with, so there was nothing to narrow. Also reuses the step-1 private
+`getCurrentSession` helper instead of re-inlining homework's own ad-hoc session lookup a
+second time.
+
+**Attachment download-url routes deliberately NOT built this step** (confirmed, matching
+the plan's own recommendation) — `LessonModule` doesn't import `StorageModule` until step
+3; a route that can't call the real `StorageService` would either fake a response or throw
+"not implemented," both worse than simply not existing yet.
+
+**New `packages/shared/src/lessons.ts`**, added NOW rather than at the first
+frontend-touching step (step 4) — a deliberate, recorded deviation from homework's own
+precedent (`homework.ts`'s own doc comment: *"the frontend's first contact with the
+homework domain (Steps 1-4 were backend-only)"* — that whole file, teacher AND student
+shapes alike, was added in one go at homework's step 5). Justified here because the
+student-facing read shape is being finalized in this exact step while the backend response
+is in front of us; `attachments: []` is forward-declared now so the type doesn't change
+again when step 3 populates it for real. Teacher-facing shared types (`Lesson`,
+`CreateLessonInput`, etc.) are NOT added yet — those wait for step 4, same as homework's
+own rule for that half. One barrel-export collision caught immediately by `tsc`:
+`TeachingWeekdaysResponse` already exists in `homework.ts`; ruled at plan time to
+duplicate rather than import (avoiding a trivial-wrapper cross-domain coupling), so the
+lessons.ts copy is named `LessonTeachingWeekdaysResponse` instead — an ambiguous bare-name
+`export *` collision is a real compile error, not just a style question, so the rename
+wasn't optional once duplication was chosen. `packages/shared` resolves via its compiled
+`dist/`, not raw source (`"main": "dist/index.js"`) — `pnpm --filter @scholametric/shared
+build` was required before the backend typecheck/tests could see the new exports.
+
+**Test impact.** New `test/me-lessons.e2e-spec.ts` (mirrors `me-homework.e2e-spec.ts`'s own
+fixture shape — a student in the class, a second student in a different class, a linked
+parent, a non-linked parent): student sees only own-class `PUBLISHED` lessons newest-first
+(proven with two same-weekday-different-weeksAgo fixture dates for an unambiguous ordering
+check — two DIFFERENT weekdays don't reliably order this way, since `pastWeekday` snaps
+each to its own most-recent occurrence before subtracting weeks, caught by a real test
+failure before landing); a `DRAFT` lesson never appears; a different class's lesson is
+silently absent (`200`, not `404`); parent sees the same via a linked child; `404` for a
+non-linked child; `403` cross-role. New `describe("GET /lessons/teaching-weekdays")` block
+added to the existing `test/lesson.e2e-spec.ts` (3 tests: correct weekday set, `403`
+non-assigned, `403` cross-tenant, `403` wrong role). Full backend e2e suite: 51 files,
+682/682 clean. `pnpm typecheck`/`pnpm lint` clean. Zero frontend diff. Zero grade-engine/
+homework-table contact.

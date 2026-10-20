@@ -2811,7 +2811,7 @@ is still an honest signal. **Response `200`**: `{ homeworkId, markedDone, marked
 
 ---
 
-## Lessons (v0.8.4 step 1, SPEC_V0.8.4.md §2/§3)
+## Lessons (v0.8.4 steps 1-2, SPEC_V0.8.4.md §2/§3/§4.2)
 
 A genuinely new domain, parallel to Homework — a Lesson is **read-only teaching content**
 (a *cahier de textes*), not an assignment: no due-date-deadline, no mark-done, no
@@ -2819,9 +2819,11 @@ submissions, no per-student state. `teacherUserId` records **authorship**, not a
 same re-derived-from-the-CURRENT-`subject_teacher_assignment` model as Homework/
 evaluations, so a reassigned teacher inherits full authority over the class's pre-existing
 lessons. **No `termId`** on this model at all — a lesson is session+date scoped, not
-term-scoped (unlike Homework). Step 1 is text-only; attachments are step 3.
+term-scoped (unlike Homework). Text-only through step 2; attachments are step 3.
 
-All six routes sit under `@Roles(TEACHER, SCHOOL_ADMIN, PROPRIETOR)` at the controller
+### Teacher authoring (`LessonController`, `/lessons`)
+
+All routes sit under `@Roles(TEACHER, SCHOOL_ADMIN, PROPRIETOR)` at the controller
 level, narrowed per-route below.
 
 **`GET /lessons?classArmId=&subjectId=`** (all three roles). `assertTeacherAssignment`
@@ -2851,6 +2853,16 @@ current `AcademicSession`. Validated before write:
 teacherName, sessionId, title, body, lessonDate, status, publishedAt, createdAt,
 updatedAt }`. `status` is `"DRAFT"` on creation.
 
+**`GET /lessons/teaching-weekdays?classArmId=&subjectId=`** (`TEACHER` only, added
+v0.8.4 step 2). The `lessonDate` picker's data source. `assertTeacherAssignment`-gated —
+`403` if the caller doesn't currently teach this subject for this class. **Response
+`200`**: `{ weekdays: Weekday[] }` — every distinct weekday (current session, any period)
+this teacher has a `TimetableSlot` for this class; reuses
+`CalendarService.teacherTeachingWeekdaysForClass`, the exact same method
+`GET /homework/teaching-weekdays` wraps — not a reimplementation. Reuses the same
+`classArmId`+`subjectId` query shape as `GET /lessons` above (this model has no `termId`
+to need a narrower DTO for).
+
 **`PATCH /lessons/:id`** (`TEACHER` only). Body: any of `title`, `body`, `lessonDate` (at
 least one required — `400` otherwise); `classArmId`/`subjectId` are immutable. A new
 `lessonDate` is re-validated against the same rule above — a title/body-only edit never
@@ -2871,6 +2883,31 @@ proprietor override regardless of assignment (safety valve). **`409`** if not pu
 own currently-assigned lesson, and only while `DRAFT` (**`409`** if `PUBLISHED` —
 unpublish first). SCHOOL_ADMIN/PROPRIETOR: any lesson in their school, any status — a
 safety net (teacher left the school, cleanup). **Response `200`**: `{ id }`.
+
+### Student + parent reads (`MeController`, added v0.8.4 step 2)
+
+Read-only, `PUBLISHED`-only, newest-`lessonDate`-first — no per-student state exists to
+show, so unlike Homework's student view there is no `markedDone`/submissions field on
+these entries at all, and (unlike Homework) no attachment-download-url route yet — those
+are deferred to step 3, where `StorageModule` lands for this domain.
+
+**`GET /me/lessons`** (`STUDENT`). No `classArmId` field on this route at all — resolved
+server-side from the caller's own current enrollment (`resolveStudentCurrentClassArmId`,
+the same helper `GET /me/homework` uses), no current-session filter escape hatch. A
+lesson belonging to a different class is simply never in the response — there's no
+`classArmId` a caller could substitute another class's with, so there's no 404 case here
+(contrast the parent route below). **Response `200`**: `{ classArmId, lessons:
+StudentLessonEntry[] }`, each entry `{ id, subjectId, subjectName, teacherName, title,
+body, lessonDate, attachments }` (`attachments` is always `[]` until step 3 —
+`LessonAttachment` doesn't exist as a table yet; the shape is forward-declared now so it
+doesn't change again then).
+
+**`GET /me/children/:childId/lessons`** (`PARENT`). `assertChildBelongsToCaller` runs
+FIRST, same ordering as every other `children/:childId/*` route — a non-linked or
+nonexistent `childId` **`404`**s before any class resolution happens. From there, resolves
+the child's current class the same way the student route does and returns the identical
+shape. Read-only by design, same as `GET /me/children/:childId/homework` — there is no
+parent-side write path for lessons either.
 
 ---
 

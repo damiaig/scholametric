@@ -249,6 +249,44 @@ describe("Lessons (e2e) — SPEC_V0.8.4.md §2/§3, v0.8.4 step 1", () => {
     });
   });
 
+  // v0.8.4 step 2 (SPEC_V0.8.4.md §6 step 2) — the lessonDate picker's
+  // data source. Reuses CalendarService.teacherTeachingWeekdaysForClass,
+  // the EXACT method GET /homework/teaching-weekdays wraps.
+  describe("GET /lessons/teaching-weekdays", () => {
+    it("returns the distinct weekdays this teacher teaches this class, this session", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/lessons/teaching-weekdays")
+        .query({ classArmId: jss1AArmId, subjectId: mathSubjectId })
+        .set(auth(mathTeacherToken));
+      expect(response.status).toBe(200);
+      expect([...response.body.weekdays].sort()).toEqual(["FRIDAY", "MONDAY", "THURSDAY", "TUESDAY"]);
+    });
+
+    it("403s a teacher not assigned this subject for this class", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/lessons/teaching-weekdays")
+        .query({ classArmId: jss1AArmId, subjectId: mathSubjectId })
+        .set(auth(englishTeacherToken));
+      expect(response.status).toBe(403);
+    });
+
+    it("403s a cross-tenant teacher (their own current session resolves no assignment for a foreign classArmId)", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/lessons/teaching-weekdays")
+        .query({ classArmId: jss1AArmId, subjectId: mathSubjectId })
+        .set(auth(hillcrestTeacherToken));
+      expect(response.status).toBe(403);
+    });
+
+    it("403s a role with no path to this controller (SCHOOL_ADMIN) — TEACHER-only, same as createLesson", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/lessons/teaching-weekdays")
+        .query({ classArmId: jss1AArmId, subjectId: mathSubjectId })
+        .set(auth(sunriseAdminToken));
+      expect(response.status).toBe(403);
+    });
+  });
+
   describe("publish/unpublish", () => {
     it("publishes DRAFT lesson, setting publishedAt; publishing again 409s", async () => {
       const lessonId = await createAndTrack(mathTeacherToken);

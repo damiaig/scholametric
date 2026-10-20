@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import { LessonStatus, UserRole, type Lesson, type User } from "@prisma/client";
+import { LessonStatus, UserRole, type Lesson, type Subject, type User } from "@prisma/client";
+import type { LessonTeachingWeekdaysResponse, StudentLessonEntry, StudentLessonListResponse } from "@scholametric/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
@@ -33,6 +34,7 @@ export interface LessonListResponse {
 }
 
 type LessonWithTeacher = Lesson & { teacherUser: User };
+type LessonWithSubjectAndTeacher = Lesson & { subject: Subject; teacherUser: User };
 
 // v0.8.4 step 1 (SPEC_V0.8.4.md §2) — a genuinely new domain, parallel to
 // HomeworkModule: no Homework/HomeworkAttachment/HomeworkSubmission/
@@ -135,6 +137,63 @@ export class LessonService {
       subjectId: query.subjectId,
       lessons: lessons.map((row) => this.toLessonResponse(row)),
     };
+  }
+
+  private toStudentLessonEntry(lesson: LessonWithSubjectAndTeacher): StudentLessonEntry {
+    return {
+      id: lesson.id,
+      subjectId: lesson.subjectId,
+      subjectName: lesson.subject.name,
+      teacherName: `${lesson.teacherUser.firstName} ${lesson.teacherUser.lastName}`,
+      title: lesson.title,
+      body: lesson.body,
+      lessonDate: lesson.lessonDate.toISOString().slice(0, 10),
+      // Always [] until step 3 — LessonAttachment doesn't exist as a
+      // table yet; the response shape is forward-declared now so it
+      // doesn't change again then.
+      attachments: [],
+    };
+  }
+
+  // v0.8.4 step 2 (SPEC_V0.8.4.md §4.2) — the student+parent read, scoped
+  // by classArmId ONLY. Unlike homework's listPublishedForStudent (which
+  // needs studentId to join HomeworkCompletion/HomeworkSubmission), a
+  // Lesson has ZERO per-student state — the response is identical for
+  // every student in the class, so MeService's student and parent paths
+  // both converge on this exact same call, differing only in how
+  // classArmId gets resolved upstream. PUBLISHED-only, newest-lessonDate-
+  // first (cahier de textes framing). No 404 here: a classArmId with zero
+  // published lessons is a legitimate empty list, not an error — the
+  // 404-not-403 walls (own enrollment / own linked child) are enforced by
+  // the callers resolving classArmId, not by this method.
+  async listPublishedLessonsForClass(classArmId: string): Promise<StudentLessonListResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const session = await this.getCurrentSession(schoolId);
+    const lessons = await this.prisma.lesson.findMany({
+      where: { schoolId, classArmId, sessionId: session.id, status: LessonStatus.PUBLISHED, deletedAt: null },
+      include: { subject: true, teacherUser: true },
+      orderBy: { lessonDate: "desc" },
+    });
+
+    return {
+      classArmId,
+      lessons: lessons.map((row) => this.toStudentLessonEntry(row)),
+    };
+  }
+
+  // v0.8.4 step 2 (SPEC_V0.8.4.md §6 step 2) — the lessonDate picker's
+  // data source for the create form. Reuses
+  // CalendarService.teacherTeachingWeekdaysForClass, the EXACT method
+  // homework's own GET /homework/teaching-weekdays wraps — a thin
+  // endpoint, not a reimplementation. Reuses getCurrentSession (above)
+  // instead of re-inlining the same academicSession lookup a second time
+  // the way homework's own version does.
+  async getTeachingWeekdays(classArmId: string, subjectId: string, user: AuthenticatedUser): Promise<LessonTeachingWeekdaysResponse> {
+    const schoolId = this.tenantContext.schoolId;
+    const session = await this.getCurrentSession(schoolId);
+    await assertTeacherAssignment(this.prisma, schoolId, user, subjectId, classArmId, session.id);
+    const weekdays = await this.calendarService.teacherTeachingWeekdaysForClass(schoolId, user.userId, classArmId);
+    return { weekdays };
   }
 
   // TEACHER-only (homework's own "teachers own it entirely" model).

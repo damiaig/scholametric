@@ -23,6 +23,17 @@ export class LessonController {
     return this.lessonService.listLessons(query, user);
   }
 
+  // v0.8.4 step 2 (SPEC_V0.8.4.md §6 step 2) — the lessonDate picker's
+  // data source. TEACHER-only, matching createLesson's own @Roles
+  // restriction — only a teacher ever opens the create form. Reuses
+  // GetLessonsQueryDto directly (classArmId+subjectId, no termId — this
+  // model has none) rather than a redundant near-duplicate DTO.
+  @Roles(UserRole.TEACHER)
+  @Get("teaching-weekdays")
+  getTeachingWeekdays(@Query() query: GetLessonsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.lessonService.getTeachingWeekdays(query.classArmId, query.subjectId, user);
+  }
+
   @Audit("lesson", "create")
   @Roles(UserRole.TEACHER)
   @Post()

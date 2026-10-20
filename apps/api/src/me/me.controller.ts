@@ -81,6 +81,15 @@ export class MeController {
     return this.meService.getMyHomework(user.userId);
   }
 
+  // v0.8.4 step 2 (SPEC_V0.8.4.md §4.2) — no classArmId field on this
+  // route either; resolved server-side from current enrollment. No
+  // termId at all (Lesson has none — session-scoped, not term-scoped).
+  @Roles(UserRole.STUDENT)
+  @Get("lessons")
+  lessons(@CurrentUser() user: AuthenticatedUser) {
+    return this.meService.getMyLessons(user.userId);
+  }
+
   // An action on existing data, not a resource creation — 200, not the
   // POST default 201 (same convention as publish/unpublish/login/refresh
   // elsewhere in this codebase). markedDone toggles either direction
@@ -213,6 +222,15 @@ export class MeController {
   @Get("children/:childId/homework")
   childHomework(@CurrentUser() user: AuthenticatedUser, @Param("childId", ParseUUIDPipe) childId: string) {
     return this.meService.getChildHomework(user.userId, childId);
+  }
+
+  // v0.8.4 step 2 (SPEC_V0.8.4.md §4.2) — same read-only-by-design
+  // framing as childHomework above; assertChildBelongsToCaller (inside
+  // getChildLessons) runs before any class resolution.
+  @Roles(UserRole.PARENT)
+  @Get("children/:childId/lessons")
+  childLessons(@CurrentUser() user: AuthenticatedUser, @Param("childId", ParseUUIDPipe) childId: string) {
+    return this.meService.getChildLessons(user.userId, childId);
   }
 
   // v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — the parent-side counterpart
