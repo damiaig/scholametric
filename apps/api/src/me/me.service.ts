@@ -379,6 +379,15 @@ export class MeService {
     return this.lessonService.listPublishedLessonsForClass(classArmId);
   }
 
+  // v0.8.4 step 3 (SPEC_V0.8.4.md §5) — the student-side counterpart to
+  // the teacher's lesson attachments, same shape as
+  // getMyHomeworkAttachmentDownloadUrl below.
+  async getMyLessonAttachmentDownloadUrl(userId: string, lessonId: string, attachmentId: string): Promise<DownloadUrlResult> {
+    const studentId = await this.resolveOwnStudentId(userId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(studentId);
+    return this.lessonService.getAttachmentDownloadUrlForStudent(lessonId, attachmentId, classArmId);
+  }
+
   // v0.8.2 step 4, flag 4 — the student-side counterpart to the teacher's
   // attachments: seeing the teacher's file is not enough without a way to
   // actually open it.
@@ -464,6 +473,19 @@ export class MeService {
     await this.assertChildBelongsToCaller(userId, childId);
     const classArmId = await this.resolveStudentCurrentClassArmId(childId);
     return this.lessonService.listPublishedLessonsForClass(classArmId);
+  }
+
+  // v0.8.4 step 3 (SPEC_V0.8.4.md §5) — assertChildBelongsToCaller FIRST,
+  // then reuses getAttachmentDownloadUrlForStudent VERBATIM (it already
+  // takes a pre-resolved classArmId generically, no student-specific
+  // logic baked in) — the own-class + PUBLISHED wall is re-derived
+  // inside that same method, exactly as it already is for the STUDENT
+  // path just above. No separate "for parent" method, same as homework's
+  // own getChildHomeworkAttachmentDownloadUrl.
+  async getChildLessonAttachmentDownloadUrl(userId: string, childId: string, lessonId: string, attachmentId: string): Promise<DownloadUrlResult> {
+    await this.assertChildBelongsToCaller(userId, childId);
+    const classArmId = await this.resolveStudentCurrentClassArmId(childId);
+    return this.lessonService.getAttachmentDownloadUrlForStudent(lessonId, attachmentId, classArmId);
   }
 
   // v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — closes the last download

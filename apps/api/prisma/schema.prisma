@@ -129,6 +129,7 @@ model School {
   homeworkCompletions       HomeworkCompletion[]
   homeworkAttachments       HomeworkAttachment[]
   lessons                   Lesson[]
+  lessonAttachments         LessonAttachment[]
   homeworkSubmissions       HomeworkSubmission[]
 
   @@map("schools")
@@ -1338,12 +1339,33 @@ model Lesson {
   createdAt     DateTime     @default(now()) @map("created_at")
   updatedAt     DateTime     @updatedAt @map("updated_at")
 
-  school      School          @relation(fields: [schoolId], references: [id])
-  classArm    ClassArm        @relation(fields: [classArmId], references: [id])
-  subject     Subject         @relation(fields: [subjectId], references: [id])
-  teacherUser User            @relation("LessonTeacher", fields: [teacherUserId], references: [id])
-  session     AcademicSession @relation(fields: [sessionId], references: [id])
+  school      School             @relation(fields: [schoolId], references: [id])
+  classArm    ClassArm           @relation(fields: [classArmId], references: [id])
+  subject     Subject            @relation(fields: [subjectId], references: [id])
+  teacherUser User               @relation("LessonTeacher", fields: [teacherUserId], references: [id])
+  session     AcademicSession    @relation(fields: [sessionId], references: [id])
+  attachments LessonAttachment[]
 
   @@index([schoolId, classArmId, subjectId])
   @@map("lessons")
+}
+
+// v0.8.4 step 3 (SPEC_V0.8.4.md §5) — byte-for-byte HomeworkAttachment's
+// own shape, lessonId instead of homeworkId. No per-student scoping field
+// (unlike HomeworkSubmission) — lessons have no student uploads at all.
+model LessonAttachment {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  schoolId    String   @map("school_id") @db.Uuid
+  lessonId    String   @map("lesson_id") @db.Uuid
+  storageKey  String   @map("storage_key")
+  fileName    String   @map("file_name")
+  contentType String   @map("content_type")
+  sizeBytes   Int      @map("size_bytes")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  school School @relation(fields: [schoolId], references: [id])
+  lesson Lesson @relation(fields: [lessonId], references: [id])
+
+  @@index([schoolId, lessonId])
+  @@map("lesson_attachments")
 }

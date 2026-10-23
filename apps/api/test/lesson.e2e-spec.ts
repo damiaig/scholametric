@@ -175,17 +175,42 @@ describe("Lessons (e2e) — SPEC_V0.8.4.md §2/§3, v0.8.4 step 1", () => {
   // once-a-week edge this suite accepts elsewhere (see HOLIDAY tests).
   describe("lessonDate = today", () => {
     const WEEKDAY_BY_JS_INDEX = [null, "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"] as const;
+    // UTC, not local — the backend's own weekdayOf/isDateInTheFuture both
+    // parse/compare dates as UTC midnight (confirmed by reading
+    // calendar.service.ts's weekdayOf directly). Using local date
+    // components here was a real, caught-in-the-wild bug: in a positive-
+    // UTC-offset timezone, the first couple of hours after local midnight
+    // are still "yesterday" in UTC, so local-today briefly looks like a
+    // FUTURE date to the backend's own UTC-based check. Matching the
+    // backend's own clock interpretation removes the mismatch entirely,
+    // regardless of which timezone the suite happens to run in.
     const now = new Date();
-    const todayWeekday = WEEKDAY_BY_JS_INDEX[now.getDay()];
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const todayWeekday = WEEKDAY_BY_JS_INDEX[now.getUTCDay()];
+    const todayStr = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
 
     const describeOrSkip = todayWeekday === null ? describe.skip : describe;
+
+    // If today happens to be a Saturday, a TimetableSlot alone isn't
+    // enough — jss1AArmId has Saturday DISABLED by default, and
+    // isSchoolDayForClassOnDate rejects a disabled Saturday regardless of
+    // any slot. Caught by this exact test failing for real once the
+    // calendar actually landed on a Saturday (not a hypothetical).
+    const needsSaturdayEnabled = todayWeekday === "SATURDAY";
 
     describeOrSkip("today is a real weekday (not Sunday)", () => {
       let scratchPeriodId: string;
       let scratchSlotId: string;
 
       beforeAll(async () => {
+        if (needsSaturdayEnabled) {
+          const response = await request(app.getHttpServer())
+            .put(`/api/v1/calendar/class-school-days/${jss1AArmId}`)
+            .set(auth(sunriseAdminToken))
+            .send({ includesSaturday: true });
+          if (response.status !== 200) {
+            throw new Error(`enabling Saturday failed: ${response.status} ${JSON.stringify(response.body)}`);
+          }
+        }
         const period = await prisma.period.create({
           data: { schoolId: sunriseId, name: "E2E-Lesson-TodayPeriod", startsAt: "18:00", endsAt: "18:45", sortOrder: 99 },
         });
@@ -208,6 +233,12 @@ describe("Lessons (e2e) — SPEC_V0.8.4.md §2/§3, v0.8.4 step 1", () => {
       afterAll(async () => {
         await prisma.timetableSlot.deleteMany({ where: { id: scratchSlotId } });
         await prisma.period.deleteMany({ where: { id: scratchPeriodId } });
+        if (needsSaturdayEnabled) {
+          await request(app.getHttpServer())
+            .put(`/api/v1/calendar/class-school-days/${jss1AArmId}`)
+            .set(auth(sunriseAdminToken))
+            .send({ includesSaturday: false });
+        }
       });
 
       it("201s creating a lesson dated exactly today", async () => {

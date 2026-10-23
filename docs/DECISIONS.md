@@ -7958,3 +7958,88 @@ added to the existing `test/lesson.e2e-spec.ts` (3 tests: correct weekday set, `
 non-assigned, `403` cross-tenant, `403` wrong role). Full backend e2e suite: 51 files,
 682/682 clean. `pnpm typecheck`/`pnpm lint` clean. Zero frontend diff. Zero grade-engine/
 homework-table contact.
+
+## 2026-10-24 — v0.8.4 step 3: lesson attachments + session-end retention (storage reuse)
+
+**Reuses Homework's `StorageService`/`DownloadUrlResult` wholesale** — no new storage
+abstraction, no Firebase contact beyond what already exists. `LessonModule` now imports
+`StorageModule` alongside `CalendarModule`. New `LessonAttachment` model (additive
+migration, hand-reviewed to strip the recurring `pg_trgm` false-positive `DROP INDEX`
+noise on the untracked trigram indexes), one new index `(schoolId, lessonId)`, two FKs.
+DTOs (`RequestUploadUrlDto`, `CommitFileDto`) and `LESSON_ATTACHMENT_CAP_BYTES` (20MB) are
+independently declared under `lessons/`, duplicated rather than imported from
+`homework/`, per the plan's own "duplicate, don't cross-import" rule. The attach flow is
+Homework's exact two-checkpoint shape (`issueAttachmentUploadUrl` → client PUT →
+`commitAttachment` re-sums the budget against the storage layer's VERIFIED actual size,
+never the client's declared one) and TEACHER-only, with no admin override on the issue
+step — a Lesson is read-only teaching content, so there is no student-upload side at all,
+unlike Homework's submissions.
+
+**One unavoidable deviation from the plan's literal wording, flagged as instructed**: the
+plan specified a module-local `UploadUrlIssueResponse` interface in `lesson.service.ts`,
+never exported. TypeScript's `TS4053` ("Return type of public method from exported class
+... cannot be named") forces it to be `export`ed anyway, since `LessonService` itself is
+exported and `issueAttachmentUploadUrl` is a public method returning that type. This is
+not a design choice — Homework's own identical `UploadUrlIssueResponse` is exported for
+the exact same structural reason, confirmed by reading `homework.service.ts` directly.
+`LessonAttachmentResponse` is exported for the same reason.
+
+**Download-url routes**: three routes, two service methods, matching Homework's own
+precedent exactly. `getAttachmentDownloadUrlForTeacher` (teacher/admin, any status,
+including `DRAFT` — the teacher is authoring, not reading as a student) backs
+`GET /lessons/:id/attachments/:attachmentId/download-url`.
+`getAttachmentDownloadUrlForStudent` (own-class + `PUBLISHED` wall baked into the lesson
+lookup itself) is reused VERBATIM by both the student route
+(`GET /me/lessons/:id/attachments/:attachmentId/download-url`) and the parent route
+(`GET /me/children/:childId/lessons/:id/attachments/:attachmentId/download-url`, with
+`assertChildBelongsToCaller` run first) — no third method, same as Homework's
+`getChildHomeworkAttachmentDownloadUrl` not existing as a separate service method either.
+`StudentLessonEntry.attachments` (forward-declared as `[]` since step 2) is now populated
+for real.
+
+**Retention**: `SessionsService.activate()`'s existing isCurrent-flip hook is extended,
+not forked into a sibling hook — a second, independent `try`/`catch` calls
+`LessonService.purgeSessionLessons(schoolId, previous.id)` right after the existing
+Homework sweep, so a Homework-sweep failure never skips the Lesson sweep in the same
+activation (each independently safe to retry; both re-query from scratch). **Stronger
+than Homework's sweep**: a lesson is purged WHOLE — the `Lesson` row itself is deleted
+outright (no `deletedAt`-only soft delete survives), including already-soft-deleted
+lessons, alongside its `LessonAttachment` rows (deleted first, FK-safe order) and storage
+objects. There is no completion/grade-like row to preserve, unlike Homework's
+`HomeworkCompletion`, so there was nothing to keep.
+
+**A genuine, pre-existing Step 1 test bug, found (not introduced) during this step's
+end-to-end proof.** `test/lesson.e2e-spec.ts`'s "lessonDate = today" block computed
+"today" using LOCAL date getters (`now.getDay()`/`getFullYear()`/etc.), while the backend
+itself (`CalendarService.weekdayOf`, `LessonService.isDateInTheFuture`) interprets every
+date as UTC midnight. In the narrow daily window where local-date and UTC-date diverge
+(the first couple of hours after local midnight, in a positive-UTC-offset timezone), the
+test's "local today" was genuinely a FUTURE date by the backend's own UTC-based check,
+and real clock time landed in that exact window while this step's suite was running. Ruled
+to fix the TEST to match the backend's own established UTC convention (not the other way
+around) — the backend's UTC-based philosophy is shared verbatim with Homework's own
+`isDueDatePast` rule, so changing it would be a large, unrequested, out-of-scope change
+touching a sibling domain. Fixed by switching the test's date computation to UTC getters;
+also added a Saturday-enable/disable toggle (mirroring `timetable-views.e2e-spec.ts`'s own
+`setSaturday` helper) since jss1A has Saturday off by default and the suite can run on any
+real weekday.
+
+**Test impact.** New `test/lesson-attachments.e2e-spec.ts`: upload-url prefix shape;
+verified-size-not-client-declared commit (checked via a direct `prisma.lessonAttachment`
+read); `400` on an uncommitted key; tenant-isolation proof with BOTH a different-lesson
+prefix and a different-school prefix (both against a real seeded object); `409` at issue
+and at commit (orphan cleanup checked); `403` non-assigned / `404` cross-tenant;
+attachments not frozen post-publish; delete (teacher-own, admin valve, `403`/`404`,
+budget-frees via fill→409→delete→fits); teacher download-url including on a `DRAFT`
+lesson; student + parent download of a `PUBLISHED` lesson's attachment (own-class/
+own-child walls, including a different-class student and a non-linked parent, both
+`404`); and two tests proving a `DRAFT` lesson's attachment is NOT downloadable to its own
+class's student or the linked child's parent (`404` both). New
+`test/lesson-retention.e2e-spec.ts` mirrors `homework-retention.e2e-spec.ts`'s own
+"create session B, activate for real, restore in `afterAll`" pattern, proving both the
+`LessonAttachment` rows AND the `Lesson` rows themselves are gone post-sweep (stronger
+than Homework), and that reactivating the already-current session sweeps nothing.
+`test/lesson.e2e-spec.ts` fixed as described above (re-confirmed 33/33 in isolation).
+Full backend e2e suite: 53 files, 708/708 clean. `pnpm typecheck`/`pnpm lint` clean. Zero
+frontend diff. Zero grade-engine/homework-table contact (only `assertTeacherAssignment`
+and the generic `StorageService`/`CalendarService` infrastructure).

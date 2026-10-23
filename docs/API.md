@@ -2884,12 +2884,58 @@ own currently-assigned lesson, and only while `DRAFT` (**`409`** if `PUBLISHED` 
 unpublish first). SCHOOL_ADMIN/PROPRIETOR: any lesson in their school, any status — a
 safety net (teacher left the school, cleanup). **Response `200`**: `{ id }`.
 
-### Student + parent reads (`MeController`, added v0.8.4 step 2)
+### Teacher attachments (v0.8.4 step 3, SPEC_V0.8.4.md §5)
+
+Reuses Homework's own `StorageService`/two-checkpoint flow wholesale — a Lesson is
+READ-ONLY teaching content, so this is a one-way "teacher attaches, students/parents
+download" flow only; there is no student-upload side at all, unlike Homework's
+submissions. Attachments are **not frozen** once a lesson is `PUBLISHED`, same ruling as
+Homework. Cap: `LESSON_ATTACHMENT_CAP_BYTES` = 20MB total per lesson.
+
+**`POST /lessons/:id/attachments/upload-url`** (`TEACHER`, `assertTeacherAssignment`,
+no admin override). Body: `{ fileName, contentType }`. **Checkpoint 1**: sums this
+lesson's existing attachment sizes; **`409`** if the remaining budget is already `<= 0`
+— no URL is issued. **Response `200`**: `{ uploadUrl, storageKey, expiresAt,
+maxSizeBytes }`. No DB row yet.
+
+**`POST /lessons/:id/attachments`** (`TEACHER`). Body: `{ storageKey, fileName,
+contentType }`. **`400`** if `storageKey` doesn't start with the exact
+`schools/{schoolId}/lessons/{lessonId}/attachments/` prefix the server itself would have
+generated (the same tenant-isolation guard as Homework's attachment commit). **`400`**
+if `StorageService.getObjectMetadata` finds nothing there. **Checkpoint 2**: re-sums the
+budget using the metadata's VERIFIED actual size; **`409`** if it would now exceed 20MB
+(the now-useless upload is deleted from storage, no row created). **Response `201`**:
+`{ id, fileName, contentType, sizeBytes, createdAt }`.
+
+**`DELETE /lessons/:id/attachments/:attachmentId`** (`TEACHER`, `SCHOOL_ADMIN`,
+`PROPRIETOR`). Same authorization shape as `DELETE /lessons/:id`: `TEACHER` gated by
+`assertTeacherAssignment`; `SCHOOL_ADMIN`/`PROPRIETOR` allowed outright (safety valve).
+Allowed on any status. Deletes the storage object THEN the row; a storage-delete failure
+is logged but does NOT block the row delete. The 20MB cap frees naturally on the next
+issue-upload-url call. **Response `200`**: `{ id }`.
+
+**`GET /lessons/:id/attachments/:attachmentId/download-url`** (`TEACHER`, `SCHOOL_ADMIN`,
+`PROPRIETOR`). Same `assertTeacherAssignment`/admin-override shape as the write routes
+above. Works on **any** status, including `DRAFT` — the teacher is authoring, not
+reading as a student. **Response `200`**: `{ downloadUrl, expiresAt }`.
+
+### Retention sweep (v0.8.4 step 3, SPEC_V0.8.4.md §5)
+
+No new endpoint — the SAME `POST /sessions/:id/activate` hook Homework's own sweep uses
+(see Sessions, above), extended with an independent `try`/`catch` so a Homework-sweep
+failure never skips the Lesson sweep in the same activation (each is independently safe
+to retry). **Stronger than Homework's sweep**: a lesson is purged **WHOLE**, not just its
+files — once a previously-current session's lessons are swept, every matching `Lesson`
+row is deleted outright (no `deletedAt`-only soft delete, no row survives), including
+lessons already soft-deleted, alongside their `LessonAttachment` rows and storage
+objects. A storage or DB failure during the sweep is logged and swallowed; it never fails
+or rolls back the activation itself.
+
+### Student + parent reads (`MeController`, added v0.8.4 step 2, attachments wired step 3)
 
 Read-only, `PUBLISHED`-only, newest-`lessonDate`-first — no per-student state exists to
 show, so unlike Homework's student view there is no `markedDone`/submissions field on
-these entries at all, and (unlike Homework) no attachment-download-url route yet — those
-are deferred to step 3, where `StorageModule` lands for this domain.
+these entries at all.
 
 **`GET /me/lessons`** (`STUDENT`). No `classArmId` field on this route at all — resolved
 server-side from the caller's own current enrollment (`resolveStudentCurrentClassArmId`,
@@ -2898,9 +2944,9 @@ lesson belonging to a different class is simply never in the response — there'
 `classArmId` a caller could substitute another class's with, so there's no 404 case here
 (contrast the parent route below). **Response `200`**: `{ classArmId, lessons:
 StudentLessonEntry[] }`, each entry `{ id, subjectId, subjectName, teacherName, title,
-body, lessonDate, attachments }` (`attachments` is always `[]` until step 3 —
-`LessonAttachment` doesn't exist as a table yet; the shape is forward-declared now so it
-doesn't change again then).
+body, lessonDate, attachments }` — `attachments` (populated as of step 3) is each
+`PUBLISHED` lesson's own `LessonAttachment[]`, oldest-first, `{ id, fileName,
+contentType, sizeBytes, createdAt }`.
 
 **`GET /me/children/:childId/lessons`** (`PARENT`). `assertChildBelongsToCaller` runs
 FIRST, same ordering as every other `children/:childId/*` route — a non-linked or
@@ -2908,6 +2954,19 @@ nonexistent `childId` **`404`**s before any class resolution happens. From there
 the child's current class the same way the student route does and returns the identical
 shape. Read-only by design, same as `GET /me/children/:childId/homework` — there is no
 parent-side write path for lessons either.
+
+**`GET /me/lessons/:id/attachments/:attachmentId/download-url`** (`STUDENT`, added step
+3) — the own-class + `PUBLISHED` wall is baked into the lesson lookup itself
+(`getAttachmentDownloadUrlForStudent`), so a `DRAFT` lesson's attachment, or one
+belonging to a different class, both **`404`**. **Response `200`**: `{ downloadUrl,
+expiresAt }`.
+
+**`GET /me/children/:childId/lessons/:id/attachments/:attachmentId/download-url`**
+(`PARENT`, added step 3) — `assertChildBelongsToCaller` runs FIRST (a non-linked child
+`404`s before any lesson resolution), then reuses the identical
+`getAttachmentDownloadUrlForStudent` method with the child's own resolved `classArmId` —
+no separate parent-only method, matching Homework's own precedent. **Response `200`**:
+`{ downloadUrl, expiresAt }`.
 
 ---
 

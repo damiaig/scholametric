@@ -6,6 +6,7 @@ import { forSchool } from "../common/tenant/for-school";
 import { paginate, Paginated } from "../common/pagination/paginate";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
 import { HomeworkService } from "../homework/homework.service";
+import { LessonService } from "../lessons/lesson.service";
 import { CreateSessionDto } from "./dto/create-session.dto";
 import { UpdateSessionDto } from "./dto/update-session.dto";
 import { ActivateSessionDto } from "./dto/activate-session.dto";
@@ -23,6 +24,7 @@ export class SessionsService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContext,
     private readonly homeworkService: HomeworkService,
+    private readonly lessonService: LessonService,
   ) {}
 
   async findAll(page: number, pageSize: number): Promise<Paginated<AcademicSession>> {
@@ -132,6 +134,16 @@ export class SessionsService {
         // error; it's logged and left for the NEXT activation's sweep to
         // pick up (purgeSessionFiles re-queries from scratch every time).
         this.logger.warn(`Retention sweep failed for session ${previous.id}: ${error}`);
+      }
+      // v0.8.4 step 3 (SPEC_V0.8.4.md §5) — the SAME trigger point,
+      // extended, not a sibling hook. A separate try/catch, deliberately:
+      // a homework-sweep failure above must not skip the lesson sweep in
+      // this same activation — both are independently safe to retry
+      // (each re-queries from scratch), so isolating them costs nothing.
+      try {
+        await this.lessonService.purgeSessionLessons(schoolId, previous.id);
+      } catch (error) {
+        this.logger.warn(`Lesson retention sweep failed for session ${previous.id}: ${error}`);
       }
     }
 

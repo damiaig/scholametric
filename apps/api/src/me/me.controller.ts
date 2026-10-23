@@ -90,6 +90,18 @@ export class MeController {
     return this.meService.getMyLessons(user.userId);
   }
 
+  // v0.8.4 step 3 (SPEC_V0.8.4.md §5) — download the teacher's own lesson
+  // attachment. Same shape as getHomeworkAttachmentDownloadUrl below.
+  @Roles(UserRole.STUDENT)
+  @Get("lessons/:id/attachments/:attachmentId/download-url")
+  getLessonAttachmentDownloadUrl(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("attachmentId", ParseUUIDPipe) attachmentId: string,
+  ) {
+    return this.meService.getMyLessonAttachmentDownloadUrl(user.userId, id, attachmentId);
+  }
+
   // An action on existing data, not a resource creation — 200, not the
   // POST default 201 (same convention as publish/unpublish/login/refresh
   // elsewhere in this codebase). markedDone toggles either direction
@@ -231,6 +243,19 @@ export class MeController {
   @Get("children/:childId/lessons")
   childLessons(@CurrentUser() user: AuthenticatedUser, @Param("childId", ParseUUIDPipe) childId: string) {
     return this.meService.getChildLessons(user.userId, childId);
+  }
+
+  // v0.8.4 step 3 (SPEC_V0.8.4.md §5) — the parent-side counterpart to
+  // getLessonAttachmentDownloadUrl above.
+  @Roles(UserRole.PARENT)
+  @Get("children/:childId/lessons/:id/attachments/:attachmentId/download-url")
+  getChildLessonAttachmentDownloadUrl(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param("childId", ParseUUIDPipe) childId: string,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("attachmentId", ParseUUIDPipe) attachmentId: string,
+  ) {
+    return this.meService.getChildLessonAttachmentDownloadUrl(user.userId, childId, id, attachmentId);
   }
 
   // v0.8.2 step 7 (SPEC_V0.8.2.md §6 item 7) — the parent-side counterpart
