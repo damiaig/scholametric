@@ -8043,3 +8043,77 @@ than Homework), and that reactivating the already-current session sweeps nothing
 Full backend e2e suite: 53 files, 708/708 clean. `pnpm typecheck`/`pnpm lint` clean. Zero
 frontend diff. Zero grade-engine/homework-table contact (only `assertTeacherAssignment`
 and the generic `StorageService`/`CalendarService` infrastructure).
+
+## 2026-10-24 — v0.8.4 step 4: Lessons TEACHER frontend
+
+**One authorized backend touch, flagged and ruled on before building**: Lessons' 5
+teacher-facing responses (`listLessons`, `createLesson`, `updateLesson`, `publishLesson`,
+`unpublishLesson`) never included `attachments` at all, unlike Homework's own identical
+5 responses (confirmed by reading `homework.service.ts` — every one of its call sites
+already includes attachments). Without this, the edit form couldn't show a lesson's
+pre-existing attachments or compute the remaining 20MB cap correctly — a real parity gap,
+not cosmetic. Fixed exactly as Step 3's own `listPublishedLessonsForClass` already
+proved the pattern: `LessonResponse`/`LessonWithTeacher` gained `attachments`, all 5
+Prisma includes gained `attachments: { orderBy: { createdAt: "asc" } }`,
+`toLessonResponse` maps them. Proven with the LOUD version, not the quiet one: a
+dedicated e2e test commits a real attachment then asserts `GET /lessons` reflects it
+(an empty-array assertion alone would pass even with the include wired wrong) — confirmed
+this test actually bites by temporarily reverting the `listLessons` include and watching
+it fail (TypeScript's own structural check caught it even before the assertion ran,
+since `LessonWithTeacher` now requires `attachments`). Nothing else in the backend moved.
+
+**`StyledDatePicker` gained a `maxDate` prop** — additive, mirrors `minDate`'s existing
+`"today"` | `"YYYY-MM-DD"` resolution exactly (the resolver was renamed
+`resolveDateBound`, shared by both — a real functional reuse, not a style rename). Two
+new unit tests mirror the existing `minDate` pair. Lessons' picker uses `maxDate="today"`
+(not `minDate`) — the one real inversion of Homework's due-date rule, past/today instead
+of future/today.
+
+**`packages/shared/src/lessons.ts` gained its teacher-facing half** (`Lesson`,
+`LessonListResponse`, `lessonFormSchema`/`LessonFormInput`, `CreateLessonInput`,
+`UpdateLessonInput`, `LESSON_ATTACHMENT_CAP_BYTES`), mirroring `homework.ts`'s own
+teacher-facing types — independently declared, not imported. `LessonUploadUrlIssueResponse`
+is deliberately NOT named `UploadUrlIssueResponse` — the barrel (`index.ts`) re-exports
+both files with `export *`, and an identical bare name is a real ambiguous-export compile
+error (`TS2308`), the same class of issue Step 2's `LessonTeachingWeekdaysResponse`
+already hit once. The existing student-facing `LessonAttachment` type is reused as-is for
+the teacher side too — same shape, no new type needed.
+
+**`features/lessons/` built as a parallel feature folder**, mirroring
+`features/homework/` file-for-file: `LessonLandingPage`/`LessonClassPage`/
+`LessonFormDialog`, `use-lessons.ts`/`use-lesson-attachments.ts`. Deliberate omissions,
+both confirmed before building rather than silently added: no "view more" modal (that
+pattern exists only in `HomeworkDueDateList.tsx`, the STUDENT-facing read list — Step 5's
+concern, not this one; the teacher form's body field is a plain `Textarea`, no
+truncation); no teacher-side attachment download link (Homework's own identical backend
+route, `GET /homework/:id/attachments/:attachmentId/download-url`, is itself
+frontend-unconsumed even on the homework side — matching that precedent rather than
+introducing an asymmetry Lessons would carry alone). `LessonClassPage` has no termId
+handling at all (`Lesson` has none) and no Submissions button (no roster/per-student
+state exists to show). `getAttachErrorMessage` is duplicated into
+`use-lesson-attachments.ts` rather than imported from homework's own copy, despite being
+a trivial 7-line pure function — kept for consistency with this feature's established
+"duplicate, don't cross-import" convention, applied even here.
+
+**Sidebar**: new `LESSON_ITEM` (icon `NotebookText`, distinct from Homework's
+`ClipboardList`), TEACHER-only this step, same staging as `HOMEWORK_ITEM`. Tested this
+time — the explicit anti-regression the spec called out (Homework's own sidebar entry
+was never unit-tested; it shipped without one and a manual walk caught the empty nav
+after the fact). The two new tests live in `AppShell.test.tsx`, the file every other
+sidebar-item test in this codebase already lives in — there is no standalone
+`Sidebar.test.tsx`.
+
+**Test impact.** New `LessonLandingPage.test.tsx`, `LessonClassPage.test.tsx` (9 tests,
+including an explicit "no Submissions button" assertion), `LessonFormDialog.test.tsx` (9
+tests, including a prop-capturing `StyledDatePicker` mock that asserts `maxDate="today"`
++ `minDate` undefined, and that the teaching-weekday `disableDate` fn correctly
+disables/enables real weekdays). 2 new tests in `AppShell.test.tsx`. 2 new tests in
+`styled-date-picker.test.tsx` mirroring the `minDate` pair. 2 new backend e2e assertions
+(the gap-fix proof, described above). Proven end-to-end against the REAL running stack
+(not just FakeStorage in e2e): logged in as the seed teacher via curl, created a lesson,
+issued a real signed Firebase upload URL, PUT a real file to it, committed, confirmed
+`GET /lessons` reflected the attachment, published, then cleaned up (unpublish, delete
+attachment — which deletes the real Firebase object — delete lesson, hard-deleted from
+the dev DB directly since the route only soft-deletes). Full backend e2e suite: 53 files,
+709/709 clean. Full frontend suite: 82 files, 548/548 clean. `pnpm typecheck`/`pnpm lint`
+clean in both workspaces. Zero `features/homework/` changes.

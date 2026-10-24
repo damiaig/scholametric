@@ -11,6 +11,7 @@ import {
   CircleHelp,
   CalendarClock,
   ClipboardList,
+  NotebookText,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { isSchoolAdmin } from "../../lib/roles";
@@ -65,6 +66,11 @@ const TEACHER_TIMETABLE_ITEM = {
 // reach /homework by URL, same as /timetable/mine already works for
 // anyone regardless of sidebar visibility.
 const HOMEWORK_ITEM = { to: "/homework", label: "Homework", icon: ClipboardList };
+// v0.8.4 step 4 (SPEC_V0.8.4.md §6 step 4) — TEACHER-only this step, same
+// staging as HOMEWORK_ITEM above (no SCHOOL_ADMIN/PROPRIETOR entry, no
+// portal entry yet — those are Step 5). NotebookText distinguishes it
+// from Homework's ClipboardList and reads as a cahier de textes.
+const LESSON_ITEM = { to: "/lessons", label: "Lessons", icon: NotebookText };
 const PORTAL_TIMETABLE_ITEM = {
   to: "/me/timetable",
   label: "Timetable",
@@ -127,6 +133,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           GRADES_ITEM,
           TEACHER_TIMETABLE_ITEM,
           HOMEWORK_ITEM,
+          LESSON_ITEM,
           ...BASE_NAV_ITEMS.filter((item) => item.to !== "/dashboard"),
         ]
       : isSchoolAdmin(user?.role)

@@ -21,6 +21,14 @@ import { GetLessonsQueryDto } from "./dto/get-lessons-query.dto";
 import { RequestUploadUrlDto } from "./dto/request-upload-url.dto";
 import { CommitFileDto } from "./dto/commit-file.dto";
 
+// v0.8.4 step 4 (SPEC_V0.8.4.md §6 step 4) — `attachments` added here as
+// the one authorized backend touch this step: homework's every teacher
+// response (list/create/update/publish/unpublish) already includes
+// attachments (confirmed by reading homework.service.ts), but Lessons'
+// teacher-facing responses never did until now — a real parity gap, not
+// a cosmetic one (the edit form couldn't show pre-existing attachments or
+// compute the remaining cap correctly without this). All 5 teacher call
+// sites below gained the matching Prisma include.
 export interface LessonResponse {
   id: string;
   classArmId: string;
@@ -35,6 +43,7 @@ export interface LessonResponse {
   publishedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  attachments: LessonAttachmentResponse[];
 }
 
 export interface LessonListResponse {
@@ -66,7 +75,7 @@ export interface UploadUrlIssueResponse {
   maxSizeBytes: number;
 }
 
-type LessonWithTeacher = Lesson & { teacherUser: User };
+type LessonWithTeacher = Lesson & { teacherUser: User; attachments: LessonAttachment[] };
 type LessonWithSubjectAndTeacher = Lesson & { subject: Subject; teacherUser: User; attachments: LessonAttachment[] };
 
 // v0.8.4 step 1 (SPEC_V0.8.4.md §2) — a genuinely new domain, parallel to
@@ -188,6 +197,7 @@ export class LessonService {
       publishedAt: lesson.publishedAt,
       createdAt: lesson.createdAt,
       updatedAt: lesson.updatedAt,
+      attachments: lesson.attachments.map((attachment) => this.toAttachmentResponse(attachment)),
     };
   }
 
@@ -203,7 +213,7 @@ export class LessonService {
 
     const lessons = await this.prisma.lesson.findMany({
       where: { schoolId, classArmId: query.classArmId, subjectId: query.subjectId, sessionId: session.id, deletedAt: null },
-      include: { teacherUser: true },
+      include: { teacherUser: true, attachments: { orderBy: { createdAt: "asc" } } },
       orderBy: { lessonDate: "desc" },
     });
 
@@ -288,7 +298,7 @@ export class LessonService {
         body: dto.body,
         lessonDate: new Date(`${dto.lessonDate}T00:00:00Z`),
       },
-      include: { teacherUser: true },
+      include: { teacherUser: true, attachments: { orderBy: { createdAt: "asc" } } },
     });
 
     return this.toLessonResponse(lesson);
@@ -326,7 +336,7 @@ export class LessonService {
         body: dto.body ?? lesson.body,
         lessonDate: dto.lessonDate !== undefined ? new Date(`${dto.lessonDate}T00:00:00Z`) : lesson.lessonDate,
       },
-      include: { teacherUser: true },
+      include: { teacherUser: true, attachments: { orderBy: { createdAt: "asc" } } },
     });
 
     return this.toLessonResponse(updated);
@@ -373,7 +383,7 @@ export class LessonService {
     const updated = await this.prisma.lesson.update({
       where: { id: lessonId },
       data: { status: LessonStatus.PUBLISHED, publishedAt: new Date() },
-      include: { teacherUser: true },
+      include: { teacherUser: true, attachments: { orderBy: { createdAt: "asc" } } },
     });
 
     return this.toLessonResponse(updated);
@@ -400,7 +410,7 @@ export class LessonService {
     const updated = await this.prisma.lesson.update({
       where: { id: lessonId },
       data: { status: LessonStatus.DRAFT, publishedAt: null },
-      include: { teacherUser: true },
+      include: { teacherUser: true, attachments: { orderBy: { createdAt: "asc" } } },
     });
 
     return this.toLessonResponse(updated);

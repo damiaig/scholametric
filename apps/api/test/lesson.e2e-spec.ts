@@ -128,6 +128,12 @@ describe("Lessons (e2e) — SPEC_V0.8.4.md §2/§3, v0.8.4 step 1", () => {
     expect(response.body.publishedAt).toBeNull();
     expect(response.body.teacherUserId).toBe(mathTeacherId);
     expect(response.body.lessonDate).toBe(VALID_LESSON_DATE);
+    // v0.8.4 step 4 (SPEC_V0.8.4.md §6 step 4) — attachments now present
+    // on the teacher-facing response at all (empty here, no file attached
+    // yet); the loud round-trip version of this (committing a file then
+    // asserting GET /lessons reflects it) lives in
+    // lesson-attachments.e2e-spec.ts.
+    expect(response.body.attachments).toEqual([]);
     createdLessonIds.push(response.body.id);
   });
 

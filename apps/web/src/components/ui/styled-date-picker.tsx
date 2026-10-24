@@ -12,6 +12,8 @@ interface StyledDatePickerProps {
   onChange: (value: string) => void;
   /** "YYYY-MM-DD", or flatpickr's own literal "today" */
   minDate?: string;
+  /** "YYYY-MM-DD", or flatpickr's own literal "today" — added v0.8.4 step 4 for Lessons' inverted date rule (past/today, not future/today). */
+  maxDate?: string;
   /**
    * Return true to disable a given calendar date, on top of minDate.
    * Generic on purpose — this component stays domain-agnostic; a caller
@@ -39,16 +41,18 @@ function toISODate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-// flatpickr parses a plain string minDate against its OWN configured
-// dateFormat/altFormat, not ISO — since this component sets a friendly
-// display dateFormat ("M j, Y"), an ISO "YYYY-MM-DD" minDate needs
+// flatpickr parses a plain string minDate/maxDate against its OWN
+// configured dateFormat/altFormat, not ISO — since this component sets a
+// friendly display dateFormat ("M j, Y"), an ISO "YYYY-MM-DD" bound needs
 // converting to a Date first. "today" is flatpickr's own special-cased
 // keyword (handled before format parsing), so it passes through as-is.
-function resolveMinDate(minDate: string | undefined): Date | string | undefined {
-  if (!minDate || minDate === "today") {
-    return minDate;
+// v0.8.4 step 4 — shared by both minDate and maxDate (added for Lessons'
+// inverted date rule); the resolution logic is identical either way.
+function resolveDateBound(bound: string | undefined): Date | string | undefined {
+  if (!bound || bound === "today") {
+    return bound;
   }
-  return parseISODate(minDate);
+  return parseISODate(bound);
 }
 
 // v0.8.1 step 1 (SPEC_V0.8.1.md §2.2) — ONE shared, styled wrapper around
@@ -65,7 +69,7 @@ function resolveMinDate(minDate: string | undefined): Date | string | undefined 
 // `value` means no date selected yet (a blank form field, distinct from
 // the agenda's usage, which is never empty) — the widget starts blank
 // instead of defaulting to some arbitrary date.
-export function StyledDatePicker({ value, onChange, minDate, disableDate, id, placeholder, className, ...aria }: StyledDatePickerProps) {
+export function StyledDatePicker({ value, onChange, minDate, maxDate, disableDate, id, placeholder, className, ...aria }: StyledDatePickerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const instanceRef = useRef<Instance | null>(null);
   const onChangeRef = useRef(onChange);
@@ -78,7 +82,8 @@ export function StyledDatePicker({ value, onChange, minDate, disableDate, id, pl
     const instance = flatpickr(inputRef.current, {
       dateFormat: "M j, Y",
       defaultDate: parseISODate(value),
-      minDate: resolveMinDate(minDate),
+      minDate: resolveDateBound(minDate),
+      maxDate: resolveDateBound(maxDate),
       disable: disableDate ? [disableDate] : [],
       onChange: (selectedDates) => {
         if (selectedDates[0]) {
@@ -88,15 +93,19 @@ export function StyledDatePicker({ value, onChange, minDate, disableDate, id, pl
     });
     instanceRef.current = instance;
     return () => instance.destroy();
-    // Instantiated once on mount; `value`/`minDate`/`disableDate` updates
-    // are pushed in imperatively below instead of re-creating the widget
-    // on every change.
+    // Instantiated once on mount; `value`/`minDate`/`maxDate`/`disableDate`
+    // updates are pushed in imperatively below instead of re-creating the
+    // widget on every change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    instanceRef.current?.set("minDate", resolveMinDate(minDate));
+    instanceRef.current?.set("minDate", resolveDateBound(minDate));
   }, [minDate]);
+
+  useEffect(() => {
+    instanceRef.current?.set("maxDate", resolveDateBound(maxDate));
+  }, [maxDate]);
 
   useEffect(() => {
     instanceRef.current?.set("disable", disableDate ? [disableDate] : []);

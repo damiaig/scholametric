@@ -233,6 +233,28 @@ describe("Lesson attachments (e2e) — SPEC_V0.8.4.md §5, v0.8.4 step 3", () =>
     expect(row.sizeBytes).toBe(3 * 1024 * 1024);
   });
 
+  // v0.8.4 step 4 (SPEC_V0.8.4.md §6 step 4) — the LOUD version of the
+  // gap-fix proof: an empty-array assertion on create alone would pass
+  // even if the include were wired wrong (an empty array is still an
+  // empty array either way). Committing a real attachment, then asserting
+  // it shows up in the TEACHER-facing GET /lessons response, is the one
+  // that actually fails if the Prisma include is a no-op.
+  it("a committed attachment appears on the teacher-facing GET /lessons response for that lesson", async () => {
+    const lessonId = await createLesson();
+    await attachAndCommit(lessonId);
+
+    const list = await request(app.getHttpServer())
+      .get("/api/v1/lessons")
+      .query({ classArmId: jss1AArmId, subjectId: mathSubjectId })
+      .set(auth(mathTeacherToken));
+    expect(list.status).toBe(200);
+
+    const lesson = list.body.lessons.find((item: { id: string }) => item.id === lessonId);
+    expect(lesson).toBeDefined();
+    expect(lesson.attachments).toHaveLength(1);
+    expect(lesson.attachments[0]).toMatchObject({ fileName: "notes.pdf", contentType: "application/pdf", sizeBytes: 1024 });
+  });
+
   it("400s a commit against a storage key nothing was ever uploaded to", async () => {
     const lessonId = await createLesson();
     const issued = await issueUploadUrl(mathTeacherToken, lessonId);

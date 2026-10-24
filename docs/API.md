@@ -2831,7 +2831,8 @@ scopes TEACHER to their own currently-assigned subject for the school's current 
 (`403` otherwise); SCHOOL_ADMIN/PROPRIETOR are existence-checked only (`404` if no teacher
 is assigned at all). **Response `200`**: `{ classArmId, subjectId, lessons:
 LessonResponse[] }` — every non-deleted lesson in that exact scope, ordered newest
-`lessonDate` first.
+`lessonDate` first. Each `LessonResponse` carries its own `attachments` (see the create
+response below).
 
 **`POST /lessons`** (`TEACHER` only). Body: `{ classArmId, subjectId, title, body,
 lessonDate }`. `sessionId` is never a client input — derived server-side from the school's
@@ -2851,7 +2852,13 @@ current `AcademicSession`. Validated before write:
 
 **Response `201`**: `LessonResponse` — `{ id, classArmId, subjectId, teacherUserId,
 teacherName, sessionId, title, body, lessonDate, status, publishedAt, createdAt,
-updatedAt }`. `status` is `"DRAFT"` on creation.
+updatedAt, attachments }`. `status` is `"DRAFT"` on creation. `attachments` (added v0.8.4
+step 4 — this and the other 4 teacher-facing responses below never carried it before this
+step, a real parity gap against Homework's own identical responses, caught and fixed
+during the Step 4 frontend build) is each lesson's own `LessonAttachment[]`, oldest-first,
+`{ id, fileName, contentType, sizeBytes, createdAt }` — populated the exact same way on
+`GET /lessons`, `PATCH /lessons/:id`, `POST /lessons/:id/publish`, and
+`POST /lessons/:id/unpublish` too.
 
 **`GET /lessons/teaching-weekdays?classArmId=&subjectId=`** (`TEACHER` only, added
 v0.8.4 step 2). The `lessonDate` picker's data source. `assertTeacherAssignment`-gated —

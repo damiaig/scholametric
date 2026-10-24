@@ -52,6 +52,30 @@ describe("StyledDatePicker", () => {
     expect(day20).not.toHaveClass("flatpickr-disabled");
   });
 
+  // v0.8.4 step 4 (SPEC_V0.8.4.md §6 step 4) — maxDate mirrors minDate's
+  // own pair of tests exactly; Lessons uses maxDate="today" in place of
+  // homework's minDate="today" for its inverted (past/today, not
+  // future/today) date rule.
+  it("maxDate disables every date after it in the calendar", async () => {
+    const user = userEvent.setup();
+    render(<StyledDatePicker value="2026-09-14" onChange={vi.fn()} maxDate="2026-09-14" aria-label="Choose a date" />);
+
+    await user.click(screen.getByLabelText("Choose a date"));
+    const day20 = await screen.findByText("20", { selector: ".flatpickr-day:not(.prevMonthDay):not(.nextMonthDay)" });
+    expect(day20).toHaveClass("flatpickr-disabled");
+  });
+
+  it("does not disable maxDate itself or dates before it", async () => {
+    const user = userEvent.setup();
+    render(<StyledDatePicker value="2026-09-14" onChange={vi.fn()} maxDate="2026-09-14" aria-label="Choose a date" />);
+
+    await user.click(screen.getByLabelText("Choose a date"));
+    const day10 = await screen.findByText("10", { selector: ".flatpickr-day:not(.prevMonthDay):not(.nextMonthDay)" });
+    const day14 = await screen.findByText("14", { selector: ".flatpickr-day:not(.prevMonthDay):not(.nextMonthDay)" });
+    expect(day10).not.toHaveClass("flatpickr-disabled");
+    expect(day14).not.toHaveClass("flatpickr-disabled");
+  });
+
   // v0.8.3 Item 4 rework (SPEC_V0.8.3_item4_rework.md) — the due-date
   // picker's own disabling, proven generically here (the caller just
   // supplies a predicate; HomeworkFormDialog.test.tsx mocks this component

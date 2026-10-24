@@ -296,6 +296,37 @@ describe("AppShell", () => {
     expect(await screen.findByRole("link", { name: "Timetable" })).toHaveAttribute("href", "/timetable");
   });
 
+  // v0.8.4 step 4 (SPEC_V0.8.4.md §6 step 4) — the explicit anti-
+  // regression this step called out: homework's own sidebar entry was
+  // forgotten at build time and only caught later by a manual walk (no
+  // test like this one exists for it). TEACHER-only this step, same
+  // staging as Homework's own HOMEWORK_ITEM (no SCHOOL_ADMIN/PROPRIETOR
+  // or portal entry yet — Step 5's job).
+  it("TEACHER sees a Lessons link pointing at /lessons", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: "Lessons" })).toHaveAttribute("href", "/lessons");
+  });
+
+  it("SCHOOL_ADMIN does not see a Lessons link yet (Step 4 is TEACHER-only)", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return CURRENT_USER;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    await screen.findByRole("link", { name: "Dashboard" });
+    expect(screen.queryByRole("link", { name: "Lessons" })).not.toBeInTheDocument();
+  });
+
   // SPEC_V0.5.1.md §2.7, v0.5.1 step 6 — Help is in BASE_NAV_ITEMS, visible
   // to every role (HelpPage itself branches content by role).
   it("Help is visible in the sidebar for both SCHOOL_ADMIN and TEACHER", async () => {

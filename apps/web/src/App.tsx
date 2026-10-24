@@ -36,6 +36,8 @@ import { AbsencesPage } from "./features/timetable/AbsencesPage";
 import { HomeworkLandingPage } from "./features/homework/HomeworkLandingPage";
 import { HomeworkClassPage } from "./features/homework/HomeworkClassPage";
 import { MyHomeworkPage } from "./features/homework/MyHomeworkPage";
+import { LessonLandingPage } from "./features/lessons/LessonLandingPage";
+import { LessonClassPage } from "./features/lessons/LessonClassPage";
 
 // Extracted from <App> (which just wraps this in <BrowserRouter>) so the
 // route-smoke test can mount the exact same route tree inside a
@@ -73,6 +75,11 @@ export function AppRoutes() {
             a non-teaching caller rather than crashing. */}
         <Route path="/homework" element={<HomeworkLandingPage />} />
         <Route path="/homework/arms/:id" element={<HomeworkClassPage />} />
+        {/* v0.8.4 step 4 (SPEC_V0.8.4.md §6 step 4) — same unguarded,
+            "reachable by any authenticated role at the URL bar, server
+            403 is the real gate" pattern as /homework above. */}
+        <Route path="/lessons" element={<LessonLandingPage />} />
+        <Route path="/lessons/arms/:id" element={<LessonClassPage />} />
         <Route path="/teachers" element={<TeachersListPage />} />
         <Route path="/teachers/:id" element={<TeacherDetailPage />} />
         <Route path="/classes" element={<ClassesPage />} />
