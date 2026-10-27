@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { screen, cleanup, waitFor } from "@testing-library/react";
+import { screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { StudentLessonEntry, StudentLessonListResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
@@ -11,6 +11,16 @@ vi.mock("../../lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api-client")>();
   return { ...actual, apiRequest: vi.fn() };
 });
+
+// StyledDatePicker's own correctness is proven once in
+// styled-date-picker.test.tsx — mocked here (the week filter's picker)
+// down to a plain native input, same convention LessonFormDialog.test.tsx
+// and LessonFilterBar.test.tsx already established.
+vi.mock("../../components/ui/styled-date-picker", () => ({
+  StyledDatePicker: ({ id, value, onChange, placeholder }: { id?: string; value: string; onChange: (value: string) => void; placeholder?: string }) => (
+    <input id={id} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+  ),
+}));
 
 const mockedApiRequest = vi.mocked(apiRequest);
 
@@ -71,6 +81,163 @@ describe("MyLessonsPage", () => {
     const viewMore = screen.getByRole("button", { name: "View more" });
     await user.click(viewMore);
     expect(screen.getByRole("heading", { name: "Chapter 3: Fractions" })).toBeInTheDocument();
+  });
+
+  // v0.8.4 Lessons Read Polish (SPEC_V0.8.4_read_polish.md §1) — the
+  // walk-found defect: a long UNBROKEN string (no spaces at all, so there
+  // is no whitespace for normal wrapping to break on) must still wrap via
+  // break-words rather than overflowing the card. jsdom doesn't lay out
+  // real pixels/overflow, so the honest proxy here is the CSS class
+  // itself being present plus the full string surviving into the DOM —
+  // the ACTUAL visual proof is the re-walk, where a human sees it wrap.
+  it("STUDENT: a long body with no spaces gets the wrap class and renders in full, not truncated to an ellipsis", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const longNoSpaceBody = "a".repeat(300);
+    const list: StudentLessonListResponse = { classArmId: "arm1", lessons: [entry({ body: longNoSpaceBody })] };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/lessons")) return list;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<MyLessonsPage />);
+
+    const bodyParagraph = await screen.findByText(longNoSpaceBody);
+    expect(bodyParagraph).toHaveClass("break-words");
+    expect(bodyParagraph.textContent).toBe(longNoSpaceBody);
+  });
+
+  it("STUDENT: the view-more modal's full text also gets the wrap class", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const longNoSpaceBody = "b".repeat(300);
+    const list: StudentLessonListResponse = { classArmId: "arm1", lessons: [entry({ body: longNoSpaceBody })] };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/lessons")) return list;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(<MyLessonsPage />);
+
+    await user.click(await screen.findByRole("button", { name: "View more" }));
+    const modalBody = screen.getAllByText(longNoSpaceBody).find((el) => el.closest('[role="dialog"]'));
+    expect(modalBody).toHaveClass("break-words");
+  });
+
+  it("STUDENT: subject filter narrows the list to the selected subject", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const list: StudentLessonListResponse = {
+      classArmId: "arm1",
+      lessons: [
+        entry({ id: "les-math", subjectId: "sub1", subjectName: "Mathematics", title: "Fractions lesson" }),
+        entry({ id: "les-eng", subjectId: "sub2", subjectName: "English", title: "Grammar lesson" }),
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/lessons")) return list;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(<MyLessonsPage />);
+
+    await screen.findByText("Fractions lesson");
+    expect(screen.getByText("Grammar lesson")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Subject" }), "sub2");
+
+    expect(screen.queryByText("Fractions lesson")).not.toBeInTheDocument();
+    expect(screen.getByText("Grammar lesson")).toBeInTheDocument();
+  });
+
+  it("STUDENT: week filter narrows to the picked week; composes with the subject filter; 'Show all' restores both", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const list: StudentLessonListResponse = {
+      classArmId: "arm1",
+      lessons: [
+        entry({ id: "les-this-week", subjectId: "sub1", subjectName: "Mathematics", title: "This week math", lessonDate: "2026-10-19" }),
+        entry({ id: "les-last-week", subjectId: "sub1", subjectName: "Mathematics", title: "Last week math", lessonDate: "2026-10-12" }),
+        entry({ id: "les-this-week-eng", subjectId: "sub2", subjectName: "English", title: "This week english", lessonDate: "2026-10-20" }),
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/lessons")) return list;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(<MyLessonsPage />);
+
+    await screen.findByText("This week math");
+    expect(screen.getByText("Last week math")).toBeInTheDocument();
+    expect(screen.getByText("This week english")).toBeInTheDocument();
+
+    // Narrow to the week containing 2026-10-19 — drops the prior week's lesson.
+    fireEvent.change(screen.getByLabelText("Week"), { target: { value: "2026-10-19" } });
+    expect(screen.queryByText("Last week math")).not.toBeInTheDocument();
+    expect(screen.getByText("This week math")).toBeInTheDocument();
+    expect(screen.getByText("This week english")).toBeInTheDocument();
+
+    // Compose with the subject filter — drops the English lesson too.
+    await user.selectOptions(screen.getByRole("combobox", { name: "Subject" }), "sub1");
+    expect(screen.queryByText("This week english")).not.toBeInTheDocument();
+    expect(screen.getByText("This week math")).toBeInTheDocument();
+
+    // "Show all" restores everything.
+    await user.click(screen.getByRole("button", { name: "Show all" }));
+    expect(screen.getByText("This week math")).toBeInTheDocument();
+    expect(screen.getByText("Last week math")).toBeInTheDocument();
+    expect(screen.getByText("This week english")).toBeInTheDocument();
+  });
+
+  it("STUDENT: a filtered-empty result shows a distinct message from the genuine no-lessons-yet state", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const list: StudentLessonListResponse = {
+      classArmId: "arm1",
+      lessons: [entry({ subjectId: "sub1", subjectName: "Mathematics", title: "Fractions lesson" })],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/lessons")) return list;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderWithProviders(<MyLessonsPage />);
+
+    await screen.findByText("Fractions lesson");
+    fireEvent.change(screen.getByLabelText("Week"), { target: { value: "2026-01-05" } });
+
+    expect(await screen.findByText("No lessons match these filters.")).toBeInTheDocument();
+    expect(screen.queryByText("No lessons published yet.")).not.toBeInTheDocument();
+  });
+
+  // The structural read-only guarantee must still hold with filters active.
+  it("STUDENT: filters introduce no write control — still no checkbox, no file input", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    const list: StudentLessonListResponse = {
+      classArmId: "arm1",
+      lessons: [
+        entry({ id: "les1", subjectId: "sub1", subjectName: "Mathematics", title: "Fractions lesson" }),
+        entry({ id: "les2", subjectId: "sub2", subjectName: "English", title: "Grammar lesson" }),
+      ],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
+      if (path.includes("/me/lessons")) return list;
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderWithProviders(<MyLessonsPage />);
+
+    await screen.findByText("Fractions lesson");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Subject" }), "sub1");
+
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(document.querySelector('input[type="file"]')).toBeNull();
   });
 
   // The four-level structural read-only guarantee, checked at the DOM

@@ -8179,3 +8179,74 @@ suite: 83 files, 557/557 clean. `pnpm typecheck`/`pnpm lint` clean in both works
 Zero `features/homework/` changes.
 
 This was the last build step for v0.8.4. Next: the walk, then tag v0.8.4.
+
+## 2026-10-27 — v0.8.4 Lessons Read Polish (folds into v0.8.4, pre-tag)
+
+**The walk-found defect, fixed**: `LessonDateList.tsx`'s clamped body preview and the
+view-more modal's full-text paragraph both gained `break-words` (`overflow-wrap:
+break-word`), not `break-all` — breaks an otherwise-unbreakable token only when needed to
+avoid overflow, leaving normal multi-word prose untouched. Checked first rather than
+assumed: the view-more mechanism itself (`isTruncated = body.length > 200`, a pure
+character count) already worked correctly on realistic long bodies — the existing Step 5
+test already proved it with a ~410-char body — so there was no second bug to fix there,
+only the wrap. Also checked: the teacher list (`LessonClassPage.tsx`) renders no body at
+all (title + badge + date only, unchanged since Step 4, mirroring Homework's own teacher
+list) — so this fix touches only `LessonDateList.tsx`; "applies to both surfaces" in the
+spec was about the filter bar below, not this.
+
+**New `features/lessons/lesson-filters.ts`** — pure, injectable filter helpers
+(`getLessonSubjectOptions`, `filterBySubjectId`, `filterByWeek`), mirroring
+`filter-week-days.ts`'s own single-purpose-pure-function style. The Monday-Sunday week
+math is reimplemented locally (3 lines, the same `day === 0 ? -6 : 1 - day` offset
+`current-week-range.ts` already uses) rather than imported — consistent with the
+duplicate-don't-cross-couple discipline already applied between `homework/` and
+`lessons/`, now extended to `timetable/` too.
+
+**One real architectural finding, confirmed rather than worked around**: the teacher page
+(`LessonClassPage.tsx`) is already scoped to exactly one subject by construction (reached
+from one class+subject cell on the landing table), and the teacher-facing `Lesson` type
+carries no `subjectName` at all. Rather than special-case "hide the subject filter on the
+teacher page," `LessonFilterBar` simply hides its subject `<select>` whenever the derived
+options list has ≤1 entry — true by construction there (`subjects={[]}` is passed), and it
+would degrade the same way for a student whose class happens to have lessons in only one
+subject. No "is this the teacher page" branch anywhere. The week filter is fully active on
+both surfaces.
+
+**Filters reset on scope change via remount, not a manual effect**: a `LessonFilteredList`
+(student/parent, in `MyLessonsPage.tsx`) and a `LessonListFiltered` (teacher, in
+`LessonClassPage.tsx`) each own only the local filter state, rendered with `key={childId}`
+/ `key={`${classArmId}-${subjectId}`}` from their parent — switching a linked child or
+navigating to a different class+subject page remounts fresh local state rather than
+carrying a stale filter across a scope change that would otherwise silently hide
+everything.
+
+**`LessonFilterBar.tsx`** — a plain `<select>` for subject (matching the existing
+child-switcher selects, not a new chip-row pattern) + a `StyledDatePicker` for the week +
+a "Show all" reset, shared by both surfaces. Purely presentational — filtering happens in
+each caller, not inside the bar.
+
+**Test impact.** New `lesson-filters.test.ts` (10 tests: dedup/order, subject no-op/narrow/
+empty, week no-op/narrow/boundary-inclusive/boundary-exclusive, composition).
+`LessonFilterBar.test.tsx` (5 tests, standalone, mirroring `WeekNavigation.test.tsx`
+having its own file). `MyLessonsPage.test.tsx` extended (+8 tests): the zero-space wrap
+defect (asserts the `break-words` class plus the full string surviving into the DOM — the
+honest jsdom-feasible proxy, since jsdom doesn't lay out real overflow; the actual visual
+proof is the re-walk), the same for the modal's full text, subject-filter narrowing,
+week-filter narrowing + composition + reset, filtered-empty vs genuine-empty distinct
+message, and a re-check that filters introduce no write control. `LessonClassPage.test.tsx`
+extended (+3 tests): confirms the subject dropdown is absent (not just unclicked), week
+filter narrows + resets, filtered-empty vs genuine-empty. Proven against the real running
+stack, not just mocked tests: created real lessons across two actual subjects (Mathematics
++ English Language, two different real teachers) spanning two real weeks, fetched them via
+`GET /me/lessons` as a real student, and ran the exact shipped `lesson-filters.ts`
+functions (via `tsx`, not a reimplementation) against that live JSON — confirmed subject
+dedup, week-boundary narrowing, and composition all behave correctly against genuinely-
+shaped backend data, not just hand-built fixtures. All real lessons, the scratch
+verification script, and a scratch portal-account password reissue (a provisioned
+student's temp password had gone stale since the earlier clean-stack stand-up) were
+cleaned up afterward. Full backend e2e suite: 53 files, 709/709 clean (unchanged — no
+backend touched). Full frontend suite: 85 files, 581/581 clean. `pnpm typecheck`/`pnpm
+lint` clean in both workspaces. Zero `features/homework/` changes.
+
+Next: the re-walk (visual wrap confirmation + filters), then the rest of WALK_V0.8.4.md
+(Part C parent, Part D walls), then tag v0.8.4.

@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import type { StudentLessonEntry } from "@scholametric/shared";
 import { PageHeader } from "../../components/PageHeader";
 import { Card, CardContent } from "../../components/ui/card";
 import { Label } from "../../components/ui/label";
@@ -9,10 +10,52 @@ import { getErrorMessage } from "../../lib/api-client";
 import { useCurrentUser } from "../shell/use-current-user";
 import { useMyChildren } from "../dashboard/use-my-children";
 import { LessonDateList } from "./LessonDateList";
+import { LessonFilterBar } from "./LessonFilterBar";
+import { filterBySubjectId, filterByWeek, getLessonSubjectOptions } from "./lesson-filters";
 import { useChildLessonAttachmentDownloadUrl, useChildLessons, useMyLessonAttachmentDownloadUrl, useMyLessons } from "./use-my-lessons";
 
 const SELECT_CLASS =
   "flex h-10 w-full rounded-md border border-muted bg-card px-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 sm:w-64";
+
+interface LessonFilteredListProps {
+  lessons: StudentLessonEntry[];
+  onDownloadAttachment: (lessonId: string, attachmentId: string) => void;
+}
+
+// v0.8.4 Lessons Read Polish (SPEC_V0.8.4_read_polish.md §2/§3/§4) — the
+// filter bar + filtered list, shared by MyLessons and ChildLessons below
+// (one wiring, not duplicated twice in this file). Owns ONLY the local
+// filter state — all data-fetching/mutation hooks stay in the caller.
+// ChildLessons renders this keyed by childId so switching children
+// remounts it fresh (a stale subject/week filter carried over from a
+// different child would silently hide everything); MyLessons never
+// changes scope, so it renders this unkeyed.
+function LessonFilteredList({ lessons, onDownloadAttachment }: LessonFilteredListProps) {
+  const [selectedSubjectId, setSelectedSubjectId] = useState("");
+  const [weekAnchor, setWeekAnchor] = useState("");
+
+  const subjects = getLessonSubjectOptions(lessons);
+  const filtered = filterByWeek(filterBySubjectId(lessons, selectedSubjectId), weekAnchor);
+
+  function handleReset() {
+    setSelectedSubjectId("");
+    setWeekAnchor("");
+  }
+
+  return (
+    <>
+      <LessonFilterBar
+        subjects={subjects}
+        selectedSubjectId={selectedSubjectId}
+        onSubjectChange={setSelectedSubjectId}
+        weekAnchor={weekAnchor}
+        onWeekAnchorChange={setWeekAnchor}
+        onReset={handleReset}
+      />
+      <LessonDateList lessons={filtered} onDownloadAttachment={onDownloadAttachment} hasUnfilteredLessons={lessons.length > 0} />
+    </>
+  );
+}
 
 // v0.8.4 step 5 (SPEC_V0.8.4.md §6 step 5) — the STUDENT's own cahier-de-
 // textes read view. Genuinely read-only: no mark-done, no upload — those
@@ -49,7 +92,7 @@ function MyLessons() {
         </Card>
       )}
 
-      {lessonsQuery.data && <LessonDateList lessons={lessonsQuery.data.lessons} onDownloadAttachment={handleDownloadAttachment} />}
+      {lessonsQuery.data && <LessonFilteredList lessons={lessonsQuery.data.lessons} onDownloadAttachment={handleDownloadAttachment} />}
     </div>
   );
 }
@@ -144,7 +187,9 @@ function ChildLessons() {
         </Card>
       )}
 
-      {childId && lessonsQuery.data && <LessonDateList lessons={lessonsQuery.data.lessons} onDownloadAttachment={handleDownloadAttachment} />}
+      {childId && lessonsQuery.data && (
+        <LessonFilteredList key={childId} lessons={lessonsQuery.data.lessons} onDownloadAttachment={handleDownloadAttachment} />
+      )}
     </div>
   );
 }

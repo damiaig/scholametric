@@ -22,6 +22,7 @@ function groupByLessonDate(lessons: StudentLessonEntry[]): Array<{ lessonDate: s
 }
 
 interface LessonDateListProps {
+  /** Already filtered by the caller (see lesson-filters.ts) — this component never filters. */
   lessons: StudentLessonEntry[];
   /**
    * v0.8.2 step 6 found this optional (the PARENT view had no matching
@@ -31,6 +32,14 @@ interface LessonDateListProps {
    * fallback for any future caller with nothing to wire it to.
    */
   onDownloadAttachment?: (lessonId: string, attachmentId: string) => void;
+  /**
+   * v0.8.4 Lessons Read Polish (SPEC_V0.8.4_read_polish.md §4) — whether
+   * the UNFILTERED list the caller fetched was non-empty. Distinguishes
+   * "the filters narrowed everything out" (true) from "nothing has ever
+   * been published" (false, the default) when `lessons` (already
+   * filtered) is empty.
+   */
+  hasUnfilteredLessons?: boolean;
 }
 
 // v0.8.4 step 5 (SPEC_V0.8.4.md §6 step 5) — the cahier-de-textes read
@@ -47,7 +56,7 @@ interface LessonDateListProps {
 // ascending due-date order). No "Due"/"Logged" prefix on the heading
 // (ruled at plan time) — the bare relative date, matching Step 4's own
 // teacher-list inversion.
-export function LessonDateList({ lessons, onDownloadAttachment }: LessonDateListProps) {
+export function LessonDateList({ lessons, onDownloadAttachment, hasUnfilteredLessons = false }: LessonDateListProps) {
   const [expandedBodyId, setExpandedBodyId] = useState<string | null>(null);
   const expandedItem = lessons.find((item) => item.id === expandedBodyId) ?? null;
 
@@ -55,7 +64,7 @@ export function LessonDateList({ lessons, onDownloadAttachment }: LessonDateList
     return (
       <Card>
         <CardContent className="p-10 text-center">
-          <p className="text-sm text-muted">No lessons published yet.</p>
+          <p className="text-sm text-muted">{hasUnfilteredLessons ? "No lessons match these filters." : "No lessons published yet."}</p>
         </CardContent>
       </Card>
     );
@@ -80,7 +89,12 @@ export function LessonDateList({ lessons, onDownloadAttachment }: LessonDateList
                       <p className="text-xs text-muted">{item.teacherName}</p>
                     </div>
 
-                    <p className="line-clamp-3 text-sm text-text">{item.body}</p>
+                    {/* v0.8.4 Lessons Read Polish (SPEC_V0.8.4_read_polish.md §1) — break-words
+                        (overflow-wrap: break-word), not break-all: breaks an otherwise-
+                        unbreakable token only when needed to avoid overflow, leaving normal
+                        multi-word prose alone. A walk-found defect: a long unbroken string
+                        (no spaces) previously overflowed the card horizontally. */}
+                    <p className="line-clamp-3 break-words text-sm text-text">{item.body}</p>
                     {isTruncated && (
                       <button
                         type="button"
@@ -125,7 +139,7 @@ export function LessonDateList({ lessons, onDownloadAttachment }: LessonDateList
       <Dialog open={expandedItem !== null} onClose={() => setExpandedBodyId(null)} title={expandedItem?.title ?? "Lesson"}>
         <div className="flex flex-col gap-4 p-6">
           <h2 className="text-lg font-semibold text-text">{expandedItem?.title}</h2>
-          <p className="whitespace-pre-wrap text-sm text-text">{expandedItem?.body}</p>
+          <p className="whitespace-pre-wrap break-words text-sm text-text">{expandedItem?.body}</p>
           <div className="flex justify-end">
             <Button type="button" variant="outline" onClick={() => setExpandedBodyId(null)}>
               Close

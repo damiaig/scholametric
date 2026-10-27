@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, cleanup, waitFor } from "@testing-library/react";
+import { screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import type { Lesson, LessonListResponse, MyTeaching } from "@scholametric/shared";
@@ -12,6 +12,16 @@ vi.mock("../../lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api-client")>();
   return { ...actual, apiRequest: vi.fn() };
 });
+
+// StyledDatePicker's own correctness is proven once in
+// styled-date-picker.test.tsx — mocked here (the week filter's picker)
+// down to a plain native input, same convention LessonFormDialog.test.tsx
+// already established.
+vi.mock("../../components/ui/styled-date-picker", () => ({
+  StyledDatePicker: ({ id, value, onChange, placeholder }: { id?: string; value: string; onChange: (value: string) => void; placeholder?: string }) => (
+    <input id={id} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+  ),
+}));
 
 const mockedApiRequest = vi.mocked(apiRequest);
 
@@ -196,5 +206,65 @@ describe("LessonClassPage", () => {
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(mockedApiRequest).toHaveBeenCalledWith("/api/v1/lessons/les1", { method: "DELETE" }));
+  });
+
+  // v0.8.4 Lessons Read Polish (SPEC_V0.8.4_read_polish.md §2) — this page
+  // is already scoped to exactly one subject by construction (reached
+  // from one class+subject cell on the landing table), so the subject
+  // control is auto-hidden by LessonFilterBar's own ≤1-option rule — not
+  // an "is this the teacher page" branch anywhere in this file.
+  it("has no subject filter dropdown — this page is already scoped to one subject", async () => {
+    const list: LessonListResponse = { classArmId: "arm1", subjectId: "sub1", lessons: [lesson()] };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/me/teaching") return TEACHING;
+      if (path === "/api/v1/lessons") return list;
+      throw new Error(`unexpected call: ${path}`);
+    });
+    renderPage("/lessons/arms/arm1?subjectId=sub1");
+
+    await screen.findByText("Chapter 3: Fractions");
+    expect(screen.queryByRole("combobox", { name: "Subject" })).not.toBeInTheDocument();
+  });
+
+  it("week filter narrows the teacher's list too; 'Show all' restores it", async () => {
+    const list: LessonListResponse = {
+      classArmId: "arm1",
+      subjectId: "sub1",
+      lessons: [lesson({ id: "les-this-week", title: "This week", lessonDate: "2026-10-19" }), lesson({ id: "les-last-week", title: "Last week", lessonDate: "2026-10-12" })],
+    };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/me/teaching") return TEACHING;
+      if (path === "/api/v1/lessons") return list;
+      throw new Error(`unexpected call: ${path}`);
+    });
+    const user = userEvent.setup();
+    renderPage("/lessons/arms/arm1?subjectId=sub1");
+
+    await screen.findByText("This week");
+    expect(screen.getByText("Last week")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Week"), { target: { value: "2026-10-19" } });
+    expect(screen.queryByText("Last week")).not.toBeInTheDocument();
+    expect(screen.getByText("This week")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show all" }));
+    expect(screen.getByText("This week")).toBeInTheDocument();
+    expect(screen.getByText("Last week")).toBeInTheDocument();
+  });
+
+  it("a filtered-empty result shows a distinct message from the genuine no-lessons-yet state", async () => {
+    const list: LessonListResponse = { classArmId: "arm1", subjectId: "sub1", lessons: [lesson({ lessonDate: "2026-10-19" })] };
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/me/teaching") return TEACHING;
+      if (path === "/api/v1/lessons") return list;
+      throw new Error(`unexpected call: ${path}`);
+    });
+    renderPage("/lessons/arms/arm1?subjectId=sub1");
+
+    await screen.findByText("Chapter 3: Fractions");
+    fireEvent.change(screen.getByLabelText("Week"), { target: { value: "2026-01-05" } });
+
+    expect(await screen.findByText("No lessons match these filters.")).toBeInTheDocument();
+    expect(screen.queryByText("No lessons logged yet for this class and subject.")).not.toBeInTheDocument();
   });
 });
