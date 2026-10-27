@@ -117,3 +117,13 @@ export interface LessonUploadUrlIssueResponse {
 // and this package's own Zod/display layer. Display/UX only: the
 // server's own two-checkpoint check is the sole authority.
 export const LESSON_ATTACHMENT_CAP_BYTES = 20 * 1024 * 1024;
+
+// v0.8.4 step 5 (SPEC_V0.8.4.md §6 step 5) — a return-type declaration for
+// a shape the backend already returns today ({ downloadUrl, expiresAt }),
+// not a backend change. Distinct name from homework.ts's own
+// DownloadUrlResponse for the same export * barrel-collision reason as
+// LessonUploadUrlIssueResponse above.
+export interface LessonDownloadUrlResponse {
+  downloadUrl: string;
+  expiresAt: string;
+}

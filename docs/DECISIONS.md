@@ -8117,3 +8117,65 @@ attachment — which deletes the real Firebase object — delete lesson, hard-de
 the dev DB directly since the route only soft-deletes). Full backend e2e suite: 53 files,
 709/709 clean. Full frontend suite: 82 files, 548/548 clean. `pnpm typecheck`/`pnpm lint`
 clean in both workspaces. Zero `features/homework/` changes.
+
+## 2026-10-27 — v0.8.4 step 5: Lessons STUDENT + PARENT frontend (last build step)
+
+**Zero backend changes** — confirmed by `git status` showing nothing under `apps/api/`
+touched. `GET /me/lessons`, `GET /me/children/:childId/lessons`, and both attachment
+download-url routes already carried everything needed since Steps 2-3.
+
+**`features/lessons/` gained its read-only half**, mirroring `features/homework/`'s own
+STUDENT/PARENT surface: `MyLessonsPage.tsx` (forks `MyLessons`/`ChildLessons` by role,
+same shape as `MyHomeworkPage.tsx`), `LessonDateList.tsx` (the cahier-de-textes display),
+`use-my-lessons.ts`. The four-level structural read-only guarantee, confirmed at plan
+time and held through the build: no `markedDone`/`submissions`/`requiresUpload` field on
+`StudentLessonEntry` (the data contract itself has nothing to wire a control to); no
+`onMarkDone`/`onUploadFile`/`onDeleteSubmission` in `LessonDateList`'s prop interface (not
+optional-and-omitted the way `HomeworkDueDateList`'s `editable={false}` path works — the
+capability isn't declared); no `Checkbox`/`StyledFileInput` import in the file at all; and
+DOM-level absence tests (`queryByRole("checkbox")`, `querySelector('input[type="file"]')`)
+for both STUDENT and PARENT.
+
+**Child-switcher**: a plain `<select>` with `?childId=` in the URL, defaulting to the
+first linked child — NOT the card-style `ChildSwitcher.tsx` component. Confirmed at plan
+time (and re-verified during the build) that this component is used only by
+`ParentDashboard.tsx`; neither `MyHomeworkPage.tsx` nor `MyGradesPage.tsx` use it for this
+kind of read-list page either, so this isn't a Lessons-specific deviation.
+
+**`LessonDownloadUrlResponse`** added to `packages/shared/src/lessons.ts` — a return-type
+declaration for a shape the backend already returns (`{ downloadUrl, expiresAt }`), not a
+backend change. Distinct name from `homework.ts`'s own `DownloadUrlResponse` for the same
+`export *` barrel-collision reason as Step 4's `LessonUploadUrlIssueResponse`.
+
+**Heading ruling**: the lesson-date group heading is the bare relative date
+(`formatDueDateRelative`), no "Due"/"Logged"/"Taught" label — matches Step 4's own
+teacher-list inversion (which dropped Homework's "Due" prefix) and the cahier-de-textes
+framing already carries the meaning. If a real user misreads it during the walk, that's a
+trivial add then, not now.
+
+**Sidebar**: `PORTAL_LESSON_ITEM` (reuses Step 4's `NotebookText` icon), visible to both
+STUDENT and PARENT, inserted right after `PORTAL_HOMEWORK_ITEM`. Tested in
+`AppShell.test.tsx` for both roles — the portal-side anti-regression, matching Step 4's
+own discipline on the teacher side. Checked: `PORTAL_HOMEWORK_ITEM` itself has no test
+like this either, so this is the first time either portal sidebar entry gets one.
+
+**Test impact.** New `MyLessonsPage.test.tsx` (7 tests: grouped render + view-more,
+structural read-only absence, student download, empty state, parent read-only + download,
+parent no-children-linked empty state). 2 new tests in `AppShell.test.tsx` (STUDENT and
+PARENT see the Lessons link at `/me/lessons`). Proven end-to-end against the REAL running
+stack, not just mocked tests: created two scratch students (one enrolled in JSS 1A with a
+linked parent, one in JSS 2A with no lessons at all) plus a teacher-authored pair of
+lessons on adjacent past teaching days (one with a real Firebase-attached file), all
+directly against the dev DB/API — confirmed `GET /me/lessons` returns both lessons
+newest-first with the attachment on the right one; confirmed the STUDENT download-url
+round trip by fetching the signed URL and reading back the real uploaded file's exact
+content; confirmed the PARENT read view via `GET /me/children/:childId/lessons` reflects
+the same ordering and attachment; confirmed the PARENT download-url round trip the same
+way; confirmed the empty-lessons state via the second scratch student. All fixture rows,
+the real Firebase object, and the two scratch `ts-node` scripts used to create them were
+removed afterward — nothing live or scratch-only survives in the dev DB or the repo. Full
+backend e2e suite: 53 files, 709/709 clean (unchanged — no backend touched). Full frontend
+suite: 83 files, 557/557 clean. `pnpm typecheck`/`pnpm lint` clean in both workspaces.
+Zero `features/homework/` changes.
+
+This was the last build step for v0.8.4. Next: the walk, then tag v0.8.4.

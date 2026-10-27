@@ -314,7 +314,7 @@ describe("AppShell", () => {
     expect(await screen.findByRole("link", { name: "Lessons" })).toHaveAttribute("href", "/lessons");
   });
 
-  it("SCHOOL_ADMIN does not see a Lessons link yet (Step 4 is TEACHER-only)", async () => {
+  it("SCHOOL_ADMIN does not see a Lessons link yet (TEACHER/STUDENT/PARENT only)", async () => {
     authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
@@ -325,6 +325,34 @@ describe("AppShell", () => {
 
     await screen.findByRole("link", { name: "Dashboard" });
     expect(screen.queryByRole("link", { name: "Lessons" })).not.toBeInTheDocument();
+  });
+
+  // v0.8.4 step 5 (SPEC_V0.8.4.md §6 step 5) — the portal-side anti-
+  // regression: PORTAL_HOMEWORK_ITEM itself has no test like this one
+  // either (checked — it doesn't), so this is the first time either
+  // portal sidebar entry gets one.
+  it("STUDENT sees a Lessons link pointing at /me/lessons", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "STUDENT" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: "Lessons" })).toHaveAttribute("href", "/me/lessons");
+  });
+
+  it("PARENT sees a Lessons link pointing at /me/lessons", async () => {
+    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "PARENT" };
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: "Lessons" })).toHaveAttribute("href", "/me/lessons");
   });
 
   // SPEC_V0.5.1.md §2.7, v0.5.1 step 6 — Help is in BASE_NAV_ITEMS, visible
