@@ -85,7 +85,7 @@ afterEach(() => {
 // provisional) while adding the running-average summary strip.
 describe("StudentReportCardView", () => {
   it("shows the running average and per-subject details, with position staying 'Not yet ranked' while overall is still provisional", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
 
     renderWithProviders(<StudentReportCardView data={CARD} examsViewer={{ kind: "self" }} />);
@@ -104,7 +104,7 @@ describe("StudentReportCardView", () => {
   });
 
   it("running position shows as a plain #N once available, before the official overall exists", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
     const withRunningPosition: ReportCardResponse = { ...CARD, runningPosition: 1 };
 
@@ -115,7 +115,7 @@ describe("StudentReportCardView", () => {
   });
 
   it("evaluation rows show the Abs/—/score three-way and anonymous class avg/best/worst, never a classmate name", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
 
     renderWithProviders(<StudentReportCardView data={CARD} examsViewer={{ kind: "self" }} />);
@@ -128,7 +128,7 @@ describe("StudentReportCardView", () => {
   });
 
   it("once fully published, position resolves from overall (not the running position, even when both are present and disagree)", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
     const fullyPublished: ReportCardResponse = {
       ...CARD,
@@ -147,7 +147,7 @@ describe("StudentReportCardView", () => {
   });
 
   it("zero published subjects: shows the honest 'not yet published' empty state, not a raw 'no results entered' printout message", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
     const empty: ReportCardResponse = {
       ...CARD,
@@ -167,7 +167,7 @@ describe("StudentReportCardView", () => {
   });
 
   it("remarks always render read-only here, never a write form", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
     const withRemark: ReportCardResponse = {
       ...CARD,
@@ -192,7 +192,7 @@ describe("StudentReportCardView", () => {
   });
 
   it("needsTeacherAssignment renders its warning badge alongside the Published badge", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
     const needsAssignment: ReportCardResponse = {
       ...CARD,

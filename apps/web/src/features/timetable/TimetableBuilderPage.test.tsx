@@ -85,7 +85,7 @@ function renderPage(route = "/timetable/arms/arm1") {
 
 function mockLoad(opts: { subjectTeachers?: ClassArmDetail["subjectTeachers"]; schoolDays?: ClassSchoolDays[]; slots?: TimetableSlot[] } = {}) {
   const armDetail = { ...ARM_DETAIL, subjectTeachers: opts.subjectTeachers ?? ARM_DETAIL.subjectTeachers };
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
   mockedApiRequest.mockImplementation(async (path: string, options?: { method?: string; body?: unknown }) => {
     const method = options?.method ?? "GET";
     if (path.includes("/auth/me")) return ADMIN_USER;

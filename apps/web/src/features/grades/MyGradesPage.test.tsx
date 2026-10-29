@@ -86,7 +86,7 @@ afterEach(() => {
 // coverage unchanged, plus the new childId-in-the-URL behavior for PARENT.
 describe("MyGradesPage", () => {
   it("STUDENT: shows their own published subject via the shared report-card renderer, with a term picker defaulting to current", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockStudentApi();
 
     renderWithProviders(<MyGradesPage />);
@@ -102,7 +102,7 @@ describe("MyGradesPage", () => {
   });
 
   it("PARENT: shows a linked child's own published subject via the same shared renderer, through the child-switcher", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
       if (path.includes("/me/children/child-1/terms")) {
@@ -125,7 +125,7 @@ describe("MyGradesPage", () => {
   });
 
   it("PARENT: a childId already in the URL (e.g. from the dashboard's 'View all →') is honored directly, no default-child flicker", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
       if (path.includes("/me/children/child-2/terms")) {
@@ -150,7 +150,7 @@ describe("MyGradesPage", () => {
   });
 
   it("PARENT: an invalid/unknown childId in the URL falls back to the parent's first linked child", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
       if (path.includes("/me/children/child-1/terms")) {
@@ -170,7 +170,7 @@ describe("MyGradesPage", () => {
   });
 
   it("STUDENT with no terms yet: shows the empty state and hides the (unusable) Term picker", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
       if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: null };

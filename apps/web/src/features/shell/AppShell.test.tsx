@@ -53,7 +53,6 @@ describe("AppShell", () => {
   it("renders the school name from /auth/me in the sidebar", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
@@ -72,7 +71,6 @@ describe("AppShell", () => {
   it("logging out clears auth state and redirects to /login", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
@@ -96,7 +94,6 @@ describe("AppShell", () => {
   it("TEACHER: Personnel and Settings are absent from the sidebar; Teachers/Classes are present", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me"))
@@ -121,7 +118,6 @@ describe("AppShell", () => {
   it("TEACHER: the Dashboard nav item reads 'My Classes' (same route); SCHOOL_ADMIN sees 'Dashboard'", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me"))
@@ -141,7 +137,6 @@ describe("AppShell", () => {
   it("PROPRIETOR sees everything SCHOOL_ADMIN does, including Personnel and Settings", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me"))
@@ -164,7 +159,6 @@ describe("AppShell", () => {
   it("TEACHER sees a Grades link pointing at the new pick-a-class page (/grades)", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me"))
@@ -183,7 +177,6 @@ describe("AppShell", () => {
   it("STUDENT sees a Grades link pointing at the existing /me/grades page", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me"))
@@ -202,7 +195,6 @@ describe("AppShell", () => {
   it("PARENT sees a Grades link pointing at the existing /me/grades page", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "PARENT" };
@@ -225,7 +217,6 @@ describe("AppShell", () => {
   it("SCHOOL_ADMIN/PROPRIETOR now get a Grades sidebar item too, pointing at /grades", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
@@ -246,7 +237,7 @@ describe("AppShell", () => {
   // roles, at the point where they get real everyday content for the
   // first time.
   it("TEACHER sees a Timetable link pointing at /timetable/mine", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -258,7 +249,7 @@ describe("AppShell", () => {
   });
 
   it("STUDENT sees a Timetable link pointing at /me/timetable", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "STUDENT" };
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -270,7 +261,7 @@ describe("AppShell", () => {
   });
 
   it("PARENT sees a Timetable link pointing at /me/timetable", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "PARENT" };
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -285,7 +276,7 @@ describe("AppShell", () => {
   // admin/proprietor's three separate calendar cards are gone, replaced
   // by one grouped "Timetable" sidebar item pointing at the hub.
   it("SCHOOL_ADMIN/PROPRIETOR see a Timetable link pointing at the hub (/timetable)", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -303,7 +294,7 @@ describe("AppShell", () => {
   // staging as Homework's own HOMEWORK_ITEM (no SCHOOL_ADMIN/PROPRIETOR
   // or portal entry yet — Step 5's job).
   it("TEACHER sees a Lessons link pointing at /lessons", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "TEACHER" };
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -315,7 +306,7 @@ describe("AppShell", () => {
   });
 
   it("SCHOOL_ADMIN does not see a Lessons link yet (TEACHER/STUDENT/PARENT only)", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -332,7 +323,7 @@ describe("AppShell", () => {
   // either (checked — it doesn't), so this is the first time either
   // portal sidebar entry gets one.
   it("STUDENT sees a Lessons link pointing at /me/lessons", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "STUDENT" };
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -344,7 +335,7 @@ describe("AppShell", () => {
   });
 
   it("PARENT sees a Lessons link pointing at /me/lessons", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...CURRENT_USER, role: "PARENT" };
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -360,7 +351,6 @@ describe("AppShell", () => {
   it("Help is visible in the sidebar for both SCHOOL_ADMIN and TEACHER", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return CURRENT_USER;
@@ -375,7 +365,6 @@ describe("AppShell", () => {
     cleanup();
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me"))

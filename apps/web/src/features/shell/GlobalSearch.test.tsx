@@ -36,7 +36,7 @@ const MATCH: Student = {
 };
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

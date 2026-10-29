@@ -50,7 +50,7 @@ function gridResponse(overrides: Partial<EvaluationScoresResponse["rows"][number
 }
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 // SPEC_V0.7.1.md §3 (item 6) — EvaluationPicker renders a clickable list,

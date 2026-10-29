@@ -21,6 +21,27 @@ one envelope everywhere:
 
 ## Auth
 
+**v0.8.5 step 1 (SPEC_V0.8.5.md §2) — the refresh token moved into an
+httpOnly cookie.** It never appears in a request or response BODY anywhere
+in this section anymore — login/refresh/change-password set it via
+`Set-Cookie`, refresh/logout read it back from the `Cookie` header. Cookie
+attributes, every time it's set: `HttpOnly`, `SameSite=Lax`, `Secure` in
+production only (env-keyed off `NODE_ENV`, never set over local http in
+dev), `Path=/auth` (sent only to this section's own endpoints, never on
+every API call), `Max-Age` = 7 days (the refresh lifetime). The access
+token is unaffected — still a normal JSON body field, still 15 minutes.
+
+**CSRF**: `POST /auth/refresh` and `POST /auth/logout` (never login) also
+require a custom `X-Requested-With` header on every call (any non-empty
+value) — defense-in-depth on top of `SameSite=Lax`. Missing it → `403`,
+before the database is touched.
+
+**CORS**: the API sets `Access-Control-Allow-Credentials: true` (with an
+explicit single origin, never `*`). A client must send `credentials:
+"include"` on every one of these calls — without it, the browser won't
+send or store the cookie at all, even same-site across ports (dev's
+5173 → 3000).
+
 ### `POST /auth/login`
 
 Public. Rate limited: 10 req/min per IP.
@@ -36,11 +57,11 @@ staff email always contains `@`; a provisioned username never does
 (`family-coding.util.ts`). `schoolSlug` scopes the lookup (the same email
 may exist at two schools; usernames are only unique per school too).
 
-**Response `200`**
+**Response `200`** — body carries only the access token + user; the
+refresh token is set as the httpOnly cookie described above, never here:
 ```json
 {
   "accessToken": "...",
-  "refreshToken": "...",
   "user": {
     "id": "...",
     "email": "admin@sunrise.test",
@@ -70,24 +91,38 @@ every other wrong combination, not with its own signal):
 
 ### `POST /auth/refresh`
 
-Public.
+Public (no access token needed) — but CSRF-guarded (see above) and reads
+its refresh token from the cookie, never a body field. **No body at all.**
 
-**Body**: `{ "refreshToken": "..." }`
+**Response `200`**: `{ "accessToken": "..." }` — the rotated refresh token
+is set as a fresh cookie, not returned here. The presented refresh token
+is revoked on use (rotation).
 
-**Response `200`**: new `{ accessToken, refreshToken }` pair. The presented
-refresh token is revoked on use (rotation).
+**Response `401`**: missing cookie, unparseable cookie value, or an
+unknown/expired/already-revoked token. Presenting an already-revoked
+token is treated as reuse and revokes every other active refresh token
+for that user (forces re-login everywhere) — unchanged this step (v0.8.5
+step 2's job; see docs/SPEC_V0.8.5.md §5).
 
-**Response `401`**: unknown, expired, or already-revoked token. Presenting an
-already-revoked token is treated as reuse and revokes every other active
-refresh token for that user (forces re-login everywhere).
+**Response `403`**: missing the `X-Requested-With` header.
 
 ### `POST /auth/logout`
 
-Requires a valid access token.
+Requires a valid access token (unchanged — the cookie alone doesn't carry
+`userId`, so the access token is still what identifies whose chain to
+revoke) + the `X-Requested-With` header. Reads the refresh token from the
+cookie — **no body**. Reworked this step (SPEC_V0.8.5.md §2), not new: it
+already existed, only the token's source/transport changed.
 
-**Body**: `{ "refreshToken": "..." }` — revokes that refresh token.
+Clears the cookie (`Set-Cookie` with an already-past `Expires` — Express's
+own `res.clearCookie()` behavior) and revokes the refresh token found in
+the cookie, if any. **Idempotent**: no cookie present (already logged
+out, or never had one) is a harmless no-op, never a `401` — logging out
+twice, or with a stale/absent cookie, always succeeds.
 
 **Response `200`**: `{ "success": true }`
+
+**Response `403`**: missing the `X-Requested-With` header.
 
 ### `GET /auth/me`
 
@@ -141,7 +176,10 @@ swap tokens and immediately stop being blocked by the guard below — without
 this, the caller's own pre-existing access token would keep the stale
 `mustChangePassword: true` claim until it naturally expired.
 
-**Response `200`**: `{ accessToken, refreshToken }`.
+**v0.8.5 step 1** — a third reissuing endpoint caught by sweeping every
+call site that touched a refresh token: this one also moved to the cookie,
+same as login/refresh. **Response `200`**: `{ accessToken }`, with the
+fresh refresh token set as the httpOnly cookie — never in this body.
 
 **Response `401`**: `currentPassword` doesn't match.
 

@@ -88,7 +88,7 @@ describe("TeacherTimetablePage", () => {
   // if the page ever calls it again, the catch-all `throw` below fails
   // the test immediately with a clear message, not a silent pass.
   it("defaults to the Agenda tab showing today, showing which class each period belongs to — no GET /calendar/periods call", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/me/teaching-timetable") return response();
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -104,7 +104,7 @@ describe("TeacherTimetablePage", () => {
   });
 
   it("switches to the Full week tab, rendering the grid built from the timetable response alone", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/me/teaching-timetable") return response();
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -125,7 +125,7 @@ describe("TeacherTimetablePage", () => {
   // not break this page — proves the grid genuinely doesn't depend on it,
   // not just that the test happens not to exercise the call.
   it("renders the Full week grid even if GET /calendar/periods would 403", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/me/teaching-timetable") return response();
       if (path === "/api/v1/calendar/periods") throw new Error("Forbidden");
@@ -147,7 +147,7 @@ describe("TeacherTimetablePage", () => {
   // the same unit once a date-picker can jump to any day). Previous is
   // still gone from the Full-week control too (removed in the prior pass).
   it("Full week's Next-week navigation shifts only the week query; the Agenda tab's date is untouched; no Previous control exists", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const weekRanges: { from: string; to: string }[] = [];
     const agendaDates: string[] = [];
     mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
@@ -186,7 +186,7 @@ describe("TeacherTimetablePage", () => {
   // nav, its own independent state: Next/Previous/pick-a-date/Today, and
   // the floor (Previous disabled on today).
   it("Agenda day navigation (Next/Previous/pick/Today) shifts only the day query; Full week's range is untouched", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const agendaDates: string[] = [];
     const weekRanges: { from: string; to: string }[] = [];
     mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
@@ -232,7 +232,7 @@ describe("TeacherTimetablePage", () => {
   // the teacher-mode branch of filterWeekDays, distinct from the
   // WEEKEND-flag check used for the student/parent class view.
   it("Full week grid drops an all-free Saturday for the teacher, shows Mon-Fri with correct dates, no Sunday column", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const oneDay = response("2026-09-14").days[0];
     const weekResponse: TeacherTimetableResponse = {
       teacherUserId: "t1",
@@ -264,7 +264,7 @@ describe("TeacherTimetablePage", () => {
   });
 
   it("offers 'Mark absent' regardless of which tab is active", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/me/teaching-timetable") return response();
       throw new Error(`unexpected apiRequest call: ${path}`);
@@ -280,7 +280,7 @@ describe("TeacherTimetablePage", () => {
   // unconditionally regardless of active tab) — a full Mon-Fri/Sat week of
   // dates to mark absence on, even while the Agenda tab is showing one day.
   it("'Mark absent' offers every school day from the full week, not just the single agenda day", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const oneDay = response("2026-09-14").days[0];
     const weekResponse: TeacherTimetableResponse = {
       teacherUserId: "t1",
@@ -313,7 +313,7 @@ describe("TeacherTimetablePage", () => {
   });
 
   it("shows an error state with retry when the timetable fails to load", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/me/teaching-timetable") throw new Error("boom");
       throw new Error(`unexpected apiRequest call: ${path}`);

@@ -46,7 +46,7 @@ const OPEN_TERM: Term = {
 const CLOSED_TERM: Term = { ...OPEN_TERM, id: "term2", name: "SECOND", isCurrent: false, closedAt: "2027-01-20T09:00:00Z", closedBy: "u1" };
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

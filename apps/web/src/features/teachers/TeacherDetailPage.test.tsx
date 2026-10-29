@@ -72,7 +72,7 @@ const SUBJECTS: Subject[] = [
 ];
 
 function renderPage(role: string = "SCHOOL_ADMIN") {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
   mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
     if (path.includes("/auth/me")) return { ...SCHOOL_ADMIN_USER, role };
     if (path.includes("/teachers/t-1")) return teacherDetail();

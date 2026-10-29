@@ -27,7 +27,22 @@ interface RequestOptions {
   // them. Callers that know their 401 means "the submitted data was
   // wrong," not "my token expired," opt out of the retry-then-logout path.
   skipAuthRetry?: boolean;
+  /**
+   * v0.8.5 step 1 (SPEC_V0.8.5.md §4) — extra headers merged into the
+   * request, on top of Content-Type/Authorization. Used only to attach
+   * the CSRF_HEADER on the two cookie-reliant auth calls (refresh,
+   * logout) — regular API calls never need this, and adding a custom
+   * header to EVERY request would force a CORS preflight on every single
+   * call instead of just those two.
+   */
+  headers?: Record<string, string>;
 }
+
+// v0.8.5 step 1 (SPEC_V0.8.5.md §4) — the defense-in-depth CSRF header the
+// backend's CsrfHeaderGuard requires on /auth/refresh and /auth/logout.
+// Presence-only check server-side; this exact value is just the
+// conventional one (matches what jQuery/XHR have historically auto-set).
+export const CSRF_HEADER = { "X-Requested-With": "XMLHttpRequest" };
 
 function buildUrl(path: string, query?: RequestOptions["query"]): string {
   const url = new URL(`${API_URL}${path}`);
@@ -42,9 +57,18 @@ function buildUrl(path: string, query?: RequestOptions["query"]): string {
 async function rawFetch<T>(path: string, options: RequestOptions, accessToken?: string): Promise<T> {
   const response = await fetch(buildUrl(path, options.query), {
     method: options.method ?? "GET",
+    // v0.8.5 step 1 (SPEC_V0.8.5.md §4) — required for the refresh cookie
+    // to flow at all: a fetch without this won't send a cookie cross-
+    // origin, and won't store one from a cross-origin Set-Cookie either
+    // (dev's 5173 -> 3000 is cross-origin despite being same-site).
+    // Unconditional and harmless on every other call — the cookie's own
+    // Path=/auth means it's simply never sent/received outside auth
+    // endpoints regardless.
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...options.headers,
     },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
@@ -68,6 +92,14 @@ export function publicApiRequest<T>(path: string, options: RequestOptions = {}):
 // refresh token on every use and revokes the whole session on reuse, so two
 // independent refresh calls racing each other would log the user out. See
 // docs/DECISIONS.md.
+//
+// v0.8.5 step 1 (SPEC_V0.8.5.md §2) — the refresh token itself is never
+// read from or sent in a body anymore; it rides along automatically as
+// the httpOnly cookie (credentials:"include" on rawFetch is what makes
+// that happen). The `current` check below still guards "is there even an
+// access token in memory" — if not, there's no live session to refresh
+// (reload wipes this store entirely; re-establishing a session from the
+// cookie alone is step 3's boot-rehydration job, not this one).
 let refreshPromise: Promise<RefreshResponse> | null = null;
 
 function refreshTokens(): Promise<RefreshResponse> {
@@ -76,11 +108,11 @@ function refreshTokens(): Promise<RefreshResponse> {
   }
   const current = authStore.getState();
   if (!current) {
-    return Promise.reject(new Error("No refresh token available"));
+    return Promise.reject(new Error("No active session to refresh"));
   }
   refreshPromise = rawFetch<RefreshResponse>("/api/v1/auth/refresh", {
     method: "POST",
-    body: { refreshToken: current.refreshToken },
+    headers: CSRF_HEADER,
   }).finally(() => {
     refreshPromise = null;
   });

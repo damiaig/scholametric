@@ -5,12 +5,36 @@ import bcrypt from "bcrypt";
 import request from "supertest";
 import { createTestApp } from "./utils/create-test-app";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { generateOpaqueToken, hashToken } from "../src/auth/refresh-token.util";
+import type { AccessTokenPayload } from "../src/auth/types/jwt-payload.type";
 
 // Matches prisma/seed.ts SEED_PASSWORD — seeded demo credentials, not a real secret.
 const SEED_PASSWORD = "Passw0rd!";
 const SUNRISE_ADMIN_EMAIL = "admin@sunrise.test";
 const SUNRISE_SLUG = "sunrise";
 const HILLCREST_SLUG = "hillcrest";
+
+// v0.8.5 step 1 (SPEC_V0.8.5.md §4) — the CSRF header CsrfHeaderGuard
+// requires on /auth/refresh and /auth/logout (presence-only check; this
+// exact value doesn't matter to the backend).
+const CSRF_HEADER = { "X-Requested-With": "XMLHttpRequest" };
+
+// v0.8.5 step 1 (SPEC_V0.8.5.md §2) — the refresh token travels only as an
+// httpOnly cookie now, never a body field: these two helpers are this
+// file's whole "cookie jar," since no existing e2e file uses supertest's
+// request.agent() and introducing one just for auth's own describe blocks
+// isn't worth it. findSetCookie reads a Set-Cookie response header;
+// asCookieHeader strips it down to the bare "name=value" a later request's
+// own Cookie header needs (dropping Path/HttpOnly/Max-Age etc.).
+function findSetCookie(response: request.Response, name: string): string | undefined {
+  const raw = response.headers["set-cookie"] as unknown as string[] | string | undefined;
+  const cookies = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  return cookies.find((c) => c.startsWith(`${name}=`));
+}
+
+function asCookieHeader(setCookieString: string): string {
+  return setCookieString.split(";")[0];
+}
 
 // Low bcrypt cost — test-only fixtures, same convention as
 // teacher-visibility.e2e-spec.ts's scratch teacher.
@@ -106,20 +130,60 @@ describe("Auth (e2e)", () => {
         ...overrides,
       });
 
+  // v0.8.5 step 1 — both helpers below exist specifically to test
+  // refresh/logout WITHOUT spending POST /auth/login's throttle quota
+  // (10/min/IP, unchanged this step): a planted refreshToken row and a
+  // directly-signed access token exercise the exact same guard/service
+  // code a real login would reach, without calling the throttled route.
+
+  async function plantRefreshToken(userId: string, rawValue: string = generateOpaqueToken()): Promise<string> {
+    await prisma.refreshToken.create({
+      data: { userId, tokenHash: hashToken(rawValue), expiresAt: new Date(Date.now() + 60 * 60 * 1000) },
+    });
+    return rawValue;
+  }
+
+  async function signAccessToken(userId: string, schoolId: string): Promise<string> {
+    const jwtService = app.get(JwtService);
+    const configService = app.get(ConfigService);
+    const payload: AccessTokenPayload = { sub: userId, schoolId, role: "SCHOOL_ADMIN", mustChangePassword: false };
+    return jwtService.signAsync(payload, { secret: configService.getOrThrow<string>("JWT_ACCESS_SECRET"), expiresIn: "15m" });
+  }
+
   describe("POST /auth/login", () => {
-    it("logs in with valid credentials", async () => {
+    it("logs in with valid credentials — accessToken+user in the body, refreshToken ONLY as an httpOnly cookie", async () => {
       const response = await login();
 
       expect(response.status).toBe(200);
       expect(response.body).toEqual({
         accessToken: expect.any(String),
-        refreshToken: expect.any(String),
         user: expect.objectContaining({
           email: SUNRISE_ADMIN_EMAIL,
           role: "SCHOOL_ADMIN",
           school: expect.objectContaining({ slug: SUNRISE_SLUG }),
         }),
       });
+      expect(response.body).not.toHaveProperty("refreshToken");
+
+      // v0.8.5 step 1 (SPEC_V0.8.5.md §2/§8 flag 3) — cookie attributes:
+      // httpOnly, Path=/auth (never sent on every API call), and a
+      // Max-Age matching the 7d refresh lifetime. Secure is env-keyed
+      // (SPEC_V0.8.5.md §8 flag 1) — off whenever NODE_ENV isn't
+      // "production" (Secure cookies won't set over local http at all),
+      // on in production; createTestApp() boots under this repo's own
+      // .env (NODE_ENV=development), so this confirms the OFF side of
+      // that branch here, folded into this same login rather than a
+      // separate test (every extra login() call eats into the
+      // unchanged-this-step 10/min throttle the rest of this file is
+      // already right at the edge of).
+      const setCookie = findSetCookie(response, "refreshToken");
+      expect(setCookie).toBeDefined();
+      expect(setCookie).toMatch(/HttpOnly/i);
+      expect(setCookie).toMatch(/Path=\/auth/i);
+      expect(setCookie).not.toMatch(/Secure/i);
+      const maxAgeMatch = setCookie!.match(/Max-Age=(\d+)/i);
+      expect(maxAgeMatch).not.toBeNull();
+      expect(Number(maxAgeMatch![1])).toBe(7 * 24 * 60 * 60); // 7 days, in seconds
     });
 
     // v0.6 step 2 (SPEC_V0.6.md §2.2): STUDENT/PARENT log in with the SAME
@@ -130,13 +194,13 @@ describe("Auth (e2e)", () => {
       expect(response.status).toBe(200);
       expect(response.body).toEqual({
         accessToken: expect.any(String),
-        refreshToken: expect.any(String),
         user: expect.objectContaining({
           email: null,
           role: "STUDENT",
           school: expect.objectContaining({ slug: SUNRISE_SLUG }),
         }),
       });
+      expect(response.body).not.toHaveProperty("refreshToken");
     });
 
     // The core anti-enumeration guarantee, extended to usernames: no
@@ -243,6 +307,11 @@ describe("Auth (e2e)", () => {
         .set("Authorization", `Bearer ${staleToken}`)
         .send({ currentPassword: MUST_CHANGE_TEMP_PASSWORD, newPassword: "a-new-password-8+chars" });
       expect(changePassword.status).toBe(200);
+      // v0.8.5 step 1 — change-password reissues a token pair too (to clear
+      // the stale claim); its refresh token moves to the cookie exactly
+      // like login/refresh, never the body.
+      expect(changePassword.body).not.toHaveProperty("refreshToken");
+      expect(findSetCookie(changePassword, "refreshToken")).toBeDefined();
       const freshToken = changePassword.body.accessToken as string;
 
       // Retry the same route with the FRESH token (change-password reissues
@@ -262,46 +331,153 @@ describe("Auth (e2e)", () => {
   });
 
   describe("refresh rotation and reuse detection", () => {
+    // v0.8.5 step 1 — ported to cookies, not deleted: the underlying
+    // rotation/reuse-detection BEHAVIOR is explicitly unchanged this step
+    // (Step 2's job is the family_id rework that flips the final
+    // assertion below from "also dead" to "still valid" — see
+    // SPEC_V0.8.5.md §5). Only the token's SOURCE/transport moves.
     it("rotates on use, kills the old token, and revokes the whole family on reuse", async () => {
       const loginResponse = await login();
-      const refreshToken1 = loginResponse.body.refreshToken as string;
+      const cookie1 = findSetCookie(loginResponse, "refreshToken")!;
 
       const firstRefresh = await request(app.getHttpServer())
         .post("/api/v1/auth/refresh")
-        .send({ refreshToken: refreshToken1 });
+        .set("Cookie", asCookieHeader(cookie1))
+        .set(CSRF_HEADER);
       expect(firstRefresh.status).toBe(200);
-      const refreshToken2 = firstRefresh.body.refreshToken as string;
-      expect(refreshToken2).not.toBe(refreshToken1);
+      expect(firstRefresh.body).not.toHaveProperty("refreshToken");
+      const cookie2 = findSetCookie(firstRefresh, "refreshToken")!;
+      expect(asCookieHeader(cookie2)).not.toBe(asCookieHeader(cookie1));
 
-      // refreshToken1 is dead after use.
+      // The old cookie is dead after use.
       const reuseAttempt = await request(app.getHttpServer())
         .post("/api/v1/auth/refresh")
-        .send({ refreshToken: refreshToken1 });
+        .set("Cookie", asCookieHeader(cookie1))
+        .set(CSRF_HEADER);
       expect(reuseAttempt.status).toBe(401);
 
-      // Reuse revoked the whole family — refreshToken2 (the newest) is dead too.
+      // Reuse revoked the whole family — the NEWEST cookie is dead too
+      // (today's pre-family_id behavior; Step 2 changes this).
       const secondTokenAttempt = await request(app.getHttpServer())
         .post("/api/v1/auth/refresh")
-        .send({ refreshToken: refreshToken2 });
+        .set("Cookie", asCookieHeader(cookie2))
+        .set(CSRF_HEADER);
       expect(secondTokenAttempt.status).toBe(401);
+    });
+
+    it("401s with no cookie at all", async () => {
+      const response = await request(app.getHttpServer()).post("/api/v1/auth/refresh").set(CSRF_HEADER);
+      expect(response.status).toBe(401);
+    });
+
+    it("401s with a garbage cookie value, not a 500", async () => {
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/auth/refresh")
+        .set("Cookie", "refreshToken=not-a-real-token")
+        .set(CSRF_HEADER);
+      expect(response.status).toBe(401);
+    });
+
+    // v0.8.5 step 1 (SPEC_V0.8.5.md §8 flag 1) — the exact defensive case
+    // Flag 1 called out: a token value containing BOTH "=" and "." (never
+    // split("="), decodeURIComponent the percent-encoded "=" correctly).
+    // The real opaque token generator never produces these characters
+    // today, so this test manually plants a refreshToken row whose VALUE
+    // does, then sends it exactly as the browser would have received it
+    // from a real Set-Cookie (confirmed empirically: Express's own
+    // `cookie` package serializes "abc=def.ghi" as "abc%3Ddef.ghi" on the
+    // wire — "." needs no encoding at all). A 200 here proves the full
+    // real pipeline (cookie extraction -> decodeURIComponent -> hashToken
+    // -> DB lookup) recovers the byte-for-byte original value, not a
+    // truncated one — a parser that `split("=")`'d instead would hash
+    // "abc" alone and never find this row.
+    it("round-trips a refresh token value containing '=' and '.' correctly", async () => {
+      await plantRefreshToken(adminUserId, "abc=def.ghi");
+
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/auth/refresh")
+        .set("Cookie", "refreshToken=abc%3Ddef.ghi")
+        .set(CSRF_HEADER);
+      expect(response.status).toBe(200);
+    });
+
+    // v0.8.5 step 1 — avoids a real login() on purpose: POST /auth/login
+    // is throttled at 10/min/IP (unchanged this step, SPEC_V0.8.5.md §1),
+    // and this file's own login-based tests already sit right at that
+    // boundary. A directly-planted refreshToken row exercises the exact
+    // same guard/service path without spending login quota.
+    it("401s a refresh call missing the CSRF header, before touching the database", async () => {
+      const rawValue = await plantRefreshToken(adminUserId);
+
+      const response = await request(app.getHttpServer()).post("/api/v1/auth/refresh").set("Cookie", `refreshToken=${rawValue}`);
+      expect(response.status).toBe(403);
+
+      // The cookie is still live — a missing-header rejection must not
+      // have consumed/rotated it.
+      const realRefresh = await request(app.getHttpServer())
+        .post("/api/v1/auth/refresh")
+        .set("Cookie", `refreshToken=${rawValue}`)
+        .set(CSRF_HEADER);
+      expect(realRefresh.status).toBe(200);
     });
   });
 
   describe("POST /auth/logout", () => {
-    it("revokes the presented refresh token; refresh after logout fails", async () => {
+    // The one logout test that goes through a real login() — worth
+    // exercising the primary proof (clears + revokes) against a cookie
+    // the LOGIN endpoint itself issued, not just a planted row.
+    it("clears the cookie and revokes the refresh token; the old cookie then 401s on refresh", async () => {
       const loginResponse = await login();
-      const { accessToken, refreshToken } = loginResponse.body;
+      const { accessToken } = loginResponse.body;
+      const cookie = findSetCookie(loginResponse, "refreshToken")!;
 
       const logoutResponse = await request(app.getHttpServer())
         .post("/api/v1/auth/logout")
         .set("Authorization", `Bearer ${accessToken}`)
-        .send({ refreshToken });
+        .set("Cookie", asCookieHeader(cookie))
+        .set(CSRF_HEADER);
       expect(logoutResponse.status).toBe(200);
+
+      // res.clearCookie() sends an empty value with an already-past
+      // Expires (confirmed: Express's own implementation, not Max-Age=0)
+      // — the browser's own instruction to delete it immediately.
+      const clearedCookie = findSetCookie(logoutResponse, "refreshToken");
+      expect(clearedCookie).toBeDefined();
+      expect(clearedCookie).toMatch(/^refreshToken=;/);
+      expect(clearedCookie).toMatch(/Expires=Thu, 01 Jan 1970/i);
 
       const refreshAfterLogout = await request(app.getHttpServer())
         .post("/api/v1/auth/refresh")
-        .send({ refreshToken });
+        .set("Cookie", asCookieHeader(cookie))
+        .set(CSRF_HEADER);
       expect(refreshAfterLogout.status).toBe(401);
+    });
+
+    // v0.8.5 step 1 (SPEC_V0.8.5.md §2) — logout is idempotent: no cookie
+    // present (already logged out, or never had one) is a harmless no-op,
+    // never a 401 — the caller's INTENT ("make sure I'm logged out") is
+    // satisfiable even with nothing left to revoke. A directly-signed
+    // access token (no login(), no DB row — there's nothing to revoke
+    // either way) avoids spending login throttle quota for this case.
+    it("logging out with no refresh cookie still succeeds (idempotent, not a 401)", async () => {
+      const accessToken = await signAccessToken(adminUserId, sunriseSchoolId);
+
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/auth/logout")
+        .set("Authorization", `Bearer ${accessToken}`)
+        .set(CSRF_HEADER);
+      expect(response.status).toBe(200);
+    });
+
+    it("403s a logout call missing the CSRF header", async () => {
+      const accessToken = await signAccessToken(adminUserId, sunriseSchoolId);
+      const rawValue = await plantRefreshToken(adminUserId);
+
+      const response = await request(app.getHttpServer())
+        .post("/api/v1/auth/logout")
+        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Cookie", `refreshToken=${rawValue}`);
+      expect(response.status).toBe(403);
     });
   });
 });

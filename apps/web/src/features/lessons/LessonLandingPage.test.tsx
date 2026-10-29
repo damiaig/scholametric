@@ -22,7 +22,7 @@ const TEACHING: MyTeaching = {
 };
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

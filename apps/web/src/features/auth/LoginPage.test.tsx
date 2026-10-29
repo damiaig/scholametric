@@ -95,7 +95,6 @@ describe("LoginPage", () => {
       if (path.includes("/auth/login")) {
         return {
           accessToken: "access-token",
-          refreshToken: "refresh-token",
           user: {
             id: "u1",
             email: "admin@sunrise.test",
@@ -118,7 +117,7 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(await screen.findByText("Dashboard placeholder")).toBeInTheDocument();
-    expect(authStore.getState()).toEqual({ accessToken: "access-token", refreshToken: "refresh-token" });
+    expect(authStore.getState()).toEqual({ accessToken: "access-token" });
   });
 
   // v0.6 step 2 (SPEC_V0.6.md §2.2): the SAME field/form works for a
@@ -130,7 +129,6 @@ describe("LoginPage", () => {
         expect(options?.body).toEqual({ schoolSlug: "sunrise", identifier: "OKAFOR1", password: "483920" });
         return {
           accessToken: "access-token",
-          refreshToken: "refresh-token",
           user: {
             id: "u2",
             email: null,
@@ -153,7 +151,7 @@ describe("LoginPage", () => {
     await user.type(screen.getByLabelText("Password"), "483920");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
-    expect(authStore.getState()).toEqual({ accessToken: "access-token", refreshToken: "refresh-token" });
+    expect(authStore.getState()).toEqual({ accessToken: "access-token" });
   });
 
   it("failed login shows the generic error sentence", async () => {

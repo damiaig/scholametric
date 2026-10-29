@@ -79,7 +79,7 @@ function mockCommon(role: "SCHOOL_ADMIN" | "PROPRIETOR", review: ExamReviewRespo
 }
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

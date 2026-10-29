@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 function mockLoad(classes: ClassLevelOverview[] = CLASSES) {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
   mockedApiRequest.mockImplementation(async (path: string) => {
     if (path.includes("/auth/me")) return ADMIN_USER;
     if (path === "/api/v1/classes") return classes;
@@ -83,7 +83,7 @@ describe("TimetableLandingPage", () => {
   });
 
   it("shows an error state with retry when classes fail to load", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return ADMIN_USER;
       if (path === "/api/v1/classes") throw new Error("boom");

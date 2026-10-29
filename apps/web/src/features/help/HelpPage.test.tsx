@@ -42,7 +42,7 @@ afterEach(() => {
 // admin-only power (publish/override/term close-unlock), and vice versa.
 describe("HelpPage", () => {
   it("SCHOOL_ADMIN/PROPRIETOR: sees the admin guide (setup, entering, review/publish, override, mark-absent-after-publish, terms, assessment structure)", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockUser("SCHOOL_ADMIN");
     renderWithProviders(<HelpPage />);
 
@@ -60,7 +60,7 @@ describe("HelpPage", () => {
   });
 
   it("PROPRIETOR sees the same admin guide as SCHOOL_ADMIN", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockUser("PROPRIETOR");
     renderWithProviders(<HelpPage />);
 
@@ -69,7 +69,7 @@ describe("HelpPage", () => {
   });
 
   it("TEACHER: sees only their own guide (classes, entering grades, class remarks) — never publish/override/term-lock/assessment-structure", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockUser("TEACHER");
     renderWithProviders(<HelpPage />);
 
@@ -94,7 +94,7 @@ describe("HelpPage", () => {
   });
 
   it("SCHOOL_ADMIN guide never mentions the portal-only username login or child-switcher copy", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockUser("SCHOOL_ADMIN");
     renderWithProviders(<HelpPage />);
 
@@ -108,7 +108,7 @@ describe("HelpPage", () => {
   // property, same as TEACHER above: never an admin-only power, in either
   // direction.
   it("STUDENT: sees login/results/published-only/read-only guidance — never an admin power, never the parent child-switcher", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockUser("STUDENT");
     renderWithProviders(<HelpPage />);
 
@@ -128,7 +128,7 @@ describe("HelpPage", () => {
   });
 
   it("PARENT: sees login/child-switcher/published-only/read-only guidance, including what to do if a child is missing — never an admin power", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockUser("PARENT");
     renderWithProviders(<HelpPage />);
 

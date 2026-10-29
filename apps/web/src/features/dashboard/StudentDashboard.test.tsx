@@ -166,7 +166,7 @@ afterEach(() => {
 
 describe("StudentDashboard", () => {
   it("renders the three metric cards straight from overall (average, class average, position)", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
 
     renderWithProviders(<StudentDashboard />);
@@ -180,7 +180,7 @@ describe("StudentDashboard", () => {
   });
 
   it("a null overall (nothing published yet) shows dashes, not a crash or a fake 0", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
       if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" };
@@ -207,7 +207,7 @@ describe("StudentDashboard", () => {
   // a dash) that motivated this cycle. `overall` stays null — position
   // still reads "Not yet ranked", only the average card changes.
   it("overall still null but the running average has a value: shows the running average, not a dash", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
       if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" };
@@ -232,7 +232,7 @@ describe("StudentDashboard", () => {
   // ranked" all term (only the average card got the running-figure
   // treatment in step 3). `overall` stays null throughout.
   it("overall still null but the running class average and running position have values: shows both, not a dash/unranked", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
       if (path.includes("/me/profile")) return { studentId: "st1", firstName: "Chidi", lastName: "Okafor", currentClassArmLabel: "JSS 1 A" };
@@ -254,7 +254,7 @@ describe("StudentDashboard", () => {
   });
 
   it("'Your grades' shows the most recent evaluation and exam per subject, with class average, and links to /me/grades", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
 
     renderWithProviders(<StudentDashboard />);
@@ -269,7 +269,7 @@ describe("StudentDashboard", () => {
   });
 
   it("shows today's schedule, with a link to the full agenda", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
 
     renderWithProviders(<StudentDashboard />);
@@ -284,7 +284,7 @@ describe("StudentDashboard", () => {
   // link tile) replaced it, so there's one homework entry point, not two.
   // Grades/Timetable keep their own link cards unchanged.
   it("Grades and Timetable link cards render; the old small Homework link card is gone", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
 
     renderWithProviders(<StudentDashboard />);
@@ -301,7 +301,7 @@ describe("StudentDashboard", () => {
   // computed real "today" date string, not fake timers — same convention
   // HomeworkClassPage.test.tsx already uses for formatDueDateRelative.
   it("'Your homework' shows title, subject + relative due date, and the Done/Not done badge, linking to /me/homework", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     const homework = {
@@ -348,7 +348,7 @@ describe("StudentDashboard", () => {
   // The backend already caps/sorts (listPublishedForStudent) — this
   // proves the CARD's own MAX_ROWS=3 slice, independent of that.
   it("'Your homework' shows at most 3 items even when more are returned", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const makeItem = (id: string, title: string, dueDate: string) => ({
       id,
       subjectId: "sub1",
@@ -392,7 +392,7 @@ describe("StudentDashboard", () => {
   });
 
   it("'Your homework' shows an empty state when nothing is due", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
 
     renderWithProviders(<StudentDashboard />);
@@ -412,7 +412,7 @@ describe("StudentDashboard", () => {
   // Score/bestScore/worstScore) rather than spreading/dumping whatever
   // the object happens to contain.
   it("an unexpected extra field on an evaluation/exam row (simulating a hypothetical name leak) never reaches the rendered DOM", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const hostileReportCard = {
       ...REPORT_CARD,
       subjects: [

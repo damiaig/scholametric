@@ -55,7 +55,7 @@ function renderApp(route: string) {
 }
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {
@@ -97,7 +97,7 @@ describe("Forced password change (frontend enforcement)", () => {
       if (path === "/api/v1/auth/me") return { ...BASE_USER, mustChangePassword: flagged };
       if (path === "/api/v1/auth/change-password" && method === "POST") {
         flagged = false;
-        return { accessToken: "new-access-token", refreshToken: "new-refresh-token" };
+        return { accessToken: "new-access-token" };
       }
       if (path === "/api/v1/me/teaching") return EMPTY_TEACHING;
       throw new Error(`unexpected apiRequest call: ${method} ${path}`);

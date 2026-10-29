@@ -7,11 +7,18 @@ interface MockResponse {
   body?: unknown;
 }
 
+// v0.8.5 step 1 (SPEC_V0.8.5.md §2/§4) — captures each call's full init so
+// tests can assert on it (no body, the CSRF header, credentials:"include")
+// rather than only on the sequence of responses.
+const fetchCalls: [string, RequestInit | undefined][] = [];
+
 function mockFetchSequence(responses: MockResponse[]) {
   let call = 0;
+  fetchCalls.length = 0;
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => {
+    vi.fn(async (url: string, init?: RequestInit) => {
+      fetchCalls.push([url, init]);
       const response = responses[call++];
       return {
         ok: response.status >= 200 && response.status < 300,
@@ -23,7 +30,7 @@ function mockFetchSequence(responses: MockResponse[]) {
 }
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "old-access-token", refreshToken: "old-refresh-token" });
+  authStore.setTokens({ accessToken: "old-access-token" });
 });
 
 afterEach(() => {
@@ -54,13 +61,13 @@ describe("apiRequest — 401 handling", () => {
     // Exactly one fetch call — no refresh attempt was made.
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     // The bug this guards against: the caller's session must still be intact.
-    expect(authStore.getState()).toEqual({ accessToken: "old-access-token", refreshToken: "old-refresh-token" });
+    expect(authStore.getState()).toEqual({ accessToken: "old-access-token" });
   });
 
   it("without skipAuthRetry, a 401 still refreshes and retries once — existing token-expiry recovery is unaffected", async () => {
     mockFetchSequence([
       { status: 401, body: { statusCode: 401, message: "Unauthorized", error: "Unauthorized", path: "/api/v1/x", timestamp: "t" } },
-      { status: 200, body: { accessToken: "new-access-token", refreshToken: "new-refresh-token" } },
+      { status: 200, body: { accessToken: "new-access-token" } },
       { status: 200, body: { ok: true } },
     ]);
 
@@ -68,7 +75,26 @@ describe("apiRequest — 401 handling", () => {
 
     expect(result).toEqual({ ok: true });
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
-    expect(authStore.getState()).toEqual({ accessToken: "new-access-token", refreshToken: "new-refresh-token" });
+    expect(authStore.getState()).toEqual({ accessToken: "new-access-token" });
+  });
+
+  // v0.8.5 step 1 (SPEC_V0.8.5.md §2/§4) — the refresh token is never read
+  // from or sent in a body: it rides the httpOnly cookie automatically via
+  // credentials:"include", and the CSRF header is required on this call.
+  it("the silent refresh call sends no body, includes the CSRF header, and uses credentials: include", async () => {
+    mockFetchSequence([
+      { status: 401, body: { statusCode: 401, message: "Unauthorized", error: "Unauthorized", path: "/api/v1/x", timestamp: "t" } },
+      { status: 200, body: { accessToken: "new-access-token" } },
+      { status: 200, body: { ok: true } },
+    ]);
+
+    await apiRequest("/api/v1/x", {});
+
+    const [refreshUrl, refreshInit] = fetchCalls[1];
+    expect(refreshUrl).toContain("/api/v1/auth/refresh");
+    expect(refreshInit?.body).toBeUndefined();
+    expect(refreshInit?.credentials).toBe("include");
+    expect(refreshInit?.headers).toMatchObject({ "X-Requested-With": "XMLHttpRequest" });
   });
 
   it("without skipAuthRetry, a 401 that ALSO fails on retry clears the session (the legitimate expired-and-unrecoverable case)", async () => {

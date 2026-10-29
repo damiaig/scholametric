@@ -28,7 +28,7 @@ const CLOSED_LOCKED: EvaluationsListResponse = { ...OPEN, termClosed: true, lock
 const CLOSED_UNLOCKED: EvaluationsListResponse = { ...OPEN, termClosed: true, locked: false, unlockReason: "Parent requested a correction" };
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

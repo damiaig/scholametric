@@ -110,7 +110,6 @@ describe("GradesLandingPage — TEACHER view", () => {
   it("renders 'Classes I teach' cards linking straight into that class's Results tab, under /grades/arms/:id", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockTeacher();
 
@@ -124,7 +123,6 @@ describe("GradesLandingPage — TEACHER view", () => {
   it("renders 'Subjects I teach' rows: class link goes to Results, action links go to Enter-scores for the right subject/track", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockTeacher();
 
@@ -150,7 +148,6 @@ describe("GradesLandingPage — TEACHER view", () => {
   it("no assignments: shows the same empty state MyClassesView uses, not an error", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockTeacher({
       classTeacherOf: [],
@@ -172,7 +169,6 @@ describe("GradesLandingPage — TEACHER view", () => {
   it("load failure shows the error message with a retry button, not a crash", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return TEACHER_USER;
@@ -200,7 +196,6 @@ describe("GradesLandingPage — SCHOOL_ADMIN/PROPRIETOR view", () => {
   it("renders every class arm school-wide, grouped by level, linking to that arm's Results tab", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockAdmin();
 
@@ -222,7 +217,6 @@ describe("GradesLandingPage — SCHOOL_ADMIN/PROPRIETOR view", () => {
   it("no classes set up yet: shows a named empty state, not an error", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockAdmin([{ id: "lvl1", name: "JSS 1", rank: 1, arms: [] }]);
 
@@ -238,7 +232,6 @@ describe("GradesLandingPage — SCHOOL_ADMIN/PROPRIETOR view", () => {
   it("load failure shows the error message with a retry button, not a crash", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return ADMIN_USER;
@@ -259,7 +252,6 @@ describe("GradesLandingPage — SCHOOL_ADMIN/PROPRIETOR view", () => {
   it("PROPRIETOR gets the same school-wide view as SCHOOL_ADMIN", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me"))

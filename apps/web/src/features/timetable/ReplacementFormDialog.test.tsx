@@ -31,7 +31,7 @@ const TEACHER_ROW = {
 };
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
   mockedApiRequest.mockImplementation(async (path: string) => {
     if (path === "/api/v1/teachers") return { items: [TEACHER_ROW], total: 1, page: 1, pageSize: 100 };
     if (path === "/api/v1/subjects") return { items: [], total: 0, page: 1, pageSize: 200 };

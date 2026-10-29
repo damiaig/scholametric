@@ -28,7 +28,7 @@ const CLOSED_LOCKED: ExamsListResponse = { ...OPEN, termClosed: true, locked: tr
 const CLOSED_UNLOCKED: ExamsListResponse = { ...OPEN, termClosed: true, locked: false, unlockReason: "Parent requested a correction" };
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

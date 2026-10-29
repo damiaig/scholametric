@@ -115,6 +115,21 @@ describe("Portal account reset-and-reissue (e2e) — SPEC_V0.6.md §5 step 5", (
     return request(app.getHttpServer()).post("/api/v1/auth/login").send({ identifier, password, schoolSlug: "sunrise" });
   }
 
+  // v0.8.5 step 1 (SPEC_V0.8.5.md §2/§4) — the refresh token travels only
+  // as an httpOnly cookie now, never a body field; CsrfHeaderGuard
+  // requires this header on /auth/refresh.
+  const CSRF_HEADER = { "X-Requested-With": "XMLHttpRequest" };
+
+  function findSetCookie(response: request.Response, name: string): string | undefined {
+    const raw = response.headers["set-cookie"] as unknown as string[] | string | undefined;
+    const cookies = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    return cookies.find((c) => c.startsWith(`${name}=`));
+  }
+
+  function asCookieHeader(setCookieString: string): string {
+    return setCookieString.split(";")[0];
+  }
+
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
@@ -192,12 +207,14 @@ describe("Portal account reset-and-reissue (e2e) — SPEC_V0.6.md §5 step 5", (
 
       const oldLogin = await login("E2EREISSUEREVOKED1", "OldPassw0rd!");
       expect(oldLogin.status).toBe(200);
+      const oldCookie = findSetCookie(oldLogin, "refreshToken")!;
 
       await reissue(userId, sunriseAdminToken);
 
       const refreshResponse = await request(app.getHttpServer())
         .post("/api/v1/auth/refresh")
-        .send({ refreshToken: oldLogin.body.refreshToken });
+        .set("Cookie", asCookieHeader(oldCookie))
+        .set(CSRF_HEADER);
       expect(refreshResponse.status).toBe(401);
     });
 

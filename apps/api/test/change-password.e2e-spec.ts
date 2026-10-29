@@ -6,6 +6,18 @@ import { SEED_PASSWORD } from "./utils/login";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 const NEW_PASSWORD = "BrandNewPassw0rd!";
+// v0.8.5 step 1 (SPEC_V0.8.5.md §4) — required on /auth/logout now.
+const CSRF_HEADER = { "X-Requested-With": "XMLHttpRequest" };
+
+function findSetCookie(response: request.Response, name: string): string | undefined {
+  const raw = response.headers["set-cookie"] as unknown as string[] | string | undefined;
+  const cookies = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  return cookies.find((c) => c.startsWith(`${name}=`));
+}
+
+function asCookieHeader(setCookieString: string): string {
+  return setCookieString.split(";")[0];
+}
 
 describe("Forced password change (e2e)", () => {
   let app: INestApplication;
@@ -76,10 +88,14 @@ describe("Forced password change (e2e)", () => {
       .send({ currentPassword: "wrong-password", newPassword: NEW_PASSWORD });
     expect(badChange.status).not.toBe(403);
 
+    // v0.8.5 step 1 — the refresh token travels only as the cookie login
+    // set, never a body field; CsrfHeaderGuard now also applies here.
+    const cookie = findSetCookie(login, "refreshToken")!;
     const logout = await request(app.getHttpServer())
       .post("/api/v1/auth/logout")
       .set(auth)
-      .send({ refreshToken: login.body.refreshToken });
+      .set("Cookie", asCookieHeader(cookie))
+      .set(CSRF_HEADER);
     expect(logout.status).not.toBe(403);
   });
 
@@ -110,6 +126,10 @@ describe("Forced password change (e2e)", () => {
 
     expect(changeResponse.status).toBe(200);
     expect(typeof changeResponse.body.accessToken).toBe("string");
+    // v0.8.5 step 1 — change-password reissues a token pair too; its
+    // refresh token moves to the cookie exactly like login/refresh.
+    expect(changeResponse.body).not.toHaveProperty("refreshToken");
+    expect(findSetCookie(changeResponse, "refreshToken")).toBeDefined();
     const newToken = changeResponse.body.accessToken;
 
     const me = await request(app.getHttpServer()).get("/api/v1/auth/me").set("Authorization", `Bearer ${newToken}`);

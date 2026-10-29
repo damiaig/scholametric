@@ -165,7 +165,7 @@ describe("MyTimetablePage", () => {
   // in these tests — if the page ever calls it again, the catch-all
   // `throw` below fails the test immediately with a clear message.
   it("STUDENT: defaults to the Agenda tab showing today, no child-switcher, no GET /calendar/periods call", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return STUDENT_USER;
       if (path === "/api/v1/me/timetable") return response("JSS 2 A");
@@ -181,7 +181,7 @@ describe("MyTimetablePage", () => {
   });
 
   it("STUDENT: switches to the Full week tab, rendering the grid built from the timetable response alone", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return STUDENT_USER;
       if (path === "/api/v1/me/timetable") return response("JSS 2 A");
@@ -202,7 +202,7 @@ describe("MyTimetablePage", () => {
   // something DID try to call the admin-only endpoint, a 403 there must
   // not break this page.
   it("STUDENT: renders the Full week grid even if GET /calendar/periods would 403", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return STUDENT_USER;
       if (path === "/api/v1/me/timetable") return response("JSS 2 A");
@@ -223,7 +223,7 @@ describe("MyTimetablePage", () => {
   // Mon-Fri only: no Saturday column (WEEKEND-excluded), and no Sunday
   // column at all (never requested/returned in the first place).
   it("STUDENT: Full week grid shows Mon-Fri with correct dates, no Saturday (WEEKEND) and no Sunday column", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return STUDENT_USER;
       if (path === "/api/v1/me/timetable") return weekResponse();
@@ -250,7 +250,7 @@ describe("MyTimetablePage", () => {
   // step, since a day and a week-offset aren't the same unit once a
   // date-picker can jump to any day).
   it("STUDENT: Full week's Next-week navigation shifts only the week query; the Agenda tab's date is untouched", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const weekRanges: { from: string; to: string }[] = [];
     const agendaDates: string[] = [];
     mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
@@ -289,7 +289,7 @@ describe("MyTimetablePage", () => {
   // nav, its own independent state: Next/Previous/pick-a-date/Today, and
   // the floor (Previous disabled on today).
   it("STUDENT: Agenda day navigation (Next/Previous/pick/Today) shifts only the day query; Full week's range is untouched", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const agendaDates: string[] = [];
     const weekRanges: { from: string; to: string }[] = [];
     mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
@@ -332,7 +332,7 @@ describe("MyTimetablePage", () => {
   });
 
   it("PARENT: shows the child-switcher, defaults to the first child, and loads that child's timetable", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return PARENT_USER;
       if (path === "/api/v1/me/children") return CHILDREN;
@@ -347,7 +347,7 @@ describe("MyTimetablePage", () => {
   });
 
   it("PARENT: switches to the Full week tab, rendering the grid built from the timetable response alone", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return PARENT_USER;
       if (path === "/api/v1/me/children") return CHILDREN;
@@ -364,7 +364,7 @@ describe("MyTimetablePage", () => {
   });
 
   it("PARENT: Full week's Next-week navigation shifts only the week query for the selected child; the Agenda tab's date is untouched", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const weekRanges: { from: string; to: string }[] = [];
     const agendaDates: string[] = [];
     mockedApiRequest.mockImplementation(async (path: string, opts?: { query?: Record<string, string | number | undefined> }) => {
@@ -400,7 +400,7 @@ describe("MyTimetablePage", () => {
   });
 
   it("PARENT: no children shows the empty state, not an error", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return PARENT_USER;
       if (path === "/api/v1/me/children") return { children: [] };
@@ -413,7 +413,7 @@ describe("MyTimetablePage", () => {
 
   it("PARENT: switching child requests that child's own timetable", async () => {
     const user = userEvent.setup();
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const children: MyChildrenResponse = {
       children: [
         ...CHILDREN.children,

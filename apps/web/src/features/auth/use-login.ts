@@ -8,7 +8,11 @@ export function useLogin() {
     mutationFn: (input: LoginInput) =>
       publicApiRequest<LoginResponse>("/api/v1/auth/login", { method: "POST", body: input }),
     onSuccess: (data) => {
-      authStore.setTokens({ accessToken: data.accessToken, refreshToken: data.refreshToken });
+      // v0.8.5 step 1 — the refresh token is never in this response body at
+      // all now; it arrived as an httpOnly cookie the browser already
+      // stored on its own (publicApiRequest -> rawFetch always sends
+      // credentials:"include").
+      authStore.setTokens({ accessToken: data.accessToken });
     },
   });
 }

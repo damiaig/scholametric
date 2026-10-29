@@ -62,7 +62,7 @@ function mockApi(role: string = "SCHOOL_ADMIN") {
 }
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

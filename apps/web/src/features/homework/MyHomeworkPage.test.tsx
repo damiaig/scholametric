@@ -52,7 +52,7 @@ afterEach(() => {
 
 describe("MyHomeworkPage", () => {
   it("STUDENT: renders due-date-grouped homework with subject/title/badge, and 'View more' for a long description", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const longDescription = "Read the assigned chapter carefully. ".repeat(10);
     const list: StudentHomeworkListResponse = {
       classArmId: "arm1",
@@ -81,7 +81,7 @@ describe("MyHomeworkPage", () => {
   // of requiresUpload (both items show it); the upload control (and its
   // submitted-files list) only renders on the item that actually needs one.
   it("STUDENT: shows the upload control only on the homework that requires it", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentHomeworkListResponse = {
       classArmId: "arm1",
       homework: [
@@ -107,7 +107,7 @@ describe("MyHomeworkPage", () => {
   // teacher-side cap display, computed from the student's own
   // submissions' sizeBytes against the 20MB cap.
   it("STUDENT: shows the remaining upload budget computed from their own submissions' sizeBytes", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentHomeworkListResponse = {
       classArmId: "arm1",
       homework: [
@@ -130,7 +130,7 @@ describe("MyHomeworkPage", () => {
   });
 
   it("STUDENT: once the 20MB cap is fully used, shows the limit message instead of the upload control", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentHomeworkListResponse = {
       classArmId: "arm1",
       homework: [
@@ -153,7 +153,7 @@ describe("MyHomeworkPage", () => {
   });
 
   it("STUDENT: mark-done flips Done/Not done via POST /me/homework/:id/complete", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentHomeworkListResponse = { classArmId: "arm1", homework: [entry()] };
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
@@ -175,7 +175,7 @@ describe("MyHomeworkPage", () => {
   });
 
   it("STUDENT: the upload flow issues the URL, PUTs directly to storage with the cap header, then commits", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentHomeworkListResponse = { classArmId: "arm1", homework: [entry({ requiresUpload: true })] };
     const calls: string[] = [];
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string; body?: unknown }) => {
@@ -223,7 +223,7 @@ describe("MyHomeworkPage", () => {
   // `current` list, same convention BreaksSection.test.tsx's own edit-flow
   // test already established, not a static fixture.
   it("STUDENT: deletes their own submission via the confirm dialog, removing the row", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     let current: StudentHomeworkListResponse = {
       classArmId: "arm1",
       homework: [
@@ -261,7 +261,7 @@ describe("MyHomeworkPage", () => {
   // filename shows via the component's own display, independent of the
   // upload flow itself (already proven above, unchanged).
   it("STUDENT: the upload control is the styled file input, with its own chosen-file display", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentHomeworkListResponse = { classArmId: "arm1", homework: [entry({ requiresUpload: true })] };
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
@@ -291,7 +291,7 @@ describe("MyHomeworkPage", () => {
   });
 
   it("STUDENT: a failed direct PUT surfaces the specific upload-failed message, not the generic fallback", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentHomeworkListResponse = { classArmId: "arm1", homework: [entry({ requiresUpload: true })] };
     mockedApiRequest.mockImplementation(async (path: string, opts?: { method?: string }) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
@@ -315,7 +315,7 @@ describe("MyHomeworkPage", () => {
   });
 
   it("PARENT: shows a linked child's homework read-only — no mark-done checkbox, no file input", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentHomeworkListResponse = {
       classArmId: "arm1",
       homework: [entry({ requiresUpload: true })],
@@ -339,7 +339,7 @@ describe("MyHomeworkPage", () => {
   // the parent's attachment is now a clickable download link (Step 6 had
   // no parent-scoped endpoint to wire, so it rendered as plain text).
   it("PARENT: downloads a linked child's homework attachment via the parent-scoped endpoint", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentHomeworkListResponse = {
       classArmId: "arm1",
       homework: [entry({ attachments: [{ id: "att1", fileName: "worksheet.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" }] })],
@@ -365,7 +365,7 @@ describe("MyHomeworkPage", () => {
   });
 
   it("PARENT: no children linked shows the empty state without querying homework", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
       if (path.includes("/me/children")) return { children: [] };

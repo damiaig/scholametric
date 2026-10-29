@@ -37,7 +37,7 @@ function currentUser(role: string, school: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

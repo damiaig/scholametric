@@ -58,7 +58,7 @@ afterEach(() => {
 
 describe("MyLessonsPage", () => {
   it("STUDENT: renders lesson-date-grouped list with subject/title/body, relative date, and 'View more' for a long body", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const longBody = "We covered fraction addition carefully. ".repeat(10);
     const list: StudentLessonListResponse = {
       classArmId: "arm1",
@@ -91,7 +91,7 @@ describe("MyLessonsPage", () => {
   // itself being present plus the full string surviving into the DOM —
   // the ACTUAL visual proof is the re-walk, where a human sees it wrap.
   it("STUDENT: a long body with no spaces gets the wrap class and renders in full, not truncated to an ellipsis", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const longNoSpaceBody = "a".repeat(300);
     const list: StudentLessonListResponse = { classArmId: "arm1", lessons: [entry({ body: longNoSpaceBody })] };
     mockedApiRequest.mockImplementation(async (path: string) => {
@@ -108,7 +108,7 @@ describe("MyLessonsPage", () => {
   });
 
   it("STUDENT: the view-more modal's full text also gets the wrap class", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const longNoSpaceBody = "b".repeat(300);
     const list: StudentLessonListResponse = { classArmId: "arm1", lessons: [entry({ body: longNoSpaceBody })] };
     mockedApiRequest.mockImplementation(async (path: string) => {
@@ -126,7 +126,7 @@ describe("MyLessonsPage", () => {
   });
 
   it("STUDENT: subject filter narrows the list to the selected subject", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentLessonListResponse = {
       classArmId: "arm1",
       lessons: [
@@ -153,7 +153,7 @@ describe("MyLessonsPage", () => {
   });
 
   it("STUDENT: week filter narrows to the picked week; composes with the subject filter; 'Show all' restores both", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentLessonListResponse = {
       classArmId: "arm1",
       lessons: [
@@ -194,7 +194,7 @@ describe("MyLessonsPage", () => {
   });
 
   it("STUDENT: a filtered-empty result shows a distinct message from the genuine no-lessons-yet state", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentLessonListResponse = {
       classArmId: "arm1",
       lessons: [entry({ subjectId: "sub1", subjectName: "Mathematics", title: "Fractions lesson" })],
@@ -216,7 +216,7 @@ describe("MyLessonsPage", () => {
 
   // The structural read-only guarantee must still hold with filters active.
   it("STUDENT: filters introduce no write control — still no checkbox, no file input", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentLessonListResponse = {
       classArmId: "arm1",
       lessons: [
@@ -245,7 +245,7 @@ describe("MyLessonsPage", () => {
   // upload"/"submissions" text anywhere — because none of that exists
   // for a Lesson at all, not because it's hidden.
   it("STUDENT: no mark-done checkbox and no upload control exist — Lessons are read-only, structurally", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentLessonListResponse = { classArmId: "arm1", lessons: [entry()] };
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
@@ -263,7 +263,7 @@ describe("MyLessonsPage", () => {
   });
 
   it("STUDENT: downloads a lesson's attachment via the student-scoped endpoint", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentLessonListResponse = {
       classArmId: "arm1",
       lessons: [entry({ attachments: [{ id: "att1", fileName: "notes.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" }] })],
@@ -288,7 +288,7 @@ describe("MyLessonsPage", () => {
   });
 
   it("STUDENT: shows the empty state with no published lessons", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentLessonListResponse = { classArmId: "arm1", lessons: [] };
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "STUDENT" };
@@ -302,7 +302,7 @@ describe("MyLessonsPage", () => {
   });
 
   it("PARENT: shows a linked child's lessons read-only — no checkbox, no file input", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentLessonListResponse = { classArmId: "arm1", lessons: [entry()] };
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
@@ -320,7 +320,7 @@ describe("MyLessonsPage", () => {
   });
 
   it("PARENT: downloads a linked child's lesson attachment via the parent-scoped endpoint", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     const list: StudentLessonListResponse = {
       classArmId: "arm1",
       lessons: [entry({ attachments: [{ id: "att1", fileName: "notes.pdf", contentType: "application/pdf", sizeBytes: 1024, createdAt: "t" }] })],
@@ -346,7 +346,7 @@ describe("MyLessonsPage", () => {
   });
 
   it("PARENT: no children linked shows the empty state without querying lessons", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return { ...BASE_USER, role: "PARENT" };
       if (path.includes("/me/children")) return { children: [] };

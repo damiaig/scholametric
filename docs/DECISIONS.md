@@ -8250,3 +8250,106 @@ lint` clean in both workspaces. Zero `features/homework/` changes.
 
 Next: the re-walk (visual wrap confirmation + filters), then the rest of WALK_V0.8.4.md
 (Part C parent, Part D walls), then tag v0.8.4.
+
+## 2026-10-29 — v0.8.5 step 1: cookie-based auth + logout rework + CSRF guard (end-to-end, reshaped)
+
+**Reshaped at plan time, before building**: the spec's own build order split this into a
+backend-only step and a later frontend-consuming step. Doing that literally would have shipped
+a breaking contract change (the live frontend still reading/sending `refreshToken` in a body)
+with no matching consumer for however long Steps 2-3 took — a real regression window, and
+`packages/shared`'s types would either lie about the wire shape or break the web workspace's
+own typecheck from a "backend-only" step. Reshaped Step 1 to the cookie contract
+**end-to-end, atomically**: backend + `packages/shared` types + the frontend's consuming end
+only (login/refresh/logout call sites) — explicitly NOT boot rehydration, which stays Step 3.
+Confirmed before building, not assumed.
+
+**Backend.** `auth.constants.ts` gained `REFRESH_COOKIE_NAME`/`REFRESH_COOKIE_PATH`/
+`CSRF_HEADER_NAME`. `login`/`refresh`/`change-password` now set the refresh token as an
+httpOnly, `SameSite=Lax`, `Path=/auth` cookie (`Secure` keyed off the already-existing
+`NODE_ENV` env var — on in production only) instead of returning it in the body;
+`POST /auth/logout` (**reworked, not new** — it already existed) now reads the cookie instead
+of a body field, clears it unconditionally, and revokes idempotently (no cookie present is a
+`200` no-op, never a `401`). `bootstrap.ts`'s CORS config was missing `credentials: true`
+entirely — added, alongside the existing single-origin `CORS_ORIGIN` (never `*`, a
+precondition for `credentials: true` to be legal at all). New `CsrfHeaderGuard`, applied only
+to `refresh`/`logout` (never `login`, which isn't cookie-reliant in the CSRF sense). Rotation
+and reuse-detection internals are untouched this step — ported to cookies, not rewritten;
+Step 2 reworks them.
+
+**No `cookie-parser` dependency** — CLAUDE.md requires asking before adding a library, and
+this app only ever needs to read exactly one cookie. Hand-rolled `extractRefreshCookie()`
+(`refresh-cookie.util.ts`): finds the `refreshToken=` segment and takes everything after the
+FIRST `=` via `indexOf`/`substring` — never `split("=")`, which would truncate a value
+containing `=`. Also `decodeURIComponent`s the result — confirmed empirically (not assumed)
+that Express's own `cookie` package percent-encodes `=` to `%3D` when SETTING the cookie
+(`.` needs no such handling, a legal unreserved cookie-octet per RFC 6265), so the raw wire
+value must be decoded back to match the stored hash or a legitimate token containing `=`
+would never refresh successfully. Unit-tested in isolation (`refresh-cookie.util.spec.ts`,
+9 tests) and round-tripped against the REAL cookie-serialization path in `auth.e2e-spec.ts`
+(a manually-planted `refreshToken` row with value `"abc=def.ghi"`, sent exactly as the wire
+would represent it, succeeds).
+
+**A third reissuing endpoint, found by grepping every call site before building, not
+assumed from the spec's own list**: `POST /auth/change-password` also calls
+`issueTokenPair()` (to clear the stale `mustChangePassword` claim) and was returning
+`refreshToken` in its body — not named in the spec's literal Step 1 text, caught by the
+"every call site" sweep and included in the same migration as login/refresh/logout. Swept
+the portal-accounts provision/reissue path specifically too (flagged as a possible fifth
+leak) — confirmed clean: it returns `tempPassword` (a one-time login password, unrelated),
+and its own `refreshToken` references are `prisma.refreshToken.updateMany(...)` revocations,
+not a body leak.
+
+**`packages/shared/src/auth.ts`** — `LoginResponse`/`RefreshResponse` both dropped
+`refreshToken` honestly (rebuilt dist), rather than left stale for a step's duration.
+
+**Frontend, consuming end only** — `auth-store.ts`'s `AuthTokens` now holds only
+`accessToken`; `api-client.ts`'s `rawFetch` gained unconditional `credentials: "include"`
+(required for the cookie to flow at all, even dev's same-site-but-cross-origin
+5173 → 3000; harmless elsewhere since the cookie's own `Path=/auth` means it's never
+sent/received outside auth endpoints regardless) and a generic `headers` passthrough used
+only to attach the new `CSRF_HEADER` on the two calls that need it (`refreshTokens()`
+internally, `useLogout()`) — not applied globally, since a custom header on every request
+would force a CORS preflight on every single call, not just these two. `use-login.ts` stores
+only the access token now. Boot rehydration (the actual reload-persistence fix) is
+explicitly NOT part of this step, per the build-order reshape above — reload still logs out,
+unchanged, until Step 3.
+
+**Mechanical fallout, not scope creep**: dropping `refreshToken` from the shared types made
+it a real excess-property TypeScript error everywhere a test literal constructed
+`authStore.setTokens({accessToken, refreshToken})` — 58 files, ~140 occurrences, almost all
+pure fixture boilerplate unrelated to what each test actually exercises. Swept via a scoped
+sed (two literal patterns: single-line `, refreshToken: "..."` and the standalone multi-line
+`refreshToken: "...",`) rather than hand-editing each file; `api-client.test.ts` and
+`ChangePasswordFlow.test.tsx` got real attention beyond the mechanical strip since they
+exercise the refresh/change-password flows directly, including a new assertion that the
+silent refresh call sends no body, includes the CSRF header, and uses
+`credentials: "include"`.
+
+**`POST /auth/login`'s existing 10/min/IP throttle, hit while writing new tests, not
+missed**: `auth.e2e-spec.ts` already sat at exactly 10 real `login()` calls (its full
+budget) before this step's new coverage. Rather than touch the throttle (explicitly
+unchanged, SPEC_V0.8.5.md §1), every new refresh/logout/CSRF test either folds into an
+existing login-backed test (the Secure-flag check merged into the main login test) or
+plants a `refreshToken` row / signs an access token directly via `JwtService` — exercising
+the exact same guard/service code a real login would reach, without spending login quota.
+Net: coverage grew, login-call count stayed at 10.
+
+**PROVE, against the real running stack, not just the test suite**: logged in via curl —
+confirmed no `refreshToken` key in the body, `Set-Cookie` with `HttpOnly`,
+`Path=/auth`, `Max-Age=604800` (7 days), `SameSite=Lax`, no `Secure` (dev), plus the real
+`Access-Control-Allow-Credentials: true`/explicit-origin CORS headers. Simulated the
+frontend's silent 401→refresh→retry path directly: refresh with the cookie + CSRF header,
+no body — rotated successfully, new access token returned, no `refreshToken` in the
+response. Confirmed a refresh/logout call missing `X-Requested-With` → `403` for both.
+Logged out — cookie cleared (`Expires` in the past), `{success:true}`, and the
+now-revoked cookie then `401`s on a follow-up refresh. All real HTTP round trips against the
+live dev API, not mocked.
+
+Full backend e2e suite: 53 files, 715/715 clean. Backend unit suite (`test:unit`): 3 files,
+25 tests clean (new: `refresh-cookie.util.spec.ts`, 9 tests). Full frontend suite: 85 files,
+582/582 clean. `pnpm typecheck`/`pnpm lint` clean in both workspaces — the honest shared
+types pass everywhere, not just the backend. Zero feature-module changes. Zero
+multi-tenancy change. Zero changes to rotation/reuse-detection internals (Step 2's job).
+
+Next: Step 2 (`family_id` + atomic rotation + reuse-detection rework), then Step 3 (boot
+rehydration — the actual reload-persistence fix), then the walk, then tag v0.8.5.

@@ -31,15 +31,20 @@ export interface AuthUserSummary {
   mustChangePassword: boolean;
 }
 
+// v0.8.5 step 1 (SPEC_V0.8.5.md §2) — refreshToken dropped from both: it
+// now travels only as an httpOnly cookie, invisible to JS, never in a
+// response body. Updated here (not left stale) so the frontend's types
+// stay honest about the actual wire shape rather than claiming a field
+// that no longer exists — the alternative (a web-side type mismatch
+// quietly swallowed) is worse than the mechanical fixture cleanup this
+// forces across the test suite.
 export interface LoginResponse {
   accessToken: string;
-  refreshToken: string;
   user: AuthUserSummary;
 }
 
 export interface RefreshResponse {
   accessToken: string;
-  refreshToken: string;
 }
 
 export interface CurrentUserSchool {

@@ -36,7 +36,7 @@ const HOMEWORK: Homework = {
 const EMPTY_SUBMISSIONS: HomeworkSubmissionsView = { homeworkId: "hw1", students: [] };
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

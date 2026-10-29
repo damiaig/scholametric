@@ -235,7 +235,6 @@ const ROUTES = [
 beforeEach(() => {
   authStore.setTokens({
     accessToken: "access-token",
-    refreshToken: "refresh-token",
   });
   mockApi();
 });

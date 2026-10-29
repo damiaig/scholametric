@@ -234,7 +234,7 @@ afterEach(() => {
 
 describe("TeacherDashboard", () => {
   it("shows today's schedule, with a link to the full timetable", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     baseMock();
 
     renderWithProviders(<TeacherDashboard />);
@@ -247,7 +247,6 @@ describe("TeacherDashboard", () => {
   it("renders 'Classes I teach' and 'Subjects' metric cards computed as a union/count from /me/teaching, plus the Enter-grades card", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     baseMock();
 
@@ -276,7 +275,6 @@ describe("TeacherDashboard", () => {
   it("embeds MyClassesView's existing content: class-teacher-of cards + a plain subject/class list, no per-row action links", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     baseMock();
 
@@ -296,7 +294,6 @@ describe("TeacherDashboard", () => {
   it("no assignments shows MyClassesView's empty state, not an error, and metric cards read 0", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
@@ -325,7 +322,6 @@ describe("TeacherDashboard", () => {
   it("'Recently posted' merges evaluations+exams across subjects sorted by real createdAt, most recent first", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     baseMock();
 
@@ -342,7 +338,6 @@ describe("TeacherDashboard", () => {
   it("the publish badge is labeled as the SUBJECT's state, never implying the specific item is published/draft", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     baseMock();
 
@@ -360,7 +355,6 @@ describe("TeacherDashboard", () => {
   it("no evaluations/exams yet shows the empty state, not a crash", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;

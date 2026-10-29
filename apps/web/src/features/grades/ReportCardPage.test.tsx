@@ -186,7 +186,7 @@ function renderPage(route = "/students/st1/report-card?termId=term1&sessionId=se
 }
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

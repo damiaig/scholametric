@@ -229,7 +229,6 @@ function mockCommon(
 beforeEach(() => {
   authStore.setTokens({
     accessToken: "access-token",
-    refreshToken: "refresh-token",
   });
 });
 

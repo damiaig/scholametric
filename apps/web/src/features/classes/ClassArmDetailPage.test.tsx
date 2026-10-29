@@ -65,7 +65,6 @@ const ARM_DETAIL: ClassArmDetail = {
 function renderPage(role: string = "SCHOOL_ADMIN") {
   authStore.setTokens({
     accessToken: "access-token",
-    refreshToken: "refresh-token",
   });
   mockedApiRequest.mockImplementation(async (path: string) => {
     if (path.includes("/auth/me")) return { ...SCHOOL_ADMIN_USER, role };
@@ -169,7 +168,6 @@ describe("ClassArmDetailPage", () => {
   it("TEACHER: a class they don't teach shows the backend's 403 message, not a crash", async () => {
     authStore.setTokens({
       accessToken: "access-token",
-      refreshToken: "refresh-token",
     });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me"))

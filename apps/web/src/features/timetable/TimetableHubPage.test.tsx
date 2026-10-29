@@ -31,7 +31,7 @@ afterEach(() => {
 
 describe("TimetableHubPage", () => {
   it("renders all three destinations with the right hrefs", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return ADMIN_USER;
       throw new Error(`unexpected apiRequest call: ${path}`);

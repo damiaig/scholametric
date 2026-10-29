@@ -30,7 +30,7 @@ afterEach(() => {
 // mock layer, since this page itself never calls /auth/login.
 describe("AccountChangePasswordPage", () => {
   it("voluntary change succeeds, shows confirmation, and the mocked backend now rejects the old password while accepting the new one", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
 
     let currentPassword = OLD_PASSWORD;
     mockedApiRequest.mockImplementation(async (path, options) => {
@@ -47,7 +47,7 @@ describe("AccountChangePasswordPage", () => {
           });
         }
         currentPassword = body.newPassword;
-        return { accessToken: "new-access-token", refreshToken: "new-refresh-token" };
+        return { accessToken: "new-access-token" };
       }
       if (path === "/api/v1/auth/login" && method === "POST") {
         const body = (options as { body: { password: string } }).body;
@@ -60,7 +60,7 @@ describe("AccountChangePasswordPage", () => {
             timestamp: new Date().toISOString(),
           });
         }
-        return { accessToken: "login-access-token", refreshToken: "login-refresh-token", user: { mustChangePassword: false } };
+        return { accessToken: "login-access-token", user: { mustChangePassword: false } };
       }
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -75,7 +75,7 @@ describe("AccountChangePasswordPage", () => {
     expect(await screen.findByText("Password changed.")).toBeInTheDocument();
 
     // The tokens the mutation returned are now the ones in use.
-    await waitFor(() => expect(authStore.getState()).toEqual({ accessToken: "new-access-token", refreshToken: "new-refresh-token" }));
+    await waitFor(() => expect(authStore.getState()).toEqual({ accessToken: "new-access-token" }));
 
     // Old password now rejected; new one works — same guarantee proven
     // live for reissue in portal-accounts-reissue.e2e-spec.ts.
@@ -88,7 +88,7 @@ describe("AccountChangePasswordPage", () => {
   });
 
   it("shows the 8-character requirement up front, and a <8-char new password blocks submission client-side — no API call, no success, no navigation", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path) => {
       throw new Error(`unexpected apiRequest call: ${path}`);
     });
@@ -109,7 +109,7 @@ describe("AccountChangePasswordPage", () => {
   });
 
   it("wrong current password shows the API's error message, not a silent no-op", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path, options) => {
       const method = (options as { method?: string })?.method;
       if (path === "/api/v1/auth/change-password" && method === "POST") {

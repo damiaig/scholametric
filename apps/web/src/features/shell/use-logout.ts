@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "../../lib/api-client";
+import { apiRequest, CSRF_HEADER } from "../../lib/api-client";
 import { authStore } from "../../lib/auth-store";
 
 // No explicit navigate() here — clearing the auth store makes
@@ -11,7 +11,11 @@ export function useLogout() {
     const tokens = authStore.getState();
     try {
       if (tokens) {
-        await apiRequest("/api/v1/auth/logout", { method: "POST", body: { refreshToken: tokens.refreshToken } });
+        // v0.8.5 step 1 — no body at all: the backend reads the refresh
+        // token straight off the cookie (credentials:"include", already
+        // on every rawFetch call) and the CSRF header is required on this
+        // endpoint now (CsrfHeaderGuard).
+        await apiRequest("/api/v1/auth/logout", { method: "POST", headers: CSRF_HEADER });
       }
     } catch {
       // The user's intent is to log out locally regardless of whether

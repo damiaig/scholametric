@@ -17,7 +17,7 @@ const mockedApiRequest = vi.mocked(apiRequest);
 const EXISTING: Exam = { id: "e1", name: "Mid-term Exam", createdAt: "t", createdBy: "u1" };
 
 beforeEach(() => {
-  authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+  authStore.setTokens({ accessToken: "access-token" });
 });
 
 afterEach(() => {

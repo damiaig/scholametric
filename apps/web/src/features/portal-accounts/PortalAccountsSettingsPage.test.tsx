@@ -115,7 +115,6 @@ async function findTable() {
 beforeEach(() => {
   authStore.setTokens({
     accessToken: "access-token",
-    refreshToken: "refresh-token",
   });
 });
 

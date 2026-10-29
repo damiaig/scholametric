@@ -157,7 +157,7 @@ afterEach(() => {
 
 describe("ParentDashboard", () => {
   it("shows the selected child's today schedule, with a link to the full agenda", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
 
     renderWithProviders(<ParentDashboard />);
@@ -168,7 +168,7 @@ describe("ParentDashboard", () => {
   });
 
   it("defaults to the first linked child and shows their metric cards + grades card", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
 
     renderWithProviders(<ParentDashboard />);
@@ -181,7 +181,7 @@ describe("ParentDashboard", () => {
   });
 
   it("switching child via the switcher swaps every figure to the new child's data", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockApi();
     const user = userEvent.setup();
 
@@ -198,7 +198,7 @@ describe("ParentDashboard", () => {
   // v0.7.2 step 3 (SPEC_V0.7.2.md §2) — same running-average fallback as
   // StudentDashboard, for the selected child's card.
   it("overall still null but the running average has a value: shows the running average, not a dash", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
       if (path.includes("/timetable")) return TIMETABLE_RESPONSE;
@@ -220,7 +220,7 @@ describe("ParentDashboard", () => {
   // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — same gap closed for the OTHER two
   // cards on the selected child's card, mirroring StudentDashboard.
   it("overall still null but the running class average and running position have values: shows both, not a dash/unranked", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
       if (path.includes("/timetable")) return TIMETABLE_RESPONSE;
@@ -241,7 +241,7 @@ describe("ParentDashboard", () => {
   });
 
   it("no linked children shows the empty state, not a crash", async () => {
-    authStore.setTokens({ accessToken: "access-token", refreshToken: "refresh-token" });
+    authStore.setTokens({ accessToken: "access-token" });
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path.includes("/auth/me")) return USER;
       if (path.includes("/me/children")) return { children: [] };
