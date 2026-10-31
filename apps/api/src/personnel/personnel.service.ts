@@ -221,6 +221,12 @@ export class PersonnelService {
     // §1) — unlike self-service change-password, this IS a different
     // session (the admin) acting on the target, so revoking the target's
     // sessions here has no "keep the caller's own session" ambiguity.
+    //
+    // Deliberately userId-wide, not family-scoped (v0.8.5 step 2,
+    // SPEC_V0.8.5.md §5, kept as-is on purpose — not an oversight): this
+    // is an admin explicitly nuking a person's access EVERYWHERE, the
+    // same category as portal-accounts' own reissue below, not the
+    // automatic theft-reaction that step scoped down to a single family.
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: userId },

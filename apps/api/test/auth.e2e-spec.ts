@@ -5,6 +5,7 @@ import bcrypt from "bcrypt";
 import request from "supertest";
 import { createTestApp } from "./utils/create-test-app";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { randomUUID } from "node:crypto";
 import { generateOpaqueToken, hashToken } from "../src/auth/refresh-token.util";
 import type { AccessTokenPayload } from "../src/auth/types/jwt-payload.type";
 
@@ -34,6 +35,11 @@ function findSetCookie(response: request.Response, name: string): string | undef
 
 function asCookieHeader(setCookieString: string): string {
   return setCookieString.split(";")[0];
+}
+
+/** Just the raw cookie VALUE (no "name="), for feeding back into refresh()/the next request. */
+function rawCookieValue(setCookieString: string): string {
+  return asCookieHeader(setCookieString).split("=")[1];
 }
 
 // Low bcrypt cost — test-only fixtures, same convention as
@@ -135,12 +141,19 @@ describe("Auth (e2e)", () => {
   // (10/min/IP, unchanged this step): a planted refreshToken row and a
   // directly-signed access token exercise the exact same guard/service
   // code a real login would reach, without calling the throttled route.
-
-  async function plantRefreshToken(userId: string, rawValue: string = generateOpaqueToken()): Promise<string> {
+  //
+  // v0.8.5 step 2 — plantRefreshToken now mints a real family (a fresh
+  // familyId, sequence 0) exactly like AuthService.issueTokenPair does at
+  // login — required now that family_id/family_sequence are non-nullable
+  // columns, and also what makes this the right fixture for the new
+  // reuse-detection tests below (each is its own independent family,
+  // mirroring a real login one generation in).
+  async function plantRefreshToken(userId: string, rawValue: string = generateOpaqueToken()): Promise<{ rawValue: string; familyId: string }> {
+    const familyId = randomUUID();
     await prisma.refreshToken.create({
-      data: { userId, tokenHash: hashToken(rawValue), expiresAt: new Date(Date.now() + 60 * 60 * 1000) },
+      data: { userId, familyId, familySequence: 0, tokenHash: hashToken(rawValue), expiresAt: new Date(Date.now() + 60 * 60 * 1000) },
     });
-    return rawValue;
+    return { rawValue, familyId };
   }
 
   async function signAccessToken(userId: string, schoolId: string): Promise<string> {
@@ -148,6 +161,10 @@ describe("Auth (e2e)", () => {
     const configService = app.get(ConfigService);
     const payload: AccessTokenPayload = { sub: userId, schoolId, role: "SCHOOL_ADMIN", mustChangePassword: false };
     return jwtService.signAsync(payload, { secret: configService.getOrThrow<string>("JWT_ACCESS_SECRET"), expiresIn: "15m" });
+  }
+
+  function refresh(cookieHeader: string) {
+    return request(app.getHttpServer()).post("/api/v1/auth/refresh").set("Cookie", `refreshToken=${cookieHeader}`).set(CSRF_HEADER);
   }
 
   describe("POST /auth/login", () => {
@@ -331,12 +348,11 @@ describe("Auth (e2e)", () => {
   });
 
   describe("refresh rotation and reuse detection", () => {
-    // v0.8.5 step 1 — ported to cookies, not deleted: the underlying
-    // rotation/reuse-detection BEHAVIOR is explicitly unchanged this step
-    // (Step 2's job is the family_id rework that flips the final
-    // assertion below from "also dead" to "still valid" — see
-    // SPEC_V0.8.5.md §5). Only the token's SOURCE/transport moves.
-    it("rotates on use, kills the old token, and revokes the whole family on reuse", async () => {
+    // v0.8.5 step 1 — still proven here with a real login: rotation
+    // itself (not the reuse-detection split below, which uses planted
+    // families to respect the login throttle) works end to end via the
+    // actual login-issued cookie.
+    it("rotates on use — the old cookie dies, a new one works", async () => {
       const loginResponse = await login();
       const cookie1 = findSetCookie(loginResponse, "refreshToken")!;
 
@@ -349,20 +365,92 @@ describe("Auth (e2e)", () => {
       const cookie2 = findSetCookie(firstRefresh, "refreshToken")!;
       expect(asCookieHeader(cookie2)).not.toBe(asCookieHeader(cookie1));
 
-      // The old cookie is dead after use.
+      // The old cookie is dead after use...
       const reuseAttempt = await request(app.getHttpServer())
         .post("/api/v1/auth/refresh")
         .set("Cookie", asCookieHeader(cookie1))
         .set(CSRF_HEADER);
       expect(reuseAttempt.status).toBe(401);
 
-      // Reuse revoked the whole family — the NEWEST cookie is dead too
-      // (today's pre-family_id behavior; Step 2 changes this).
+      // ...but (v0.8.5 step 2 — this is the diagnosed bug, now fixed) the
+      // NEWEST cookie is untouched: cookie1's reuse was a lone, isolated
+      // presentation with no concurrent race and no further chain
+      // advancement, so it's classified as benign (sequence+1 === max)
+      // and the family is never revoked. See the dedicated benign-race
+      // and genuine-reuse tests below for the real two-branch proof.
       const secondTokenAttempt = await request(app.getHttpServer())
         .post("/api/v1/auth/refresh")
         .set("Cookie", asCookieHeader(cookie2))
         .set(CSRF_HEADER);
-      expect(secondTokenAttempt.status).toBe(401);
+      expect(secondTokenAttempt.status).toBe(200);
+    });
+
+    // v0.8.5 step 2 (SPEC_V0.8.5.md §5) — invariant half (a): a BENIGN
+    // race. Two genuinely concurrent real HTTP calls (Promise.all, not a
+    // mock and not sequential) present the SAME still-live token. Exactly
+    // one must win; the loser's 401 must NOT revoke the family — the
+    // actual, real-concurrency proof of the diagnosed bug being fixed.
+    it("two genuinely concurrent refresh calls on the same token: exactly one wins, the loser 401s WITHOUT revoking the family", async () => {
+      const { rawValue } = await plantRefreshToken(adminUserId);
+
+      const [callA, callB] = await Promise.all([refresh(rawValue), refresh(rawValue)]);
+
+      const statuses = [callA.status, callB.status].sort();
+      expect(statuses).toEqual([200, 401]);
+      const winner = callA.status === 200 ? callA : callB;
+
+      // The winner's brand-new cookie must still work — proving the
+      // loser's 401 did not revoke the family it belongs to.
+      const winnerCookie = findSetCookie(winner, "refreshToken")!;
+      const followUp = await refresh(rawCookieValue(winnerCookie));
+      expect(followUp.status).toBe(200);
+    });
+
+    // v0.8.5 step 2 — invariant half (b): GENUINE reuse. A token that has
+    // been superseded by two or more generations (the chain has moved
+    // past its immediate successor) gets replayed — this is the hallmark
+    // of a stolen/leaked token, and must revoke the WHOLE family,
+    // including the currently-live, legitimate tip.
+    it("replaying a token superseded by two or more generations revokes the WHOLE family — even the current legitimate tip dies", async () => {
+      const { rawValue: gen0 } = await plantRefreshToken(adminUserId);
+      const firstRefresh = await refresh(gen0);
+      expect(firstRefresh.status).toBe(200);
+      const gen1 = rawCookieValue(findSetCookie(firstRefresh, "refreshToken")!);
+
+      const secondRefresh = await refresh(gen1);
+      expect(secondRefresh.status).toBe(200);
+      const gen2 = rawCookieValue(findSetCookie(secondRefresh, "refreshToken")!);
+
+      // Replay the ORIGINAL token — the chain has moved two generations
+      // past it (gen0 -> gen1 -> gen2), not just one.
+      const replay = await refresh(gen0);
+      expect(replay.status).toBe(401);
+
+      // The whole family is dead now — even gen2, the legitimate current
+      // tip that was never itself compromised, no longer refreshes.
+      const tipAfterReplay = await refresh(gen2);
+      expect(tipAfterReplay.status).toBe(401);
+    });
+
+    // v0.8.5 step 2 — multi-device: a second, independent family for the
+    // SAME user is a completely separate chain. Folded into the logout
+    // test below (not a separate test here) so proving it doesn't cost
+    // an extra login() call — see that test's own doc comment.
+
+    // v0.8.5 step 2 (SPEC_V0.8.5.md §5/§8) — rotation + the 7d expiry
+    // still hold: a plainly-expired (never rotated, never touched)
+    // planted token 401s, and — the refinement confirmed at plan time —
+    // does NOT revoke its family, since a token that simply timed out
+    // from disuse isn't suspicious.
+    it("a naturally expired token 401s without revoking its family", async () => {
+      const { rawValue, familyId } = await plantRefreshToken(adminUserId);
+      await prisma.refreshToken.updateMany({ where: { familyId }, data: { expiresAt: new Date(Date.now() - 1000) } });
+
+      const response = await refresh(rawValue);
+      expect(response.status).toBe(401);
+
+      const row = await prisma.refreshToken.findFirstOrThrow({ where: { familyId } });
+      expect(row.revokedAt).toBeNull();
     });
 
     it("401s with no cookie at all", async () => {
@@ -407,7 +495,7 @@ describe("Auth (e2e)", () => {
     // boundary. A directly-planted refreshToken row exercises the exact
     // same guard/service path without spending login quota.
     it("401s a refresh call missing the CSRF header, before touching the database", async () => {
-      const rawValue = await plantRefreshToken(adminUserId);
+      const { rawValue } = await plantRefreshToken(adminUserId);
 
       const response = await request(app.getHttpServer()).post("/api/v1/auth/refresh").set("Cookie", `refreshToken=${rawValue}`);
       expect(response.status).toBe(403);
@@ -425,11 +513,20 @@ describe("Auth (e2e)", () => {
   describe("POST /auth/logout", () => {
     // The one logout test that goes through a real login() — worth
     // exercising the primary proof (clears + revokes) against a cookie
-    // the LOGIN endpoint itself issued, not just a planted row.
-    it("clears the cookie and revokes the refresh token; the old cookie then 401s on refresh", async () => {
+    // the LOGIN endpoint itself issued, not just a planted row. Also
+    // doubles as the multi-device proof (SPEC_V0.8.5.md §5): a SECOND,
+    // independent family for the same user (a planted "device B", not a
+    // second real login — stays within the login throttle budget) must
+    // be completely unaffected by device A's logout, since family-scoped
+    // revocation (not userId-wide) is the whole point of this step.
+    it("clears the cookie and revokes the refresh token's family; a DIFFERENT device's family is unaffected", async () => {
       const loginResponse = await login();
       const { accessToken } = loginResponse.body;
       const cookie = findSetCookie(loginResponse, "refreshToken")!;
+
+      // Device B — an independent family for the SAME user, planted
+      // rather than a second real login.
+      const { rawValue: deviceBToken } = await plantRefreshToken(adminUserId);
 
       const logoutResponse = await request(app.getHttpServer())
         .post("/api/v1/auth/logout")
@@ -446,11 +543,17 @@ describe("Auth (e2e)", () => {
       expect(clearedCookie).toMatch(/^refreshToken=;/);
       expect(clearedCookie).toMatch(/Expires=Thu, 01 Jan 1970/i);
 
+      // Device A's own family is dead...
       const refreshAfterLogout = await request(app.getHttpServer())
         .post("/api/v1/auth/refresh")
         .set("Cookie", asCookieHeader(cookie))
         .set(CSRF_HEADER);
       expect(refreshAfterLogout.status).toBe(401);
+
+      // ...but device B's completely separate family still works —
+      // logout is family-scoped, never userId-wide.
+      const deviceBRefresh = await refresh(deviceBToken);
+      expect(deviceBRefresh.status).toBe(200);
     });
 
     // v0.8.5 step 1 (SPEC_V0.8.5.md §2) — logout is idempotent: no cookie
@@ -471,7 +574,7 @@ describe("Auth (e2e)", () => {
 
     it("403s a logout call missing the CSRF header", async () => {
       const accessToken = await signAccessToken(adminUserId, sunriseSchoolId);
-      const rawValue = await plantRefreshToken(adminUserId);
+      const { rawValue } = await plantRefreshToken(adminUserId);
 
       const response = await request(app.getHttpServer())
         .post("/api/v1/auth/logout")

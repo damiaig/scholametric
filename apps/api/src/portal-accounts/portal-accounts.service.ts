@@ -366,6 +366,12 @@ export class PortalAccountsService {
     const tempPassword = generateNumericTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, BCRYPT_COST);
 
+    // Deliberately userId-wide, not family-scoped (v0.8.5 step 2,
+    // SPEC_V0.8.5.md §5, kept as-is on purpose — not an oversight): a
+    // reissue is an admin explicitly killing this account's access
+    // EVERYWHERE, the same category as personnel.service.ts's own
+    // password reset, not the automatic theft-reaction that step scoped
+    // down to a single family.
     const [updated] = await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id },

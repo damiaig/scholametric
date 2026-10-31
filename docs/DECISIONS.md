@@ -8353,3 +8353,70 @@ multi-tenancy change. Zero changes to rotation/reuse-detection internals (Step 2
 
 Next: Step 2 (`family_id` + atomic rotation + reuse-detection rework), then Step 3 (boot
 rehydration — the actual reload-persistence fix), then the walk, then tag v0.8.5.
+
+## 2026-10-29 — v0.8.5 step 2: family_id + atomic rotation + reuse-detection rework
+
+**Migration**: `refresh_tokens` gains `family_id` (UUID) + `family_sequence` (int),
+`UNIQUE(family_id, family_sequence)`. Nullable-add → backfill (`family_id = id,
+family_sequence = 0`, making every pre-existing token a single-member family of itself)
+→ `SET NOT NULL`, matching every other required-column-on-non-empty-table migration in
+this project. `prisma migrate dev --create-only` refused non-interactively (required
+column, no default); hand-authored the migration SQL instead — it's exactly what Prisma
+would have scaffolded, just without the interactive confirmation step. Applied cleanly;
+backfill verified directly (34/34 existing rows became their own single-token families).
+
+**Atomic rotation, the correctness core of this step**: `refresh()` now rotates via
+`prisma.refreshToken.updateMany({where: {id, revokedAt: null}, data: {revokedAt: now()}})`
+inside a `$transaction`, checking `.count` — Postgres row locking under that `WHERE`
+serializes concurrent callers on the same row, so exactly one wins. The winner's
+"revoke parent" and "create child (family_id, sequence+1)" are in the SAME transaction —
+non-negotiable, because it's what lets a losing concurrent caller see the family's tip
+already at `sequence+1` (not still at `sequence`) and correctly classify the collision as
+a benign race rather than reuse. Splitting those two writes across transactions would
+create a window where a loser sees "parent revoked, no child yet" and wrongly nukes the
+family on every ordinary concurrent-refresh race.
+
+**Two-branch discriminator on an already-revoked token** (`handleAlreadyRevoked`):
+classify via `MAX(family_sequence)` for the token's family. Tip is exactly
+`token.sequence + 1` → benign race, no-op (401, family lives). Tip is further ahead →
+genuine reuse, revoke the **entire family** including its current legitimate tip (401,
+forces re-login for that session only — other families/devices for the same user are
+untouched). A naturally expired token is checked first, as a separate non-revoking 401,
+before any of this runs.
+
+**`logout()` reworked to family-scope**, not single-token: looks up the presented token's
+`family_id` first, then revokes every token in that family. Ending a session now reliably
+ends that whole chain, not just whatever token happened to be live at that instant.
+
+**Deliberately left user-wide, not narrowed to family-scope**: `personnel.service.ts`'s
+password-reset and `portal-accounts.service.ts`'s reissue both still revoke every refresh
+token for the `userId`, across all families. Annotated both call sites explicitly — these
+are admin-triggered "nuke this person's access everywhere" actions, a different category
+from the automatic theft-reaction this step scopes to one family. Not an oversight.
+
+**Test-budget discipline**: `auth.e2e-spec.ts`'s `plantRefreshToken` helper now mints a
+real family (returns `{rawValue, familyId}`) so planted rows exercise the exact same
+family/sequence code path a real login would. New coverage (concurrent-race, genuine-reuse,
+multi-device, expiry) stayed within the existing 10/min login-throttle budget the same way
+Step 1 did — planted tokens and directly-signed access tokens instead of spending real
+`login()` calls. Final count: still 10.
+
+**PROVE, against the real running stack, real concurrency, not simulated**: (a) benign
+race — two genuinely concurrent `curl` calls (backgrounded, `wait`) at the same cookie
+produced exactly one 200 and one 401; the winner's new cookie refreshed again successfully
+afterward, confirming the family survived. (b) genuine reuse — real login, rotated two
+generations ahead via sequential refreshes, then replayed the original login cookie:
+401, and critically the current legitimate tip (gen2) ALSO now 401s — confirmed whole-family
+revocation, not just the replayed token. (c) multi-device — two independent real logins for
+the same user; logging out device A's family (`200`, with its access token + CSRF header)
+killed device A's token (`401` on replay) while device B's family kept working (`200`)
+untouched. (d) expiry — a real token's `expires_at` set to the past directly via `psql`
+against the dev Postgres container; refreshing with it 401s, and the row's `revoked_at`
+stays `NULL` afterward (expiry never revokes).
+
+Full backend e2e suite and backend unit suite green; full frontend typecheck/lint/vitest
+green (no frontend files touched this step). Zero controller/cookie/CSRF changes. Zero
+frontend changes. Zero feature-module or multi-tenancy changes.
+
+Next: Step 3 (boot rehydration — the actual reload-persistence fix), then the walk, then
+tag v0.8.5.

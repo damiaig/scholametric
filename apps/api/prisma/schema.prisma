@@ -201,16 +201,32 @@ model User {
 // No school_id here by design — a refresh token is only ever reached via
 // user_id, and the owning user already carries school_id. See
 // docs/DECISIONS.md for the tradeoff against CLAUDE.md §4's general rule.
+//
+// v0.8.5 step 2 (SPEC_V0.8.5.md §5) — family_id (a per-login-chain
+// grouping key, a plain v4 UUID — internal, never client-exposed, so
+// CLAUDE.md's UUIDv7 rule for client-facing ids doesn't apply) +
+// family_sequence (a monotonic counter within that family: 0 at login,
+// parent+1 on each rotation) together are the reuse-detection
+// discriminator: MAX(family_sequence) for a family tells you whether a
+// presented already-revoked token's immediate (and only) successor has
+// itself ever been used — not-yet-used means a benign race/retry
+// (401 only); already-superseded-by-two-or-more means genuine replay of
+// a stolen token (revoke the whole family). The composite unique index
+// is also a hard DB-level invariant: a logic bug that assigns a
+// duplicate sequence within a family fails loudly, not silently.
 model RefreshToken {
-  id        String    @id @default(uuid(7)) @db.Uuid
-  userId    String    @map("user_id") @db.Uuid
-  tokenHash String    @map("token_hash")
-  expiresAt DateTime  @map("expires_at")
-  revokedAt DateTime? @map("revoked_at")
-  createdAt DateTime  @default(now()) @map("created_at")
+  id             String    @id @default(uuid(7)) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  tokenHash      String    @map("token_hash")
+  familyId       String    @map("family_id") @db.Uuid
+  familySequence Int       @map("family_sequence")
+  expiresAt      DateTime  @map("expires_at")
+  revokedAt      DateTime? @map("revoked_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id])
 
+  @@unique([familyId, familySequence])
   @@index([userId])
   @@map("refresh_tokens")
 }

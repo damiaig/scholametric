@@ -98,11 +98,29 @@ its refresh token from the cookie, never a body field. **No body at all.**
 is set as a fresh cookie, not returned here. The presented refresh token
 is revoked on use (rotation).
 
-**Response `401`**: missing cookie, unparseable cookie value, or an
-unknown/expired/already-revoked token. Presenting an already-revoked
-token is treated as reuse and revokes every other active refresh token
-for that user (forces re-login everywhere) — unchanged this step (v0.8.5
-step 2's job; see docs/SPEC_V0.8.5.md §5).
+**Response `401`**: missing cookie, unparseable cookie value, unknown
+token, naturally expired token, or an already-revoked token.
+
+**v0.8.5 step 2** (SPEC_V0.8.5.md §5) — rotation is now atomic (an
+`updateMany` conditioned on `revoked_at IS NULL`, so under concurrent
+calls on the same token exactly one wins the row) and every token
+belongs to a `family_id` (the chain started at login, one per device/
+login session) with a per-family `family_sequence`. Presenting an
+already-revoked token is **not** automatically treated as reuse — it is
+classified against the family's current tip (`MAX(family_sequence)`):
+- **Benign race** (two concurrent requests both presented the same
+  now-superseded token): the family's tip is exactly one generation
+  ahead of the presented token. No-op — the family stays alive, the
+  caller just gets `401` and should use the winning cookie it already
+  has.
+- **Genuine reuse** (the presented token is two or more generations
+  stale — i.e. it was already rotated away from before this replay):
+  the **entire family** is revoked, including its current legitimate
+  tip, forcing re-login for that session. Other families for the same
+  user (other devices/logins) are untouched.
+
+A naturally expired token is checked before rotation and always `401`s
+without revoking anything.
 
 **Response `403`**: missing the `X-Requested-With` header.
 
@@ -115,10 +133,13 @@ cookie — **no body**. Reworked this step (SPEC_V0.8.5.md §2), not new: it
 already existed, only the token's source/transport changed.
 
 Clears the cookie (`Set-Cookie` with an already-past `Expires` — Express's
-own `res.clearCookie()` behavior) and revokes the refresh token found in
-the cookie, if any. **Idempotent**: no cookie present (already logged
-out, or never had one) is a harmless no-op, never a `401` — logging out
-twice, or with a stale/absent cookie, always succeeds.
+own `res.clearCookie()` behavior) and revokes the **entire family** of
+the refresh token found in the cookie, if any (v0.8.5 step 2 — logout
+ends that whole login session, not just its current token; other
+families for the same user, e.g. other devices, are untouched).
+**Idempotent**: no cookie present (already logged out, or never had
+one) is a harmless no-op, never a `401` — logging out twice, or with a
+stale/absent cookie, always succeeds.
 
 **Response `200`**: `{ "success": true }`
 
@@ -168,13 +189,15 @@ deliberately not the standard `@Audit()`/`AuditInterceptor` path, which logs
 `request.body` verbatim and would otherwise put both passwords in
 `audit_logs`.
 
-**Does NOT revoke the caller's other active sessions** — no
-session/family concept exists in the schema to distinguish "this session"
-from "others" (docs/DECISIONS.md). It DOES reissue a fresh token pair for
-the caller (same shape as `POST /auth/refresh`), so their own client can
-swap tokens and immediately stop being blocked by the guard below — without
-this, the caller's own pre-existing access token would keep the stale
-`mustChangePassword: true` claim until it naturally expired.
+**Does NOT revoke the caller's other active sessions/families** — this
+call mints a brand-new family for the caller (same v0.8.5-step-2 family
+concept `POST /auth/refresh` uses) rather than touching any existing
+one, deliberately leaving the caller's other devices/logins alone. It
+DOES reissue a fresh token pair for the caller (same shape as `POST
+/auth/refresh`), so their own client can swap tokens and immediately
+stop being blocked by the guard below — without this, the caller's own
+pre-existing access token would keep the stale `mustChangePassword:
+true` claim until it naturally expired.
 
 **v0.8.5 step 1** — a third reissuing endpoint caught by sweeping every
 call site that touched a refresh token: this one also moved to the cookie,
@@ -790,7 +813,11 @@ change them to `TEACHER`.
 ### `POST /personnel/:userId/reset-password`
 
 Sets a new server-generated temporary password, revokes all of that
-user's active refresh tokens, and (v0.3) sets `mustChangePassword: true`
+user's active refresh tokens **across every family/device** (an
+admin-triggered "nuke this user's access everywhere" action, deliberately
+not scoped to a single family like the automatic reuse-detection in
+`POST /auth/refresh` — see docs/SPEC_V0.8.5.md §5), and (v0.3) sets
+`mustChangePassword: true`
 so they're forced through `POST /auth/change-password` on next login.
 Works for any user in the tenant, not only ones with a `staff_profile`.
 The v0.2 `POST /users/:id/reset-password` alias this used to also be
