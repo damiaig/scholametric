@@ -12,6 +12,13 @@ describe("ProtectedLayout", () => {
   });
 
   it("redirects an unauthenticated visitor to /login instead of rendering the protected route", () => {
+    // v0.8.5 step 3 — ProtectedLayout is mounted directly here, bypassing
+    // AuthBootGate (the real app's status: "unknown" -> never renders this
+    // at all). This test needs the "confirmed unauthenticated" state set up
+    // explicitly, not the module's "unknown" default, since it's testing
+    // what happens once that's already resolved.
+    authStore.clear();
+
     renderWithProviders(
       <Routes>
         <Route path="/login" element={<div>Login page marker</div>} />

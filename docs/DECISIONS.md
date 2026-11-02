@@ -8420,3 +8420,58 @@ frontend changes. Zero feature-module or multi-tenancy changes.
 
 Next: Step 3 (boot rehydration — the actual reload-persistence fix), then the walk, then
 tag v0.8.5.
+
+## 2026-11-02 — v0.8.5 step 3: boot rehydration (reverses the 2026-07-13 "reload logs you
+out" decision above)
+
+Decision: a page reload no longer always starts logged out. `auth-store.ts`'s `status` is
+now a tri-state (`unknown` -> `authenticated` | `unauthenticated`), starting `unknown` on
+every page load instead of defaulting straight to logged-out. A new `AuthBootGate`
+(apps/web/src/app/AuthBootGate.tsx) wraps the entire route tree (`App.tsx`) and fires one
+boot `POST /auth/refresh` — the httpOnly cookie from Steps 1-2 rides along — while
+rendering a loading splash; it resolves `status` to `authenticated` (access token now in
+memory) or `unauthenticated` (no cookie / expired / revoked) once that settles.
+
+**The anti-flash mechanism is architectural, not a boolean patch**: `AuthBootGate` doesn't
+render its children (`AppRoutes`) AT ALL while `status === "unknown"` — meaning
+`LoginRoute`/`ChangePasswordRoute`/`ProtectedLayout` are never even instantiated during
+boot, let alone rendering the wrong thing. That's what makes a reload with a valid cookie
+go splash -> app with no flash of the login screen, and it's also why all four existing
+`useIsAuthenticated()` consumers needed **zero code changes**: that hook still returns a
+plain boolean (`status === "authenticated"`), and every one of its callers only ever
+executes post-boot in the real app.
+
+**Shared single-flight, not a second refresh mechanism**: `api-client.ts`'s `refreshTokens()`
+(Step 1) had a guard rejecting immediately if there was no access token in memory yet — exactly
+the boot case by construction. Removed the guard and exported the function; the boot call and
+the existing mid-session 401-retry path now share the one `refreshPromise` module variable by
+construction, proved under React 18 `StrictMode`'s double-effect-invocation (exactly one real
+`fetch` call despite the double mount/cleanup/mount).
+
+**Reason for the reversal**: the 2026-07-13 decision was correct for what Steps 1-2 made
+possible at the time (no httpOnly-cookie refresh token yet, so no safe way to rehydrate
+without a persistent, XSS-exfiltratable credential). That constraint is gone — the refresh
+token has lived only in an httpOnly cookie since Step 1 — so the "zero persistent
+credentials" tradeoff no longer requires giving up session persistence too.
+
+**Found during build, not scope creep**: `/auth/me` fires twice (not once) on the first
+authenticated render — `ProtectedLayout` gates its children (`Sidebar`, the page itself)
+behind its own `currentUser.isLoading`, so those children mount their own `useCurrentUser()`
+observer on a LATER commit, after the first call's data already exists; TanStack Query's
+default `staleTime: 0` means a newly-mounted observer for already-fetched-but-stale data
+triggers one background refetch. Confirmed pre-existing and unrelated to this step via a
+control case (same double-call with `authStore` pre-authenticated and `AuthBootGate` out of
+the tree entirely, i.e. today's already-shipped Step 1/2 behavior) — not fixed here
+(unrelated to auth-status gating, out of this step's scope); the web test asserts "nothing
+unexpected fired," not an exact count, and says why inline.
+
+Full frontend typecheck/lint/vitest green (588 tests: 582 existing + the new
+`AuthBootGate.test.tsx`'s 3). Zero backend changes, zero `packages/shared` changes, zero
+feature-module changes — only `auth-store.ts`, `api-client.ts`, the new `AuthBootGate.tsx` +
+test, `App.tsx`, and one precondition fix in `ProtectedLayout.test.tsx` (it mounts
+`ProtectedLayout` directly, bypassing `AuthBootGate`, so it now sets the "confirmed
+unauthenticated" state explicitly rather than relying on the old default).
+
+Next: Step 4 — the walk (log in -> hard-refresh -> still logged in; two browsers = two
+independent sessions; the race; a stale/replayed token rejected; silent mid-session
+refresh), then tag v0.8.5.

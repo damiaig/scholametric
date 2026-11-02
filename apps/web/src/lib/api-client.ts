@@ -96,19 +96,21 @@ export function publicApiRequest<T>(path: string, options: RequestOptions = {}):
 // v0.8.5 step 1 (SPEC_V0.8.5.md §2) — the refresh token itself is never
 // read from or sent in a body anymore; it rides along automatically as
 // the httpOnly cookie (credentials:"include" on rawFetch is what makes
-// that happen). The `current` check below still guards "is there even an
-// access token in memory" — if not, there's no live session to refresh
-// (reload wipes this store entirely; re-establishing a session from the
-// cookie alone is step 3's boot-rehydration job, not this one).
+// that happen).
+//
+// v0.8.5 step 3 (SPEC_V0.8.5.md §3) — exported so AuthBootGate can call this
+// exact function on boot. There's deliberately no "is there an access token
+// in memory" guard here anymore: boot calls this with NOTHING in memory yet
+// (that's the whole point — asking the cookie for one), and the single
+// `refreshPromise` below is what makes boot and any mid-session 401-retry
+// share one in-flight call either way. The only other caller (apiRequest's
+// catch branch, below) already checks its own `tokens` before ever reaching
+// this function, so removing the guard here changes nothing for it.
 let refreshPromise: Promise<RefreshResponse> | null = null;
 
-function refreshTokens(): Promise<RefreshResponse> {
+export function refreshTokens(): Promise<RefreshResponse> {
   if (refreshPromise) {
     return refreshPromise;
-  }
-  const current = authStore.getState();
-  if (!current) {
-    return Promise.reject(new Error("No active session to refresh"));
   }
   refreshPromise = rawFetch<RefreshResponse>("/api/v1/auth/refresh", {
     method: "POST",

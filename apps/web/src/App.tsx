@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { AuthBootGate } from "./app/AuthBootGate";
 import { LoginRoute } from "./app/LoginRoute";
 import { ChangePasswordRoute } from "./app/ChangePasswordRoute";
 import { ProtectedLayout } from "./app/ProtectedLayout";
@@ -165,7 +166,9 @@ export function AppRoutes() {
 export function App() {
   return (
     <BrowserRouter>
-      <AppRoutes />
+      <AuthBootGate>
+        <AppRoutes />
+      </AuthBootGate>
     </BrowserRouter>
   );
 }
