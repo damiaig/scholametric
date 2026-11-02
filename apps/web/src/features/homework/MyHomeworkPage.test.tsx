@@ -3,6 +3,7 @@ import { screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { StudentHomeworkEntry, StudentHomeworkListResponse } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
+import { futureMonday } from "../../test/future-date";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
 import { MyHomeworkPage } from "./MyHomeworkPage";
@@ -33,7 +34,7 @@ function entry(overrides: Partial<StudentHomeworkEntry> = {}): StudentHomeworkEn
     teacherName: "Ms. Adaeze",
     title: "Chapter 3 exercises",
     description: "Solve all questions at the end of the chapter.",
-    dueDate: "2026-11-02",
+    dueDate: futureMonday(),
     requiresUpload: false,
     markedDone: false,
     markedAt: null,

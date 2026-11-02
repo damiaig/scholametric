@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import type { Homework, HomeworkListResponse, MyTeaching } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
+import { futureMonday } from "../../test/future-date";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
 import { HomeworkClassPage } from "./HomeworkClassPage";
@@ -34,7 +35,7 @@ function homework(overrides: Partial<Homework> = {}): Homework {
     termId: "term1",
     title: "Chapter 3 exercises",
     description: "Solve all questions.",
-    dueDate: "2026-11-02",
+    dueDate: futureMonday(),
     requiresUpload: false,
     status: "DRAFT",
     publishedAt: null,
@@ -85,7 +86,17 @@ describe("HomeworkClassPage", () => {
   // student list's own weekday-day-month format via formatDueDateRelative,
   // so a non-relative due date reads the same way on both surfaces.
   it("shows a non-relative due date in weekday-day-month form", async () => {
-    const list: HomeworkListResponse = { classArmId: "arm1", subjectId: "sub1", termId: "term1", homework: [homework({ dueDate: "2026-11-02" })] };
+    const dueDate = futureMonday();
+    // Mirrors formatDueDateRelative's own Intl.DateTimeFormat call exactly
+    // (same locale, same options) — the expected label is derived from the
+    // SAME computed date, not a hardcoded day/month that eventually goes
+    // stale the way this test's old "2026-11-02"/"Due Monday 2 November"
+    // pairing did once real time caught up to it.
+    const [year, month, day] = dueDate.split("-").map(Number);
+    const expectedLabel = new Intl.DateTimeFormat("en-GB", { weekday: "long", day: "numeric", month: "long" }).format(
+      new Date(year, month - 1, day),
+    );
+    const list: HomeworkListResponse = { classArmId: "arm1", subjectId: "sub1", termId: "term1", homework: [homework({ dueDate })] };
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/me/teaching") return TEACHING;
       if (path === "/api/v1/homework") return list;
@@ -93,7 +104,7 @@ describe("HomeworkClassPage", () => {
     });
     renderPage("/homework/arms/arm1?subjectId=sub1");
 
-    expect(await screen.findByText("Due Monday 2 November")).toBeInTheDocument();
+    expect(await screen.findByText(`Due ${expectedLabel}`)).toBeInTheDocument();
   });
 
   // Computed from the real current date, not a fixed fixture + fake
