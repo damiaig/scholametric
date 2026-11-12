@@ -8475,3 +8475,46 @@ unauthenticated" state explicitly rather than relying on the old default).
 Next: Step 4 — the walk (log in -> hard-refresh -> still logged in; two browsers = two
 independent sessions; the race; a stale/replayed token rejected; silent mid-session
 refresh), then tag v0.8.5.
+
+## 2026-11-11 — v0.8.5 bugfix: the reload fix didn't actually work in a real browser (two bugs)
+
+Found by the user testing live in a browser immediately after Step 3 — e2e and curl had both
+been passing throughout Steps 1-3 because both forward the refresh cookie by hand, bypassing
+the exact browser mechanics that broke.
+
+**Bug A — cookie Path was never a prefix of the real route.** `REFRESH_COOKIE_PATH` was
+`/auth`, but `app.setGlobalPrefix("api/v1", ...)` (bootstrap.ts) means the real mounted route
+is `/api/v1/auth/refresh`, not `/auth/refresh`. `/auth` is not a prefix of `/api/v1/auth/...`
+at all, so per RFC 6265 path-matching the browser never attached the cookie to the refresh
+request — the boot `POST /api/v1/auth/refresh` 401s every time, even with a freshly-stored
+cookie sitting right there. Fixed by changing the one shared `REFRESH_COOKIE_PATH` constant
+(auth.constants.ts) to `/api/v1/auth`; login/refresh/change-password (set) and logout
+(clear) already all read this same constant, so there was no separate drift to fix on that
+side — only the value was wrong.
+
+**Bug B — reported as "login's Set-Cookie is discarded because the request isn't
+credentialed."** On inspection, `rawFetch` (api-client.ts) already sends
+`credentials: "include"` unconditionally on every call, including login — this was true as
+of Step 1 and nothing since has narrowed it. Audited every other network call in the web app
+(grep for raw `fetch(` outside api-client.ts: only the Firebase-storage direct-upload PUTs
+in homework/lessons attachments, unrelated to the API origin or this cookie) — confirmed no
+call bypasses `rawFetch`. Most likely Bug A alone fully explained the observed symptom (a
+cookie stored under the wrong Path looks identical, from DevTools' per-request Network panel,
+to a cookie that was never stored, since it's never shown as attached to the refresh
+request). Did not change any code for this one, since there was nothing to change — added
+the regression coverage requested anyway (below), since "already correct" deserves a test
+proving it stays that way as much as a real bug does.
+
+**Regression coverage added**: (a) backend e2e — the login test now asserts the Set-Cookie's
+Path actually RFC-path-matches the real `/api/v1/auth/refresh` route (prefix + boundary
+check, not a hardcoded literal that could drift again the same way), and the logout test
+asserts the clear cookie's Path is identical to the set cookie's Path; (b) frontend —
+`api-client.test.ts` gained two tests asserting `credentials: "include"` on `publicApiRequest`
+(login's own path) and on `apiRequest`'s direct call, alongside the existing refresh-call
+assertion, so all three entry points are covered individually rather than inferring one from
+another.
+
+Full backend e2e + unit, full frontend typecheck/lint/vitest green. Zero feature-module
+changes. `docs/API.md` and `docs/SPEC_V0.8.5.md` corrected to describe the real Path
+(SPEC_V0.8.5.md's own §8 resolution for this flag was itself wrong — corrected in place,
+unlike this append-only log).

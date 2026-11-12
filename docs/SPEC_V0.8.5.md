@@ -194,9 +194,14 @@ start:dev`, web dev server fresh.*
   to flow, even dev cross-port (5173 → 3000). **Resolved (step 1):** `credentials: true` added
   to the existing `enableCors` call (it was missing entirely); `credentials: "include"` added
   unconditionally inside the frontend's shared `rawFetch` (harmless on non-auth calls — the
-  cookie's own `Path=/auth` means it's never sent/received outside auth endpoints anyway).
-- **Cookie Path:** recommend `Path=/auth` so the refresh cookie isn't sent on every API
-  request. **Resolved (step 1):** built as `/auth`.
+  cookie's own `Path` means it's never sent/received outside auth endpoints anyway).
+- **Cookie Path:** recommend a path scoped to the auth endpoints so the refresh cookie isn't
+  sent on every API request. **Resolved (step 1):** built as `/auth`. **Corrected
+  (2026-11-11, docs/DECISIONS.md):** `/auth` was never actually a prefix of the real mounted
+  route — `app.setGlobalPrefix("api/v1", ...)` means the real refresh endpoint is
+  `/api/v1/auth/refresh`, not `/auth/refresh` — so the browser never sent the cookie back on
+  refresh at all. Corrected to `/api/v1/auth`. e2e/curl tests missed this because both
+  forward the cookie by hand instead of a real cookie jar enforcing RFC 6265 path-matching.
 - **cookie-parser dependency:** CLAUDE.md requires asking before adding a library.
   **Resolved (step 1):** hand-parsed instead — the app only ever needs to read exactly one
   cookie. The parser finds the `refreshToken=` segment and takes everything after the FIRST

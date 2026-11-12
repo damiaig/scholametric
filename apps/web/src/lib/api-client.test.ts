@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { authStore } from "./auth-store";
-import { apiRequest } from "./api-client";
+import { apiRequest, publicApiRequest } from "./api-client";
 
 interface MockResponse {
   status: number;
@@ -105,5 +105,36 @@ describe("apiRequest — 401 handling", () => {
 
     await expect(apiRequest("/api/v1/x", {})).rejects.toMatchObject({ status: 401 });
     expect(authStore.getState()).toBeNull();
+  });
+});
+
+// v0.8.5 bugfix (docs/DECISIONS.md, 2026-11-11) — a real browser only
+// stores a cross-origin Set-Cookie from a response to a request that was
+// ITSELF credentialed. The refresh call's credentials:"include" was
+// already covered above, but LOGIN's never was, and a login response is
+// exactly the one that sets the cookie in the first place — if that
+// specific call ever lost credentials:"include" (e.g. someone "simplified"
+// rawFetch to only include it conditionally), the refresh cookie would
+// never be stored at all, and this suite's own mocked fetch wouldn't catch
+// it since it doesn't model real browser cookie-jar/CORS behavior. This
+// asserts the actual RequestInit every entry point sends, not just one of
+// them.
+describe("credentials: \"include\" is unconditional on every call (rawFetch), not just refresh", () => {
+  it("publicApiRequest — the path login uses — sends credentials: include", async () => {
+    mockFetchSequence([{ status: 200, body: { accessToken: "t", user: {} } }]);
+
+    await publicApiRequest("/api/v1/auth/login", { method: "POST", body: { identifier: "a", password: "b" } });
+
+    const [, init] = fetchCalls[0];
+    expect(init?.credentials).toBe("include");
+  });
+
+  it("apiRequest's own direct (non-retry) call also sends credentials: include", async () => {
+    mockFetchSequence([{ status: 200, body: { ok: true } }]);
+
+    await apiRequest("/api/v1/x", {});
+
+    const [, init] = fetchCalls[0];
+    expect(init?.credentials).toBe("include");
   });
 });

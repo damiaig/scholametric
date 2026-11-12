@@ -27,9 +27,13 @@ in this section anymore — login/refresh/change-password set it via
 `Set-Cookie`, refresh/logout read it back from the `Cookie` header. Cookie
 attributes, every time it's set: `HttpOnly`, `SameSite=Lax`, `Secure` in
 production only (env-keyed off `NODE_ENV`, never set over local http in
-dev), `Path=/auth` (sent only to this section's own endpoints, never on
-every API call), `Max-Age` = 7 days (the refresh lifetime). The access
-token is unaffected — still a normal JSON body field, still 15 minutes.
+dev), `Path=/api/v1/auth` (sent only to this section's own endpoints, never
+on every API call — this must include the global `api/v1` prefix the real
+routes are mounted under; a bugfix on 2026-11-11 corrected this from a
+bare `/auth`, which was never actually a prefix of the real route and so
+was silently never sent back at all, see docs/DECISIONS.md), `Max-Age` = 7
+days (the refresh lifetime). The access token is unaffected — still a
+normal JSON body field, still 15 minutes.
 
 **CSRF**: `POST /auth/refresh` and `POST /auth/logout` (never login) also
 require a custom `X-Requested-With` header on every call (any non-empty

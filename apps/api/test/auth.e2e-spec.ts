@@ -183,24 +183,42 @@ describe("Auth (e2e)", () => {
       expect(response.body).not.toHaveProperty("refreshToken");
 
       // v0.8.5 step 1 (SPEC_V0.8.5.md §2/§8 flag 3) — cookie attributes:
-      // httpOnly, Path=/auth (never sent on every API call), and a
-      // Max-Age matching the 7d refresh lifetime. Secure is env-keyed
-      // (SPEC_V0.8.5.md §8 flag 1) — off whenever NODE_ENV isn't
-      // "production" (Secure cookies won't set over local http at all),
-      // on in production; createTestApp() boots under this repo's own
-      // .env (NODE_ENV=development), so this confirms the OFF side of
-      // that branch here, folded into this same login rather than a
-      // separate test (every extra login() call eats into the
-      // unchanged-this-step 10/min throttle the rest of this file is
-      // already right at the edge of).
+      // httpOnly, a Path that actually covers the real mounted refresh
+      // route (never sent on every API call), and a Max-Age matching the
+      // 7d refresh lifetime. Secure is env-keyed (SPEC_V0.8.5.md §8 flag
+      // 1) — off whenever NODE_ENV isn't "production" (Secure cookies
+      // won't set over local http at all), on in production;
+      // createTestApp() boots under this repo's own .env
+      // (NODE_ENV=development), so this confirms the OFF side of that
+      // branch here, folded into this same login rather than a separate
+      // test (every extra login() call eats into the unchanged-this-step
+      // 10/min throttle the rest of this file is already right at the
+      // edge of).
       const setCookie = findSetCookie(response, "refreshToken");
       expect(setCookie).toBeDefined();
       expect(setCookie).toMatch(/HttpOnly/i);
-      expect(setCookie).toMatch(/Path=\/auth/i);
       expect(setCookie).not.toMatch(/Secure/i);
       const maxAgeMatch = setCookie!.match(/Max-Age=(\d+)/i);
       expect(maxAgeMatch).not.toBeNull();
       expect(Number(maxAgeMatch![1])).toBe(7 * 24 * 60 * 60); // 7 days, in seconds
+
+      // v0.8.5 bugfix (docs/DECISIONS.md, 2026-11-11) — Path=/auth was
+      // never a prefix of the REAL mounted route (/api/v1/auth/refresh,
+      // once the global prefix is applied), so the browser never sent the
+      // cookie back on refresh at all; e2e/curl missed this because both
+      // forward the cookie by hand instead of letting a real cookie jar
+      // decide. This asserts the RFC 6265 §5.1.4 path-match invariant
+      // itself — the cookie's Path must be a prefix of the refresh route,
+      // AND the next character after that prefix must be "/" (or nothing)
+      // — not just a hardcoded literal that could silently drift from the
+      // real route again if the global prefix ever changes without this
+      // cookie's Path changing to match.
+      const pathMatch = setCookie!.match(/Path=([^;]+)/i);
+      expect(pathMatch).not.toBeNull();
+      const cookiePath = pathMatch![1];
+      const refreshRoute = "/api/v1/auth/refresh";
+      expect(refreshRoute.startsWith(cookiePath)).toBe(true);
+      expect(refreshRoute[cookiePath.length]).toBe("/");
     });
 
     // v0.6 step 2 (SPEC_V0.6.md §2.2): STUDENT/PARENT log in with the SAME
@@ -542,6 +560,16 @@ describe("Auth (e2e)", () => {
       expect(clearedCookie).toBeDefined();
       expect(clearedCookie).toMatch(/^refreshToken=;/);
       expect(clearedCookie).toMatch(/Expires=Thu, 01 Jan 1970/i);
+      // v0.8.5 bugfix (docs/DECISIONS.md, 2026-11-11) — set and clear MUST
+      // use the identical Path, or the browser treats them as two
+      // different cookies: a clear on the wrong Path leaves the original
+      // uncleared. Both sides already read the one REFRESH_COOKIE_PATH
+      // constant in source; this proves it from the outside, against the
+      // real cookie strings, not just by reading the source.
+      const setPath = cookie.match(/Path=([^;]+)/i)?.[1];
+      const clearPath = clearedCookie!.match(/Path=([^;]+)/i)?.[1];
+      expect(setPath).toBeDefined();
+      expect(clearPath).toBe(setPath);
 
       // Device A's own family is dead...
       const refreshAfterLogout = await request(app.getHttpServer())
