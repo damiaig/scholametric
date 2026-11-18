@@ -8518,3 +8518,69 @@ Full backend e2e + unit, full frontend typecheck/lint/vitest green. Zero feature
 changes. `docs/API.md` and `docs/SPEC_V0.8.5.md` corrected to describe the real Path
 (SPEC_V0.8.5.md's own §8 resolution for this flag was itself wrong — corrected in place,
 unlike this append-only log).
+
+## 2026-11-18 — v0.9 Step 1: e2e "passes alone, fails under full-suite load" — diagnostics only, two confirmed root causes, no fix yet
+
+Goal: find out why the 53-file e2e suite is flaky under `--runInBand` load but not alone.
+Findings-only step, per plan; nothing below was fixed. Full raw data, per-run logs, and the
+complete run-by-run tables live outside the repo at `~/flake-hunt-data/FINDINGS.md` (not
+committed — this entry is the durable summary).
+
+**Root cause #1 (confirmed, reproduced in isolation): advisory-lock-held connections starve
+the Prisma pool under load.** `grades.service.ts`, `terms.service.ts`, `students.service.ts`,
+`exams.service.ts`, `portal-accounts.service.ts`, and `personnel.service.ts` all wrap mutations
+in a Prisma interactive `$transaction` that takes a `pg_advisory_xact_lock(hashtext(...))`
+keyed per school/term/subject/class-arm. A transaction blocked waiting on that lock keeps
+holding its pool connection for the whole wait. A controlled repro (N=60 concurrent
+`POST /personnel` calls for one school, same lock key, deleted after use) failed 45% of the
+time at `connection_limit=3` with exactly `"Unable to start a transaction in the given time"`,
+and passed 100% at `connection_limit=30` — same code, same concurrency, only the pool size
+changed. Three of these lock-holding transactions
+(`portal-accounts.service.ts` provision/re-provision, `grades.service.ts#updateEvaluation`,
+`exams.service.ts#updateExam`) have **no explicit `{timeout, maxWait}` override**, falling
+back to Prisma's 5s/2s defaults — yet a live dump during a real hang caught a connection
+sitting `idle in transaction` for over 20 minutes despite that. Likely explanation (not
+independently verified against Prisma internals): `pg_advisory_xact_lock` blocks synchronously
+inside Postgres on the same connection, and a client-side transaction timeout firing doesn't
+necessarily translate into an out-of-band Postgres cancel of an already-blocked query. Field
+evidence is consistent with this at the real CI pool size: 1/10 runs hung at the local default
+pool (~21), 6/10 hung or failed at `connection_limit=9` (the real, CI-probe-measured pool
+size), 3/10 at an INDUCED `connection_limit=5` stress arm (non-monotonic vs. pool=9 — not
+fully explained, logged as-is rather than smoothed over). **Flagging this as a potential
+production defect, not only a test flake**: two real concurrent requests to the same locked
+resource (a double-click, a retry, two staff doing the same action) could hit the same stall
+in production. A historical hang (2026-09-01, `portal-accounts.e2e-spec.ts`, originally "no
+lead") and a since-superseded "environmental" classification of one run in this step's own
+raw data are being retroactively flagged as plausibly the same mechanism, not re-confirmed.
+
+**Root cause #2 (confirmed, decisive): the test DB not resetting between runs causes a
+separate, much larger cascade.** A dedicated "no reset between runs" arm (N=10) produced
+100-260 failed tests (out of 718) in 5 of 10 runs — fixture-collision cascades
+(`prisma.user.create()` unique-constraint collisions, then everything downstream reading
+stale/missing fixture state) — a completely different failure shape and far higher failure
+count than anything load-related produced. This directly confirms the 2026-11-12 BACKLOG
+item. Unrelated to root cause #1: one rep of this same arm, run against a provably clean DB
+(the one reset before run 1), still hung the same way root cause #1 predicts — the two causes
+are independent and both real.
+
+**Explicitly NOT explained by either root cause, left open**: a recurring "401/404 on a
+request that should succeed, reusing a token/state that worked moments earlier" shape (seen
+in `personnel`, `grades-publish`'s own concurrency test, `evaluations-authoring`, and
+historically `portal-accounts`). Checked and ruled out database involvement specifically:
+`JwtAuthGuard` does zero DB work (stateless JWT verification only), and only three files in
+the whole API ever throw `UnauthorizedException`, none reachable from the affected routes
+except that same stateless guard. This is real and reproduced on a clean DB, but its cause is
+unknown — not attributed to root cause #1, to avoid overclaiming.
+
+Also checked and ruled out: no spec/helper instantiates an extra `PrismaClient`; no direct
+`this.prisma` (non-transactional client) usage found inside any of the ~23 advisory-lock-
+holding transaction callbacks or their directly-invoked helpers, via a brace-matching script
+over all six services — the leak is pool exhaustion from legitimate lock contention, not a
+transaction-scoping bug. The dev-API/web-containers-running-vs-stopped variable (N=2) showed
+no obvious effect, but N=2 is too small to rule one out.
+
+No fix applied. Proposed next step (not built): add explicit, generous
+`{timeout, maxWait}` to the three transactions currently missing one; investigate whether
+Prisma's transaction timeout can be made to actually cancel a connection blocked inside
+`pg_advisory_xact_lock` (vs. just stopping client-side); separately, fix the test-DB-reset
+gap per the existing BACKLOG item. The 401/404 shape needs its own dedicated investigation.
