@@ -2,20 +2,23 @@
 
 ## Deferred / known issues
 
-## e2e test database never resets between local runs (flaky, not a code bug)
-`apps/api/test/global-setup.ts` only creates `scholametric_test` if it doesn't already exist,
-then runs `migrate deploy` + `db seed` — it never truncates existing rows. Across many local
-`pnpm test` runs in one long-lived dev environment, this lets state accumulate (e.g. extra
+## e2e test database never resets between local runs — FIXED (v0.9 Step 2a, 2026-11-19)
+`apps/api/test/global-setup.ts` only created `scholametric_test` if it didn't already exist,
+then ran `migrate deploy` + `db seed` — it never truncated existing rows. Across many local
+`pnpm test` runs in one long-lived dev environment, this let state accumulate (e.g. extra
 students from earlier runs whose fixtures weren't cleaned up), and `me-student.e2e-spec.ts`
 hit this directly: a local full-suite run failed with a `(school_id, admission_number)`
 unique-constraint violation, while running that same file in isolation immediately after hit
 a *different* Prisma error — two different failures on identical, unchanged code is the
 signature of stale row state, not a regression (confirmed: that file hasn't been touched
 since v0.7.4, zero diff across any v0.8.5 commit). CI stayed green throughout on its own
-always-fresh database. Fix = truncate (or drop/recreate) `scholametric_test`'s tables in
-`global-setup.ts` before migrate+seed, every run, not just create-if-missing. Not scheduled
-to a version yet — noted during the v0.8.5 health check (2026-11-12) so it doesn't get
-mistaken for a real bug again.
+always-fresh database. Noted during the v0.8.5 health check (2026-11-12); independently
+confirmed as a major, real cause of flakiness during the v0.9 Step 1 flake-hunt (a dedicated
+no-reset-between-runs arm produced 100-260 failed tests per run in half its runs).
+**Fixed**: `global-setup.ts` now drops (`WITH (FORCE)`) and recreates `scholametric_test` on
+every run, guarded by `assertIsTestDatabaseUrl()` (unit-tested) so this destructive step can
+never target anything else. Proved with 5 back-to-back full-suite runs, no manual reset
+between them — zero stale-state failures (docs/DECISIONS.md, 2026-11-20).
 
 ## School-local "today" for date rules (timezone correctness)
 The backend computes "today" in UTC (CalendarService / the lesson isDateInTheFuture check and

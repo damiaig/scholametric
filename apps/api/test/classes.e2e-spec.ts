@@ -72,6 +72,19 @@ describe("Classes (e2e)", () => {
     });
 
     it("runs as a CONSTANT number of queries regardless of data size (not N+1)", async () => {
+      // Warm-up call, BEFORE the listener attaches and before anything is
+      // counted (docs/DECISIONS.md, 2026-08-31 flake + v0.9 Step 2a fix):
+      // the first real execution of this endpoint's exact query shape pays
+      // a one-time cost (prepared-statement setup/query-plan caching) that
+      // a later identical call doesn't — unrelated to connection pooling,
+      // since several other queries already ran in beforeAll/the previous
+      // test on this same app. Without this, whichever tenant happens to
+      // go first absorbs that one-time cost and the two counts can differ
+      // by one, flakily. This doesn't loosen the invariant below — it's
+      // still an exact equality — it just makes both measurements start
+      // from the same already-warm state.
+      await request(app.getHttpServer()).get("/api/v1/classes").set(auth(sunriseAdminToken));
+
       const queries: string[] = [];
       const listener = (event: { query: string }) => queries.push(event.query);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

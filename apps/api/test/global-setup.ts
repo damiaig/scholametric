@@ -1,25 +1,33 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
-import { MAINTENANCE_DATABASE_URL, TEST_DATABASE_URL } from "./test-db";
+import { assertIsTestDatabaseUrl, MAINTENANCE_DATABASE_URL, TEST_DATABASE_URL } from "./test-db";
 
 const API_ROOT = path.join(__dirname, "..");
 
-// Runs ONCE before any e2e test file (Jest globalSetup). Creates (if it
-// doesn't already exist) a dedicated "scholametric_test" database, then
-// migrates and seeds it — the SAME migrations/seed script the dev/walk
-// stack uses, just against an isolated target. This is what makes
-// `pnpm test`/`pnpm run ci` physically incapable of writing to real seeded
-// data in the dev database (docs/DECISIONS.md).
+// Runs ONCE before any e2e test file (Jest globalSetup). Drops (if it
+// exists) and recreates "scholametric_test" on EVERY run, then migrates and
+// seeds it fresh — the SAME migrations/seed script the dev/walk stack uses,
+// just against an isolated target. This also means `pnpm test`/
+// `pnpm run ci` is physically incapable of writing to real seeded data in
+// the dev database (docs/DECISIONS.md).
+//
+// v0.9 Step 2a (docs/DECISIONS.md, 2026-11-19): previously this only
+// created the database if missing, so leftover rows from a prior run's
+// test files that didn't clean up after themselves would still be there on
+// the next run — confirmed as a major, independent source of flakiness
+// (the "Arm B" no-reset-between-runs data: 100-260 failed tests per run
+// from fixture-collision cascades). Always dropping and recreating closes
+// that gap. `WITH (FORCE)` (Postgres 13+) also disconnects any lingering
+// sessions still attached to the database, so a prior crashed run holding
+// an open connection can't block this.
 export default async function globalSetup(): Promise<void> {
+  assertIsTestDatabaseUrl(TEST_DATABASE_URL);
+
   const admin = new PrismaClient({ datasources: { db: { url: MAINTENANCE_DATABASE_URL } } });
   try {
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS scholametric_test WITH (FORCE)`);
     await admin.$executeRawUnsafe(`CREATE DATABASE scholametric_test`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("already exists")) {
-      throw error;
-    }
   } finally {
     await admin.$disconnect();
   }

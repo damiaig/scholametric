@@ -8584,3 +8584,83 @@ No fix applied. Proposed next step (not built): add explicit, generous
 Prisma's transaction timeout can be made to actually cancel a connection blocked inside
 `pg_advisory_xact_lock` (vs. just stopping client-side); separately, fix the test-DB-reset
 gap per the existing BACKLOG item. The 401/404 shape needs its own dedicated investigation.
+
+## 2026-11-20 — v0.9 Step 2a: fixed cause #2 (test DB never resetting); Step 2b diagnostics (findings only, mechanism confirmed, no fix yet)
+
+**Step 2a, committed.** `global-setup.ts` now drops (`WITH (FORCE)`) and recreates
+`scholametric_test` on every run, not just when missing — guarded by a new
+`assertIsTestDatabaseUrl()` (`test/test-db.ts`, unit-tested) that refuses any db name other
+than `scholametric_test` before any destructive statement, so this can never target real data.
+Fixed one real "mutates a shared seeded tenant without restoring" bug found in a bounded audit
+(not exhaustive across all 53 files): `grade-boundaries.e2e-spec.ts` restored the
+`gradeBoundary` rows it changed but never cleaned up the permanent `auditLog` row
+`GradeBoundariesService#replaceAll` writes on every successful PUT — fixed. Also fixed the
+2026-08-31 `classes.e2e-spec.ts` N+1-test flake: added a discardable warm-up request before
+the query-count listener attaches, so whichever tenant is measured first no longer absorbs a
+one-time first-query-shape cost the other tenant doesn't pay — the invariant itself (exact
+equality, `<=3`) is unchanged, nothing loosened.
+
+**Proof**: 5 full-suite runs back-to-back, no manual reset between them (wrapped in
+`caffeinate -i` + a 600s per-run hard timeout, after a first unwrapped attempt got stuck for
+over a day on a run contaminated by repeated sleep/wake cycles — discarded, not counted). Zero
+of 5 runs showed a stale-state failure. Two of five had unrelated, already-documented,
+out-of-scope issues (one cause-#1 socket-hang-up cascade, one instance of the still-open
+401/404 shape below) — neither is stale-state, so the fix is confirmed working.
+
+**Step 2b diagnostics (no fix applied here — findings only, per plan):**
+
+1. **Root-caused exactly why a 20s-or-shorter configured transaction timeout doesn't end an
+   idle-in-transaction hang.** Directly reproduced with a controlled two-connection experiment
+   (throwaway script, deleted after use): a transaction blocked waiting on
+   `pg_advisory_xact_lock` stayed `active`/`wait_event_type=Lock`/`blocked_by=[<holder>]` for
+   over 30 seconds *past* its own configured 5-second timeout, completely unchanged — Prisma's
+   timeout is a client-side bookkeeping deadline only, not a Postgres-level cancel. The backend
+   only returns once whoever holds the lock actually releases it, and only THEN does Prisma
+   notice the deadline already passed and throw ("Transaction already closed: ... timeout was
+   5000 ms, however 39065 ms passed"). The real bound on how long a connection stays tied up is
+   entirely set by whoever holds the contended lock, which in the field can be minutes. This
+   fully explains the 20+ minute idle-in-transaction dumps from Step 1.
+2. **Re-traced the "no leaked `this.prisma`" audit into every helper the ~23 lock-holding
+   callbacks call**, not just literal tokens in the callback body (the original brace-matching
+   script had false positives from un-stripped comment text referencing method names like
+   "close()/unlock()/relock()" in prose). The real helper list — `this.recomputeStudents`,
+   `this.recomputeOverallForClassArm`, `this.findIncompleteStudentsForEvaluation`,
+   `this.recomputeExamStudents`, `this.recomputeExamOverallForClassArm`,
+   `this.recomputeYearExamResults`, `this.findIncompleteExamEntries`,
+   `this.toEvaluationResponse`, `this.toExamResponse`, `this.publishedLockException`,
+   `this.resultLockException`, `resolveSliceLockState`, `computeStandardCompetitionRanking`,
+   `resolveFinalGrade`, `generateNumericTempPassword`, `nextFreeFamilyCode`,
+   `nextSiblingDigit`, `stripTrailingDigits`, `surnameToStem`, `throwIfUniqueConstraint` — is
+   confirmed clean: every one either takes `tx: Prisma.TransactionClient` explicitly and only
+   touches it, or has zero Prisma/DB access at all (pure math/string/crypto utilities).
+3. **Correlated every unexplained 401/404 occurrence** (`grades-publish`, `personnel`,
+   `subject-for-a-class-rule`, `guardians`, across Arm A, pool=9, and this step's own proof
+   run) against pool-exhaustion/throttle/malformed-auth signatures in the same run's full raw
+   log. Zero matches across 7 checked instances — **this shape does not fold into cause #1**
+   and remains open, unexplained, flagged separately. Separately confirmed Arm B's ~50
+   "unexpected 404" instances (`timetable-slots`, `homework`, `evaluations-engine`) DO fold
+   into cause #2 (stale state) — spot-checked one, whose own preceding tests had already
+   failed before it, the classic within-run cascade shape.
+
+**2b candidate fixes (scoped, NOT built — plan only):**
+- A shared `TRANSACTION_OPTIONS` constant (or small helper) so every lock-holding
+  `$transaction` call gets an explicit, generous `{timeout, maxWait}` — closing the 3 call
+  sites currently missing one (`portal-accounts.service.ts` provision/re-provision,
+  `grades.service.ts#updateEvaluation`, `exams.service.ts#updateExam`), which otherwise fall
+  back to Prisma's 5s/2s defaults.
+- `SET LOCAL lock_timeout` inside each of these transactions (before taking the advisory lock)
+  so a lock wait fails fast with a clean, mapped 409/503 instead of silently consuming a pool
+  connection for however long the contended lock takes to free up — this is what diagnostic #1
+  shows is actually needed; a bigger `timeout` option alone doesn't help, since it never
+  interrupts the blocked lock-acquisition call itself.
+- An explicit, documented `connection_limit` in the production `DATABASE_URL` (currently
+  implicit, defaulting to `num_cpus*2+1`) so pool size is a deliberate, known value, not an
+  accident of whatever machine it happens to run on.
+- A keyed in-process (or Redis-backed) request queue per lock key is a bigger design decision
+  — take it only after measuring with the above in place, not preemptively.
+
+**2b acceptance (for when that fix work happens, not executed now):** pool=9 and pool=3 arms,
+20 runs each, 0 failures; plus a deterministic small-pool concurrency regression test (the
+throwaway repro's shape, kept and committed as a real test).
+
+No fixes applied for 2b. Stopping for review per plan.

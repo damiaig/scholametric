@@ -24,8 +24,27 @@ function withDatabaseName(databaseUrl: string, name: string): string {
 
 const ambientDatabaseUrl = process.env.DATABASE_URL ?? LOCAL_DEFAULT_DATABASE_URL;
 
-export const TEST_DATABASE_URL = withDatabaseName(ambientDatabaseUrl, "scholametric_test");
+const TEST_DATABASE_NAME = "scholametric_test";
+
+export const TEST_DATABASE_URL = withDatabaseName(ambientDatabaseUrl, TEST_DATABASE_NAME);
 
 // The Postgres instance's always-present maintenance database — used only
 // to issue `CREATE DATABASE scholametric_test`, which cannot target itself.
 export const MAINTENANCE_DATABASE_URL = withDatabaseName(ambientDatabaseUrl, "postgres");
+
+// global-setup.ts now drops and recreates scholametric_test on EVERY run
+// (v0.9 Step 2a, docs/DECISIONS.md — the 2026-11-12 BACKLOG item: the test
+// DB never resetting between runs was a confirmed, major source of flakes).
+// That's a real `DROP DATABASE`, so this guard is the one thing standing
+// between a config/env mistake (e.g. an ambient DATABASE_URL someone forgot
+// to override) and destroying a real, non-test database. Called
+// immediately before every destructive statement — never trust a caller
+// to have checked first.
+export function assertIsTestDatabaseUrl(databaseUrl: string): void {
+  const name = new URL(databaseUrl).pathname.replace(/^\//, "");
+  if (name !== TEST_DATABASE_NAME) {
+    throw new Error(
+      `Refusing to run a destructive test-database operation against "${name}" — only "${TEST_DATABASE_NAME}" is ever allowed here.`,
+    );
+  }
+}

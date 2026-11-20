@@ -40,6 +40,14 @@ describe("Grade boundaries + grading presets (e2e)", () => {
     for (const boundary of WAEC_SET) {
       await prisma.gradeBoundary.create({ data: { schoolId: sunriseSchoolId, ...boundary } });
     }
+    // GradeBoundariesService#replaceAll writes a permanent auditLog row
+    // (entityType "gradeBoundaries", entityId = schoolId) on every
+    // successful PUT this file's "PUT /grade-boundaries" tests make —
+    // restoring the boundary rows above doesn't remove those. Left
+    // uncleaned, they're extra rows on the shared `sunrise` tenant that any
+    // later-running file's audit-log assertions could trip over (v0.9 Step
+    // 2a audit, docs/DECISIONS.md).
+    await prisma.auditLog.deleteMany({ where: { schoolId: sunriseSchoolId, entityType: "gradeBoundaries" } });
     await app.close();
   });
 
