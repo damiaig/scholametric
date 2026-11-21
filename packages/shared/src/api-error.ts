@@ -19,4 +19,10 @@ export interface ApiErrorBody {
   // saveGrid's closed-term 409 (SPEC_V0.5.md §2.3, v0.5 step 3/5) — also a
   // race case, since GET /grades/grid already renders locked-from-load.
   termLocked?: boolean;
+  // AllExceptionsFilter's advisory-lock-contention mapping (v0.9 Step 2b,
+  // docs/DECISIONS.md) — a 409 (another request holds the same lock right
+  // now) or a 503 (the connection pool itself is briefly saturated), both
+  // meaning "transient, safe to retry automatically," unlike every other
+  // field on this type which means "a user action is needed to proceed."
+  retryable?: true;
 }

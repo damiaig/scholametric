@@ -273,6 +273,22 @@ export function useScoreEntrySaveQueue(
           };
         });
       } catch (error) {
+        // v0.9 Step 2b (docs/DECISIONS.md) — advisory-lock contention
+        // (another save on the same class/subject/term in flight, or the
+        // server briefly out of pool capacity) now comes back as a 409 or
+        // 503 with `retryable: true`, instead of hanging. Checked BEFORE
+        // termLocked/lockedStudentIds below so a future addition to either
+        // of those bodies can never be mistaken for this transient,
+        // automatically-retried case. Reuses the same FLUSH_ERROR +
+        // scheduleRetry mechanism the generic catch below already has —
+        // called out explicitly (rather than just falling through to it)
+        // so this path has its own name to test against.
+        if (error instanceof ApiError && (error.status === 409 || error.status === 503) && error.body?.retryable) {
+          dispatch({ type: "FLUSH_ERROR", sent, message: getErrorMessage(error, "Couldn't save. Retrying…") });
+          scheduleRetry(ERROR_RETRY_MS);
+          return;
+        }
+
         if (error instanceof ApiError && error.status === 409 && error.body?.termLocked) {
           // Whole-slice lock (SPEC_V0.5.md §2.3) — every requested student
           // in this batch is affected, not just specific ones (unlike the
