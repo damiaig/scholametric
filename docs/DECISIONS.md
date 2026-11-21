@@ -8664,3 +8664,62 @@ out-of-scope issues (one cause-#1 socket-hang-up cascade, one instance of the st
 throwaway repro's shape, kept and committed as a real test).
 
 No fixes applied for 2b. Stopping for review per plan.
+
+## 2026-11-21 — v0.9 Step 2b built and PROVEd: fix confirmed working for its own mechanism; acceptance criterion not met; a separate, broader cause remains
+
+**Built as 3 commits** (b0f2b3f, 315ca3f, 2ff6923): `runLockedTransaction()` wraps all 23
+advisory-lock-holding transactions with `SET LOCAL lock_timeout` (env-overridable,
+default 5000ms) + a shared `{maxWait: 10s, timeout: 20s}`; `AllExceptionsFilter` maps the
+resulting Postgres/Prisma errors to a retryable 409 ("another save in progress") or 503
+("server busy"); the frontend's save queue checks the new `retryable` flag first. Pre-build
+audit found a 4th no-explicit-options site (`students.service.ts#create`, not previously
+named) and confirmed every existing site's own options never carried anything beyond
+`timeout` (never `maxWait`/`isolationLevel`), so nothing was silently dropped by the shared
+constant.
+
+**Mechanism confirmed directly, not by inference**: a controlled regression test
+(`lock-timeout-regression.e2e-spec.ts`, `LOCK_TIMEOUT_MS` overridden to 500ms) gets the
+mapped 409 in ~500ms when a lock is already held, instead of hanging; a 40-way concurrency
+test (`lock-pool-saturation.e2e-spec.ts`, `connection_limit=3`) confirms every request
+resolves to success or a mapped error, never a raw hang. Error-shape audit found a 3rd
+Prisma error family beyond the two named in the plan: `P2024` ("Timed out fetching a new
+connection from the pool"), found empirically via `AuditInterceptor`'s own plain
+`auditLog.create()` call competing for the same exhausted pool — mapped to the same 503 as
+`maxWait` exhaustion. Also found that an ORDINARY Prisma model call (not just a raw query)
+blocked by `lock_timeout` surfaces as a *different* public class
+(`PrismaClientUnknownRequestError`, no `.code`/`.meta` at all — the SQLSTATE is only in the
+raw message text) — both shapes are checked.
+
+**PROVE (20 runs each, `caffeinate -i` + 600s hard timeout, `reset_mode=never` since Step
+2a's global-setup now self-resets every invocation): acceptance criterion ("0 failures over
+20 runs") NOT met for either arm.** Pool=9: 10/20 had an issue (4 genuine hard-timeout hangs).
+Pool=3 (INDUCED): 5/20 — fewer than pool=9, now confirmed at a real N=20, not just Step 1's
+N=10; the non-monotonic pool-size-vs-failure-rate relationship is a real, repeatable pattern,
+not noise, and remains unexplained. Full per-run tables: `~/flake-hunt-data/FINDINGS.md`.
+
+**The critical finding**: tracing every hang/failure to its actual file across both arms,
+the overwhelming majority are in files with **no advisory lock at all** — `lesson`,
+`homework`, `report-card`, `exams-engine`, `exams-views`, `teacher-absences`, `me-student`,
+`guardians`, `auth`, `schools-crud`, `lesson-attachments`, `homework-attachments`. Only
+`portal-accounts` and `terms` (two of the six wrapped services) appear. This fix is doing
+exactly what diagnostic #1 proved it needed to — confirmed directly by the two tests above —
+but Step 1's broader claim ("reduced pool size correlates with more failures across the
+whole suite") has at least one other, separate, still-uncharacterized cause this step never
+touched, and that cause is now the dominant visible signal.
+
+**Two things flagged, not resolved:**
+- `portal-accounts.e2e-spec.ts` (pool=9 run 16) hung for 915s despite being one of the
+  wrapped services. Its timeout dump showed no sustained lock wait (connections idle,
+  sub-second durations) — ruling out "still stuck on the lock itself" for this run, and
+  matching the file's own pre-existing historical pattern (2026-09-01 entry, "never
+  reproduced in isolation") more than a new regression, but not proven either way.
+- `terms.e2e-spec.ts` showed a new shape (`Expected: 409 Received: 400/401`) under load —
+  traced one instance to the test's own `createScratchBundle()` setup helper likely racing
+  under contention and sending a malformed follow-up request, not an issue in the fix itself,
+  but not fully root-caused.
+
+**Recommendation**: the broader pool-size-sensitive flakiness across the whole suite is its
+own, separate, not-yet-diagnosed item for a future step — this fix closes the one mechanism
+that was actually proven (advisory-lock waits never being interrupted), confirmed working,
+and should stay as-is rather than being expanded speculatively to chase the remaining,
+different-shaped failures.
