@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma, ResultStatus, UserRole, type Exam } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
@@ -239,7 +240,7 @@ export interface YearExamsTerm {
 
 // The dedicated year-long Exams view (SPEC_V0.7.md §4) — one entry per
 // term the student was enrolled in this session (chronological, by
-// term.startsOn), each with every subject's individual exams + that
+// term.startsOn), each with every subject's individual exams + tha
 // subject's average, the term's cross-subject average/position, and the
 // whole-session overall at the end. Every level independently filtered
 // to PUBLISHED for STUDENT/PARENT — a partially-published year shows only
@@ -265,7 +266,7 @@ export interface YearExamsResponse {
 // no override endpoint (term_subject_exam_results has no override_grade —
 // Q4's edit/authoring rules are Step 2+), no subjectPosition (Q6 ranks
 // only at the per-term cross-subject level (b) and the whole-year level
-// (c), never per-subject), and two extra cascades publish/unpublish must
+// (c), never per-subject), and two extra cascades publish/unpublish mus
 // drive: TermExamResult (per-term, analog of TermOverallResult) and
 // YearExamResult (whole-year, spans all three terms, no separate publish
 // action of its own — confirmed, purely derived/cached).
@@ -347,7 +348,7 @@ export class ExamsService {
     const termLock = termLockKey(schoolId, dto.termId);
     const subjLockKey = examSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         // Term-level lock FIRST, always — same shared key close()/unlock()/
         // relock() (terms.service.ts) and the evaluation track's
@@ -387,7 +388,7 @@ export class ExamsService {
         // approval queue must not be editable out from under them (an
         // unblocked edit would silently un-submit it via
         // recomputeExamStudents' status derivation below, with no signal
-        // to anyone, and would invalidate approve()'s assumption that
+        // to anyone, and would invalidate approve()'s assumption tha
         // nothing changed since the completeness gate ran at submit time).
         // Same bypass roles as the PUBLISHED lock.
         const lockedResults = existingResults.filter(
@@ -445,7 +446,7 @@ export class ExamsService {
               termId: dto.termId,
               scoreCount: dto.scores.length,
               // Renamed from publishedBypassStudentIds (v0.7.4 step 2) —
-              // the bypass now covers PENDING_APPROVAL too, not just
+              // the bypass now covers PENDING_APPROVAL too, not jus
               // PUBLISHED, so "published" alone would be a misleading name.
               lockBypassStudentIds: [...preserveStatusByStudentId.keys()],
             },
@@ -470,7 +471,6 @@ export class ExamsService {
           })),
         };
       },
-      { timeout: 20000 },
     );
   }
 
@@ -521,7 +521,7 @@ export class ExamsService {
     const termLock = termLockKey(schoolId, dto.termId);
     const subjLockKey = examSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
 
@@ -578,7 +578,6 @@ export class ExamsService {
 
         return this.toExamResponse(exam);
       },
-      { timeout: 10000 },
     );
   }
 
@@ -601,7 +600,7 @@ export class ExamsService {
     const termLock = termLockKey(schoolId, exam.termId);
     const subjLockKey = examSubjectLockKey(schoolId, exam.subjectId, exam.classArmId, exam.termId);
 
-    return this.prisma.$transaction(async (tx) => {
+    return runLockedTransaction(this.prisma, async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
 
       const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: exam.termId } });
@@ -670,7 +669,7 @@ export class ExamsService {
     const termLock = termLockKey(schoolId, exam.termId);
     const subjLockKey = examSubjectLockKey(schoolId, exam.subjectId, exam.classArmId, exam.termId);
 
-    await this.prisma.$transaction(
+    await runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
 
@@ -718,7 +717,6 @@ export class ExamsService {
           );
         }
       },
-      { timeout: 20000 },
     );
 
     return { id: examId };
@@ -738,7 +736,7 @@ export class ExamsService {
   // Admin-only manual re-trigger — re-derives term_subject_exam_results for
   // a whole class arm + subject + term from whatever exam_scores currently
   // exist. No overall/year cascade here (mirrors GradesService.recompute:
-  // not gated by the closed-term check, re-derives only from data that
+  // not gated by the closed-term check, re-derives only from data tha
   // already passed that gate at write time).
   async recompute(dto: RecomputeExamGradesDto): Promise<{ recomputedCount: number }> {
     const schoolId = this.tenantContext.schoolId;
@@ -752,7 +750,7 @@ export class ExamsService {
 
     const lockKey = examSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
@@ -780,7 +778,6 @@ export class ExamsService {
 
         return { recomputedCount: recomputed.length };
       },
-      { timeout: 20000 },
     );
   }
 
@@ -797,8 +794,8 @@ export class ExamsService {
   // nothing for a cascade to do until approve().
   //
   // Completeness gate (SPEC_V0.7.4.md §3 Q5) — ROSTER-WIDE, reusing the
-  // evaluation track's Step 1 shape: every CURRENTLY enrolled student must
-  // be decided on every active exam for this subject/term, not just
+  // evaluation track's Step 1 shape: every CURRENTLY enrolled student mus
+  // be decided on every active exam for this subject/term, not jus
   // students who already happen to have a term_subject_exam_result row
   // (the old carve-out this replaces — see findIncompleteExamEntries).
   async submitForApproval(dto: SubmitExamForApprovalDto, user: AuthenticatedUser): Promise<SubmitExamForApprovalResponse> {
@@ -814,7 +811,7 @@ export class ExamsService {
 
     const subjectLockKey = examSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjectLockKey}))`;
 
@@ -865,7 +862,6 @@ export class ExamsService {
           submittedCount: toSubmit.length,
         };
       },
-      { timeout: 20000 },
     );
   }
 
@@ -886,7 +882,7 @@ export class ExamsService {
     const classArmLockKey = examClassArmLockKey(schoolId, dto.classArmId, dto.termId);
     const yearLockKey = examYearLockKey(schoolId, term.sessionId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjectLockKey}))`;
 
@@ -941,7 +937,6 @@ export class ExamsService {
           yearExamRecomputedCount: yearCascade.recomputedCount,
         };
       },
-      { timeout: 20000 },
     );
   }
 
@@ -957,7 +952,7 @@ export class ExamsService {
 
     const subjectLockKey = examSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjectLockKey}))`;
 
@@ -989,7 +984,6 @@ export class ExamsService {
           rejectedCount: toReject.length,
         };
       },
-      { timeout: 20000 },
     );
   }
 
@@ -1007,7 +1001,7 @@ export class ExamsService {
     const classArmLockKey = examClassArmLockKey(schoolId, dto.classArmId, dto.termId);
     const yearLockKey = examYearLockKey(schoolId, term.sessionId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${subjectLockKey}))`;
 
@@ -1063,7 +1057,6 @@ export class ExamsService {
           yearExamRecomputedCount: yearCascade.recomputedCount,
         };
       },
-      { timeout: 20000 },
     );
   }
 
@@ -1282,8 +1275,8 @@ export class ExamsService {
 
   // v0.7 step 3 (SPEC_V0.7.md §4): the dedicated year-long Exams view.
   // Same security resolution as getStudentSubjectExams above, spanning
-  // every term in the session. Visibility is independently gated at
-  // EVERY level — a subject's own row, that term's cross-subject
+  // every term in the session. Visibility is independently gated a
+  // EVERY level — a subject's own row, that term's cross-subjec
   // aggregate, and the whole-session aggregate each check their OWN
   // status, exactly like getReportCard's subjects array (filtered
   // per-subject) versus its overall block (filtered separately): a
@@ -1413,7 +1406,7 @@ export class ExamsService {
             _avg: { averageScore: true },
           })
         : [],
-      // year_exam_results has no class_arm_id (it's whole-session, not
+      // year_exam_results has no class_arm_id (it's whole-session, no
       // per-class-arm) — "class" membership for the year-level general
       // average has to be resolved via this session's roster instead of a
       // direct column filter, unlike every other level above.
@@ -1533,7 +1526,7 @@ export class ExamsService {
   // v0.7.4 step 2 (SPEC_V0.7.4.md §3) — generalized from
   // preservePublishedStudentIds: Set<string> to a status map, since a
   // bypassed write can now happen during EITHER lock tier (PUBLISHED or
-  // PENDING_APPROVAL, saveExamScores' own widened gate above) and must
+  // PENDING_APPROVAL, saveExamScores' own widened gate above) and mus
   // preserve whichever one currently applies, not force everyone toward
   // PUBLISHED. A student absent from the map (the normal, non-bypass
   // path) still resolves to DRAFT exactly as before.
@@ -1592,7 +1585,7 @@ export class ExamsService {
           autoGrade,
           status,
           classArmId: ctx.classArmId,
-          // undefined = leave the existing publishedAt untouched — correct
+          // undefined = leave the existing publishedAt untouched — correc
           // whether the preserved status is PUBLISHED (a real timestamp
           // already there) or PENDING_APPROVAL (already null).
           publishedAt: preservedStatus ? undefined : null,
@@ -1693,7 +1686,7 @@ export class ExamsService {
     return { publishedCount, revertedCount };
   }
 
-  // Recomputes year_exam_results (ranking (c)) for the WHOLE session (not
+  // Recomputes year_exam_results (ranking (c)) for the WHOLE session (no
   // one class arm — a student may move class arms between terms, and the
   // model itself has no classArmId), from every currently-PUBLISHED
   // term_exam_result this session, across all three terms. Purely derived
@@ -1763,7 +1756,7 @@ export class ExamsService {
   // v0.7.4 step 2 (SPEC_V0.7.4.md §3 Q5) — rewritten ROSTER-WIDE, reusing
   // GradesService.findIncompleteStudentsForEvaluation's shape (Step 1):
   // `studentIds` is now the FULL currently-enrolled roster (from
-  // getRoster(), passed in by submitForApproval), not a candidate list
+  // getRoster(), passed in by submitForApproval), not a candidate lis
   // derived from students who already happen to have a
   // term_subject_exam_result row — that was the old carve-out this
   // replaces. Single-subject now (submit always targets exactly one

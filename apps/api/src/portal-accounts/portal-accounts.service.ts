@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import bcrypt from "bcrypt";
 import { StudentStatus, User, UserRole } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { paginate, Paginated } from "../common/pagination/paginate";
@@ -169,7 +170,7 @@ export class PortalAccountsService {
     linksByStudent: Map<string, GuardianLink[]>,
     result: ProvisionResult,
   ): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
+    await runLockedTransaction(this.prisma, async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${schoolId}:portal-accounts`}))`;
 
       // Deterministic anchor: lowest admissionNumber (members are already
@@ -253,10 +254,10 @@ export class PortalAccountsService {
         result.alreadyProvisioned.parents++;
       }
 
-      // Blended-family read-scope (SPEC_V0.6 amendment): the parent
+      // Blended-family read-scope (SPEC_V0.6 amendment): the paren
       // account's future read-scope (Step 4) is the anchor guardian's OWN
       // direct links, not "family membership" — so any member here who
-      // isn't directly linked to the anchor guardian is flagged, not
+      // isn't directly linked to the anchor guardian is flagged, no
       // silently included (would leak) or silently dropped (would gap).
       // Also catches accidental over-merges through a guardian shared
       // across otherwise-unrelated households.
@@ -347,7 +348,7 @@ export class PortalAccountsService {
     return toPortalAccountSummary(account);
   }
 
-  // SPEC_V0.6.md §5 step 5 — temp passwords are bcrypt-hashed at rest
+  // SPEC_V0.6.md §5 step 5 — temp passwords are bcrypt-hashed at res
   // (provisionFamily above) with no plaintext ever recoverable, so
   // reprinting a slip later is only possible by generating a FRESH temp
   // password. Reuses provisioning's own generator/cost (no parallel
@@ -387,7 +388,7 @@ export class PortalAccountsService {
   // Batch = a class arm's current-session roster's own STUDENT accounts +
   // the deduplicated set of PARENT accounts directly linked (student_
   // guardians) to any of those students — a guardian shared across two
-  // roster siblings is reissued/printed exactly once, not twice. Default
+  // roster siblings is reissued/printed exactly once, not twice. Defaul
   // (force=false) skips any account that already changed its password
   // (mustChangePassword=false — a family actively using their login) and
   // any roster student with no portal account at all yet; both are
@@ -476,7 +477,7 @@ type PortalAccountWithLinks = User & {
 // class-arms.service.ts's teacherFirstName reads live through
 // classTeacherAssignment.teacherUser, never a copy) — so a later name
 // correction on the Student/Guardian record shows up here without an
-// update to this row. user.firstName/lastName are populated once at
+// update to this row. user.firstName/lastName are populated once a
 // creation (User's NOT NULL columns require some value) but are not the
 // read source for portal accounts.
 function toPortalAccountSummary(user: PortalAccountWithLinks): PortalAccountSummary {

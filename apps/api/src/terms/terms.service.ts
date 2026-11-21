@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { ResultStatus, type Term, type TermUnlock } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { paginate, Paginated } from "../common/pagination/paginate";
@@ -90,10 +91,10 @@ export class TermsService {
   // term read-only. Q4: warn-but-allow — a term can close with unpublished
   // results left behind; this returns what's still unpublished (grouped by
   // class arm + subject, ids only — step 5 already has its own classes/
-  // subjects lists to resolve names against) rather than blocking. Not
+  // subjects lists to resolve names against) rather than blocking. No
   // idempotent — re-closing an already-closed term 409s rather than
   // silently overwriting closed_at/closed_by, which would destroy the
-  // original close record (unlike publish()'s legitimate idempotent
+  // original close record (unlike publish()'s legitimate idempoten
   // re-confirm, there's no "reconfirm a close" semantic).
   async close(id: string, user: AuthenticatedUser): Promise<CloseTermResponse> {
     const schoolId = this.tenantContext.schoolId;
@@ -106,7 +107,7 @@ export class TermsService {
     }
 
     const lockKey = termLockKey(schoolId, id);
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         // Same term-level lock saveGrid() acquires first — serializes this
         // close against a concurrent saveGrid so neither can read a stale
@@ -137,7 +138,6 @@ export class TermsService {
 
         return { ...closed, unpublishedCount: unpublishedRows.length, unpublished: [...grouped.values()] };
       },
-      { timeout: 15000 },
     );
   }
 
@@ -157,7 +157,7 @@ export class TermsService {
     if (!subject) throw new NotFoundException("Subject not found.");
 
     const lockKey = termLockKey(schoolId, id);
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
@@ -184,7 +184,6 @@ export class TermsService {
           },
         });
       },
-      { timeout: 10000 },
     );
   }
 
@@ -202,7 +201,7 @@ export class TermsService {
     if (!subject) throw new NotFoundException("Subject not found.");
 
     const lockKey = termLockKey(schoolId, id);
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
@@ -215,7 +214,6 @@ export class TermsService {
 
         return tx.termUnlock.update({ where: { id: active.id }, data: { relockedAt: new Date(), relockedBy: user.userId } });
       },
-      { timeout: 10000 },
     );
   }
 }

@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma, Student, StudentStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { paginate } from "../common/pagination/paginate";
@@ -100,7 +101,7 @@ export class StudentsService {
     const schoolId = this.tenantContext.schoolId;
     const primaryIndex = this.resolvePrimaryIndex(dto.guardians);
 
-    return this.prisma.$transaction(async (tx) => {
+    return runLockedTransaction(this.prisma, async (tx) => {
       const school = await tx.school.findUniqueOrThrow({ where: { id: schoolId } });
       const classArm = await tx.classArm.findFirst({ where: forSchool(schoolId, { id: dto.classArmId }) });
       if (!classArm) {
@@ -258,7 +259,7 @@ export class StudentsService {
   }
 
   /**
-   * {slug prefix}/{session start year}/{4-digit sequence}, sequence reset
+   * {slug prefix}/{session start year}/{4-digit sequence}, sequence rese
    * per (school, year). An advisory transaction lock keyed on the same pair
    * serializes concurrent allocation — no dedicated sequence table needed
    * (schema changes are out of scope this step). See docs/DECISIONS.md.

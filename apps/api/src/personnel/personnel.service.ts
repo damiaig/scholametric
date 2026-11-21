@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import bcrypt from "bcrypt";
 import { JobTitle, Prisma, StaffProfile, User, UserRole, UserStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { paginate, Paginated } from "../common/pagination/paginate";
@@ -123,7 +124,7 @@ export class PersonnelService {
   async create(dto: CreatePersonnelDto): Promise<PersonnelSummary> {
     const schoolId = this.tenantContext.schoolId;
 
-    return this.prisma.$transaction(async (tx) => {
+    return runLockedTransaction(this.prisma, async (tx) => {
       const school = await tx.school.findUniqueOrThrow({ where: { id: schoolId } });
       const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
 
@@ -202,9 +203,9 @@ export class PersonnelService {
   }
 
   // Deliberately checks the User table, not StaffProfile: this is also
-  // reached via the deprecated /users/:id/reset-password alias, which must
+  // reached via the deprecated /users/:id/reset-password alias, which mus
   // keep working for any tenant user regardless of whether a staff_profile
-  // exists for them (e.g. one predating this version) — a password reset
+  // exists for them (e.g. one predating this version) — a password rese
   // touches users/refresh_tokens only, never staff_profiles.
   async resetPassword(userId: string): Promise<{ temporaryPassword: string }> {
     const schoolId = this.tenantContext.schoolId;
@@ -218,7 +219,7 @@ export class PersonnelService {
 
     // A password reset should also end that user's other active sessions,
     // and forces them through change-password on next login (SPEC_V0.3.md
-    // §1) — unlike self-service change-password, this IS a different
+    // §1) — unlike self-service change-password, this IS a differen
     // session (the admin) acting on the target, so revoking the target's
     // sessions here has no "keep the caller's own session" ambiguity.
     //

@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma, ResultStatus, UserRole, type Evaluation, type Term } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
@@ -55,7 +56,7 @@ export interface EvaluationScoresResponse {
   // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the evaluation's OWN status, read
   // once at the top level rather than per-row. Pre-v0.7.4 this was a
   // per-student `status` sourced from term_subject_result (subject-level
-  // publish could leave stragglers mid-roster mid-publish); now that
+  // publish could leave stragglers mid-roster mid-publish); now tha
   // publish is per-evaluation and atomic across its whole roster (the
   // completeness gate means every student is decided before publish
   // succeeds), one evaluation is either published for everyone on this
@@ -350,7 +351,7 @@ export interface ReportCardRemarks {
   principalRemarkAt: Date | null;
 }
 
-// A self-contained printable document (SPEC_V0.5.md §2.4) — student
+// A self-contained printable document (SPEC_V0.5.md §2.4) — studen
 // identity and remark-author names are embedded directly, unlike
 // StudentResultsResponse above, whose caller already has student context.
 export interface ReportCardResponse {
@@ -373,7 +374,7 @@ export interface ReportCardResponse {
   runningAverageScore: number | null;
   // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — class-wide companions to
   // runningAverageScore: the mean of every published-so-far student's
-  // OWN running average, and this student's provisional rank in that
+  // OWN running average, and this student's provisional rank in tha
   // same ≥1-published cohort (a DIFFERENT, looser pool than
   // overall.overallPosition's fully-published-only one — the two can
   // legitimately diverge). Mirrored by hand in packages/shared/src/grades.ts.
@@ -471,7 +472,7 @@ export class GradesService {
     const subjLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
     const armLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         // Term-level lock FIRST, always — same fixed order close()/unlock()/
         // relock() use for THEIR only lock (SPEC_V0.5.md §2.3, step 3).
@@ -486,7 +487,7 @@ export class GradesService {
         // Fresh read, not the `term` object from resolveTenantScopeWithEvaluation
         // above (fetched before this lock — could be stale by now). Outer
         // gate: fires before the PUBLISHED-lock below, and deliberately
-        // doesn't relax it — an unlock grants "may edit this slice," not
+        // doesn't relax it — an unlock grants "may edit this slice," no
         // "may also bypass the separate publish safeguard" (docs/DECISIONS.md).
         const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: dto.termId } });
         const { locked } = await resolveSliceLockState(tx, {
@@ -555,7 +556,7 @@ export class GradesService {
           needsOverallRecompute = overallRows.some((r) => r.status === ResultStatus.PUBLISHED);
         }
         // A bypassed edit to an already-published evaluation changes
-        // scores that currently DO count toward the subject total — that
+        // scores that currently DO count toward the subject total — tha
         // student's overall (and, once the subject re-ranks below,
         // possibly every other published student's overall too) needs the
         // same cross-subject cascade gap #2 already triggers this lock for.
@@ -674,7 +675,6 @@ export class GradesService {
           })),
         };
       },
-      { timeout: 20000 }, // was 15000 — bumped to match publish()'s budget for the same added class-arm-wide phase (only spent when needsOverallRecompute fires)
     );
   }
 
@@ -683,7 +683,7 @@ export class GradesService {
   // assertTeacherAssignment, NOT the broader resolveTeacherAccess — this
   // is an authoring action, not a read-visibility one, confirmed). Also
   // surfaces the slice's lock state so the frontend can show a blocked
-  // "+ New evaluation" affordance BEFORE the teacher opens the form, not
+  // "+ New evaluation" affordance BEFORE the teacher opens the form, no
   // as a bare 409 after submitting (docs/DECISIONS.md).
   async listEvaluations(query: GetEvaluationsQueryDto, user: AuthenticatedUser): Promise<EvaluationsListResponse> {
     const schoolId = this.tenantContext.schoolId;
@@ -720,9 +720,9 @@ export class GradesService {
   // entirely"). Term-lock first (shared with the exam track, same key
   // order as saveEvaluationScores).
   // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — the old "subject already
-  // published blocks creating a new evaluation" gate is REMOVED: that
-  // was a consequence of subject-publish being the only publish unit
-  // (adding an evaluation to an already-published subject meant
+  // published blocks creating a new evaluation" gate is REMOVED: tha
+  // was a consequence of subject-publish being the only publish uni
+  // (adding an evaluation to an already-published subject mean
   // resurrecting a declared-final state). With publish per-evaluation,
   // this is now the normal case — add CA3 while CA1 is already published
   // and visible; CA3 just starts as its own fresh, unpublished evaluation
@@ -735,7 +735,7 @@ export class GradesService {
     const termLock = termLockKey(schoolId, dto.termId);
     const subjLockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
 
@@ -770,7 +770,6 @@ export class GradesService {
 
         return this.toEvaluationResponse(evaluation);
       },
-      { timeout: 10000 },
     );
   }
 
@@ -799,7 +798,7 @@ export class GradesService {
     const termLock = termLockKey(schoolId, evaluation.termId);
     const subjLockKey = buildSubjectLockKey(schoolId, evaluation.subjectId, evaluation.classArmId, evaluation.termId);
 
-    return this.prisma.$transaction(async (tx) => {
+    return runLockedTransaction(this.prisma, async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
 
       const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: evaluation.termId } });
@@ -836,7 +835,7 @@ export class GradesService {
   }
 
   // PROPRIETOR only, categorical (enforced at the controller, mirrors
-  // unpublishEvaluation() exactly — not data-dependent). Blocks outright
+  // unpublishEvaluation() exactly — not data-dependent). Blocks outrigh
   // (409) while THIS evaluation is PUBLISHED — confirmed: no force-delete-
   // through-published cascade (v0.7.4 step 1: re-scoped from "the
   // subject" to "this evaluation" — a sibling's publish state has no
@@ -860,7 +859,7 @@ export class GradesService {
     const termLock = termLockKey(schoolId, evaluation.termId);
     const subjLockKey = buildSubjectLockKey(schoolId, evaluation.subjectId, evaluation.classArmId, evaluation.termId);
 
-    await this.prisma.$transaction(
+    await runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
 
@@ -895,7 +894,6 @@ export class GradesService {
           );
         }
       },
-      { timeout: 20000 },
     );
 
     return { id: evaluationId };
@@ -953,7 +951,7 @@ export class GradesService {
     const lockKey = buildSubjectLockKey(schoolId, dto.subjectId, dto.classArmId, dto.termId);
     const armLockKey = buildClassArmLockKey(schoolId, dto.classArmId, dto.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
@@ -1002,14 +1000,13 @@ export class GradesService {
 
         return { recomputedCount: recomputed.length };
       },
-      { timeout: 20000 }, // was 15000 — bumped to match saveGrid's budget for the same added class-arm-wide phase (only spent when needsOverallRecompute fires)
     );
   }
 
   // v0.7.4 step 1 (SPEC_V0.7.4.md §2) — replaces subject-level publish().
   // Publishing THIS evaluation makes its scores visible to students/
   // parents (getReportCard's evaluations query, self-view, filters to
-  // status: PUBLISHED) and re-derives every roster student's subject
+  // status: PUBLISHED) and re-derives every roster student's subjec
   // total/status from whichever evaluations are currently published
   // (recomputeStudents) — the subject itself has no publish action of
   // its own anymore; re-ranks the ENTIRE currently-published set for this
@@ -1037,7 +1034,7 @@ export class GradesService {
     const subjectLockKey = buildSubjectLockKey(schoolId, evaluation.subjectId, evaluation.classArmId, evaluation.termId);
     const classArmLockKey = buildClassArmLockKey(schoolId, evaluation.classArmId, evaluation.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
         const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: evaluation.termId } });
@@ -1067,7 +1064,7 @@ export class GradesService {
 
         // Completeness gate (Q2) — every roster student needs a decided
         // (score-or-absent) row for THIS evaluation, not every evaluation
-        // for the subject. Simpler than the old subject-scoped check it
+        // for the subject. Simpler than the old subject-scoped check i
         // replaces: one evaluation, the whole roster.
         const incompleteStudentIds = await this.findIncompleteStudentsForEvaluation(tx, evaluationId, studentIds);
         if (incompleteStudentIds.length > 0) {
@@ -1143,7 +1140,6 @@ export class GradesService {
           overallPublishedCount: overall.publishedCount,
         };
       },
-      { timeout: 20000 },
     );
   }
 
@@ -1173,7 +1169,7 @@ export class GradesService {
     const subjectLockKey = buildSubjectLockKey(schoolId, evaluation.subjectId, evaluation.classArmId, evaluation.termId);
     const classArmLockKey = buildClassArmLockKey(schoolId, evaluation.classArmId, evaluation.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${termLock}))`;
         const freshTerm = await tx.term.findUniqueOrThrow({ where: { id: evaluation.termId } });
@@ -1251,7 +1247,6 @@ export class GradesService {
           overallRevertedCount: overall.revertedCount,
         };
       },
-      { timeout: 20000 },
     );
   }
 
@@ -1262,7 +1257,7 @@ export class GradesService {
   // while DRAFT: the total isn't final pre-publish, so a stored override
   // would silently strand itself on an incomplete number —
   // recomputeStudents enforces the same invariant on the way back down
-  // (unpublish reverting to DRAFT nulls any stored override, not just
+  // (unpublish reverting to DRAFT nulls any stored override, not jus
   // leaves it stale).
   async override(dto: OverrideGradeDto, user: AuthenticatedUser): Promise<OverrideResponse> {
     const schoolId = this.tenantContext.schoolId;
@@ -1280,7 +1275,7 @@ export class GradesService {
 
     const lockKey = buildSubjectLockKey(schoolId, row.subjectId, row.classArmId, row.termId);
 
-    return this.prisma.$transaction(
+    return runLockedTransaction(this.prisma,
       async (tx) => {
         // Same lock a concurrent saveGrid/publish/unpublish for this grid
         // would hold — serializes override against all of them.
@@ -1334,7 +1329,6 @@ export class GradesService {
           status: updated.status,
         };
       },
-      { timeout: 10000 },
     );
   }
 
@@ -1398,7 +1392,7 @@ export class GradesService {
           subjectId,
           subjectName: name,
           // SPEC_V0.5.1.md §2.1/Q1(b): a subject that already has real
-          // grades never gets hidden, but if there's no current
+          // grades never gets hidden, but if there's no curren
           // subject_teacher_assignment for it, it's surfaced as needing
           // one rather than shown as if everything is normal.
           needsTeacherAssignment: !assignedSubjects.has(subjectId),
@@ -1707,9 +1701,9 @@ export class GradesService {
     ]);
 
     // Remarks travel with the finalized card, not ahead of it: a STUDENT
-    // only sees teacher/principal remarks once the term's OVERALL result
+    // only sees teacher/principal remarks once the term's OVERALL resul
     // is itself published (approved decision, v0.6 step 3) — showing a
-    // remark before the term's results are actually out would contradict
+    // remark before the term's results are actually out would contradic
     // "only what's been made final."
     const remarksVisibleToCaller = !publishedOnlyForSelfView || overall !== null;
 
@@ -1728,7 +1722,7 @@ export class GradesService {
     // action). Now that publish is per-evaluation and a subject counts as
     // PUBLISHED once it has >=1 published evaluation, a visible subject can
     // still have an UNPUBLISHED sibling evaluation — without this filter,
-    // that sibling's scores would leak to the student/parent the moment
+    // that sibling's scores would leak to the student/parent the momen
     // any one of its subject's evaluations goes live. Same conditional
     // `status: PUBLISHED` gate as every other publishedOnlyForSelfView
     // branch in this method.
@@ -1771,7 +1765,7 @@ export class GradesService {
     // resolved as a studentId allow-list per subject first, then applied
     // in JS via computeAssessmentClassStats. `null` allow-list (staff)
     // means every classmate's row counts regardless of publish state.
-    // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — every PUBLISHED term_subject_result
+    // v0.7.3 step 2 (SPEC_V0.7.3.md §3) — every PUBLISHED term_subject_resul
     // in this class arm/term, unfiltered by subject and not grouped by the
     // DB: runningClassAverageScore/runningPosition need each STUDENT's own
     // running average first (group-by-student, then average/rank those),
@@ -1850,7 +1844,7 @@ export class GradesService {
 
     // v0.7.2 step 1 (SPEC_V0.7.2.md §2/§5 step 1) — Pronote-style running
     // average: a NEW, ADDITIVE, on-read figure computed from published
-    // subjects so far, entirely independent of term_overall_results. It
+    // subjects so far, entirely independent of term_overall_results. I
     // is deliberately NOT gated behind `overall` being non-null — that's
     // the whole point (it's what fills in while `overall` is still null
     // mid-term). Reuses `subjectResults`, already fetched above with the
@@ -1995,7 +1989,7 @@ export class GradesService {
   // SCHOOL_ADMIN/PROPRIETOR: no check, same "any tenant-scoped combo"
   // pattern used throughout this service. Not gated by the step-3 closed-
   // term/unlock mechanism — that gate is score-data-scoped; writing an
-  // end-of-term remark is part of closing out the term, not a score edit
+  // end-of-term remark is part of closing out the term, not a score edi
   // (docs/DECISIONS.md).
   async writeTeacherRemark(studentId: string, dto: WriteRemarkDto, user: AuthenticatedUser): Promise<RemarkResponse> {
     const { schoolId, enrollment } = await this.resolveRemarkTarget(studentId, dto);
@@ -2053,7 +2047,7 @@ export class GradesService {
   // PUBLISHED. So every non-preserved row this function writes is DRAFT —
   // there's no computed intermediate status to derive anymore.
   // subject_position/published_at are unconditionally cleared for every
-  // non-preserved row, same as before — publish() is the only place that
+  // non-preserved row, same as before — publish() is the only place tha
   // sets them, directly, after this function returns.
   //
   // v0.7.4 step 1 (SPEC_V0.7.4.md §2, Q1) — status/total are now DERIVED
@@ -2168,7 +2162,7 @@ export class GradesService {
     return results;
   }
 
-  // Recomputes term_overall_results for EVERY student who has at least
+  // Recomputes term_overall_results for EVERY student who has at leas
   // one term_subject_result in this class arm/term — not just students
   // directly touched by whatever publish/unpublish just ran. Necessary
   // because removing or adding one student from the "fully published"
@@ -2265,7 +2259,7 @@ export class GradesService {
   // v0.7.4 step 1 (SPEC_V0.7.4.md §2, Q2) — the completeness gate moved
   // to evaluation granularity: replaces the old subject-scoped
   // findIncompleteEntries (which checked "every evaluation for a
-  // subject, every candidate student"). This is simpler than what it
+  // subject, every candidate student"). This is simpler than what i
   // replaces — one evaluation, every roster student — because publish
   // is now per-evaluation, not per-subject. "Blank" = no evaluation_scores
   // row, or a row with rawScore IS NULL AND isAbsent = false (both
