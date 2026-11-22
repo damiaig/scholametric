@@ -8723,3 +8723,61 @@ own, separate, not-yet-diagnosed item for a future step — this fix closes the 
 that was actually proven (advisory-lock waits never being interrupted), confirmed working,
 and should stay as-is rather than being expanded speculatively to chase the remaining,
 different-shaped failures.
+
+## 2026-11-22 — v0.9 Step 2c diagnostics (time-boxed, no fix built): the local 50%/25% rates are not the true base rate; the hangs are mostly not database-related at all
+
+**Corrections to the 2026-11-21 PROVE entry (appended to findings, not edited):** the
+pool=3-vs-pool=9 comparison (5/20 vs 10/20) is **not statistically distinguishable**
+(Fisher's exact p≈0.19, verified directly); the original Step-1-era comparison that first
+motivated "consistent with pool size mattering" (1/10 vs 6/10) is itself only **p≈0.057**,
+marginal. Every "real, repeatable pattern" claim about pool size in the prior findings is
+withdrawn to "not distinguishable from noise at these sample sizes."
+
+**CI base rate, pulled directly (GitHub REST API, read-only token, last 50 runs on `main`):
+49/50 success; the one failure's own backend e2e Jest run was 100% green (718/718) — the
+failure was an unrelated frontend date-text-matching test on a 3-week-old commit. Backend
+e2e CI base rate in this sample: 0/50.** This directly contradicts the local 50%(pool=9)/
+25%(pool=3) rates — those are not the true base rate, and are likely inflated by something
+specific to the local machine (consistent with this document's own earlier sleep/wake
+contamination history).
+
+**Audited every `$transaction(async tx => ...)` callback in `apps/api/src`, not just the 23
+already-wrapped ones.** Found 4 more (`schools.service.ts#create`, `auth.service.ts#refresh`,
+`student-guardians.service.ts#add`/`#setPrimary`) — no leaked `this.prisma`, no nested
+transactions, no fire-and-forget DB calls found in any of them, nor in the specifically-named
+hung files' own services (`lesson`, `homework`, `calendar`, `me` — none of which use
+`$transaction` at all). `FakeStorageService` (synchronous, zero I/O) and `AuditInterceptor`
+(correct RxJS `concatMap` usage) both ruled out as hang sources. **New, separate, fixable
+finding**: `auth.service.ts#refresh()` and `student-guardians.service.ts#setPrimary()` both
+have deliberate, by-design row-level lock contention (an `updateMany` race and an explicit
+`SELECT ... FOR UPDATE`, the latter "verified against a 6-way concurrent `Promise.all`" per
+its own comment, in `guardians.e2e-spec.ts` — a named hang site) with **no explicit timeout
+at all** — the exact same unprotected-wait gap Step 2b closed for advisory locks, just via
+ordinary row locks. Proposed fix (not built): extend the same `lock_timeout` pattern,
+generalized beyond advisory locks, to these two sites, with a per-site regression test.
+
+**Pulled pg_stat_activity from all 6 existing timeout dumps (no new runs): 4 of 6 show ZERO
+Postgres connections at kill time**, with the Node process sitting at 0% CPU for minutes
+(confirmed via `ps`, after having burned real CPU earlier in the run) — not waiting on the
+database in any form. The 5th (`portal-accounts`, 915s) shows 3 connections but all with
+sub-one-second idle durations, ruling out a sustained lock wait as ITS proximate cause too.
+Only the 6th shows real, multi-minute activity: three connections, none inside a transaction,
+idle on three different already-completed statements, all going idle within 0.1s of each
+other and still sitting there 6.5 minutes later — the signature of an abandoned batch of
+requests, not independent stalls.
+
+**Hypothesis: "second-connection acquisition / leaked transactions shrinking the pool" is
+REFUTED** by this data (no excess connections found anywhere; the pool was mostly idle while
+hung). **The better-supported hypothesis is "other": a Node-side stuck async operation with
+no database involvement**, consistent with an in-flight request abandoned by Jest's own 30s
+per-test timeout (which stops awaiting a slow request without cancelling it) whose
+server-side DB work already finished but whose response never got torn down. Two specific
+internal candidates were checked and ruled out without finding the actual stuck point — this
+remains unproven.
+
+**Recommendation**: ship the `auth`/`student-guardians` row-lock timeout fix as a small,
+separate follow-up (cause identified, fix proposed, acceptance proposed). Split the broader
+"process hangs with zero DB connections" mystery into its own v0.9.1 diagnostic item, scoped
+to catching the process *while* hung (e.g. a `SIGUSR1` stack dump, or `--detectOpenHandles`
+with a debugger attached) rather than post-mortem — not attempted this round. No fix built in
+this step.
