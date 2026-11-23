@@ -106,6 +106,72 @@ describe("apiRequest — 401 handling", () => {
     await expect(apiRequest("/api/v1/x", {})).rejects.toMatchObject({ status: 401 });
     expect(authStore.getState()).toBeNull();
   });
+
+  // v0.9 Step 2c hard requirement: advisory-lock/row-lock contention on the
+  // backend's refresh rotation (common/filters/all-exceptions.filter.ts)
+  // now maps to a retryable 409/503 instead of hanging — that is NOT proof
+  // the session is invalid, and must not clear it. Covers refreshTokens()'s
+  // own internal retry ALSO failing retryably (two retryable responses:
+  // the original refresh attempt and its one internal retry), so the
+  // session stays intact even when the transient condition persists a
+  // little past the one built-in retry.
+  it("a 401 whose refresh attempt gets a retryable 409 (even after refreshTokens()'s own retry) leaves the session intact", async () => {
+    mockFetchSequence([
+      { status: 401, body: { statusCode: 401, message: "Unauthorized", error: "Unauthorized", path: "/api/v1/x", timestamp: "t" } },
+      {
+        status: 409,
+        body: {
+          statusCode: 409,
+          message: "Another save for this record is already in progress. Please try again in a moment.",
+          error: "Conflict",
+          path: "/api/v1/auth/refresh",
+          timestamp: "t",
+          retryable: true,
+        },
+      },
+      {
+        status: 409,
+        body: {
+          statusCode: 409,
+          message: "Another save for this record is already in progress. Please try again in a moment.",
+          error: "Conflict",
+          path: "/api/v1/auth/refresh",
+          timestamp: "t",
+          retryable: true,
+        },
+      },
+    ]);
+
+    await expect(apiRequest("/api/v1/x", {})).rejects.toMatchObject({ status: 401 });
+    // The ORIGINAL 401 is what the caller sees (same as before this step),
+    // but — unlike the genuinely-expired case above — the session itself
+    // is untouched, since nothing ever proved it invalid.
+    expect(authStore.getState()).not.toBeNull();
+  });
+
+  // Same principle, a different failure shape: a network error on the
+  // refresh attempt (not even an HTTP response) is just as much "the
+  // server/network is unavailable right now," not "you are logged out."
+  it("a 401 whose refresh attempt fails with a network error (not even an HTTP response) also leaves the session intact", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        call += 1;
+        if (call === 1) {
+          return {
+            ok: false,
+            status: 401,
+            json: async () => ({ statusCode: 401, message: "Unauthorized", error: "Unauthorized", path: "/api/v1/x", timestamp: "t" }),
+          } as Response;
+        }
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+
+    await expect(apiRequest("/api/v1/x", {})).rejects.toMatchObject({ status: 401 });
+    expect(authStore.getState()).not.toBeNull();
+  });
 });
 
 // v0.8.5 bugfix (docs/DECISIONS.md, 2026-11-11) — a real browser only

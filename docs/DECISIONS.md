@@ -8781,3 +8781,52 @@ separate follow-up (cause identified, fix proposed, acceptance proposed). Split 
 to catching the process *while* hung (e.g. a `SIGUSR1` stack dump, or `--detectOpenHandles`
 with a debugger attached) rather than post-mortem — not attempted this round. No fix built in
 this step.
+
+## 2026-11-23 — v0.9 Step 2c Plan 1 shipped: auth#refresh + student-guardians#setPrimary row-lock timeout, and a real gap closed in the frontend's refresh-failure handling
+
+**Backend**: `auth.service.ts#refresh()` and `student-guardians.service.ts#setPrimary()` —
+the two row-lock sites found in the 2c audit — now go through `runLockedTransaction()`
+(`common/prisma/locked-transaction.ts`, generalized from "advisory-lock-holding" to "any
+lock-holding" transaction, since `SET LOCAL lock_timeout` bounds any Postgres-level lock wait,
+not just an advisory one). Confirmed by reading both: neither transaction's correctness
+depends on an unbounded wait — `refresh()`'s own comment already documents the row-lock wait
+as "load-bearing" only up to "however long the winner's commit takes," never as a guarantee of
+no timeout; `setPrimary()`'s `SELECT ... FOR UPDATE` is the same. Per-site regression tests
+(`auth-refresh-lock-timeout.e2e-spec.ts`, `student-guardians-lock-timeout.e2e-spec.ts`,
+following `lock-timeout-regression.e2e-spec.ts`'s pattern exactly) confirm the mapped 409
+arrives in ~`lock_timeout`, not a hang.
+
+**The hard requirement — a real, confirmed gap, not hypothetical.** Before this: `api-client.ts`'s
+`apiRequest()` 401-retry catch and `AuthBootGate.tsx`'s boot-time catch BOTH treated *any*
+`refreshTokens()` failure — a definitive 401, a network error, or (now, after the backend
+change above) the new retryable 409/503 — identically, by calling `authStore.clear()`. Fixed:
+
+- `refreshTokens()` itself now retries ONCE, inside the existing single-flight promise every
+  caller already shares, on a retryable (`body.retryable === true`) failure — a fresh request,
+  not a replay, so it picks up whatever cookie is current (e.g. a concurrent refresh's
+  already-rotated one) exactly as a real browser's cookie jar would hand a real `fetch()` call.
+  Proved end-to-end at the backend level (`auth-refresh-lock-timeout.e2e-spec.ts`): a request
+  blocked by the new lock_timeout gets the mapped 409 fast, and a follow-up using the other
+  (winning) request's fresh cookie succeeds cleanly, with the family never revoked anywhere in
+  the sequence.
+- `apiRequest` now clears the session ONLY on a definitive 401 from the refresh attempt;
+  anything else (still-retryable, network error, unrelated 5xx) rethrows the original error
+  with the session left intact.
+- `AuthBootGate` now does the same — on anything other than a definitive 401, `status` stays
+  `"unknown"` (never "unauthenticated") and a new, minimal "Server busy" + Retry UI renders
+  instead of ever reaching the login page for a reason that has nothing to do with the user's
+  actual session.
+- Extended to network errors and other 5xx too (not just the new retryable 409/503) — the same
+  underlying principle ("only a server-confirmed invalid session logs you out") applies
+  identically, and doing anything else for a dropped connection was already the same bug class.
+  Low-risk: in every one of these cases the previous behavior (involuntary logout) was strictly
+  worse than the new one (keep the session, let the person retry).
+
+Frontend tests added: `AuthBootGate.test.tsx` (persistent retryable failure shows "Server
+busy", never the login page, and Retry recovers; the one internal retry succeeding resolves
+boot normally with no visible interruption) and `api-client.test.ts` (a retryable refresh
+failure — including after its own internal retry — leaves the session intact; a network error
+on refresh does too). All pre-existing tests in both files still pass unchanged.
+
+Full suites green: backend e2e 57/57 suites, 722/722 tests; frontend 87/87 files, 594/594
+tests.

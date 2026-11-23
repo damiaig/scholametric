@@ -59,6 +59,25 @@ function unauthorizedResponse(): Response {
   } as Response;
 }
 
+// v0.9 Step 2c (docs/DECISIONS.md) — the new mapped shape
+// (common/filters/all-exceptions.filter.ts) for advisory-lock/row-lock
+// contention: a 409 or 503 with retryable:true, meaning "transient,
+// not proof the session is invalid."
+function retryableResponse(): Response {
+  return {
+    ok: false,
+    status: 409,
+    json: async () => ({
+      statusCode: 409,
+      message: "Another save for this record is already in progress. Please try again in a moment.",
+      error: "Conflict",
+      path: "/api/v1/auth/refresh",
+      timestamp: "t",
+      retryable: true,
+    }),
+  } as Response;
+}
+
 function renderApp(route = "/help") {
   const queryClient = createTestQueryClient();
   return render(
@@ -177,5 +196,55 @@ describe("AuthBootGate", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "Help" })).toBeInTheDocument());
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // v0.9 Step 2c hard requirement: a retryable 409/503 from /auth/refresh
+  // must NOT be treated as "logged out." Even after refreshTokens()'s own
+  // one internal retry also fails retryably, AuthBootGate must show a
+  // retry prompt, never the login page, and never clear a session that
+  // was never proven invalid.
+  it("a persistently retryable refresh failure shows 'Server busy' with a Retry button, NEVER the login page", async () => {
+    const fetchMock = vi.fn(async () => retryableResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp("/help");
+
+    await waitFor(() => expect(screen.getByText("Server busy")).toBeInTheDocument());
+
+    // Both the original attempt AND refreshTokens()'s own one retry fired.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Sign in to ScholaMetric")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Help" })).not.toBeInTheDocument();
+    expect(mockedApiRequest).not.toHaveBeenCalled();
+
+    // Clicking Retry re-attempts the same boot refresh; this time it
+    // succeeds, landing on the real app, not the login page.
+    mockProtectedEndpoints();
+    fetchMock.mockImplementation(async () => okResponse({ accessToken: "new-access-token" }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Help" })).toBeInTheDocument());
+    expect(screen.queryByText("Sign in to ScholaMetric")).not.toBeInTheDocument();
+  });
+
+  // The retry mechanism itself: refreshTokens()'s one internal retry
+  // succeeding (not exhausting it) resolves boot normally, with no
+  // "Server busy" flash and no login page — proves the single retry is
+  // enough to absorb the common, short-lived contention case.
+  it("refreshTokens()'s own one retry succeeding resolves boot normally, with no 'Server busy' state", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(retryableResponse());
+    fetchMock.mockResolvedValueOnce(okResponse({ accessToken: "new-access-token" }));
+    vi.stubGlobal("fetch", fetchMock);
+    mockProtectedEndpoints();
+
+    renderApp("/help");
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Help" })).toBeInTheDocument());
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Server busy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sign in to ScholaMetric")).not.toBeInTheDocument();
   });
 });

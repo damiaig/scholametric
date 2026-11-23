@@ -108,14 +108,51 @@ export function publicApiRequest<T>(path: string, options: RequestOptions = {}):
 // this function, so removing the guard here changes nothing for it.
 let refreshPromise: Promise<RefreshResponse> | null = null;
 
-export function refreshTokens(): Promise<RefreshResponse> {
+/** v0.9 Step 2c — how long to wait before the one retry below. */
+const REFRESH_RETRY_DELAY_MS = 300;
+
+function isRetryableApiError(error: unknown): boolean {
+  return error instanceof ApiError && error.body?.retryable === true;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// v0.9 Step 2c (docs/DECISIONS.md) — advisory-lock/row-lock contention on
+// the backend's own refresh-rotation row can now return a retryable 409/503
+// (common/filters/all-exceptions.filter.ts) instead of hanging. That is NOT
+// "this session is invalid" — it is the server/network being transiently
+// busy, same bug class as a dropped request, and must not be treated as a
+// logout. ONE retry here, inside the single-flight promise every caller
+// (AuthBootGate, apiRequest's 401-retry) already shares, so every current
+// waiter benefits from the same retry rather than each needing its own
+// logic. The retry is a genuinely fresh request (not a replay of the first
+// one's in-flight state) — in a real browser, `credentials:"include"`
+// always sends whatever the cookie jar holds AT SEND TIME, so if the
+// original attempt raced a concurrent refresh and lost, the browser's
+// cookie jar has very likely already been updated to that concurrent
+// request's freshly-rotated cookie by the time this retry fires, and the
+// retry picks THAT up automatically — proved end-to-end at the backend
+// level in auth-refresh-lock-timeout.e2e-spec.ts. If the retry ALSO fails
+// retryably (or with anything other than a definitive 401), the error is
+// left for the caller to decide what to do — see apiRequest and
+// AuthBootGate, neither of which clears the session for it.
+export async function refreshTokens(): Promise<RefreshResponse> {
   if (refreshPromise) {
     return refreshPromise;
   }
-  refreshPromise = rawFetch<RefreshResponse>("/api/v1/auth/refresh", {
-    method: "POST",
-    headers: CSRF_HEADER,
-  }).finally(() => {
+  refreshPromise = (async () => {
+    try {
+      return await rawFetch<RefreshResponse>("/api/v1/auth/refresh", { method: "POST", headers: CSRF_HEADER });
+    } catch (error) {
+      if (!isRetryableApiError(error)) {
+        throw error;
+      }
+      await sleep(REFRESH_RETRY_DELAY_MS);
+      return await rawFetch<RefreshResponse>("/api/v1/auth/refresh", { method: "POST", headers: CSRF_HEADER });
+    }
+  })().finally(() => {
     refreshPromise = null;
   });
   return refreshPromise;
@@ -132,8 +169,18 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
         const refreshed = await refreshTokens();
         authStore.setTokens(refreshed);
         return await rawFetch<T>(path, options, refreshed.accessToken);
-      } catch {
-        authStore.clear();
+      } catch (refreshError) {
+        // v0.9 Step 2c — only a DEFINITIVE rejection (the server saying
+        // this session's refresh token is actually invalid/expired/
+        // reused) means the user is really logged out. Anything else —
+        // refreshTokens()'s own retryable 409/503 even after its one
+        // internal retry, a network error, or an unrelated 5xx — is the
+        // server/network being transiently unavailable, not proof the
+        // session is invalid, so the session is left intact (the caller
+        // sees the ORIGINAL 401 and decides what to show).
+        if (refreshError instanceof ApiError && refreshError.status === 401) {
+          authStore.clear();
+        }
         throw error;
       }
     }

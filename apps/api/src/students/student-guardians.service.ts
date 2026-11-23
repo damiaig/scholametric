@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import type { Guardian, GuardianRelationship, StudentGuardian } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
@@ -130,7 +131,7 @@ export class StudentGuardiansService {
     const schoolId = this.tenantContext.schoolId;
     await this.assertStudentInTenant(schoolId, studentId);
 
-    return this.prisma.$transaction(async (tx) => {
+    return runLockedTransaction(this.prisma, async (tx) => {
       // ORDER BY id is load-bearing: without a fixed lock-acquisition order,
       // concurrent swaps on the same student can deadlock instead of
       // serializing (seen under a 6-way concurrent test — Postgres aborts

@@ -5,6 +5,7 @@ import { JwtService } from "@nestjs/jwt";
 import bcrypt from "bcrypt";
 import { Prisma, type RefreshToken, type School, type User } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { LoginDto } from "./dto/login.dto";
 import { ChangePasswordDto } from "./dto/change-password.dto";
 import { ACCESS_TOKEN_TTL, BCRYPT_COST, REFRESH_TOKEN_TTL_MS } from "./auth.constants";
@@ -117,7 +118,7 @@ export class AuthService {
       throw new UnauthorizedException("Unauthorized");
     }
 
-    const rotated = await this.prisma.$transaction(async (tx) => {
+    const rotated = await runLockedTransaction(this.prisma, async (tx) => {
       const result = await tx.refreshToken.updateMany({
         where: { id: row.id, revokedAt: null },
         data: { revokedAt: new Date() },
