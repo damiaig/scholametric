@@ -4,6 +4,7 @@ import { createTestApp } from "./utils/create-test-app";
 import { loginAs } from "./utils/login";
 import { futureWeekday, pastWeekday } from "./utils/future-date";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { schoolToday } from "@scholametric/shared";
 
 // v0.8.4 step 1 (SPEC_V0.8.4.md §2, §3) — Lesson model + teacher
 // authoring + the lesson-date rule (text-only; files are step 3).
@@ -181,18 +182,18 @@ describe("Lessons (e2e) — SPEC_V0.8.4.md §2/§3, v0.8.4 step 1", () => {
   // once-a-week edge this suite accepts elsewhere (see HOLIDAY tests).
   describe("lessonDate = today", () => {
     const WEEKDAY_BY_JS_INDEX = [null, "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"] as const;
-    // UTC, not local — the backend's own weekdayOf/isDateInTheFuture both
-    // parse/compare dates as UTC midnight (confirmed by reading
-    // calendar.service.ts's weekdayOf directly). Using local date
-    // components here was a real, caught-in-the-wild bug: in a positive-
-    // UTC-offset timezone, the first couple of hours after local midnight
-    // are still "yesterday" in UTC, so local-today briefly looks like a
-    // FUTURE date to the backend's own UTC-based check. Matching the
-    // backend's own clock interpretation removes the mismatch entirely,
-    // regardless of which timezone the suite happens to run in.
+    // v0.9 Item B (docs/SPEC_V0.9.md §3) — school-local (Africa/Lagos)
+    // today via schoolToday(), matching isDateInTheFuture's own fixed
+    // rule now rather than the UTC convention this file used to
+    // deliberately mirror (see docs/DECISIONS.md's superseded v0.8.4
+    // entry for the bug that convention originally worked around — fixed
+    // at the source now, not papered over here). todayStr is already a
+    // plain "YYYY-MM-DD"; its weekday is read by parsing it as UTC
+    // midnight, the same safe, timezone-independent "weekday of a known
+    // date string" pattern calendar.service.ts's own weekdayOf uses.
     const now = new Date();
-    const todayWeekday = WEEKDAY_BY_JS_INDEX[now.getUTCDay()];
-    const todayStr = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+    const todayStr = schoolToday(now);
+    const todayWeekday = WEEKDAY_BY_JS_INDEX[new Date(`${todayStr}T00:00:00Z`).getUTCDay()];
 
     const describeOrSkip = todayWeekday === null ? describe.skip : describe;
 

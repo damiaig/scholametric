@@ -8830,3 +8830,54 @@ on refresh does too). All pre-existing tests in both files still pass unchanged.
 
 Full suites green: backend e2e 57/57 suites, 722/722 tests; frontend 87/87 files, 594/594
 tests.
+
+## 2026-11-23 — v0.9 Step 2c Plan 2: school-local (Africa/Lagos) "today" for every date rule — SUPERSEDES the UTC convention stated 2026-09-26 (v0.8.1 step 3, line ~6610: "Built on Date.UTC(...)... a fixed ~1hr offset from true Nigerian (WAT) wall-clock is an acceptable, *consistent* imprecision") and 2026-10-24 (v0.8.4 step 3, line ~8019: "Ruled to fix the TEST to match the backend's own established UTC convention... the backend's UTC-based philosophy is shared verbatim with Homework's own isDueDatePast rule")
+
+Both statements above described the UTC-"today" convention as a deliberate, acceptable
+design choice. It wasn't: it caused real, user-visible failures at the school-local midnight
+boundary (a teacher logging a lesson or a homework due-date check landing on the wrong side
+of "today" for roughly the first hour after WAT midnight), and BACKLOG.md's "School-local
+'today' for date rules (timezone correctness)" entry (added after the v0.8.4 PROVE run
+above literally hit this window) tracked it as an open, unscheduled bug the whole time. v0.9
+Step 2c Plan 2 fixes it at the source instead of carrying it forward.
+
+New `packages/shared/src/school-time.ts`: `SCHOOL_TIME_ZONE = "Africa/Lagos"`; `schoolToday(now)`
+and `schoolNowParts(now)`, both built on `Intl.DateTimeFormat` with an explicit `timeZone`
+(never the process's own local/UTC clock) — verified identical under `TZ=UTC`,
+`TZ=Europe/Paris`, `TZ=Pacific/Kiritimati` in both the API's Jest/Node runtime and the web
+app's Vitest/jsdom runtime, including a direct assertion that ICU's Africa/Lagos data is
+present (`schoolToday(new Date("2026-11-12T23:30:00Z")) === "2026-11-13"`).
+
+Site inventory (grepped `apps/api/src` + `packages/shared/src` for `Date.now`, `Date.UTC`,
+`getUTC*`, `setUTCHours`, `new Date()`, and any start-of-day/"current term" helper): exactly
+three real sites, all now delegating to `schoolToday`/`schoolNowParts` — `lesson.service.ts`'s
+`isDateInTheFuture`, `homework.service.ts`'s `isDueDatePast` (and its ~line-487 past-due-hidden
+filter, which calls it), and `calendar.ts`'s `isPeriodTimePast` (rewritten to compare
+school-local wall-clock strings — `` `${date}T${endsAt}` < `${nowDate}T${nowTime}` `` — instead
+of constructing a UTC instant). "Current term"/"current session" resolution is, in every case,
+a stored `isCurrent` boolean flipped explicitly by `SessionsService`/`TermsService`'s own
+transactions — never UTC-"today"-derived — confirmed out of scope. Deliberately excluded:
+`packages/shared/src/students.ts`'s `isPastDate` (dateOfBirth sanity check, mirrored by
+`@MaxDate(() => new Date())` in the student DTOs) — a coarse "not an impossible future
+birthdate" guard, not a date-boundary rule.
+
+Test-level workarounds that existed ONLY to match the old UTC convention, replaced rather
+than left alongside the fix: `test/lesson.e2e-spec.ts`'s "lessonDate = today" block (was
+`now.getUTCDay()`/UTC getters per the superseded v0.8.4 entry above; now `schoolToday(now)`,
+with the weekday read by parsing that date string as UTC midnight — the same safe,
+timezone-independent "weekday of a known date string" pattern `calendar.service.ts`'s own
+`weekdayOf` already used) and `test/utils/future-date.ts`'s `futureWeekday`/`pastWeekday`
+(was system-local `Date` getters; now anchored on `schoolToday()` with all offset arithmetic
+done by parsing that string as UTC midnight, never the process's own local clock).
+`apps/web/src/features/timetable/is-period-time-past.test.ts` (the v0.8.1-era UTC-instant
+cases cited above) rewritten to WAT-expressed cases; the old millisecond-boundary case
+dropped since wall-clock string comparison is minute-granular by construction, replaced with
+a one-minute-after case.
+
+Full suites green: backend e2e 57/57 suites, 722/722 tests (run with `--runInBand`, matching
+CI — an earlier parallel-worker run of the same suite produced 54 unrelated failures from
+cross-file fixture collisions on the shared test DB, the known flake class this whole v0.9
+pass is about, not a regression from this change: each affected file passed cleanly in
+isolation); frontend 88/88 files, 598/598 tests. API unit tests (41/41) and the web
+`school-time.test.ts` (4/4) identical under `TZ=UTC`/`Europe/Paris`/`Pacific/Kiritimati`.
+BACKLOG.md's timezone entry removed as fixed.

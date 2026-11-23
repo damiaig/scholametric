@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { schoolNowParts } from "./school-time";
 
 // v0.8 step 1 (SPEC_V0.8.md §7 item 1) — the calendar domain's foundation:
 // periods (bell schedule), breaks, holidays, per-class school-days.
@@ -302,14 +303,21 @@ export type ReplaceTimetableExceptionInput = z.infer<typeof replaceTimetableExce
 // (hides Replace/Edit replacement) and the API (rejects a late PATCH
 // /calendar/timetable-exceptions/:id) so it can't drift between the two.
 // `endsAt`, not `startsAt` — a period is only "passed" once fully over,
-// not mid-lesson. Deliberately Date.UTC, not a local-timezone
-// constructor: this runs in two different processes (a browser and a
-// server) that could disagree on "local" time, which would be a worse bug
-// than a fixed, known offset from true school wall-clock time. There's no
-// per-school timezone anywhere in this system yet — this is a coarse
-// "has this obviously already happened" gate, not a precise one.
+// not mid-lesson.
+//
+// v0.9 Item B (docs/SPEC_V0.9.md §3) — `date`/`endsAt` are already
+// school-local (Africa/Lagos) wall-clock values (a period's `endsAt` is
+// what's printed on the timetable, e.g. "14:00" WAT); the OLD code
+// constructed `Date.UTC(year, month, day, hours, minutes)`, which
+// silently treated those WAT numbers as if they were UTC — off by exactly
+// the UTC+1 offset, which is why the "Replace" button used to stay for an
+// extra hour every day. Fixed by comparing wall-clock to wall-clock
+// directly (both as "YYYY-MM-DDTHH:mm" strings, which sort correctly
+// since every field is fixed-width and zero-padded) instead of
+// constructing an instant at all — there is no "which timezone is this
+// instant in" question left to get wrong.
 export function isPeriodTimePast(date: string, endsAt: string, now: Date = new Date()): boolean {
-  const [year, month, day] = date.split("-").map(Number);
-  const [hours, minutes] = endsAt.split(":").map(Number);
-  return Date.UTC(year, month - 1, day, hours, minutes) < now.getTime();
+  const { date: nowDate, hours, minutes } = schoolNowParts(now);
+  const nowTime = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  return `${date}T${endsAt}` < `${nowDate}T${nowTime}`;
 }

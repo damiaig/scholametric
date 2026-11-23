@@ -19,3 +19,4 @@ export * from "./portal-accounts";
 export * from "./calendar";
 export * from "./homework";
 export * from "./lessons";
+export * from "./school-time";

@@ -7,6 +7,7 @@ import type {
   StudentLessonEntry,
   StudentLessonListResponse,
 } from "@scholametric/shared";
+import { schoolToday } from "@scholametric/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
@@ -146,15 +147,17 @@ export class LessonService {
 
   // Mirrors homework's isDueDatePast (v0.8.2 step 2) almost verbatim,
   // just inverted: a lesson date is invalid once it's AFTER today, not
-  // before. Pure UTC date math, no time-of-day. Kept private/injectable
-  // with a real default (now: Date = new Date()) for the same reason
-  // isDueDatePast is — no frontend consumer needs a byte-identical
-  // evaluation yet in this backend-only step, so it isn't promoted to
-  // packages/shared.
+  // before. Pure date math, no time-of-day. Kept private/injectable with a
+  // real default (now: Date = new Date()) for the same reason isDueDatePast
+  // is — no frontend consumer needs a byte-identical evaluation yet in
+  // this backend-only step, so it isn't promoted to packages/shared.
+  //
+  // v0.9 Item B (docs/SPEC_V0.9.md §3) — "today" is now school-local
+  // (Africa/Lagos) via schoolToday(), not UTC: the old Date.UTC-based
+  // "today" lagged school-local today by a full day for the first hour
+  // after local midnight, rejecting a teacher's own-day lesson as "future".
   private isDateInTheFuture(dateStr: string, now: Date = new Date()): boolean {
-    const [year, month, day] = dateStr.split("-").map(Number);
-    const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    return Date.UTC(year, month - 1, day) > todayUTC;
+    return dateStr > schoolToday(now);
   }
 
   // THE lesson-date rule (SPEC_V0.8.4.md §3) — the one genuine inversion

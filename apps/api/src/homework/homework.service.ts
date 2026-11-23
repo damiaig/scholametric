@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { randomUUID } from "node:crypto";
 import { HomeworkStatus, UserRole, type Homework, type HomeworkAttachment, type HomeworkSubmission, type Subject, type Term, type User } from "@prisma/client";
 import type { TeachingWeekdaysResponse } from "@scholametric/shared";
+import { schoolToday } from "@scholametric/shared";
 import { PrismaService } from "../prisma/prisma.service";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
@@ -233,10 +234,12 @@ export class HomeworkService {
   // needing a byte-identical browser+server evaluation yet. Promote it
   // when the student-facing page actually needs to match this exact
   // rule client-side.
+  //
+  // v0.9 Item B (docs/SPEC_V0.9.md §3) — "today" is now school-local
+  // (Africa/Lagos) via schoolToday(), not UTC — see lesson.service.ts's
+  // isDateInTheFuture for the identical bug this also had.
   private isDueDatePast(dueDate: string, now: Date = new Date()): boolean {
-    const [year, month, day] = dueDate.split("-").map(Number);
-    const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    return Date.UTC(year, month - 1, day) < todayUTC;
+    return dueDate < schoolToday(now);
   }
 
   private toHomeworkResponse(homework: HomeworkWithTeacher): HomeworkResponse {
