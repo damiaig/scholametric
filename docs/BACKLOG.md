@@ -2,6 +2,27 @@
 
 ## Deferred / known issues
 
+## v0.9.1: local e2e hangs with zero DB connections at 0% CPU — needs a LIVE capture, not a v0.9 blocker
+Across the v0.9 Step 1/2b/2c flake-hunt, 4 of 6 local hard-timeout hangs showed the Node
+process sitting at 0% CPU for minutes with **zero** Postgres connections open at kill time —
+not a database wait in any form. CI's own backend e2e suite shows 0/50 failures in the same
+window (same pool size as the failing local arms), so this is local-environment-specific, not
+a shipped defect, and is explicitly not a v0.9 blocker (see docs/SPEC_V0.9.md §2 acceptance,
+revised 2026-11-23). Ruled out: "second-connection acquisition shrinking the pool" (no excess
+connections found in any dump), `FakeStorageService` (synchronous, no I/O), `AuditInterceptor`
+(correct RxJS usage). Jest's own 30s per-test timeout is a real timer that would still fire if
+the hang were simply one abandoned promise inside a normal test — it didn't, ruling that out
+too. **Two named suspects, neither confirmed**: (a) macOS process suspension/throttling (App
+Nap) or Docker Desktop pausing, which would freeze the whole process including its own
+internal timers; (b) the flake-hunt harness's own custom Jest reporter
+(`~/flake-hunt-data/reporter.js`, not part of this repo) doing a synchronous `execSync`
+`docker compose exec ... psql` shell-out at every file boundary — confirmed every PROVE arm
+ran with this reporter attached, and Node's `execSync` timeout option isn't airtight against
+every way a wrapped Docker/psql call can hang. **v0.9.1 task**: capture a LIVE stack at the
+moment of a hang, not a post-mortem log — e.g. `sample <pid>` (macOS) and
+`ps -o state,wchan -p <pid>` taken *before* killing the process, run once without the custom
+reporter attached to isolate suspect (b). Full findings: `~/flake-hunt-data/FINDINGS.md`.
+
 ## e2e test database never resets between local runs — FIXED (v0.9 Step 2a, 2026-11-19)
 `apps/api/test/global-setup.ts` only created `scholametric_test` if it didn't already exist,
 then ran `migrate deploy` + `db seed` — it never truncated existing rows. Across many local
