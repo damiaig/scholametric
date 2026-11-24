@@ -116,6 +116,9 @@ Violating tenancy is a data breach, not a bug. Treat it accordingly.
 - Passwords: bcrypt (cost 12). Refresh tokens stored hashed, rotated on use.
 - Log with Nest's Logger; include `requestId` and `schoolId` in log context
   via an interceptor. Never log passwords, tokens, or full request bodies.
+- `LOCK_TIMEOUT_MS` (env, default 5000): how long a lock-holding transaction
+  (`runLockedTransaction`) waits before giving up with a retryable 409/503,
+  mapped by `AllExceptionsFilter` (v0.9, `docs/DECISIONS.md`).
 
 ---
 

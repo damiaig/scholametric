@@ -26,7 +26,10 @@ const PARTS_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
   hour: "2-digit",
   minute: "2-digit",
-  hour12: false,
+  // hour12: false alone doesn't pin the hour CYCLE — some ICU builds still
+  // render midnight as "24", not "00", under hour12: false. hourCycle:
+  // "h23" forces 0-23 explicitly, so midnight is always "00".
+  hourCycle: "h23",
 });
 
 /** The school-local (Africa/Lagos) calendar date "now" falls on, as "YYYY-MM-DD". */

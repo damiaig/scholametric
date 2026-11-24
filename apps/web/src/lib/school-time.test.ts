@@ -25,6 +25,10 @@ describe("schoolToday / schoolNowParts / isPeriodTimePast — school-local (Afri
     });
   });
 
+  it("hours is 0 at school-local midnight, never 24", () => {
+    expect(schoolNowParts(new Date("2026-11-12T23:30:00Z")).hours).toBe(0);
+  });
+
   it("isPeriodTimePast compares school-local wall-clock, not a UTC-misinterpreted instant", () => {
     const periodDate = "2026-11-12";
     const endsAt = "14:00";

@@ -11,7 +11,9 @@ interface ErrorBody {
   [extra: string]: unknown;
 }
 
-type LockContentionBody = Pick<ErrorBody, "statusCode" | "message" | "error"> & { retryable: true };
+type LockContentionKind = "55P03" | "maxWait" | "P2024" | "expired-transaction";
+
+type LockContentionBody = Pick<ErrorBody, "statusCode" | "message" | "error"> & { retryable: true; kind: LockContentionKind };
 
 // v0.9 Step 2b (docs/DECISIONS.md) — advisory-lock contention never
 // surfaces as an HttpException, so it has to be detected and mapped here,
@@ -54,6 +56,7 @@ function mapLockContentionError(exception: unknown): LockContentionBody | null {
       message: "Another save for this record is already in progress. Please try again in a moment.",
       error: "Conflict",
       retryable: true,
+      kind: "55P03",
     };
   }
 
@@ -69,6 +72,7 @@ function mapLockContentionError(exception: unknown): LockContentionBody | null {
       message: "The server is busy right now. Please try again in a moment.",
       error: "Service Unavailable",
       retryable: true,
+      kind: "P2024",
     };
   }
 
@@ -79,14 +83,20 @@ function mapLockContentionError(exception: unknown): LockContentionBody | null {
         message: "The server is busy right now. Please try again in a moment.",
         error: "Service Unavailable",
         retryable: true,
+        kind: "maxWait",
       };
     }
     if (exception.message.includes("cannot be executed on an expired transaction")) {
       return {
         statusCode: HttpStatus.CONFLICT,
-        message: "Another save for this record is already in progress. Please try again in a moment.",
+        // Softer than the 55P03 wording deliberately — by the time this
+        // fires, the blocking transaction may have already finished, so
+        // "already in progress" isn't always accurate; "or took too long"
+        // covers both.
+        message: "A save is already in progress or took too long. Please try again in a moment.",
         error: "Conflict",
         retryable: true,
+        kind: "expired-transaction",
       };
     }
   }
@@ -106,8 +116,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const lockContention = mapLockContentionError(exception);
     if (lockContention) {
-      response.status(lockContention.statusCode).json({
-        ...lockContention,
+      const { kind, ...body } = lockContention;
+      this.logger.warn(`Lock contention (${kind}): ${request.method} ${request.url}`);
+      response.status(body.statusCode).json({
+        ...body,
         path: request.url,
         timestamp: new Date().toISOString(),
       });

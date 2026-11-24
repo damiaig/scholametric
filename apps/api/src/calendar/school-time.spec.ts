@@ -24,6 +24,15 @@ describe("schoolToday / schoolNowParts / isPeriodTimePast — school-local (Afri
     });
   });
 
+  // v0.9 Step 2c review follow-up (docs/DECISIONS.md) — hour12: false alone
+  // doesn't pin the hour CYCLE; some ICU builds still render midnight as
+  // "24", not "00" (hourCycle: "h23" is what actually fixes it). Direct,
+  // explicit assertion so a regression back to hour12 fails loudly here,
+  // not just as a side effect of the toEqual above.
+  it("hours is 0 at school-local midnight, never 24", () => {
+    expect(schoolNowParts(new Date("2026-11-12T23:30:00Z")).hours).toBe(0);
+  });
+
   it("isPeriodTimePast compares school-local wall-clock, not a UTC-misinterpreted instant", () => {
     // A period ending at 14:00 WAT (= 13:00 UTC) — the v0.8.1 bug kept this
     // "not past" until 15:00 WAT (one hour late, every day).
