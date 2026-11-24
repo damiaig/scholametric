@@ -5,6 +5,8 @@ import { assertIsTestDatabaseUrl, MAINTENANCE_DATABASE_URL, TEST_DATABASE_URL } 
 
 const API_ROOT = path.join(__dirname, "..");
 
+// MUST run with --runInBand (package.json's "test" script, same as CI) — parallel workers collide on shared fixtures in this one scholametric_test database (v0.9 Step 2c).
+//
 // Runs ONCE before any e2e test file (Jest globalSetup). Drops (if it
 // exists) and recreates "scholametric_test" on EVERY run, then migrates and
 // seeds it fresh — the SAME migrations/seed script the dev/walk stack uses,
