@@ -7,7 +7,7 @@ import { AllExceptionsFilter } from "./all-exceptions.filter";
 // no signal these were happening at all. Asserts BOTH halves of the fix:
 // a warning is logged with the kind, and the response body sent to the
 // client is byte-for-byte unchanged by adding that logging.
-function makeHost(request: { method: string; url: string }) {
+function makeHost(request: { method: string; url: string; path: string }) {
   const json = jest.fn();
   const status = jest.fn().mockReturnValue({ json });
   const response = { status };
@@ -37,7 +37,7 @@ describe("AllExceptionsFilter — lock-contention logging", () => {
       code: "P2028",
       clientVersion: "test",
     });
-    const { host, status, json } = makeHost({ method: "PATCH", url: "/api/v1/students/abc" });
+    const { host, status, json } = makeHost({ method: "PATCH", url: "/api/v1/students/abc", path: "/api/v1/students/abc" });
 
     filter.catch(exception, host);
 
@@ -63,11 +63,34 @@ describe("AllExceptionsFilter — lock-contention logging", () => {
   it("does not log a warning for a non-lock-contention error", () => {
     const errorSpy = jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
     const filter = new AllExceptionsFilter();
-    const { host } = makeHost({ method: "GET", url: "/api/v1/students" });
+    const { host } = makeHost({ method: "GET", url: "/api/v1/students", path: "/api/v1/students" });
 
     filter.catch(new Error("boom"), host);
 
     expect(warnSpy).not.toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+
+  // v0.9 Step 2c review follow-up (docs/DECISIONS.md) — req.url carries
+  // the query string; a GET's own filters (e.g. ?search=<student name>)
+  // have no business landing in a warn log. req.path never includes it.
+  it("logs the path only, with the query string stripped, even though the request had one", () => {
+    const filter = new AllExceptionsFilter();
+    const exception = new Prisma.PrismaClientKnownRequestError("Unable to start a transaction in the given time", {
+      code: "P2028",
+      clientVersion: "test",
+    });
+    const { host } = makeHost({
+      method: "GET",
+      url: "/api/v1/students?search=Jane+Doe",
+      path: "/api/v1/students",
+    });
+
+    filter.catch(exception, host);
+
+    const logged = warnSpy.mock.calls[0][0] as string;
+    expect(logged).toContain("/api/v1/students");
+    expect(logged).not.toContain("search");
+    expect(logged).not.toContain("Jane");
   });
 });

@@ -117,7 +117,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const lockContention = mapLockContentionError(exception);
     if (lockContention) {
       const { kind, ...body } = lockContention;
-      this.logger.warn(`Lock contention (${kind}): ${request.method} ${request.url}`);
+      // request.path (not request.url), deliberately: req.url carries the
+      // query string, and a GET's own filters (e.g. ?search=<student name>)
+      // have no business landing in a warn log.
+      this.logger.warn(`Lock contention (${kind}): ${request.method} ${request.path}`);
       response.status(body.statusCode).json({
         ...body,
         path: request.url,

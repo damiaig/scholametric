@@ -23,6 +23,18 @@ moment of a hang, not a post-mortem log — e.g. `sample <pid>` (macOS) and
 `ps -o state,wchan -p <pid>` taken *before* killing the process, run once without the custom
 reporter attached to isolate suspect (b). Full findings: `~/flake-hunt-data/FINDINGS.md`.
 
+**2026-11-25 — live data point supporting suspect (a).** A `pnpm run test` launched during
+v0.9 Step B's PROVE sat overnight (elapsed `01-00:47:38`, only `2:09.67` of actual CPU time —
+the host machine slept). `sample <pid>` before killing it showed the main thread genuinely
+idle in `uv__io_poll` → `kevent`, every worker thread parked on a semaphore/condvar wait — not
+blocked in a syscall, not spinning, just waiting for an I/O event that never arrived while the
+OS had the process suspended. This is a live demonstration of the EXACT signature (0% CPU,
+event loop idle, no forward progress) suspect (a) predicts macOS suspension would produce on
+this process, including its own internal timers — not a reproduction of the original few-
+minutes-long local flake (this one ran a full day, an obvious sleep/lid-close, not an ambiguous
+short stall), but it confirms the mechanism is real and produces exactly this shape of hang,
+making (a) the more plausible of the two suspects. Still doesn't rule out (b).
+
 ## e2e test database never resets between local runs — FIXED (v0.9 Step 2a, 2026-11-19)
 `apps/api/test/global-setup.ts` only created `scholametric_test` if it didn't already exist,
 then ran `migrate deploy` + `db seed` — it never truncated existing rows. Across many local
