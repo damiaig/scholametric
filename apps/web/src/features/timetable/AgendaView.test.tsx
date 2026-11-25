@@ -19,7 +19,7 @@ function makeDay(date: string, dayOfWeek: ResolvedTimetableDay["dayOfWeek"], ove
   return { date, dayOfWeek, isSchoolDay: true, nonSchoolReason: null, holidayName: null, periods: [], breaks: [], ...overrides };
 }
 
-const TODAY = new Date(2026, 8, 14); // Monday
+const TODAY = new Date(Date.UTC(2026, 8, 14, 12)); // Monday, midday UTC
 
 afterEach(() => cleanup());
 

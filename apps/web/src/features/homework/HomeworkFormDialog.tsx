@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Paperclip, X, RefreshCw, Trash2 } from "lucide-react";
 import {
   homeworkFormSchema,
+  schoolToday,
   HOMEWORK_ATTACHMENT_CAP_BYTES,
   type Homework,
   type HomeworkAttachment,
@@ -272,7 +273,7 @@ export function HomeworkFormDialog({ open, onClose, classArmId, subjectId, termI
                 id="homework-due-date"
                 value={field.value}
                 onChange={field.onChange}
-                minDate="today"
+                minDate={schoolToday()}
                 disableDate={disableDate}
                 placeholder="Select a date…"
               />

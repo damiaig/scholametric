@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
-import type { Lesson, LessonListResponse, MyTeaching } from "@scholametric/shared";
+import { schoolToday, type Lesson, type LessonListResponse, type MyTeaching } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
@@ -102,9 +102,10 @@ describe("LessonClassPage", () => {
 
   // Computed from the real current date, not a fixed fixture + fake
   // timers — same convention HomeworkClassPage.test.tsx already uses.
+  // v0.9 Step B (docs/SPEC_V0.9.md §3) — schoolToday(), not local Date
+  // getters (confirmed: fails under TZ=Pacific/Pago_Pago otherwise).
   it("shows 'Today' for a lesson dated today", async () => {
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const todayStr = schoolToday();
     const list: LessonListResponse = { classArmId: "arm1", subjectId: "sub1", lessons: [lesson({ lessonDate: todayStr })] };
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/me/teaching") return TEACHING;

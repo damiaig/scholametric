@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Lesson } from "@scholametric/shared";
+import { schoolToday, type Lesson } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest, ApiError } from "../../lib/api-client";
@@ -105,16 +105,19 @@ describe("LessonFormDialog", () => {
   });
 
   // v0.8.4 step 4 (SPEC_V0.8.4.md §3) — the one real inversion: the
-  // picker is capped at maxDate="today" (past/today only, never the
-  // future), not homework's own minDate="today" (future/today only).
-  it("passes maxDate='today' to the picker, not minDate — the inverted date rule", async () => {
+  // picker is capped at maxDate=schoolToday() (past/today only, never the
+  // future), not homework's own minDate=schoolToday() (future/today only).
+  // v0.9 Step B (docs/SPEC_V0.9.md §3) — maxDate is now an explicit
+  // schoolToday()-derived "YYYY-MM-DD" string, not flatpickr's own
+  // browser-local "today" keyword.
+  it("passes maxDate=schoolToday() to the picker, not minDate — the inverted date rule", async () => {
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/lessons/teaching-weekdays") return { weekdays: ["MONDAY", "TUESDAY", "THURSDAY", "FRIDAY"] };
       throw new Error(`unexpected call: ${path}`);
     });
     renderWithProviders(<LessonFormDialog open onClose={vi.fn()} classArmId="arm1" subjectId="sub1" />);
 
-    await waitFor(() => expect(lastDatePickerProps?.maxDate).toBe("today"));
+    await waitFor(() => expect(lastDatePickerProps?.maxDate).toBe(schoolToday()));
     expect(lastDatePickerProps?.minDate).toBeUndefined();
   });
 

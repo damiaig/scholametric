@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { TeacherTimetableResponse } from "@scholametric/shared";
@@ -24,6 +24,17 @@ vi.mock("../../components/ui/styled-date-picker", () => ({
 }));
 
 const mockedApiRequest = vi.mocked(apiRequest);
+
+// v0.9 Step B (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — see
+// MyTimetablePage.test.tsx's identical comment: pins the system clock
+// instead of racing it (component and test both read new Date()). Only
+// Date is pinned — no vi.useFakeTimers(), so setTimeout/userEvent/
+// waitFor all still use real timers.
+const FIXED_NOW = new Date(Date.UTC(2026, 8, 14, 12)); // Monday, midday UTC
+
+beforeEach(() => {
+  vi.setSystemTime(FIXED_NOW);
+});
 
 const WEEKDAY_BY_INDEX = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"] as const;
 function weekdayFor(dateString: string): (typeof WEEKDAY_BY_INDEX)[number] {
@@ -78,6 +89,7 @@ function response(date: string = todayDateString()): TeacherTimetableResponse {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   authStore.clear();
 });
 

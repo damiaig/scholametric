@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { ResolvedTimetableDay } from "@scholametric/shared";
+import { schoolToday, type ResolvedTimetableDay } from "@scholametric/shared";
 import { Button } from "../../components/ui/button";
 import { StyledDatePicker } from "../../components/ui/styled-date-picker";
 import { AgendaDayCard } from "./AgendaDayCard";
@@ -21,8 +21,9 @@ interface AgendaViewProps {
 // day-based: one day at a time, with day-by-day navigation plus a
 // date-picker to jump to any day. Replaces the old "Today + Upcoming"
 // multi-day grouping entirely. Navigation floor (§2.3): "previous day" is
-// disabled once already on today — the picker's own minDate="today"
-// enforces the same floor inside the calendar; forward is unbounded. The
+// disabled once already on today — the picker's own minDate={schoolToday(today)}
+// enforces the same floor inside the calendar (v0.9 Step B: school-local,
+// not the browser's own "today"); forward is unbounded. The
 // non-school-day rendering (§2.5, holiday/weekend) is unchanged — it's
 // AgendaDayCard's own existing branch, just for whichever single day is
 // navigated to; nothing here skips a non-school day.
@@ -40,7 +41,7 @@ export function AgendaView({ day, onPrevDay, onNextDay, onPickDate, onToday, sho
         <Button type="button" variant="outline" size="sm" aria-label="Previous day" onClick={onPrevDay} disabled={viewingToday}>
           <ChevronLeft className="h-4 w-4" aria-hidden="true" />
         </Button>
-        <StyledDatePicker value={day.date} onChange={onPickDate} minDate="today" aria-label="Choose a date" />
+        <StyledDatePicker value={day.date} onChange={onPickDate} minDate={schoolToday(today)} aria-label="Choose a date" />
         <Button type="button" variant="outline" size="sm" aria-label="Next day" onClick={onNextDay}>
           <ChevronRight className="h-4 w-4" aria-hidden="true" />
         </Button>

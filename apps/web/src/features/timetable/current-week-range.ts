@@ -1,4 +1,24 @@
+import { schoolToday } from "@scholametric/shared";
 import { formatDate as formatDisplayDate } from "../../lib/format-date";
+
+// v0.9 Item B Step B (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — every
+// "today" in this file is now school-local (Africa/Lagos) via
+// schoolToday(), not the browser's own local/UTC clock. Once an instant
+// has been turned into a "YYYY-MM-DD" string, all further arithmetic
+// (weekday-of, add N days) is done by parsing that string as UTC midnight
+// — the same safe, timezone-independent pattern used server-side
+// (apps/api/test/utils/future-date.ts, calendar.service.ts's weekdayOf) —
+// never local Date getters/setters again, so none of this can disagree
+// with the process's own timezone or a DST transition.
+function addDays(dateStr: string, days: number): string {
+  const date = new Date(`${dateStr}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function weekdayOf(dateStr: string): number {
+  return new Date(`${dateStr}T00:00:00Z`).getUTCDay();
+}
 
 // v0.8 walk-found fix — this week's Monday-Saturday range, as "YYYY-MM-DD"
 // strings, computed client-side (the API never defaults the range itself —
@@ -12,17 +32,12 @@ import { formatDate as formatDisplayDate } from "../../lib/format-date";
 // isSchoolDay/nonSchoolReason signal the response already carries rather
 // than a second lookup.
 export function getCurrentWeekRange(today: Date = new Date()): { from: string; to: string } {
-  const day = today.getDay(); // 0 = Sunday
+  const todayStr = schoolToday(today);
+  const day = weekdayOf(todayStr); // 0 = Sunday
   const mondayOffset = day === 0 ? -6 : 1 - day;
-  const monday = new Date(today);
-  monday.setDate(today.getDate() + mondayOffset);
-  const saturday = new Date(monday);
-  saturday.setDate(monday.getDate() + 5);
-  return { from: formatDate(monday), to: formatDate(saturday) };
-}
-
-function formatDate(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const monday = addDays(todayStr, mondayOffset);
+  const saturday = addDays(monday, 5);
+  return { from: monday, to: saturday };
 }
 
 // v0.8 step 5 (SPEC_V0.8.md §7 item 5) — "today" plus the next `days - 1`
@@ -33,9 +48,8 @@ function formatDate(date: Date): string {
 // card, including non-school days (holiday/weekend) — nothing here is
 // collapsed or skipped.
 export function getAgendaRange(today: Date = new Date(), days = 7): { from: string; to: string } {
-  const end = new Date(today);
-  end.setDate(today.getDate() + (days - 1));
-  return { from: formatDate(today), to: formatDate(end) };
+  const todayStr = schoolToday(today);
+  return { from: todayStr, to: addDays(todayStr, days - 1) };
 }
 
 // v0.8 walk-found fix — the seam getCurrentWeekRange()/getAgendaRange()
@@ -44,10 +58,14 @@ export function getAgendaRange(today: Date = new Date(), days = 7): { from: stri
 // back into the same two functions unchanged. No new range-computation
 // logic, no backend change — from/to are still always explicit, still
 // always a valid ≤31-day span regardless of how far the offset goes.
+// v0.9 Step B amendment — pure elapsed-time (epoch ms) arithmetic, not
+// local-Date getDate()/setDate(): a week is always exactly 7*24h here,
+// never reinterpreted through a DST transition in whatever timezone the
+// browser/test process happens to be in. The result is still just an
+// instant fed to schoolToday() by the two functions above, which is where
+// the actual calendar date gets resolved.
 export function addWeeks(date: Date, weeks: number): Date {
-  const shifted = new Date(date);
-  shifted.setDate(date.getDate() + weeks * 7);
-  return shifted;
+  return new Date(date.getTime() + weeks * 7 * 24 * 60 * 60 * 1000);
 }
 
 // Shared by all three role pages: at offset 0, show the tab's own default
@@ -72,7 +90,7 @@ export function describeWeekOffset(weekOffset: number, defaultLabel: string, ran
 // injectable-`today`-parameter pattern (getCurrentWeekRange/getAgendaRange)
 // so tests never need fake timers.
 export function todayDateString(today: Date = new Date()): string {
-  return formatDate(today);
+  return schoolToday(today);
 }
 
 export function isToday(dateString: string, today: Date = new Date()): boolean {
@@ -80,7 +98,5 @@ export function isToday(dateString: string, today: Date = new Date()): boolean {
 }
 
 export function addDaysToDateString(dateString: string, days: number): string {
-  const [year, month, day] = dateString.split("-").map(Number);
-  const shifted = new Date(year, month - 1, day + days);
-  return formatDate(shifted);
+  return addDays(dateString, days);
 }

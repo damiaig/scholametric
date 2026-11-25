@@ -88,3 +88,25 @@ jobs:
           pnpm run lint &&
           pnpm -r --workspace-concurrency=1 --if-present run test &&
           pnpm run test:unit
+
+      # v0.9 Item B Step B (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — the
+      # step above always runs in this runner's own UTC, so it alone can
+      # never catch a regression back to process-timezone-dependent date
+      # code (exactly how the v0.8.4 WAT-boundary bug first slipped past
+      # CI). Re-runs only the fast, TZ-sensitive suites (API unit + the
+      # full web suite — NOT the slow backend e2e, which doesn't exercise
+      # date-boundary logic against the process clock any differently)
+      # under two extreme offsets: a positive one (catches a "today"
+      # resolved too early/late at the Africa/Lagos boundary) and a
+      # negative one (catches `new Date("YYYY-MM-DD")` — UTC midnight —
+      # landing on the PREVIOUS local day, the formatDate() hazard this
+      # step's own review follow-up found and fixed).
+      - name: Date-rule tests under TZ=Pacific/Kiritimati (UTC+14)
+        env:
+          TZ: Pacific/Kiritimati
+        run: pnpm --filter @scholametric/api run test:unit && pnpm --filter @scholametric/web run test
+
+      - name: Date-rule tests under TZ=Pacific/Pago_Pago (UTC-11)
+        env:
+          TZ: Pacific/Pago_Pago
+        run: pnpm --filter @scholametric/api run test:unit && pnpm --filter @scholametric/web run test

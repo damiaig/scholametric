@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
-import type { Homework, HomeworkListResponse, MyTeaching } from "@scholametric/shared";
+import { schoolToday, type Homework, type HomeworkListResponse, type MyTeaching } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { futureMonday } from "../../test/future-date";
 import { authStore } from "../../lib/auth-store";
@@ -111,9 +111,12 @@ describe("HomeworkClassPage", () => {
   // timers — same "prefer a genuinely-true relative date over faking the
   // clock" convention this codebase already uses (futureMonday() on the
   // backend, getAgendaRange(new Date(), 1) call sites on the frontend).
+  // v0.9 Step B (docs/SPEC_V0.9.md §3) — schoolToday(), not local Date
+  // getters: the component's own formatDueDateRelative resolves "today"
+  // the same way, so this must too (confirmed: this test fails under
+  // TZ=Pacific/Pago_Pago with the old local-getter computation).
   it("shows 'Today'/'Tomorrow' for a due date within 1 day of now", async () => {
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const todayStr = schoolToday();
     const list: HomeworkListResponse = { classArmId: "arm1", subjectId: "sub1", termId: "term1", homework: [homework({ dueDate: todayStr })] };
     mockedApiRequest.mockImplementation(async (path: string) => {
       if (path === "/api/v1/me/teaching") return TEACHING;

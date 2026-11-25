@@ -86,19 +86,19 @@ describe("AgendaDayCard", () => {
   // pattern as getCurrentWeekRange/getAgendaRange) so this is deterministic
   // regardless of which real day the suite runs on.
   it("shows the weekday header when the day isn't today", () => {
-    render(<AgendaDayCard day={SCHOOL_DAY} today={new Date(2026, 8, 15)} />);
+    render(<AgendaDayCard day={SCHOOL_DAY} today={new Date(Date.UTC(2026, 8, 15, 12))} />);
     expect(screen.getByText("Monday")).toBeInTheDocument();
     expect(screen.queryByText("Today")).not.toBeInTheDocument();
   });
 
   it("shows 'Today' when the day IS actually today", () => {
-    render(<AgendaDayCard day={SCHOOL_DAY} today={new Date(2026, 8, 14)} />);
+    render(<AgendaDayCard day={SCHOOL_DAY} today={new Date(Date.UTC(2026, 8, 14, 12))} />);
     expect(screen.getByText("Today")).toBeInTheDocument();
     expect(screen.queryByText("Monday")).not.toBeInTheDocument();
   });
 
   it("compact mode always shows 'Today', regardless of the injected date (the dashboard strip is always genuinely today)", () => {
-    render(<AgendaDayCard day={SCHOOL_DAY} compact today={new Date(2026, 8, 15)} />);
+    render(<AgendaDayCard day={SCHOOL_DAY} compact today={new Date(Date.UTC(2026, 8, 15, 12))} />);
     expect(screen.getByText("Today")).toBeInTheDocument();
   });
 

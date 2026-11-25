@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, cleanup } from "@testing-library/react";
+import { schoolToday } from "@scholametric/shared";
 import { renderWithProviders } from "../../test/render-with-providers";
 import { authStore } from "../../lib/auth-store";
 import { apiRequest } from "../../lib/api-client";
@@ -300,10 +301,11 @@ describe("StudentDashboard", () => {
   // shows), no client-side filtering/sorting of its own. A dynamically
   // computed real "today" date string, not fake timers — same convention
   // HomeworkClassPage.test.tsx already uses for formatDueDateRelative.
+  // v0.9 Step B (docs/SPEC_V0.9.md §3) — schoolToday(), not local Date
+  // getters (confirmed: fails under TZ=Pacific/Pago_Pago otherwise).
   it("'Your homework' shows title, subject + relative due date, and the Done/Not done badge, linking to /me/homework", async () => {
     authStore.setTokens({ accessToken: "access-token" });
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const todayStr = schoolToday();
     const homework = {
       classArmId: "arm1",
       homework: [

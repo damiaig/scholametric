@@ -10,9 +10,9 @@ interface StyledDatePickerProps {
   /** "YYYY-MM-DD", or "" for no date selected yet (e.g. a blank form field) */
   value: string;
   onChange: (value: string) => void;
-  /** "YYYY-MM-DD", or flatpickr's own literal "today" */
+  /** "YYYY-MM-DD" */
   minDate?: string;
-  /** "YYYY-MM-DD", or flatpickr's own literal "today" — added v0.8.4 step 4 for Lessons' inverted date rule (past/today, not future/today). */
+  /** "YYYY-MM-DD" — added v0.8.4 step 4 for Lessons' inverted date rule (past/today, not future/today). */
   maxDate?: string;
   /**
    * Return true to disable a given calendar date, on top of minDate.
@@ -44,15 +44,15 @@ function toISODate(date: Date): string {
 // flatpickr parses a plain string minDate/maxDate against its OWN
 // configured dateFormat/altFormat, not ISO — since this component sets a
 // friendly display dateFormat ("M j, Y"), an ISO "YYYY-MM-DD" bound needs
-// converting to a Date first. "today" is flatpickr's own special-cased
-// keyword (handled before format parsing), so it passes through as-is.
+// converting to a Date first.
 // v0.8.4 step 4 — shared by both minDate and maxDate (added for Lessons'
 // inverted date rule); the resolution logic is identical either way.
-function resolveDateBound(bound: string | undefined): Date | string | undefined {
-  if (!bound || bound === "today") {
-    return bound;
-  }
-  return parseISODate(bound);
+// v0.9 Step B (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — no longer
+// accepts flatpickr's own "today" keyword: that resolves from the
+// BROWSER's own clock/timezone, not school-local (Africa/Lagos). Every
+// caller now passes an explicit schoolToday()-derived string instead.
+function resolveDateBound(bound: string | undefined): Date | undefined {
+  return bound ? parseISODate(bound) : undefined;
 }
 
 // v0.8.1 step 1 (SPEC_V0.8.1.md §2.2) — ONE shared, styled wrapper around

@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Paperclip, X, RefreshCw, Trash2 } from "lucide-react";
 import {
   lessonFormSchema,
+  schoolToday,
   LESSON_ATTACHMENT_CAP_BYTES,
   type Lesson,
   type LessonAttachment,
@@ -236,7 +237,7 @@ export function LessonFormDialog({ open, onClose, classArmId, subjectId, lesson 
                 id="lesson-date"
                 value={field.value}
                 onChange={field.onChange}
-                maxDate="today"
+                maxDate={schoolToday()}
                 disableDate={disableDate}
                 placeholder="Select a date…"
               />

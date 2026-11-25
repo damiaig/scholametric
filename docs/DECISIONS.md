@@ -8881,3 +8881,72 @@ pass is about, not a regression from this change: each affected file passed clea
 isolation); frontend 88/88 files, 598/598 tests. API unit tests (41/41) and the web
 `school-time.test.ts` (4/4) identical under `TZ=UTC`/`Europe/Paris`/`Pacific/Kiritimati`.
 BACKLOG.md's timezone entry removed as fixed.
+
+## 2026-11-24/25 — v0.9 Step 2c Plan 2 review follow-up + Step B FRONTEND (school-local "today" on the frontend; formatDate/formatDateTime classified calendar-date vs instant)
+
+Review follow-up (separate small commit before Step B): `AllExceptionsFilter` now
+`logger.warn`s every mapped lock-contention response (kind + request path, no stack; response
+body unchanged — `kind` stripped before serialization) instead of returning silently.
+`school-time.ts`'s `PARTS_FORMATTER` switched from `hour12: false` to `hourCycle: "h23"` —
+`hour12: false` alone doesn't pin the hour CYCLE on every ICU build (some still render
+midnight as "24", not "00"); `hourCycle: "h23"` does. Softened the expired-transaction 409's
+wording ("a save is already in progress or took too long") — unlike the live 55P03 case, the
+blocking transaction may have already finished by the time this fires. Documented
+`LOCK_TIMEOUT_MS` in `.env.example` and `CLAUDE.md`.
+
+Step B grep patterns (`apps/web/src`, excluding tests): `new Date(`, `.getDate()`, `.getDay()`,
+`.getFullYear()`, `.getMonth()`, `toLocale*`, `Date.now`, flatpickr `defaultDate`. Site
+inventory: IN SCOPE — `current-week-range.ts` (`getCurrentWeekRange`, `getAgendaRange`,
+`todayDateString`, `isToday`, `addDaysToDateString`, `addWeeks`), the 3 `StyledDatePicker`
+"today"-token call sites (`HomeworkFormDialog.tsx` `minDate`, `LessonFormDialog.tsx`
+`maxDate`, `AgendaView.tsx` `minDate`), `test/future-date.ts` (the web test helper, same bug
+as the backend's `apps/api/test/utils/future-date.ts`, found via the same grep sweep).
+OUT OF SCOPE, confirmed and named: `StudentBioFields.tsx`'s dateOfBirth `TODAY` bound (mirrors
+the backend's `isPastDate`/`@MaxDate` exclusion — a coarse future-birthdate guard, not a date
+rule); `lesson-filters.ts`'s `weekBounds` (takes an explicit anchor date string, never a "now"
+default — a closed local-frame construct→read round trip with no instant-to-calendar-date
+conversion, so no timezone ambiguity exists to fix); `use-recently-posted.ts` (sorts real
+instants against each other via `.getTime()`, not a "today" boundary);
+`StudentDashboard/TeacherDashboard/ParentDashboard.tsx` (pure callers of `getAgendaRange`, no
+own date math, inherit the fix).
+
+`current-week-range.ts`: every "today" now resolves via `schoolToday(today)`; all further
+arithmetic parses the resulting string as UTC midnight (the same safe pattern
+`future-date.ts`/`calendar.service.ts#weekdayOf` already use) rather than local Date
+getters/setters. `addWeeks` rewritten to pure epoch-ms arithmetic (`date.getTime() + weeks*7*
+24*60*60*1000`), not local `getDate()`/`setDate()` — immune to DST reinterpretation in
+whatever timezone the browser/test process happens to be in. `formatDueDateRelative`
+(`format-date.ts`) now diffs two date strings (`dueDate`, `schoolToday(today)`) both parsed as
+UTC midnight — `dueDate` is a date-only string with no instant of its own, so it is NEVER
+passed through `schoolToday()` (which takes an instant). `StyledDatePicker`'s `resolveDateBound`
+no longer accepts flatpickr's own `"today"` keyword (resolved from the BROWSER's clock, not
+Africa/Lagos) — the branch is deleted outright; all 3 call sites now pass an explicit
+`schoolToday()`-derived string.
+
+**Mid-build discovery, scope expanded with explicit approval**: `formatDate()`/
+`formatDateTime()` (`lib/format-date.ts`), used by 11 other files, were not in Step B's
+original named scope but share the identical bug class — confirmed empirically
+(`formatDate("2026-09-21")` under `TZ=Pacific/Pago_Pago` rendered "Sep 20, 2026"). Classified
+and fixed centrally, no call-site edits: a value at EXACTLY UTC midnight (how a Prisma
+`@db.Date` column serializes; a plain `"YYYY-MM-DD"` string parses to the same instant) is a
+CALENDAR DATE — `formatDate` now checks this (`isMidnightUTC`) and formats with `timeZone:
+"UTC"` so it never shifts a day. Any other instant is real (`markedAt`, `createdAt`, a
+remark's `*RemarkAt` — confirmed against the Prisma schema per field, not guessed) and
+`formatDateTime` now always resolves it in `SCHOOL_TIME_ZONE` (Africa/Lagos), never the
+browser's own timezone — a genuine instant landing on exactly UTC midnight is astronomically
+unlikely, so the check never misclassifies one.
+
+CI: two new steps, each re-running only the fast TZ-sensitive suites (API `test:unit` + the
+full web suite — NOT the slow backend e2e, which doesn't exercise date-boundary logic against
+the process clock any differently) under `TZ=Pacific/Kiritimati` (UTC+14) and
+`TZ=Pacific/Pago_Pago` (UTC-11). The Pago Pago run caught 3 real, pre-existing test fixtures
+using the old local-getter "today" convention in their OWN setup (not production code):
+`StudentDashboard.test.tsx`, `HomeworkClassPage.test.tsx`, `LessonClassPage.test.tsx` — all
+switched to `schoolToday()`. `MyTimetablePage.test.tsx`/`TeacherTimetablePage.test.tsx` now
+pin the clock via `vi.setSystemTime()` (not `vi.useFakeTimers()` — confirmed empirically that
+`setSystemTime` alone doesn't touch `setTimeout`, so `waitFor`/`userEvent` can't hang) instead
+of racing the real clock against the component's own `new Date()` reads.
+
+Full suites green: backend e2e 57/57 suites, 722/722 tests; frontend 88/88 files, 605/605
+tests — under default (UTC), `TZ=Pacific/Kiritimati`, and `TZ=Pacific/Pago_Pago` alike.
+`pnpm typecheck`/`pnpm lint` clean throughout.

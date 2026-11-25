@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ClassTimetableResponse, MyChildrenResponse } from "@scholametric/shared";
@@ -24,6 +24,20 @@ vi.mock("../../components/ui/styled-date-picker", () => ({
 }));
 
 const mockedApiRequest = vi.mocked(apiRequest);
+
+// v0.9 Step B (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — the page itself
+// calls new Date() with no injected override, so this suite pins the
+// system clock instead of racing it: both the component's own reads and
+// this file's "expected" computations (todayDateString(), addWeeks(new
+// Date(), …)) now resolve against the SAME fixed instant, deterministic
+// regardless of which real day/timezone the suite runs under. Does NOT
+// use vi.useFakeTimers() — only Date is pinned; setTimeout/userEvent/
+// waitFor all still use real timers, so nothing here can hang.
+const FIXED_NOW = new Date(Date.UTC(2026, 8, 14, 12)); // Monday, midday UTC
+
+beforeEach(() => {
+  vi.setSystemTime(FIXED_NOW);
+});
 
 const STUDENT_USER = {
   id: "u2",
@@ -155,6 +169,7 @@ const CHILDREN: MyChildrenResponse = {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   authStore.clear();
 });
 
