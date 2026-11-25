@@ -49,13 +49,13 @@ export class StudentsController {
   ) {}
 
   @Get()
-  findAll(@Query() query: ListStudentsQueryDto) {
-    return this.studentsService.findAll(query);
+  findAll(@Query() query: ListStudentsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.studentsService.findAll(query, user);
   }
 
   @Get(":id")
-  findOne(@Param("id", ParseUUIDPipe) id: string) {
-    return this.studentsService.findOne(id);
+  findOne(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.studentsService.findOne(id, user);
   }
 
   // Results tab (SPEC_V0.4.md §2/§4 step 5). TEACHER access is a plain
@@ -160,8 +160,8 @@ export class StudentsController {
   }
 
   @Get(":id/guardians")
-  findGuardians(@Param("id", ParseUUIDPipe) id: string) {
-    return this.studentGuardiansService.findAll(id);
+  findGuardians(@Param("id", ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.studentGuardiansService.findAll(id, user);
   }
 
   @Roles(UserRole.PROPRIETOR, UserRole.SCHOOL_ADMIN)

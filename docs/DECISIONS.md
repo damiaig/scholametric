@@ -8991,3 +8991,68 @@ different concept, entirely of this codebase's current era. `requiresApproval` h
 references anywhere, only a comment noting it's gone (`packages/shared/src/grades.ts:290`).
 Both confirmed obsolete and closed; `docs/SPEC_V0.9.md`'s own follow-up table is the user's to
 update.
+
+## 2026-11-25 — v0.9 Plan B (E1): teacher scoping on student data
+
+A TEACHER may read a student's bio/identity data only if the student's CURRENT class arm is
+one they teach (class-teacher OR any subject assignment, via the existing
+`resolveTeacherAccess`/`resolveTeacherArmIds` — the same relationship `GET /class-arms/:id` and
+grade reads already use). Programmatic route audit (every controller method whose `@Roles`,
+method- or class-level, includes `TEACHER` — a Python script walking each `*.controller.ts`,
+tracking the nearest preceding `@Roles` through any intervening decorator like `@Audit`, not
+just an immediately-adjacent one, which a first naive pass missed): of every TEACHER-reachable
+route, only three were genuinely unscoped — `GET /students` (list), `GET /students/:id`,
+`GET /students/:id/guardians`, all in `students.controller.ts`/`student-guardians.service.ts`.
+Everything else already goes through `assertTeacherAssignment`/`resolveTeacherAccess`
+somewhere: `GET /class-arms/:id` (roster), `exams/*`, `grades/evaluation-scores`,
+`homework/:id/submissions` (confirmed scoped to the homework's own classArmId+subjectId
+assignment), `lessons/*`. The teacher dashboard (`dashboard/stats`, `TeacherDashboard.tsx`)
+returns only school-wide aggregate counts, never an individual student's identity — "needing
+grading" is deliberately absent there already (no endpoint gives an aggregate ungraded count
+without an unbounded fan-out, per its own existing comment) — so there was no individual
+student data to scope in the first place.
+
+New shared util `assert-teacher-may-read-student.util.ts` (one rule, reused by
+`students.service.ts#findOne` and `student-guardians.service.ts#findAll` — the other three
+guardian mutation routes are SCHOOL_ADMIN/PROPRIETOR-only at the controller already).
+`students.service.ts#findAll` filters a TEACHER's list to `enrollments: { some: { classArmId:
+{ in: teacherArmIds }, session: { isCurrent: true } } }` — the SAME `where` object drives both
+the `findMany` and the `count` inside the existing `$transaction`, so `total` can never be the
+unfiltered count and a name search can never surface an out-of-scope student (both narrow the
+same `where`).
+
+**Deliberate asymmetry, not an oversight**: `GET /students/:id/results`, `:id/report-card`,
+`:id/exams`, `:id/year-exams` keep their existing, different rule — scoped to the QUERY's
+requested session's enrollment, not just the current one, letting a teacher who taught a
+student last session (but rotated off this year) still pull up that term's report card.
+Applying the new CURRENT-only rule there would be a regression, not a fix.
+
+**Edge cases**: a student with no row in the current session's enrollment table (e.g. never
+re-enrolled after a rollover) is visible to admin/proprietor only — a TEACHER gets no list row
+and a categorical 403, since there is nothing for the rule to check against. Between sessions,
+with no academic session marked current at all, a TEACHER's list is simply empty (every
+possible current-session assignment is vacuously absent) — a real, user-visible behaviour
+change at rollover, not a bug; worth naming in the acceptance walk.
+
+**403 bodies carry no student field** — only the standard envelope (`statusCode`, `message`,
+`error`, `path`, `timestamp`); `path` legitimately echoes the requested URL (the caller already
+has the ID), but never a name/DOB/admission number. Cross-tenant stays 404, confirmed for a
+TEACHER token specifically (previously only tested for admin).
+
+**Frontend**: no code change — `StudentsListPage.tsx` does no client-side filtering of its own,
+so it already renders exactly whatever the (now server-scoped) response contains, and
+`StudentDetailPage.tsx` already had a generic `isError`/`getErrorMessage` state for any fetch
+failure. Both proven with new tests rather than assumed. (Pre-existing, unrelated gap also
+confirmed while reading this code: a TEACHER's class-arm filter dropdown on `StudentsListPage`
+is already absent today, since `GET /class-arms` 403s for that role — not something this
+change introduces or needs to fix.)
+
+Tests: `students.e2e-spec.ts` — in-class TEACHER unchanged (every GET succeeds); out-of-class
+TEACHER refused on list/detail/guardians with no student field in the 403 body; a name search
+for an out-of-scope student returns zero results; the no-current-enrollment and
+no-current-session edge cases; a TEACHER's cross-tenant 404. Frontend: `StudentsListPage`
+renders exactly the filtered rows; `StudentDetailPage` shows the backend's own sentence on a
+403, not a crash.
+
+Full suites green: backend e2e 57/57 suites, 727/727 tests; frontend 89/89 files, 609/609
+tests. `pnpm typecheck`/`pnpm lint` clean.

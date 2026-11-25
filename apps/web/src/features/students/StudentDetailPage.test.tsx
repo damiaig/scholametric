@@ -150,6 +150,34 @@ describe("StudentDetailPage — back link", () => {
   });
 });
 
+// v0.9 Item E1 (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — an out-of-class
+// TEACHER's GET now 403s server-side; this page already had a generic
+// isError/getErrorMessage state for ANY fetch failure (no new code path),
+// so this proves that existing state actually fires readably for a 403
+// specifically, not a crash or a blank page.
+describe("StudentDetailPage — 403 (out-of-class TEACHER)", () => {
+  it("shows the backend's own readable sentence, not a crash or a blank page", async () => {
+    mockedApiRequest.mockImplementation(async (path: string) => {
+      if (path.includes("/auth/me")) return TEACHER_USER;
+      if (path === "/api/v1/students/st-1") {
+        throw new ApiError(403, {
+          statusCode: 403,
+          message: "You are not assigned to this student's class.",
+          error: "Forbidden",
+          path: "/api/v1/students/st-1",
+          timestamp: new Date().toISOString(),
+        });
+      }
+      throw new Error(`unexpected apiRequest call: ${path}`);
+    });
+
+    renderDetailPage();
+
+    expect(await screen.findByText("You are not assigned to this student's class.")).toBeInTheDocument();
+    expect(screen.queryByText("Oluwaseun Adeyemi")).not.toBeInTheDocument();
+  });
+});
+
 describe("StudentDetailPage — RBAC", () => {
   it("TEACHER: Edit/Transfer/Withdraw buttons are absent, and the History tab does not render", async () => {
     mockApi({ role: "TEACHER" });

@@ -1,12 +1,14 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import type { Guardian, GuardianRelationship, StudentGuardian } from "@prisma/client";
+import { UserRole, type Guardian, type GuardianRelationship, type StudentGuardian } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
+import type { AuthenticatedUser } from "../common/types/authenticated-user";
 import { AddStudentGuardianDto } from "./dto/add-student-guardian.dto";
 import { resolveOrCreateGuardian } from "./resolve-guardian.util";
+import { assertTeacherMayReadStudent } from "./assert-teacher-may-read-student.util";
 
 export interface StudentGuardianSummary {
   id: string;
@@ -41,9 +43,25 @@ export class StudentGuardiansService {
     private readonly tenantContext: TenantContext,
   ) {}
 
-  async findAll(studentId: string): Promise<StudentGuardianSummary[]> {
+  // v0.9 Item E1 (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — same read
+  // rule as StudentsService#findOne (the other three methods here are
+  // SCHOOL_ADMIN/PROPRIETOR-only at the controller, so this is the only
+  // one a TEACHER ever reaches).
+  async findAll(studentId: string, user: AuthenticatedUser): Promise<StudentGuardianSummary[]> {
     const schoolId = this.tenantContext.schoolId;
     await this.assertStudentInTenant(schoolId, studentId);
+
+    if (user.role === UserRole.TEACHER) {
+      const currentEnrollment = await this.prisma.studentEnrollment.findFirst({
+        where: forSchool(schoolId, { studentId, session: { isCurrent: true } }),
+      });
+      await assertTeacherMayReadStudent(this.prisma, {
+        schoolId,
+        teacherUserId: user.userId,
+        currentClassArmId: currentEnrollment?.classArmId ?? null,
+        currentSessionId: currentEnrollment?.sessionId ?? null,
+      });
+    }
 
     const links = await this.prisma.studentGuardian.findMany({
       where: { schoolId, studentId },

@@ -230,4 +230,25 @@ describe("StudentsListPage", () => {
     await findTable();
     expect(screen.queryByRole("button", { name: /New student/ })).not.toBeInTheDocument();
   });
+
+  // v0.9 Item E1 (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — GET /students
+  // is now scoped server-side for TEACHER (students.service.ts#findAll);
+  // this page does no client-side filtering or merging of its own, so
+  // there is nothing here that could add an out-of-scope row back in —
+  // it renders exactly what the (now-filtered) response contains, and
+  // every row's link target comes straight from that same row's own id.
+  // A stale link/bookmark to an out-of-scope student is still refused by
+  // the backend's own 403 on GET /students/:id — proven separately in
+  // StudentDetailPage.test.tsx.
+  it("TEACHER: renders exactly the (already-filtered) rows the API returns — no out-of-scope student appears", async () => {
+    mockApi({
+      role: "TEACHER",
+      studentsHandler: () => paginated([student({ id: "st-in-scope", firstName: "InScope", lastName: "Student" })]),
+    });
+    renderWithProviders(<StudentsListPage />);
+
+    const table = within(await findTable());
+    expect(table.getByText("InScope Student")).toBeInTheDocument();
+    expect(table.getAllByRole("row")).toHaveLength(2); // header + the one in-scope row
+  });
 });

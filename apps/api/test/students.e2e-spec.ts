@@ -10,6 +10,7 @@ describe("Students (e2e)", () => {
   let prisma: PrismaService;
   let sunriseAdminToken: string;
   let sunriseTeacherToken: string;
+  let coverTeacherToken: string;
   let hillcrestAdminToken: string;
   let sunriseSchoolId: string;
   let sunriseClassArmId: string;
@@ -23,6 +24,12 @@ describe("Students (e2e)", () => {
 
     sunriseAdminToken = await loginAs(app, "admin@sunrise.test", "sunrise");
     sunriseTeacherToken = await loginAs(app, "teacher@sunrise.test", "sunrise");
+    // teacher3@sunrise.test (Physics) has NO SubjectTeacherAssignment or
+    // ClassTeacherAssignment anywhere in the seed — the same "assigned to
+    // nothing" fixture lesson.e2e-spec.ts/homework.e2e-spec.ts already use
+    // as their own out-of-scope teacher, reused here rather than inventing
+    // a second one.
+    coverTeacherToken = await loginAs(app, "teacher3@sunrise.test", "sunrise");
     hillcrestAdminToken = await loginAs(app, "admin@hillcrest.test", "hillcrest");
 
     const sunrise = await prisma.school.findUniqueOrThrow({ where: { slug: "sunrise" } });
@@ -260,7 +267,13 @@ describe("Students (e2e)", () => {
   });
 
   describe("RBAC", () => {
-    it("TEACHER: every GET succeeds, every mutation 403s", async () => {
+    // v0.9 Item E1 (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) —
+    // sunriseTeacherToken (teacher@sunrise.test) teaches sunriseClassArmId
+    // (JSS 1 A, Mathematics) — the SAME class sunriseSeededStudentId is
+    // enrolled in — so this is deliberately the IN-CLASS case, not a
+    // generic "any TEACHER" one; see the sibling test below for the
+    // out-of-class refusal.
+    it("in-class TEACHER: every GET succeeds, every mutation 403s", async () => {
       const list = await request(app.getHttpServer()).get("/api/v1/students").set(auth(sunriseTeacherToken));
       expect(list.status).toBe(200);
 
@@ -303,6 +316,115 @@ describe("Students (e2e)", () => {
         .set(auth(sunriseTeacherToken))
         .send({ classArmId: sunriseClassArmId });
       expect(transfer.status).toBe(403);
+    });
+
+    // v0.9 Item E1 — coverTeacherToken (teacher3@sunrise.test) teaches
+    // nothing at all, so the student's CURRENT class arm is never one of
+    // theirs: every read route refuses them, and the refusal body carries
+    // no student field at all (not even a redacted one).
+    it("out-of-class TEACHER: list excludes the student, detail/guardians 403 with no student fields in the body", async () => {
+      const list = await request(app.getHttpServer())
+        .get("/api/v1/students")
+        .query({ search: "SUN/2026/0001", pageSize: 100 })
+        .set(auth(coverTeacherToken));
+      expect(list.status).toBe(200);
+      expect(list.body.items.some((s: { id: string }) => s.id === sunriseSeededStudentId)).toBe(false);
+
+      const getOne = await request(app.getHttpServer())
+        .get(`/api/v1/students/${sunriseSeededStudentId}`)
+        .set(auth(coverTeacherToken));
+      expect(getOne.status).toBe(403);
+      expect(getOne.body).not.toHaveProperty("firstName");
+      expect(getOne.body).not.toHaveProperty("lastName");
+      expect(getOne.body).not.toHaveProperty("admissionNumber");
+      expect(getOne.body).not.toHaveProperty("dateOfBirth");
+      // The standard error envelope's own `path` legitimately echoes the
+      // requested URL (CLAUDE.md §5) — the caller already knows the ID
+      // they asked for. What must never appear is anything the caller
+      // DIDN'T already have: the student's name/DOB/admission number.
+      expect(Object.keys(getOne.body).sort()).toEqual(["error", "message", "path", "statusCode", "timestamp"]);
+
+      const getGuardians = await request(app.getHttpServer())
+        .get(`/api/v1/students/${sunriseSeededStudentId}/guardians`)
+        .set(auth(coverTeacherToken));
+      expect(getGuardians.status).toBe(403);
+      expect(Array.isArray(getGuardians.body)).toBe(false);
+    });
+
+    // v0.9 Item E1 — the SAME `where` drives both findMany and count (see
+    // students.service.ts#findAll's own comment): a name search for a
+    // student outside the caller's scope can't surface them, and `total`
+    // is always the FILTERED count, never the unfiltered one a leaked
+    // pagination total would reveal.
+    it("out-of-class TEACHER: a name search for the out-of-scope student returns zero results, total included", async () => {
+      const response = await request(app.getHttpServer())
+        .get("/api/v1/students")
+        .query({ search: "Oluwa", pageSize: 100 })
+        .set(auth(coverTeacherToken));
+      expect(response.status).toBe(200);
+      expect(response.body.items).toEqual([]);
+      expect(response.body.total).toBe(0);
+    });
+
+    // v0.9 Item E1 — a student with no row in the CURRENT session's
+    // enrollment table (e.g. never re-enrolled after a rollover) has
+    // nothing for the teacher rule to check against: admin/proprietor
+    // still sees them (unchanged), a TEACHER (even the one who taught
+    // their LAST known class) gets no list row and a categorical 403.
+    it("a student with no current-session enrollment is visible to admin only; any TEACHER is refused", async () => {
+      const created = await request(app.getHttpServer())
+        .post("/api/v1/students")
+        .set(auth(sunriseAdminToken))
+        .send(validStudentPayload());
+      expect(created.status).toBe(201);
+      createdStudentIds.push(created.body.id);
+
+      await prisma.studentEnrollment.deleteMany({ where: { studentId: created.body.id } });
+
+      const adminGet = await request(app.getHttpServer())
+        .get(`/api/v1/students/${created.body.id}`)
+        .set(auth(sunriseAdminToken));
+      expect(adminGet.status).toBe(200);
+      expect(adminGet.body.currentEnrollment).toBeNull();
+
+      const teacherGet = await request(app.getHttpServer())
+        .get(`/api/v1/students/${created.body.id}`)
+        .set(auth(sunriseTeacherToken));
+      expect(teacherGet.status).toBe(403);
+
+      const teacherList = await request(app.getHttpServer())
+        .get("/api/v1/students")
+        .query({ search: created.body.lastName, pageSize: 100 })
+        .set(auth(sunriseTeacherToken));
+      expect(teacherList.body.items.some((s: { id: string }) => s.id === created.body.id)).toBe(false);
+    });
+
+    // v0.9 Item E1 — the between-session rollover edge case: with no
+    // academic session marked current at all, a TEACHER has no possible
+    // current-session assignment to check against, so the list is simply
+    // empty — a real, recorded behaviour change at rollover (see
+    // docs/DECISIONS.md), not an error.
+    it("a TEACHER sees an empty list (not an error) when no academic session is current", async () => {
+      const currentSession = await prisma.academicSession.findFirstOrThrow({
+        where: { schoolId: sunriseSchoolId, isCurrent: true },
+      });
+      await prisma.academicSession.update({ where: { id: currentSession.id }, data: { isCurrent: false } });
+      try {
+        const response = await request(app.getHttpServer()).get("/api/v1/students").set(auth(sunriseTeacherToken));
+        expect(response.status).toBe(200);
+        expect(response.body.items).toEqual([]);
+        expect(response.body.total).toBe(0);
+      } finally {
+        await prisma.academicSession.update({ where: { id: currentSession.id }, data: { isCurrent: true } });
+      }
+    });
+
+    it("a TEACHER reaching for a cross-tenant student 404s, same as admin — never 403", async () => {
+      const hillcrestStudent = await prisma.student.findFirstOrThrow({ where: { NOT: { schoolId: sunriseSchoolId } } });
+      const response = await request(app.getHttpServer())
+        .get(`/api/v1/students/${hillcrestStudent.id}`)
+        .set(auth(sunriseTeacherToken));
+      expect(response.status).toBe(404);
     });
   });
 

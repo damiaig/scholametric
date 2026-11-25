@@ -1,17 +1,20 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma, Student, StudentStatus } from "@prisma/client";
+import { Prisma, Student, StudentStatus, UserRole } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { runLockedTransaction } from "../common/prisma/locked-transaction";
 import { TenantContext } from "../common/tenant/tenant-context";
 import { forSchool } from "../common/tenant/for-school";
 import { paginate } from "../common/pagination/paginate";
 import { throwIfUniqueConstraint } from "../common/prisma/prisma-errors";
+import type { AuthenticatedUser } from "../common/types/authenticated-user";
+import { resolveTeacherArmIds } from "../grades/teacher-access.util";
 import { CreateStudentDto } from "./dto/create-student.dto";
 import { UpdateStudentDto } from "./dto/update-student.dto";
 import { WithdrawStudentDto } from "./dto/withdraw-student.dto";
 import { TransferClassDto } from "./dto/transfer-class.dto";
 import { ListStudentsQueryDto } from "./dto/list-students-query.dto";
 import { resolveOrCreateGuardian } from "./resolve-guardian.util";
+import { assertTeacherMayReadStudent } from "./assert-teacher-may-read-student.util";
 
 const ADMISSION_NUMBER_SEQUENCE_LENGTH = 4;
 
@@ -44,7 +47,16 @@ export class StudentsService {
     private readonly tenantContext: TenantContext,
   ) {}
 
-  async findAll(query: ListStudentsQueryDto) {
+  // v0.9 Item E1 (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — a TEACHER's
+  // list is filtered to students whose CURRENT class arm is one they
+  // teach, via the SAME `where` used by both findMany and count below
+  // (so total is always the filtered count, never the unfiltered one —
+  // pagination can't leak an out-of-scope count, and a name search can't
+  // surface an out-of-scope student either, since the search OR and the
+  // class-arm restriction both narrow the SAME where). No current
+  // session (between-session rollover) resolves to an empty allowed-arm
+  // set, which is an empty list for a TEACHER, not an error.
+  async findAll(query: ListStudentsQueryDto, user: AuthenticatedUser) {
     const schoolId = this.tenantContext.schoolId;
     const where: Prisma.StudentWhereInput = {
       ...forSchool(schoolId, { deletedAt: null }),
@@ -59,7 +71,14 @@ export class StudentsService {
       ];
     }
 
-    if (query.classArmId) {
+    if (user.role === UserRole.TEACHER) {
+      const session = await this.prisma.academicSession.findFirst({ where: forSchool(schoolId, { isCurrent: true }) });
+      const teacherArmIds = session
+        ? await resolveTeacherArmIds(this.prisma, { schoolId, teacherUserId: user.userId, sessionId: session.id })
+        : new Set<string>();
+      const allowedArmIds = query.classArmId ? (teacherArmIds.has(query.classArmId) ? [query.classArmId] : []) : [...teacherArmIds];
+      where.enrollments = { some: { classArmId: { in: allowedArmIds }, session: { isCurrent: true } } };
+    } else if (query.classArmId) {
       where.enrollments = { some: { classArmId: query.classArmId, session: { isCurrent: true } } };
     }
 
@@ -78,7 +97,7 @@ export class StudentsService {
     return paginate(items.map((item) => this.toListItem(item)), total, query.page, query.pageSize);
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, user: AuthenticatedUser) {
     const schoolId = this.tenantContext.schoolId;
     const student = await this.prisma.student.findFirst({
       where: forSchool(schoolId, { id, deletedAt: null }),
@@ -86,6 +105,15 @@ export class StudentsService {
     });
     if (!student) {
       throw new NotFoundException("Student not found.");
+    }
+    if (user.role === UserRole.TEACHER) {
+      const currentEnrollment = student.enrollments[0];
+      await assertTeacherMayReadStudent(this.prisma, {
+        schoolId,
+        teacherUserId: user.userId,
+        currentClassArmId: currentEnrollment?.classArmId ?? null,
+        currentSessionId: currentEnrollment?.sessionId ?? null,
+      });
     }
     return this.toDetail(student);
   }
