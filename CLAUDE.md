@@ -176,6 +176,9 @@ CI runs on GitHub Actions for every push.
    failing tests to make the build green.
 6. Stop when the scope is complete. Summarize what changed and what the
    next logical step is. Do not start the next step.
+7. Scratch review diffs (`*.diff`, `*.patch`) go in the gitignored
+   `.review/` directory at repo root, never committed loose at the top
+   level.
 
 ---
 

@@ -8950,3 +8950,44 @@ of racing the real clock against the component's own `new Date()` reads.
 Full suites green: backend e2e 57/57 suites, 722/722 tests; frontend 88/88 files, 605/605
 tests — under default (UTC), `TZ=Pacific/Kiritimati`, and `TZ=Pacific/Pago_Pago` alike.
 `pnpm typecheck`/`pnpm lint` clean throughout.
+
+## 2026-11-25 — v0.9 Plan A: useCurrentUser staleTime, repo scratch-file cleanup, E2/E3 closed
+
+**Item C.** `useCurrentUser()` gets `staleTime: 5 * 60 * 1000`. Every path that changes the
+current user's own identity-relevant data already invalidates/clears explicitly:
+`use-change-password.ts` (the one mutation behind both the self-service and forced-password-
+change flows) invalidates `["auth","me"]`; `use-school.ts` (`CurrentUser` embeds the school
+profile) does too; `use-logout.ts` and a definitive 401/boot-refresh failure both route through
+`authStore.clear()`. Confirmed gap, fixed in the same change: `authStore.clear()` did NOT clear
+the query cache (only `use-logout.ts` did, via its own separate `queryClient.clear()`) — with
+`staleTime:0` this self-corrected in milliseconds (a stale-while-revalidate background refetch
+on the next mount); with `staleTime:5min` it would have let a second user's login, in the same
+tab, with no explicit logout in between (e.g. the first session ending via a definitive 401),
+see the FIRST user's cached identity for up to 5 minutes. Fixed by centralizing
+`queryClient.clear()` inside `authStore.clear()` itself (covers all three existing call sites,
+and any future one, rather than relying on each to remember) plus an explicit
+`queryClient.clear()` in `use-login.ts`'s own `onSuccess` (a login is always a new identity,
+`setTokens()` itself must NOT auto-clear since it's also used for silent refresh-rotation).
+Proof: `lib/auth-session-boundary.test.tsx` (new) — `authStore.clear()` wipes the cached
+`["auth","me"]` entry, not just the token; a second user's login shows the second user's
+identity immediately. `AuthBootGate.test.tsx`'s boot-rehydration test tightened from "at least
+one call, all to the right path" to exactly one `/auth/me` call — the caveat comment explaining
+why it couldn't be exact (staleTime:0 causing extra mount-triggered background refetches) no
+longer applies and is deleted.
+
+**Item D.** `git rm`'d 13 tracked scratch diff files at repo root (`gap2.diff`, `pretag-
+fix.diff`, `v05-step1..6.diff`, `v051-step1..4.diff` including the trailing-comma
+`v051-step3.diff,`, `v051-step56.diff`) — one more than the 12 originally estimated;
+`v051-step3.diff,`'s trailing comma meant it was easy to undercount by eye. `.gitignore`:
+root-anchored `/*.diff`, `/*.diff,`, `/*.patch`, `/.review/`. `step4.diff` (untracked) left
+alone — now also gitignored by the new pattern, which only removes it from `git status` noise,
+nothing else. CLAUDE.md §8 gets a new item 7 pointing scratch review diffs at `.review/`.
+
+**E2/E3 closed.** Grepped `apps/api/prisma/schema.prisma` + `apps/api/src` + `packages/shared/
+src`: no `AssessmentComponent` model or any component-shaped table exists anywhere (deleted
+v0.7, confirmed); the only remaining `maxScore` is the grade-boundary band cap
+(`schema.prisma:817`) and its DTO/service/preset plumbing — unrelated field, same name,
+different concept, entirely of this codebase's current era. `requiresApproval` has zero live
+references anywhere, only a comment noting it's gone (`packages/shared/src/grades.ts:290`).
+Both confirmed obsolete and closed; `docs/SPEC_V0.9.md`'s own follow-up table is the user's to
+update.

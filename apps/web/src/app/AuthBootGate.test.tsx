@@ -133,18 +133,15 @@ describe("AuthBootGate", () => {
     // The headline proof: the login screen was never present at any point
     // along the way, not just absent now.
     expect(screen.queryByText("Sign in to ScholaMetric")).not.toBeInTheDocument();
-    expect(mockedApiRequest.mock.calls.length).toBeGreaterThan(0);
-    // Not "exactly once": ProtectedLayout's own useCurrentUser() mounts
-    // first and gates its children (Sidebar, HelpPage) behind its own
-    // isLoading, so those two mount their own useCurrentUser() observers
-    // on a LATER commit, once the first call's data already exists —
-    // TanStack Query's default staleTime:0 means a newly-mounted observer
-    // for already-fetched-but-stale data triggers one background refetch.
-    // Confirmed pre-existing and unrelated to this step via a control case
-    // (same double-call with authStore pre-authenticated and AuthBootGate
-    // out of the tree entirely) — the property that actually matters here
-    // is that NOTHING unexpected fired, not an exact count.
-    expect(mockedApiRequest.mock.calls.every(([path]) => path === "/api/v1/auth/me")).toBe(true);
+    // Exactly once: ProtectedLayout's useCurrentUser() mounts first and
+    // gates its children (Sidebar, HelpPage) behind its own isLoading, so
+    // those two mount their own useCurrentUser() observers on a LATER
+    // commit, once the first call's data already exists — v0.9 Item C's
+    // 5-minute staleTime (docs/SPEC_V0.9.md §3) means that data is still
+    // fresh, so those later observers read the cache instead of each
+    // triggering their own redundant background refetch.
+    expect(mockedApiRequest).toHaveBeenCalledTimes(1);
+    expect(mockedApiRequest).toHaveBeenCalledWith("/api/v1/auth/me");
 
     // Step 1's logout still works, unaffected by boot rehydration: clicking
     // it clears the session and lands back on /login (it's the shell's own

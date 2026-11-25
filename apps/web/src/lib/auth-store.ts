@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { queryClient } from "./query-client";
 
 // Memory-only, module-level auth state — deliberately not localStorage/
 // sessionStorage (never a persistent, XSS-exfiltratable credential) and not
@@ -43,9 +44,18 @@ export const authStore = {
     emitChange();
   },
 
+  // v0.9 Item C (docs/SPEC_V0.9.md §3, docs/DECISIONS.md) — clears the
+  // query cache too, centralized here rather than at each of this
+  // method's own call sites (api-client.ts's definitive-401 path,
+  // AuthBootGate's boot-refresh failure, use-logout.ts): every one of
+  // them means "this session's identity is gone," and useCurrentUser()'s
+  // now-nonzero staleTime means the cache would otherwise keep serving
+  // THIS session's stale data into whatever (possibly different) session
+  // follows. Centralizing here means a future call site can't forget it.
   clear(): void {
     accessToken = null;
     status = "unauthenticated";
+    queryClient.clear();
     emitChange();
   },
 
@@ -65,6 +75,7 @@ export const authStore = {
 export function resetAuthStatusForTests(): void {
   status = "unknown";
   accessToken = null;
+  queryClient.clear();
   emitChange();
 }
 

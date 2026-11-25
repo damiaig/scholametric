@@ -1,12 +1,9 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { apiRequest, CSRF_HEADER } from "../../lib/api-client";
 import { authStore } from "../../lib/auth-store";
 
 // No explicit navigate() here — clearing the auth store makes
 // ProtectedLayout's reactive guard redirect to /login on its next render.
 export function useLogout() {
-  const queryClient = useQueryClient();
-
   return async function logout(): Promise<void> {
     const tokens = authStore.getState();
     try {
@@ -21,8 +18,10 @@ export function useLogout() {
       // The user's intent is to log out locally regardless of whether
       // server-side revocation succeeded.
     } finally {
+      // v0.9 Item C (docs/SPEC_V0.9.md §3) — authStore.clear() itself
+      // clears the query cache now (centralized there); no separate
+      // queryClient.clear() needed here anymore.
       authStore.clear();
-      queryClient.clear();
     }
   };
 }

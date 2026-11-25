@@ -10,3 +10,12 @@ coverage/
 pnpm-lock.yaml.bak
 .turbo/
 apps/web/.vite/
+
+# Scratch review/working diffs at the repo root only (v0.9 Item D,
+# docs/DECISIONS.md) — root-anchored so a legitimate .diff/.patch fixture
+# elsewhere in the tree is unaffected. Review diffs belong in the
+# gitignored .review/ directory instead (see CLAUDE.md).
+/*.diff
+/*.diff,
+/*.patch
+/.review/
